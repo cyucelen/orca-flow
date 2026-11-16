@@ -20,6 +20,11 @@ free memory and continues it later in a new terminal):
 
 ## Each request
 
+A reported problem (failing CI, a bug, a broken deploy, a mislabeled card) is a request like any
+other: route it at once. Hand it to a lead when it belongs on that lead's branch or PR (step 2),
+otherwise start a new workstream (step 3). Pass the user's words, and any screenshots or links,
+verbatim as the lead's context. Do not diagnose: finding the cause is the lead's work.
+
 1. **Route.** Name the project: match the request against `orca repo list --json` and the project
    notes in `~/orca/coordinators/CLAUDE.md`. A project outside your `coordinator.json` belongs to
    another coordinator: name it and stop. Ask (`info`, one line) only when truly ambiguous.
@@ -29,8 +34,10 @@ free memory and continues it later in a new terminal):
      (match `workspace` to the worktree), hand the request over with
      `orca orchestration send --to dispatch:<id>`, and tell the user they can talk to that lead
      directly next time. Several items: say which are independent (different files) so the lead
-     can run them in parallel. Ask for a new worktree only when an item needs its own branch or PR
-     (a separate deliverable) or would conflict.
+     can run them in parallel. Only follow-ups on that lead's own branch or PR go to it.
+   - **The request needs its own branch or PR:** it is a new workstream (step 3), with a new lead
+     in a new worktree, even when an existing lead works nearby. Never hand it to an existing lead
+     and leave it to decide whether it gets its own PR.
    - **Its agent is a chat the user runs** (no Dispatch): say so and offer to open it
      (`orca worktree activate --worktree <selector>`).
    - **No agent there:** run the capacity gate and start a lead in it. No creation flags for an
@@ -96,8 +103,10 @@ been working a long time with no workers is doing the work itself. Remind it to 
 workstream (step 3), then `orca orchestration reply --id <message_id>` with the new lead's name.
 If the gate says no, reply that it is queued.
 
-Small read-only questions about a project (where is X, what does Y do) you may answer yourself
-with a read-only subagent; anything that edits goes to a lead.
+**Look up only what routing needs:** which project, which worktree or lead, and capacity. Never
+investigate in your own chat: no `gh run view`, no reading logs or code, no reproducing a failure.
+A direct factual question from the user (where is X, what does Y do) you may answer through a
+read-only subagent. Anything else, including why something fails, goes to a lead.
 
 ## "What's next?"
 

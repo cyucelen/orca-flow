@@ -88,7 +88,9 @@ the user will keep using (a lead).
 
 **Only coordinators create worktrees.** A worktree costs a setup run (install) and usually a dev
 server; that, not the checkout, is what slows the machine. Leads and workers work in `current`;
-when a task truly needs its own branch, ask your coordinator with `orca orchestration ask`.
+a request that needs its own branch or PR is a separate workstream: a new lead in a new worktree.
+A lead asks its coordinator for one with `orca orchestration ask`; it never juggles branches in
+its own worktree.
 
 ### Capacity gate
 
@@ -161,6 +163,8 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 - Spawn without running the capacity gate.
 - Use priority words other than now/today/soon/someday.
 - Create a worktree unless you are a coordinator.
+- Diagnose as a coordinator: route a reported problem to a lead with the user's words, never
+  investigate it yourself.
 - Release or close workers; Orca does that.
 - Remove a worktree without the user's yes.
 - Poll workers or run watch scripts.

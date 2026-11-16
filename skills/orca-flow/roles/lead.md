@@ -7,27 +7,30 @@ available.
 
 ## Each request from the user
 
-1. **A running worker owns those files?** Send the request to it:
+1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at
+   once with `orca orchestration ask` for a new worktree and lead, tell the user in one line, and
+   end your turn. Never queue it behind your own work or switch branches in this worktree.
+2. **A running worker owns those files?** Send the request to it:
    `orca orchestration send --to dispatch:<id> --subject "<fix>" --body "<spec>"`. It gets it when
    its current turn ends. Never edit files a running worker is changing, even for a small fix.
-2. **Do it yourself only when it fits in this turn:** you can make it, verify it and finish it in
+3. **Do it yourself only when it fits in this turn:** you can make it, verify it and finish it in
    the same short turn, with no tests to write and no release. Say what changed in one line.
    Anything with tests, a screenshot, a release, or more than one file goes to a worker. A
    pre-diagnosed spec is still a worker task: knowing the fix does not make it small.
-3. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
+4. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
    it with its whole conversation, so it already knows the code.
-4. **Otherwise start a worker** in this worktree: run the capacity gate, then
+5. **Otherwise start a worker** in this worktree: run the capacity gate, then
    `orca orchestration worker-start --worktree current --agent claude --task-title "<outcome>"
    --spec-file -`. Workers running at the same time must touch different files; otherwise send the
    second task to the first worker, or start it after the first reports.
-5. **Confirm in one line** who is on it, then end your turn. Orca wakes you when a worker reports.
+6. **Confirm in one line** who is on it, then end your turn. Orca wakes you when a worker reports.
 
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.
 
-**Several requests at once** (or queued while you worked): independent ones (different files) go
-to parallel workers; ones on the same files chain on one worker. When the workers deliver, check
-them, then release once, in order. Only you push and release.
+**Several requests at once** (or queued while you worked): independent ones on this branch
+(different files) go to parallel workers; ones on the same files chain on one worker. When the
+workers deliver, check them, then release once, in order. Only you push and release.
 
 Write each spec self-contained: the outcome in its first line, the change, which files it may
 edit, what other workers own (files, migrations, schema, lockfiles), constraints, and the evidence
@@ -38,7 +41,7 @@ that proves it is done (tests, a screenshot, a command's output).
 - Check its evidence; rerun a check only for a gap or a contradiction.
 - Tell the user the outcome in one line. When it is something they will want to see, make it a
   `review` ask with how to look (a URL, a screenshot).
-- A failure: send the worker what to fix, or take over if it fits in one short turn (step 2) and no
+- A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
   worker is running on those files.
 
 **A worker's question:** answer it with `orca orchestration reply --id <message_id>` when it follows
@@ -56,7 +59,7 @@ sidebar puts it on your card and in the user's queue; the coordinator never asks
 Your dispatch preamble says to ask the coordinator with `orca orchestration ask`. As a lead, use
 that only for what the coordinator owns:
 
-- a new worktree or branch (a separate deliverable, or work that would conflict),
+- a new worktree and lead: a request that needs its own branch or PR, or work that would conflict,
 - capacity: room for a worker that needs a new worktree,
 - a conflict with another workstream.
 
@@ -67,6 +70,8 @@ Never route a user decision through the coordinator, and never put a question fo
 
 Workers commit their work on this worktree's branch. Only you push, open or update the PR, and
 release, and only when the user wants it (they say so, or the spec you were given asks for it).
+This worktree holds one branch and one PR; a request for another PR goes to your coordinator
+(step 1 of Each request).
 
 ## Finishing the workstream
 
@@ -92,7 +97,7 @@ When you do finish, `worker_done` carries the outcome, the PR and anything left 
 worktree's card when the goal or level changes.
 
 You never create worktrees, close workers or remove anything. A task that needs its own branch:
-ask your coordinator with `orca orchestration ask` and end your turn.
+ask your coordinator with `orca orchestration ask` for a new worktree and lead, and end your turn.
 
 ## Without a coordinator
 
