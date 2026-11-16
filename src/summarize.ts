@@ -102,6 +102,7 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
 
 export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; turnAt: string | null }
 
+/** Condense a Claude Code transcript into what the summarizer needs. */
 export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null {
   const events: Event[] = []
   let cwd: string | null = null
