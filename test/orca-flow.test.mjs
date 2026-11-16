@@ -20,7 +20,7 @@ test('capacity: the shared memory decision, pressure overrides', () => {
 
 const line = (type, content, extra = {}) => JSON.stringify({ type, message: { content }, timestamp: extra.at ?? 't', ...extra })
 
-test('digest keeps the latest turn, skips tool results and sidechains, and finds the role', () => {
+test('digest keeps the latest turn apart from the earlier one, skips tool results and sidechains, and finds the role', () => {
   const lines = [
     line('user', 'Task T1, Dispatch ID d-9: fix the login bug', { at: '1' }),
     line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'pnpm test' } }]),
@@ -32,8 +32,10 @@ test('digest keeps the latest turn, skips tool results and sidechains, and finds
   const d = digest(lines)
   assert.equal(d.role, 'worker')
   assert.match(d.firstPrompt, /fix the login bug/)
-  assert.match(d.turn, /→ Bash: pnpm test/)
-  assert.doesNotMatch(d.turn, /side/)
+  assert.match(d.context, /→ Bash: pnpm test/, 'the earlier turn is context')
+  assert.doesNotMatch(d.turn, /pnpm test/, 'and not part of the latest turn')
+  assert.match(d.turn, /^USER: now ship it$/)
+  assert.doesNotMatch(d.context + d.turn, /side/)
   assert.equal(d.lastAssistant, 'PR #12 opened. Merge it?')
   assert.equal(d.turnAt, '3')
 })

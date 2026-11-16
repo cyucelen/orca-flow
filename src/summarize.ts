@@ -17,7 +17,7 @@ const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 4
+export const SUMMARIZER_VERSION = 5
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -56,6 +56,8 @@ Rules:
 - Never put ids, hashes, terminal names, file paths or URLs in title, about, glance or watching.
 - Be concrete in "since": name PRs, tests, numbers. No filler, no "the agent".
 - "since" is what changed in the latest turn only.
+- "needs" and "glance" come ONLY from the agent's final message of the latest turn. An ask, action or question from the earlier turn, or from earlier in the latest turn, that the final message does not repeat is not current: needs.type "none" and glance "". The earlier turn is context for "title", "about" and "goal" only.
+- An optional invitation or offer is not an ask: "let me know if…", "tell me how", "if you'd rather…, tell me", "say the word if…", "happy to … if you want" means needs.type "none" and glance "". Only a question or to-do the agent actually waits on counts.
 - "needs": what the agent is waiting on from the user right now. "none" if the turn ended with work finished and nothing asked, and "none" when it is waiting on something else: workers it started, a background job, a long-running command, CI. Only a question, a decision or something for the user to do counts. "approval" = yes/no on something prepared; "decision" = choose between options; "review" = look at a diff/PR/result; "info" = a fact only the user has; "action" = something only the user can do outside the chat (change a setting, run a command, log in somewhere, rename a project), often with "tell me when done". Ask ONE question in at most 25 words; if the agent asked several, ask the most important and say "(+2 more)". Options are 1-5 word labels like "Merge", "Keep both", "Ask each time", never sentences.
 - An "action" is not a question: never rephrase it as one ("Rename cacasports to katos in Orca?" is wrong). Keep the agent's own wording as an imperative in "ask" and "glance" ("Rename the project to katos in Orca settings."). Its options are ["Done"] or empty. The rules below apply to actions too: a heads-up about a later action is not an ask, and an action the user already took on is not one.
 - An ask needs a question the user can answer RIGHT NOW, or an action the user can do right now. A heads-up about a later step is not one: "releasing waits for your go-ahead", "I'll ask you once the PR is up", "merging needs your OK later" while the work it depends on is still running or not yet there means needs.type "none" and glance "", with what it waits on first in "watching". Never turn such a statement into a question.
@@ -98,9 +100,8 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
   return 'solo'
 }
 
-export type Digest = { role: Role; firstPrompt: string; turn: string; lastAssistant: string; turnAt: string | null }
+export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; turnAt: string | null }
 
-/** Condense a Claude Code transcript into what the summarizer needs. */
 export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null {
   const events: Event[] = []
   let cwd: string | null = null
@@ -132,18 +133,21 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
   }
   const prompts = events.filter((e) => e.kind === 'user')
   if (prompts.length === 0) return null
-  // The latest turn, plus the one before it for context.
-  const startPrompt = prompts.at(-2) ?? prompts.at(-1)!
-  const tail = events.slice(events.indexOf(startPrompt))
-  const lastAssistant = [...events].reverse().find((e) => e.kind === 'assistant')
-  const body = tail
+  // The latest turn, and the one before it as context only: its asks are not current.
+  const latest = events.indexOf(prompts.at(-1)!)
+  const earlier = prompts.length > 1 ? events.slice(events.indexOf(prompts.at(-2)!), latest) : []
+  const turn = events.slice(latest)
+  // The final message comes from the latest turn only; an earlier turn's is not this turn's.
+  const lastAssistant = [...turn].reverse().find((e) => e.kind === 'assistant')
+  const render = (es: Event[]) => es
     .filter((e) => e !== lastAssistant)
     .map((e) => (e.kind === 'user' ? `USER: ${clip(e.text, 1500)}` : e.kind === 'assistant' ? `AGENT: ${clip(e.text, 800)}` : `  → ${e.text}`))
     .join('\n')
   return {
     role: roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home),
     firstPrompt: clip(prompts[0].text, 1500),
-    turn: clip(body, 10_000),
+    context: clip(render(earlier), 4000),
+    turn: clip(render(turn), 10_000),
     lastAssistant: lastAssistant ? clip(lastAssistant.text, 4000) : '',
     turnAt: events.at(-1)?.at ?? null
   }
@@ -311,6 +315,7 @@ export function promptFor(d: Digest, previous: { title?: string; about?: string 
     goal && `Coordinator's goal for this workstream: ${goal}`,
     previous?.title && `Previous title: ${previous.title}${previous.about ? `\nPrevious about: ${previous.about}` : ''}`,
     `FIRST REQUEST:\n${d.firstPrompt}`,
+    d.context && `EARLIER TURN (context only; its asks are not current):\n${d.context}`,
     `LATEST TURN:\n${d.turn}`,
     `AGENT'S FINAL MESSAGE THIS TURN:\n${d.lastAssistant || '(none)'}`
   ].filter(Boolean).join('\n\n')

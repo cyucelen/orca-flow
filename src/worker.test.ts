@@ -391,6 +391,56 @@ test('a to-do for the user is an "action" kept as an imperative, never rephrased
   assert.ok(SUMMARIZER_VERSION >= 3, 'cards written before actions existed refresh')
 })
 
+test("an earlier turn's action is context only; asks come from the latest turn's final message", async () => {
+  const { SYSTEM_PROMPT, SUMMARIZER_VERSION, digest, promptFor } = await import('./summarize.ts')
+  // The iori coordinator's card showed "ASKS · ACTION — Rename cacasports to katos in Orca." after
+  // the user said "ok" and it answered with something else: the rename was the turn before's.
+  const line = (type: string, content: unknown) => JSON.stringify({ type, timestamp: '2026-11-16T12:00:00Z', message: { content } })
+  const rename = 'Still on your side: rename the project to katos in Orca settings, then tell me'
+  const opened = 'I opened the Katos store setup chat, where the release lead is waiting for your approval on the Taiwan tax info.'
+  const d = digest([
+    line('user', 'Set up the Katos store'),
+    line('assistant', [{ type: 'text', text: 'Store created.' }]),
+    line('user', 'what is left?'),
+    line('assistant', [{ type: 'text', text: rename }]),
+    line('user', 'ok'),
+    line('assistant', [{ type: 'text', text: opened }])
+  ])!
+  assert.match(d.context, /AGENT: Still on your side: rename the project/)
+  assert.equal(d.turn, 'USER: ok')
+  assert.equal(d.lastAssistant, opened)
+  const prompt = promptFor(d, null)
+  const earlier = prompt.indexOf('EARLIER TURN (context only; its asks are not current):\n')
+  const latest = prompt.indexOf('LATEST TURN:\n')
+  const final = prompt.indexOf("AGENT'S FINAL MESSAGE THIS TURN:\n")
+  assert.ok(earlier >= 0 && earlier < latest && latest < final, 'earlier turn, then the latest, then its final message')
+  assert.ok(prompt.slice(earlier, latest).includes(rename), 'the rename sits in the earlier turn')
+  assert.ok(!prompt.slice(latest).includes('rename'), 'and nowhere in the latest turn or its final message')
+  assert.match(SYSTEM_PROMPT, /"needs" and "glance" come ONLY from the agent's final message of the latest turn/)
+  assert.match(SYSTEM_PROMPT, /from the earlier turn, or from earlier in the latest turn, that the final message does not repeat is not current: needs\.type "none" and glance ""/)
+  assert.ok(SUMMARIZER_VERSION >= 5, 'cards that carried an old ask forward refresh')
+})
+
+test('an only turn has no earlier-turn section, and its final message is its own', async () => {
+  const { digest, promptFor } = await import('./summarize.ts')
+  const line = (type: string, content: unknown) => JSON.stringify({ type, timestamp: '2026-11-16T12:00:00Z', message: { content } })
+  const d = digest([line('user', 'Fix it'), line('assistant', [{ type: 'text', text: 'Merge PR #3?' }])])!
+  assert.equal(d.context, '')
+  assert.ok(!promptFor(d, null).includes('EARLIER TURN'))
+  const toolsOnly = digest([line('user', 'Fix it'), line('assistant', [{ type: 'text', text: 'Merge PR #3?' }]), line('user', 'yes'), line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'gh pr merge 3' } }])])!
+  assert.equal(toolsOnly.lastAssistant, '', "the earlier turn's message is not this turn's final message")
+})
+
+test('an optional invitation ("tell me how") is not an ask', async () => {
+  const { SYSTEM_PROMPT, SUMMARIZER_VERSION } = await import('./summarize.ts')
+  // "OK, I won't start it. If you'd rather handle this another way, tell me how." became
+  // "ASKS · INFO — How to handle skill reloads after updates?".
+  assert.match(SYSTEM_PROMPT, /An optional invitation or offer is not an ask/)
+  assert.match(SYSTEM_PROMPT, /"let me know if…", "tell me how", "if you'd rather…, tell me", "say the word if…", "happy to … if you want" means needs\.type "none" and glance ""/)
+  assert.match(SYSTEM_PROMPT, /Only a question or to-do the agent actually waits on counts/)
+  assert.ok(SUMMARIZER_VERSION >= 5, 'cards that read an invitation as an ask refresh')
+})
+
 test("a transcript Claude creates a moment after the turn's status is found on a retry, without a warning", async () => {
   const { turnSummarizer } = await import('./summarize.ts')
   const runs: string[] = []
