@@ -4,6 +4,7 @@ import * as main from './worker.ts'
 import { nextTarget, waitingQueue } from './rank.ts'
 import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, scaffoldCoordinator, validateName, writeLook } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
+import { emptyUi, render } from './view.ts'
 
 const ps: main.PsWorktree[] = [
   {
@@ -730,8 +731,36 @@ test('the focused tab: each tab group\'s front tab and that tab\'s front pane, a
   const calls: string[][] = []
   const front = await main.readFocus(async (args) => { calls.push(args); return { terminals: [], visualLayouts: one } })
   assert.deepEqual(front, ['tab-a:lead'])
-  assert.deepEqual(calls, [['terminal', 'list', '--worktree', 'active', '--include-visual-layouts']])
-  assert.equal(await main.readFocus(async () => { throw new Error('selector_not_found') }), null, 'unknown: the panel falls back to the lead')
+  assert.deepEqual(calls, [['terminal', 'list', '--include-visual-layouts']])
+  assert.equal(await main.readFocus(async () => { throw new Error('orca terminal list timed out') }), null, 'unknown: the panel falls back to the lead')
+})
+
+test('clicking a worker nested under its lead in one worktree marks the worker, not the lead', async () => {
+  // As Orca lays it out after the click: release-stores is focused with its worker's tab in front;
+  // another worktree has its own tab in front.
+  const tab = (tabId: string) => ({ tabId, title: tabId, activeLeafId: 'leaf', panes: { type: 'terminal', handle: `term-${tabId}`, tabId, leafId: 'leaf', connected: true, active: true } })
+  const layouts = [
+    { worktreeId: 'r::/w/release-stores', worktreePath: '/w/release-stores', root: { type: 'group', groupId: 'g1', activeTabId: 'worker', tabs: [tab('lead'), tab('worker')] } },
+    { worktreeId: 'r::/w/other', worktreePath: '/w/other', root: { type: 'group', groupId: 'g2', activeTabId: 'other', tabs: [tab('other')] } }
+  ]
+  // The worker runs in `/`, where Orca's `--worktree active` (resolved from the current directory) finds no worktree.
+  const run = async (args: string[]) => {
+    if (args.includes('active')) throw new Error('No Orca-managed worktree contains the current directory: /')
+    return { terminals: [], visualLayouts: layouts }
+  }
+  const rows = main.fromPs([
+    { identity: { key: 'stores' }, displayName: 'release-stores', repo: 'katos', path: '/w/release-stores', isActive: true, liveTerminalCount: 2, agents: [
+      { paneKey: 'lead:leaf', state: 'working', conversationName: 'Katos store release' },
+      { paneKey: 'worker:leaf', parentPaneKey: 'lead:leaf', state: 'done', conversationName: 'Play Console Data safety' }
+    ] },
+    { identity: { key: 'other' }, displayName: 'other', repo: 'katos', path: '/w/other', liveTerminalCount: 1, agents: [{ paneKey: 'other:leaf', state: 'working', conversationName: 'Other' }] }
+  ])
+  const nested = assignCoordinators(rows, [], { dispatcherOf: new Map(), paneOf: new Map() })
+  assert.equal(nested[0].agents.find((a) => a.paneKey === 'worker:leaf')?.leadPane, 'lead:leaf', 'the worker nests under its lead')
+  const focusedPanes = await main.readFocus(run)
+  const { main: html } = render({ rows: nested, source: 'cli', capacity: null, coordinators: [], focusedPanes }, emptyUi())
+  const current = [...html.matchAll(/class="item[^"]*current"[^>]*data-menu="agent:([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(current, ['worker:leaf'])
 })
 
 test('remove anyway waives uncommitted files only, after the person confirmed', async () => {

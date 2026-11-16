@@ -455,10 +455,15 @@ export function focusedPanes(layouts: VisualLayout[] | undefined): string[] {
   return (layouts ?? []).flatMap((l) => front(l.root))
 }
 
-/** The focused workspace's front panes, or null when Orca could not say (then only its lead is marked). */
+/**
+ * Every workspace's front panes, or null when Orca could not say (then only the focused workspace's
+ * lead is marked). Which workspace is focused comes from Orca's own flag on the rows, so the panel
+ * marks only that one's. Not `--worktree active`: the CLI resolves it from the current directory,
+ * and this worker runs in `/`, so it always failed and every worktree marked its lead.
+ */
 export async function readFocus(run: (args: string[], options?: { timeoutMs?: number }) => Promise<any>): Promise<string[] | null> {
   try {
-    const listed = await run(['terminal', 'list', '--worktree', 'active', '--include-visual-layouts'], { timeoutMs: 5000 })
+    const listed = await run(['terminal', 'list', '--include-visual-layouts'], { timeoutMs: 5000 })
     return focusedPanes(listed?.visualLayouts)
   } catch {
     return null
@@ -558,7 +563,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   let latest: Snapshot | null = null
   // The panel's update button reads the update state from every snapshot it gets.
   let updateState: UpdateState = { kind: 'none' }
-  // The panes in front in the focused workspace; only their agents wear the current border.
+  // The panes in front in every workspace; only the focused workspace's agents among them wear the current border.
   let focus: string[] | null = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus })
   const run = orcaRunner(ORCA_BIN)
@@ -762,7 +767,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
   orca.panels.handle('sidebar.open', async (input) => {
     const opened = await openAgent(orca, run, input)
-    void rereadFocus()
+    // A read already in flight predates the switch; read again after it.
+    void (focusReading ?? Promise.resolve()).then(rereadFocus)
     return opened
   })
 
