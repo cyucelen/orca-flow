@@ -140,7 +140,7 @@ test('monitoring comes from Orca: its working mode, even while its state says wo
   noMatch(main, /Up next/)
 })
 
-test('the opened cockpit: memory, heaviest, counts and actions that confirm in place', () => {
+test('the opened cockpit: memory in parts, one line per consumer, counts and actions that confirm in place', () => {
   const stats: CockpitStats = {
     swap: { usedGB: 20.1, totalGB: 21 }, ram: { usedGB: 15.1, totalGB: 16 },
     started: [
@@ -161,21 +161,78 @@ test('the opened cockpit: memory, heaviest, counts and actions that confirm in p
   assert.match(render(snap, ui).copen, /class="refreshing"/, 'reopening keeps the last stats with a spinner')
   ui.statsLoading = false
   const open = render(snap, ui).copen
-  assert.match(open, /meter-label">Swap<\/span><span class="bar warn">[\s\S]*?20\.1 of 21 GB/)
-  assert.match(open, /class="warn">15\.1 of 16 GB used/, 'RAM shows total and used, warning when nearly full')
-  noMatch(open, /By process|after the 2 GB margin/)
-  assert.match(open, /Pricing page[\s\S]*?class="item static started"><span class="sub-mark">↳<\/span><span class="t">next-server \+3<\/span><span class="r">1\.3 GB<\/span><\/div>/, 'what a session started sits under it')
-  assert.match(open, /vite <span class="soft">old-feature<\/span><\/span><span class="r">300 MB/, 'what a sleeping agent left running is listed with its worktree')
-  assert.match(open, /Pricing page[\s\S]*1\.5 GB[\s\S]*data-yes="close:p-pricing">sleep/)
-  assert.match(open, /data-act="closeall">Free 430 MB: sleep 1 finished session</, 'memory is tight here (agents-only)')
-  assert.match(open, /class="stat ask"><span class="n">2<\/span><span class="l">asking/)
-  assert.match(open, /<div class="stat "><span class="n">1<\/span><span class="l">finished/)
-  assert.match(open, /Remove state-cleanup[\s\S]*PR #1753 merged · clean/)
+  assert.match(open, /meter-label">Swap<\/span><span class="bar warn"[^>]*><span style="width:95\.7%"><\/span><\/span><span class="num warn"[^>]*>20\.1 \/ 21 GB/)
+  assert.match(open, /class="num warn" data-tip="RAM: 15\.1 of 16 GB used, 0\.9 GB free">15\.1 \/ 16 GB/, 'RAM shows used and total, warning when nearly full')
+  // A session and what it started are one line: their total shown, the split on hover.
+  assert.match(open, /class="item static use" data-tip="Pricing page\nSession: 1\.5 GB\nnext-server \+3: 1\.3 GB">[\s\S]*?Pricing page<\/span><span class="r"><i class="key c0"><\/i>2\.7 GB<\/span><span class="aslot"><button class="act" data-yes="close:p-pricing">sleep/)
+  noMatch(open, /↳|item static started/, 'no separate row for what a session started')
+  assert.match(open, /data-tip="vite: 300 MB\nLeft running in old-feature">[\s\S]*?vite <span class="soft">old-feature<\/span><\/span><span class="r"><i class="key c1"><\/i>300 MB<\/span><span class="aslot"><\/span>/, 'what a sleeping agent left running keeps its worktree, and room where sleep would be')
+  assert.match(open, /class="bar mbar" data-tip="0\.9 GB free"><span class="seg c0" style="width:17\.1%" data-tip="Pricing page: 2\.7 GB"><\/span><span class="seg c1" style="width:1\.8%" data-tip="vite: 300 MB"><\/span><span class="seg rest" style="width:75\.5%" data-tip="Everything else: 12\.1 GB"><\/span><\/span>/, 'the RAM bar is the list in its colors, plus the rest of what is used')
+  assert.match(open, /<div class="tallies"><span class="label">Agents<\/span><span class="tally ask"><b>2<\/b> asking<\/span><span class="tally"><b>2<\/b> working<\/span><span class="tally"><b>1<\/b> finished<\/span><span class="act-sep">·<\/span><button class="act" data-act="closeall" data-tip="Sleep 1 finished session to free 430 MB">Free 430 MB<\/button><\/div>/, 'memory is tight here (agents-only): the counts and sleeping the finished share a line')
+  assert.match(open, /class="item static merged" data-tip="state-cleanup\nPR #1753 merged · clean"><span class="mglyph pr-merged"><svg[\s\S]*?<\/svg><\/span><button class="act" data-act="remove:cleanup">Remove state-cleanup<\/button><span class="r">#1753<\/span><\/div>/)
+  ui.confirming = 'remove:cleanup'
+  assert.match(render(snap, ui).copen, /<span class="confirm"><span class="q">Remove state-cleanup\?<\/span> <button class="yes" data-yes="remove:cleanup">Yes<\/button> <button class="no" data-no>No<\/button><\/span><span class="r">#1753/, 'removing confirms in place, on the same line')
+  ui.confirming = null
   ui.pending = 'remove:cleanup'
   assert.match(render(snap, ui).copen, /class="rstatus pending"><span class="refreshing"><\/span>Removing…/, 'the same inline style as row actions')
   ui.pending = null
   ui.notice = { key: 'remove:cleanup', text: 'Removed', ok: true }
   assert.match(render(snap, ui).copen, /class="rstatus ok">Removed/)
+  ui.notice = null
+  ui.pending = 'close:p-pricing'
+  assert.match(render(snap, ui).copen, /<span class="aslot"><span class="rstatus pending"><span class="refreshing"><\/span>Sleeping…/)
+})
+
+/** What a person can read in the panel's HTML: its text, and every tooltip. */
+const readable = (html: string) =>
+  `${html.replace(/<[^>]+>/g, ' ')}\n${[...html.matchAll(/data-tip="([^"]*)"/g)].map((m) => m[1]).join('\n')}`.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+
+test('the compact cockpit keeps every number the longer one showed, at least on hover', () => {
+  // The numbers in the cockpit as it was: 6 finished sessions, two dev servers under their sessions,
+  // two left running by sessions that slept, two merged worktrees.
+  const titles = ['BOU-3949 PR 2', 'Require auth for downloading documents', 'Api-node staging secrets rotation', 'Fix flaky test', 'Lint', 'Docs']
+  const rows = titles.map((t, i) => row(`ws${i}`, 'mono', [agent(`p${i}`, t, 'done', { terminal: `term-${i}`, summary: summary() })]))
+  const s: Snapshot = { ...snap, rows, capacity: { ...snap.capacity!, verdict: 'agents-only' } }
+  const ref = (i: number, memMB: number) => ({ paneKey: `p${i}`, terminal: `term-${i}`, workspaceId: `ws${i}`, title: titles[i], repo: 'mono', memMB })
+  const group = (paneKey: string, name: string, count: number, memMB: number, worktreeName: string) =>
+    ({ key: `/w/${worktreeName}|${paneKey}`, path: `/w/${worktreeName}`, paneKey, workspaceId: worktreeName, worktreeName, repo: 'mono', name, count, memMB })
+  const ui = emptyUi()
+  ui.cockpitOpen = true
+  ui.stats = {
+    ram: { usedGB: 29.3, totalGB: 48 }, swap: { usedGB: 13.6, totalGB: 15 },
+    started: [group('p0', 'dev-web.cjs', 23, 6451, 'bou-3949'), group('p1', 'node', 6, 1843, 'require-auth'), group('p-gone1', 'node', 26, 6861, 'employee repo'), group('p-gone2', 'node', 24, 6554, 'add document cleanup job')],
+    heaviest: [ref(0, 199), ref(1, 457), ref(2, 472)],
+    finished: [ref(0, 199), ref(1, 457), ref(2, 472), ref(3, 310), ref(4, 305), ref(5, 305)],
+    merged: [{ workspaceId: 'w1', name: 'bou-3949-durable-document-deletion', repo: 'mono', pr: 6125 }, { workspaceId: 'w2', name: 'employee repo', repo: 'mono', pr: 6213 }]
+  }
+  const open = render(s, ui).copen
+  const seen = readable(open)
+  for (const shown of [
+    '29.3 of 48 GB used', '13.6 of 15 GB used', // RAM and swap, used and total
+    'BOU-3949 PR 2\nSession: 199 MB\ndev-web.cjs +22: 6.3 GB', 'Require auth for downloading documents\nSession: 457 MB\nnode +5: 1.8 GB', 'Api-node staging secrets rotation\nSession: 472 MB',
+    'node +25: 6.7 GB\nLeft running in employee repo', 'node +23: 6.4 GB\nLeft running in add document cleanup job',
+    '6  finished', 'Free 2.0 GB', 'Sleep 6 finished sessions to free 2.0 GB',
+    'Remove bou-3949-durable-document-deletion', 'PR #6125 merged · clean', 'Remove employee repo', 'PR #6213 merged · clean'
+  ]) assert.ok(seen.includes(shown), `${JSON.stringify(shown)} is readable`)
+  // One line per consumer, heaviest first, each with its total.
+  assert.deepEqual([...open.matchAll(/<i class="key (c\d|rest)"><\/i>([^<]+)</g)].map((m) => `${m[1]} ${m[2]}`), ['c0 6.7 GB', 'c1 6.5 GB', 'c2 6.4 GB', 'c3 2.2 GB', 'c4 472 MB'])
+  assert.equal((open.match(/data-yes="close:/g) ?? []).length, 3, 'every open session can still sleep')
+  assert.equal((open.match(/class="label"/g) ?? []).length, 2, 'two headings (Memory, Agents), down from four')
+})
+
+test('the RAM bar never shows more than is used, and colors five consumers at most', () => {
+  const g = (i: number, memMB: number) => ({ key: `/w/x${i}|`, path: `/w/x${i}`, paneKey: null, workspaceId: `x${i}`, worktreeName: `x${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB })
+  const ui = emptyUi()
+  ui.cockpitOpen = true
+  // Footprints can include swapped memory, so together they can exceed what RAM reports as used.
+  ui.stats = { ram: { usedGB: 4, totalGB: 16 }, swap: null, heaviest: [], finished: [], merged: [], started: [1, 2, 3, 4, 5, 6].map((i) => g(i, 1024)) }
+  const open = render(snap, ui).copen
+  const widths = [...open.matchAll(/class="seg [^"]+" style="width:([\d.]+)%"/g)].map((m) => Number(m[1]))
+  assert.equal(widths.length, 5, 'the sixth folds into the rest, which is empty here')
+  assert.ok(widths.reduce((n, w) => n + w, 0) <= 25.01, `parts ${widths} fit in the 25% used`)
+  assert.match(open, /proc6 <span class="soft">x6<\/span><\/span><span class="r"><i class="key rest"><\/i>1\.0 GB/, 'the sixth row wears the rest color')
+  noMatch(open, /meter-label">Swap/, 'no swap, no swap bar')
+  noMatch(open, /class="aslot"/, 'no row can sleep: no room kept for it')
 })
 
 test('sleeping every finished session is offered only when memory is tight, and confirms in place', () => {
@@ -188,13 +245,14 @@ test('sleeping every finished session is offered only when memory is tight, and 
   ui.stats = { swap: null, ram: null, started: [], heaviest: [], merged: [],
     finished: [{ paneKey: 'p-f1', terminal: 'term-1', workspaceId: 'f1', title: 'First done', repo: 'shop', memMB: 400 }, { paneKey: 'p-f2', terminal: 'term-2', workspaceId: 'f2', title: 'Second done', repo: 'shop', memMB: 700 }] }
   noMatch(render(at('ok'), ui).copen, /closeall/, 'room to spare: nothing to sleep in bulk')
-  for (const v of ['agents-only', 'full', 'pressure'] as const) assert.match(render(at(v), ui).copen, /data-act="closeall">Free 1\.1 GB: sleep 2 finished sessions</, v)
+  assert.match(render(at('ok'), ui).copen, /<b>2<\/b> finished<\/span><\/div>/)
+  for (const v of ['agents-only', 'full', 'pressure'] as const) assert.match(render(at(v), ui).copen, /<b>2<\/b> finished<\/span><span class="act-sep">·<\/span><button class="act" data-act="closeall" data-tip="Sleep 2 finished sessions to free 1\.1 GB">Free 1\.1 GB</, v)
   assert.deepEqual(finishedAgents(at('full').rows).map((a) => a.paneKey), ['p-f1', 'p-f2'], 'the set Sleep all puts to sleep')
   ui.confirming = 'closeall'
-  assert.match(render(at('full'), ui).copen, /Sleep 2 sessions\? <button class="yes" data-yes="closeall">Yes/)
+  assert.match(render(at('full'), ui).copen, /<span class="q">Sleep 2 sessions\?<\/span> <button class="yes" data-yes="closeall">Yes/)
   ui.confirming = null
   ui.stats = { ...ui.stats, finished: [] }
-  assert.match(render(at('full'), ui).copen, /data-act="closeall">Sleep 2 finished sessions</, 'memory not known yet')
+  assert.match(render(at('full'), ui).copen, /data-act="closeall" data-tip="Sleep 2 finished sessions">Sleep all</, 'memory not known yet')
 })
 
 test('coordinators show no team characters on the right', () => {

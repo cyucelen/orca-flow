@@ -278,11 +278,11 @@ function rowStatus(ui: UiState, key: string): string | null {
 }
 
 /** An action that asks "Yes · No" in place (unless `ask` is false), then shows its result. */
-function action(key: string, label: string, question: string, ui: UiState, ask = true): string {
+function action(key: string, label: string, question: string, ui: UiState, ask = true, tip = ''): string {
   if (ui.pending === key) return busy(key.startsWith('remove:') ? 'Removing…' : 'Sleeping…')
   if (ui.notice?.key === key) return `<span class="rstatus ${ui.notice.ok ? 'ok' : 'bad'}">${esc(ui.notice.text)}</span>`
-  if (ui.confirming === key) return `<span class="confirm">${esc(question)} <button class="yes" data-yes="${esc(key)}">Yes</button> <button class="no" data-no>No</button></span>`
-  return ask ? `<button class="act" data-act="${esc(key)}">${esc(label)}</button>` : `<button class="act" data-yes="${esc(key)}">${esc(label)}</button>`
+  if (ui.confirming === key) return `<span class="confirm"><span class="q">${esc(question)}</span> <button class="yes" data-yes="${esc(key)}">Yes</button> <button class="no" data-no>No</button></span>`
+  return `<button class="act" ${ask ? 'data-act' : 'data-yes'}="${esc(key)}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${esc(label)}</button>`
 }
 
 /** While Orca's memory report runs the first time: three characters hop in turn over a quiet line. */
@@ -296,63 +296,100 @@ function loader(): string {
   return `<div class="copen">${crew('Checking what’s running…')}</div><div class="hair"></div>`
 }
 
+/** Consumers that get their own color in the RAM bar, in the order of the chart palette (panel.css). */
+const SERIES = 5
+
+/** One line in the memory list: a session with what it started, or what a sleeping agent left running. */
+type Consumer = { ch: string; name: string; where: string; mb: number; tip: string; sleep: string }
+
 function cockpitOpen(snap: Snapshot, ui: UiState): string {
   if (!ui.stats && ui.notice?.key === 'load') return `<div class="copen"><div class="empty">Could not check what’s running: ${esc(ui.notice.text)}</div></div><div class="hair"></div>`
   if (!ui.stats) return loader()
   const st = ui.stats
-  const all = snap.rows.flatMap((r) => r.agents)
-  const placed = (pane: string) => snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row }))).find((p) => p.a.paneKey === pane)
-  const swap = st.swap && st.swap.totalGB > 0 ? st.swap : null
-  const pct = swap ? Math.round((swap.usedGB / swap.totalGB) * 100) : 0
-  const ram = st.ram ?? null
-  const ramPct = ram ? Math.min(100, Math.round((ram.usedGB / ram.totalGB) * 100)) : 0
-  // A labelled bar: neutral until it is nearly full.
-  const meter = (label: string, pct: number, text: string) =>
-    `<div class="swap"><span class="meter-label">${label}</span><span class="bar${pct >= 85 ? ' warn' : ''}"><span style="width:${pct}%"></span></span><span class="${pct >= 85 ? 'warn' : 'muted'}">${text}</span></div>`
   const placedAll = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
-  const stat = (n: number, label: string, cls = '', attrs = '') =>
-    n > 0 ? `<${attrs ? 'button' : 'div'} class="stat ${cls}"${attrs}><span class="n">${n}</span><span class="l">${label}</span></${attrs ? 'button' : 'div'}>` : ''
-  const counts = [
-    stat(all.filter((a) => faceOf(a) === 'asks').length, 'asking', 'ask'),
-    stat(all.filter((a) => faceOf(a) === 'working').length, 'working'),
-    stat(all.filter((a) => faceOf(a) === 'monitoring').length, 'monitoring'),
-    stat(finishedOf(placedAll).length, 'finished')
-  ].join('')
-  // What a session started outside itself (a dev server) sits under it; Orca does not count it.
+  const all = placedAll.map((p) => p.a)
+  const placed = (pane: string) => placedAll.find((p) => p.a.paneKey === pane)
+  // What a session started outside itself (a dev server) counts toward it; Orca does not count it.
   const startedName = (g: StartedGroup) => (g.count > 1 ? `${g.name} +${g.count - 1}` : g.name)
-  const startedLine = (g: StartedGroup, ch = '', where = '') =>
-    `<div class="item static${ch ? '' : ' started'}">${ch || '<span class="sub-mark">↳</span>'}<span class="t">${esc(startedName(g))}${where ? ` <span class="soft">${esc(where)}</span>` : ''}</span><span class="r">${size(g.memMB)}</span></div>`
   const started = st.started ?? []
-  const heavy = st.heaviest.map((h) => {
-    const p = placed(h.paneKey)
-    const ch = p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), 16) : character(colorOf(h.repo), 'solo', 'done', 16)
-    return `<div class="item static">${ch}<span class="t">${esc(h.title)}</span><span class="r">${size(h.memMB)}</span>${action(`close:${h.paneKey}`, 'sleep', '', ui, false)}</div>` +
-      started.filter((g) => g.paneKey === h.paneKey).map((g) => startedLine(g)).join('')
-  }).join('')
-  // Started by an agent that is not open any more (it slept): still running, still costing memory.
   const live = new Set(all.map((a) => a.paneKey))
-  const orphans = started.filter((g) => !g.paneKey || !live.has(g.paneKey)).map((g) => startedLine(g, character(colorOf(g.repo), 'solo', 'idle', 16), g.worktreeName)).join('')
-  // Sleeping every finished session is offered only when memory is tight; otherwise they cost nothing
-  // you need, and each one sleeps from its own menu. The same set the footer's Sleep all used.
-  const finished = finishedOf(placedAll)
-  const freedMb = finished.reduce((n, p) => n + (st.finished.find((f) => f.paneKey === p.a.paneKey)?.memMB ?? 0), 0)
-  const tight = (snap.capacity?.verdict ?? 'ok') !== 'ok'
-  const n = finished.length
-  const sleepAll = tight && n > 0
-    ? `<div class="closeall">${action('closeall', `${freedMb ? `Free ${size(freedMb)}: sleep` : 'Sleep'} ${n} finished ${n === 1 ? 'session' : 'sessions'}`, `Sleep ${n} ${n === 1 ? 'session' : 'sessions'}?`, ui)}</div>`
+  const consumers: Consumer[] = [
+    ...st.heaviest.map((h) => {
+      const p = placed(h.paneKey)
+      const groups = started.filter((g) => g.paneKey === h.paneKey)
+      return {
+        ch: p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), 16) : character(colorOf(h.repo), 'solo', 'done', 16),
+        name: h.title,
+        where: '',
+        mb: h.memMB + groups.reduce((n, g) => n + g.memMB, 0),
+        tip: [h.title, `Session: ${size(h.memMB)}`, ...groups.map((g) => `${startedName(g)}: ${size(g.memMB)}`)].join('\n'),
+        sleep: action(`close:${h.paneKey}`, 'sleep', '', ui, false)
+      }
+    }),
+    // Started by an agent that is not open any more (it slept): still running, still costing memory.
+    ...started.filter((g) => !g.paneKey || !live.has(g.paneKey)).map((g) => ({
+      ch: character(colorOf(g.repo), 'solo', 'idle', 16),
+      name: startedName(g),
+      where: g.worktreeName,
+      mb: g.memMB,
+      tip: `${startedName(g)}: ${size(g.memMB)}\nLeft running in ${g.worktreeName}`,
+      sleep: ''
+    }))
+  ].sort((x, y) => y.mb - x.mb)
+  // The heaviest consumers are parts of RAM used, in the colors their rows wear; the rest of what is
+  // used is one grey part. Footprints can count swapped memory, so the parts never exceed used.
+  const ram = st.ram ?? null
+  const swap = st.swap && st.swap.totalGB > 0 ? st.swap : null
+  const pctOf = (part: number, whole: number) => (whole > 0 ? Math.min(100, Math.round((part / whole) * 1000) / 10) : 0)
+  let ramMeter = ''
+  if (ram) {
+    const usedMb = ram.usedGB * 1024
+    const named = consumers.slice(0, SERIES)
+    const namedMb = named.reduce((n, c) => n + c.mb, 0)
+    const scale = namedMb > usedMb ? usedMb / namedMb : 1
+    const seg = (cls: string, widthMb: number, tip: string) => (widthMb >= 1 ? `<span class="seg ${cls}" style="width:${pctOf(widthMb, ram.totalGB * 1024)}%" data-tip="${esc(tip)}"></span>` : '')
+    const rest = Math.max(0, usedMb - namedMb * scale)
+    const free = Math.max(0, +(ram.totalGB - ram.usedGB).toFixed(1))
+    const warn = ram.usedGB / ram.totalGB >= 0.85
+    ramMeter = `<span class="meter-label">RAM</span><span class="bar mbar" data-tip="${free} GB free">${named.map((c, i) => seg(`c${i}`, c.mb * scale, `${c.name}: ${size(c.mb)}`)).join('')}${seg('rest', rest, `Everything else: ${size(Math.round(rest))}`)}</span><span class="num${warn ? ' warn' : ''}" data-tip="RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free">${ram.usedGB} / ${ram.totalGB} GB</span>`
+  }
+  const swapWarn = swap ? swap.usedGB / swap.totalGB >= 0.85 : false
+  const swapMeter = swap
+    ? `<span class="meter-label">Swap</span><span class="bar${swapWarn ? ' warn' : ''}" data-tip="Swap: ${swap.usedGB} of ${swap.totalGB} GB used"><span style="width:${pctOf(swap.usedGB, swap.totalGB)}%"></span></span><span class="num${swapWarn ? ' warn' : ''}" data-tip="Swap: ${swap.usedGB} of ${swap.totalGB} GB used">${swap.usedGB} / ${swap.totalGB} GB</span>`
     : ''
-  const actions = [
-    sleepAll,
-    ...st.merged.map((m) => `<div class="merged">${action(`remove:${m.workspaceId}`, `Remove ${m.name}`, `Remove ${m.name}?`, ui)}<span class="soft">PR #${m.pr} merged · clean</span></div>`)
+  // Sizes line up: every row keeps room for sleep when any row has it.
+  const slot = consumers.some((c) => c.sleep)
+  const rows = consumers.map((c, i) =>
+    `<div class="item static use" data-tip="${esc(c.tip)}">${c.ch}<span class="t">${esc(c.name)}${c.where ? ` <span class="soft">${esc(c.where)}</span>` : ''}</span><span class="r"><i class="key ${i < SERIES ? `c${i}` : 'rest'}"></i>${size(c.mb)}</span>${slot ? `<span class="aslot">${c.sleep}</span>` : ''}</div>`
+  ).join('')
+  // Agents in one line: what each is doing, then, when memory is tight, sleeping the finished ones.
+  // Otherwise they cost nothing you need, and each one sleeps from its own menu. The same set the
+  // footer's Sleep all used.
+  const finished = finishedOf(placedAll)
+  const n = finished.length
+  const freedMb = finished.reduce((m, p) => m + (st.finished.find((f) => f.paneKey === p.a.paneKey)?.memMB ?? 0), 0)
+  const tight = (snap.capacity?.verdict ?? 'ok') !== 'ok'
+  const sessions = n === 1 ? 'session' : 'sessions'
+  const sleepAll = tight && n > 0
+    ? action('closeall', freedMb ? `Free ${size(freedMb)}` : 'Sleep all', `Sleep ${n} ${sessions}?`, ui, true, `Sleep ${n} finished ${sessions}${freedMb ? ` to free ${size(freedMb)}` : ''}`)
+    : ''
+  const tally = (k: number, label: string, cls = '') => (k > 0 ? `<span class="tally${cls ? ` ${cls}` : ''}"><b>${k}</b> ${label}</span>` : '')
+  const counts = [
+    tally(all.filter((a) => faceOf(a) === 'asks').length, 'asking', 'ask'),
+    tally(all.filter((a) => faceOf(a) === 'working').length, 'working'),
+    tally(all.filter((a) => faceOf(a) === 'monitoring').length, 'monitoring'),
+    tally(n, 'finished')
   ].filter(Boolean).join('')
+  // A merged, clean worktree: one line, its name cut short, the rest on hover.
+  const merged = st.merged.map((m) =>
+    `<div class="item static merged" data-tip="${esc(`${m.name}\nPR #${m.pr} merged · clean`)}"><span class="mglyph pr-merged">${PR_ICON.merged}</span>${action(`remove:${m.workspaceId}`, `Remove ${m.name}`, `Remove ${m.name}?`, ui)}<span class="r">#${m.pr}</span></div>`
+  ).join('')
   return `<div class="copen">
     <div class="cgroup"><span class="label">Memory${ui.statsLoading ? ' <span class="refreshing" aria-label="Refreshing"></span>' : ''}</span>
-      ${ram ? meter('RAM', ramPct, `${ram.usedGB} of ${ram.totalGB} GB used`) : ''}
-      ${swap ? meter('Swap', pct, `${swap.usedGB} of ${swap.totalGB} GB`) : ''}
+      ${ramMeter || swapMeter ? `<div class="meters">${ramMeter}${swapMeter}</div>` : ''}
+      ${rows ? `<div class="uses">${rows}</div>` : ''}
     </div>
-    ${heavy || orphans ? `<div class="cgroup"><span class="label">Heaviest</span>${heavy}${orphans}</div>` : ''}
-    ${counts ? `<div class="cgroup"><span class="label">Agents</span><div class="stats">${counts}</div></div>` : ''}
-    ${actions ? `<div class="cactions">${actions}</div>` : ''}
+    ${counts || merged ? `<div class="cgroup">${counts ? `<div class="tallies"><span class="label">Agents</span>${counts}${sleepAll ? `<span class="act-sep">·</span>${sleepAll}` : ''}</div>` : ''}${merged}</div>` : ''}
   </div><div class="hair"></div>`
 }
 
