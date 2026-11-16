@@ -476,7 +476,8 @@ const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined
 
 function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, indent: boolean, ui: UiState, done = false, current = false): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
-  const right = status ?? `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${prBadge(p.row.pr)}<span>${ago(p.row.lastActivityAt, ui.now)}</span>`
+  // A worker nested under its lead shares its worktree: the lead's row already shows project, PR and age.
+  const right = status ?? (indent ? '' : `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${prBadge(p.row.pr)}<span>${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}`
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.

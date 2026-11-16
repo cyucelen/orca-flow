@@ -340,6 +340,16 @@ test('a lead whose worker is still working stays in the tree as available, with 
   assert.deepEqual(finishedAgents(done.rows).map((a) => a.paneKey).sort(), ['p-lead', 'p-rev'], 'once its workers are done, it is finished too')
 })
 
+test("a worker nested under its lead shows no project, PR or age; the lead keeps them", () => {
+  const lead = agent('p-lead', 'Orca Flow bugs', 'done', { coordinator: 'main' })
+  const worker = agent('p-w', 'Fix card ask logic', 'working', { coordinator: 'main', leadPane: 'p-lead' })
+  const s: Snapshot = { ...snap, rows: [row('bugs', 'orca-plugin', [lead, worker], { pr: { number: 42, url: 'u', state: 'open', checks: 'success' }, lastActivityAt: 1 })] }
+  const { main } = render(s, { ...emptyUi(), now: 3_600_001 })
+  const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span></button>`).exec(main)![1]
+  assert.match(right('p-lead'), /<span class="soft">orca-plugin<\/span><span class="pr pr-ok"[\s\S]*<span>1h<\/span>$/, 'the lead row keeps project, PR and age')
+  assert.equal(right('p-w'), '', 'the nested worker row has none of them')
+})
+
 test('the owner of an open PR stays in the tree until it merges; its finished workers still finish', () => {
   const pr = (state: string) => ({ number: 1770, url: 'u', state, checks: 'success' as const })
   const lead = agent('p-lead', 'Onboarding', 'done', { coordinator: 'alpha' })
