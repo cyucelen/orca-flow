@@ -1,7 +1,7 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { askKindOf, character, emptyUi, faceOf, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { askingRows, askKindOf, character, emptyUi, faceOf, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { removeWorktree } from './cockpit.ts'
@@ -269,6 +269,28 @@ test('agent and coordinator rows say which context menu they get', () => {
   const { main } = render(snap, emptyUi())
   assert.match(main, /data-menu="agent:p-dup"/)
   assert.match(main, /data-menu="coordinator:alpha"/)
+})
+
+test('a worker that sent worker_done never asks: its "decision for you" is for its lead', () => {
+  // firstview's "PR 1778 code-smells sweep" ended its report "Decision for you: ..." after worker_done
+  // and showed as "ASKS · DECISION" first in Up next, with a ? on the worker.
+  const decision = summary({ role: 'worker', priority: 'P1', glance: 'Send analytics events even without consent?',
+    needs: { type: 'decision', ask: 'Send signup_completed for visitors who declined analytics?', options: ['Send both', 'Skip both'] } })
+  const lead = agent('p-lead', 'Analytics activation tracking', 'done', { coordinator: 'alpha', dispatch: 'open', summary: summary({ role: 'lead' }) })
+  const worker = (dispatch: AgentInfo['dispatch'], state: AgentInfo['state'] = 'done') =>
+    agent('p-w', 'PR 1778 code-smells sweep', state, { coordinator: 'alpha', leadPane: 'p-lead', dispatch, summary: decision })
+  const at = (w: AgentInfo) => render({ ...snap, rows: [row('at', 'web-app', [lead, w])] }, emptyUi()).main
+
+  assert.notEqual(faceOf(worker('settled')), 'asks', 'a settled dispatch: no ask on its face')
+  const main = at(worker('settled'))
+  noMatch(main, /Up next/, 'not in Up next')
+  noMatch(main, /Send analytics events even without consent\?/)
+  noMatch(main, /data-tip="(Asks a question|Wants a review|Needs a yes\/no)"/, 'no ask badge in the tree')
+  assert.deepEqual(askingRows({ ...snap, rows: [row('at', 'web-app', [lead, worker('settled')])] }), [], 'nor in the queue jump-to-next and the status bar read')
+
+  assert.equal(faceOf(worker('open')), 'asks', 'an open dispatch still asks: it is waiting in its own chat')
+  assert.match(at(worker('open')), /Up next · 1[\s\S]*Send analytics events even without consent\?/)
+  assert.equal(faceOf(worker('settled', 'waiting')), 'asks', "Orca's own waiting state still counts")
 })
 
 test('Up next lists every asking agent, even several in one workspace', () => {

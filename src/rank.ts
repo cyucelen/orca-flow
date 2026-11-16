@@ -4,11 +4,17 @@
 import type { AgentInfo, WorkspaceRow } from './protocol.ts'
 
 /**
+ * A dispatched worker that ended its task: Orca settled its dispatch (worker_done, or abandoned). Its
+ * report, a "decision for you" included, is for its lead, not the user.
+ */
+export const reported = (a: AgentInfo) => a.summary?.role === 'worker' && a.dispatch === 'settled'
+
+/**
  * A summary may claim an ask only if it was written under the current rules (it carries
- * `glance`); older ones produced junk asks like terminal ids.
+ * `glance`); older ones produced junk asks like terminal ids. A worker that reported claims none.
  */
 export const claimsAsk = (a: AgentInfo) =>
-  a.summary !== null && typeof a.summary.glance === 'string' && a.summary.needs.type !== 'none'
+  a.summary !== null && typeof a.summary.glance === 'string' && a.summary.needs.type !== 'none' && !reported(a)
 
 /**
  * The one rule for "this agent needs you", mirroring Orca: its blocked (permission prompt) and

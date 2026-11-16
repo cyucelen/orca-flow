@@ -13,11 +13,11 @@ const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
 
 /**
  * Written into every card as `summarizer`. Bump it whenever SYSTEM_PROMPT, COORDINATOR_ASKS,
- * SUMMARY_SCHEMA, promptFor or role detection (roleOf/digest) changes: when the plugin worker
+ * WORKER_ASKS, SUMMARY_SCHEMA, promptFor or role detection (roleOf/digest) changes: when the plugin worker
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 5
+export const SUMMARIZER_VERSION = 6
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -85,7 +85,7 @@ export function briefOf(text: string): string {
 }
 
 type Role = 'lead' | 'worker' | 'coordinator' | 'solo'
-type Event = { kind: 'user' | 'assistant' | 'tool'; text: string; raw?: string; at?: string }
+type Event = { kind: 'user' | 'assistant' | 'tool'; text: string; raw?: string; at?: string; reports?: boolean }
 
 /** Decided from facts, not by the model: a session in one of the user's coordinator folders is that
  * coordinator; a lead's first prompt names its role; a dispatched worker's carries its Dispatch id;
@@ -100,7 +100,11 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
   return 'solo'
 }
 
-export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; turnAt: string | null }
+/** A command that sends worker_done, not one that merely mentions it (in a heredoc, a grep, a test). */
+const SENDS_DONE = /^(?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration send\b.*--type[= ]['"]?worker_done\b/
+
+/** `reported`: a dispatched worker that sent worker_done in the latest turn; its final message is its report to its lead. */
+export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; turnAt: string | null; reported: boolean }
 
 /** Condense a Claude Code transcript into what the summarizer needs. */
 export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null {
@@ -127,7 +131,9 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
         if (c.type === 'text' && c.text.trim()) events.push({ kind: 'assistant', text: c.text.trim(), at: d.timestamp })
         if (c.type === 'tool_use') {
           const detail = c.input?.command ?? c.input?.file_path ?? c.input?.description ?? ''
-          events.push({ kind: 'tool', text: `${c.name}${detail ? `: ${clip(String(detail).replace(/\s+/g, ' '), 140)}` : ''}`, at: d.timestamp })
+          // Judged on the whole command: the shown one is clipped.
+          const reports = c.name === 'Bash' && SENDS_DONE.test(String(c.input?.command ?? '').replace(/\s+/g, ' '))
+          events.push({ kind: 'tool', text: `${c.name}${detail ? `: ${clip(String(detail).replace(/\s+/g, ' '), 140)}` : ''}`, at: d.timestamp, reports })
         }
       }
     }
@@ -144,13 +150,15 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
     .filter((e) => e !== lastAssistant)
     .map((e) => (e.kind === 'user' ? `USER: ${clip(e.text, 1500)}` : e.kind === 'assistant' ? `AGENT: ${clip(e.text, 800)}` : `  → ${e.text}`))
     .join('\n')
+  const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home)
   return {
-    role: roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home),
+    role,
     firstPrompt: clip(prompts[0].text, 1500),
     context: clip(render(earlier), 4000),
     turn: clip(render(turn), 10_000),
     lastAssistant: lastAssistant ? clip(lastAssistant.text, 4000) : '',
-    turnAt: events.at(-1)?.at ?? null
+    turnAt: events.at(-1)?.at ?? null,
+    reported: role === 'worker' && turn.some((e) => e.reports)
   }
 }
 
@@ -309,10 +317,22 @@ function writeJson(path: string, value: unknown): void {
  */
 export const COORDINATOR_ASKS = `This agent is a COORDINATOR: it routes work to leads and workers, which have their own cards. For "needs", count only a question the user must answer TO THE COORDINATOR ITSELF: which project or coordinator takes a request, approving a worktree removal, approving freeing memory or stopping a session, a conflict between two workstreams, or a fact it needs before it can start work; or an "action" the user must do for the coordinator itself outside the chat ("rename the project in Orca's settings, tell me when done"). Every decision about a workstream a lead owns (reviewing or merging its PR, picking an option, approving its release) is the lead's ask, on the lead's card, even when the coordinator repeats it. A question it relays or summarizes from a lead or worker (from a lead's status note, a "stopped without reporting" notice or the queue), or one that tells the user to answer, try or review something in another agent's chat, is NOT its ask: set needs.type "none" and glance "" (name what it waits on in "watching", e.g. "lead's review").`
 
+/**
+ * A dispatched worker reports to the agent that dispatched it. Its report's "Decision for you",
+ * question or review is for that lead (which shows it, or asks the user, itself); on the worker it
+ * showed an ask nobody was waiting on.
+ */
+export const WORKER_ASKS = `This agent is a dispatched WORKER: a lead or coordinator dispatched it and it reports to that lead, not to the user. A decision, question, review or to-do in its report ("Decision for you: …", "Left for you: …", "Should we …?") is addressed to its lead, which decides or asks the user itself: set needs.type "none" and glance "". Count a need only when the worker is genuinely blocked waiting in its own chat on the user before it can finish its task (a permission, a fact only the user has), not when its final message is its report.`
+
+/** Stated as a fact when the latest turn ran `orca orchestration send --type worker_done`. */
+export const WORKER_REPORTED = `FACT: in the latest turn this worker sent worker_done to its lead: its task is over and its final message is its report to that lead. needs.type is "none" and glance is "".`
+
 /** What Haiku reads for one turn: the role's rules, the card so far, and the turn itself. */
 export function promptFor(d: Digest, previous: { title?: string; about?: string } | null, goal?: string): string {
   return [
     d.role === 'coordinator' && COORDINATOR_ASKS,
+    d.role === 'worker' && WORKER_ASKS,
+    d.reported && WORKER_REPORTED,
     goal && `Coordinator's goal for this workstream: ${goal}`,
     previous?.title && `Previous title: ${previous.title}${previous.about ? `\nPrevious about: ${previous.about}` : ''}`,
     `FIRST REQUEST:\n${d.firstPrompt}`,
@@ -320,6 +340,11 @@ export function promptFor(d: Digest, previous: { title?: string; about?: string 
     `LATEST TURN:\n${d.turn}`,
     `AGENT'S FINAL MESSAGE THIS TURN:\n${d.lastAssistant || '(none)'}`
   ].filter(Boolean).join('\n\n')
+}
+
+/** Facts win over the model: a worker that sent worker_done asks the user nothing. */
+export function withFacts<S extends object>(d: Digest, summary: S): S {
+  return d.reported ? { ...summary, needs: { type: 'none', ask: '', options: [] }, glance: '' } : summary
 }
 
 /**
@@ -333,7 +358,7 @@ export async function summarizePane(input: { pane: string; transcript: string; w
   if (!d) return 'empty'
   const previous = readJson(out)
   if (!input.force && previous?.turnAt && d.turnAt && previous.turnAt >= d.turnAt) return 'skipped'
-  const { summary } = await callHaiku(promptFor(d, previous, input.goal))
+  const summary = withFacts(d, (await callHaiku(promptFor(d, previous, input.goal))).summary)
   // A newer turn may have finished while Haiku ran; keep the newest, even when forced.
   const latest = readJson(out)
   if (latest?.turnAt && d.turnAt && latest.turnAt > d.turnAt) return 'skipped'

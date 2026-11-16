@@ -350,6 +350,48 @@ test("a coordinator's card does not repeat its lead's question; a lead's still a
   assert.ok(!promptFor(lead, null).includes(COORDINATOR_ASKS), 'a lead keeps its own asks')
 })
 
+test('a worker that sent worker_done asks the user nothing: its report is for its lead', async () => {
+  const { SUMMARIZER_VERSION, WORKER_ASKS, WORKER_REPORTED, digest, promptFor, withFacts } = await import('./summarize.ts')
+  // firstview's "PR 1778 code-smells sweep" sent worker_done, then ended "Decision for you: ...";
+  // its card said "ASKS · DECISION — Send analytics events even without consent?".
+  const line = (type: string, content: unknown) => JSON.stringify({ type, timestamp: '2026-11-16T20:55:23Z', message: { content } })
+  const brief = 'You are a dispatched worker. Your task ID is task_1, Dispatch ID ctx_e2.\n=== TASK ===\nPR 1778 code-smells sweep'
+  const done = "orca orchestration send --from term_b9 --type worker_done --subject 'Non-blocking analytics' --task-id task_1 --dispatch-id ctx_e2 --outcome succeeded --files-modified '" + 'apps/api/src/lib/posthog.ts,'.repeat(10) + "'"
+  const report = 'Four commits, not pushed.\n\nDecision for you: like `user_approved`, the server sends `signup_completed` even for visitors who declined analytics in the browser.\n\nLeft for you: the PR body and the tracking-plan entry.'
+  const turn = [
+    line('user', brief),
+    line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: done } }]),
+    line('user', [{ type: 'tool_result', content: 'Next: Recorded. End your turn.' }]),
+    line('assistant', [{ type: 'text', text: report }])
+  ]
+  const d = digest(turn)!
+  assert.equal(d.role, 'worker')
+  assert.equal(d.reported, true, 'the worker_done send in the latest turn is the fact')
+  const prompt = promptFor(d, null)
+  assert.ok(prompt.startsWith(`${WORKER_ASKS}\n\n${WORKER_REPORTED}`), 'the worker rule and the finished fact come first')
+  assert.match(WORKER_ASKS, /"Decision for you: …"[\s\S]*addressed to its lead[\s\S]*needs\.type "none" and glance ""/)
+  assert.match(WORKER_REPORTED, /sent worker_done[\s\S]*needs\.type is "none" and glance is ""/)
+  assert.match(prompt, /AGENT'S FINAL MESSAGE THIS TURN:\nFour commits[\s\S]*Decision for you/)
+  const haiku = { title: 'PR 1778 code-smells sweep', glance: 'Send analytics events even without consent?', needs: { type: 'decision', ask: 'Send them?', options: ['Send both'] } }
+  assert.deepEqual(withFacts(d, haiku), { ...haiku, glance: '', needs: { type: 'none', ask: '', options: [] } }, 'the fact wins over the model')
+  assert.ok(SUMMARIZER_VERSION >= 6, 'worker cards written under the old rules refresh')
+
+  // Still working its task: the worker rule applies, but nothing says it is finished.
+  const working = digest([line('user', brief), line('assistant', [{ type: 'text', text: 'Which schema should I use, v1 or v2?' }])])!
+  assert.equal(working.reported, false)
+  assert.ok(promptFor(working, null).startsWith(WORKER_ASKS) && !promptFor(working, null).includes(WORKER_REPORTED))
+  assert.equal(withFacts(working, haiku), haiku, 'the model decides while the worker is not finished')
+  // Mentioning worker_done (a grep, a heredoc) is not sending it; chained it still counts.
+  const mention = digest([line('user', brief), line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'grep -n "--type worker_done" SKILL.md' } }])])!
+  assert.equal(mention.reported, false)
+  const chained = digest([line('user', brief), line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'cd /w && orca orchestration send --type=worker_done --subject x' } }])])!
+  assert.equal(chained.reported, true)
+  // Only a worker: a lead reports worker_done too, and keeps its own asks.
+  const lead = digest([line('user', 'Your role: lead. Ship it'), line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: done } }])])!
+  assert.equal(lead.reported, false)
+  assert.ok(!promptFor(lead, null).includes(WORKER_ASKS))
+})
+
 test("a lead's PR review relayed by its coordinator stays on the lead's card", async () => {
   const { COORDINATOR_ASKS, SUMMARIZER_VERSION } = await import('./summarize.ts')
   // The coordinator relayed a lead's "is PR #3 good to merge?" as its own review ask.
