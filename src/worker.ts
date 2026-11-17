@@ -528,7 +528,7 @@ export function installedKey(dir: string | null): string | null {
 }
 
 const UPDATE_DIR = join(DATA_DIR, 'update')
-const UPDATE_CHECK_MS = 4 * 60 * 60_000
+const UPDATE_CHECK_MS = 15 * 60_000
 
 /**
  * The update item and the panel's update button: hidden until a newer release exists. The status

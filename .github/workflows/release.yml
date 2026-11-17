@@ -1,0 +1,71 @@
+# Merging a PR into main releases Orca Flow: version bump, tag vX.Y.Z, GitHub Release.
+# scripts/release.mjs decides the version; see its header for the rules and labels.
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+# One release at a time, in merge order. Never cancel a release halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      # The latest main, not the PR's merge commit: an earlier release may have pushed a bump since.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide the release
+        id: decide
+        run: node scripts/release.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Commit the version bump
+        if: steps.decide.outputs.release == 'true' && steps.decide.outputs.bump == 'true'
+        env:
+          MESSAGE: ${{ steps.decide.outputs.message }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898094+github-actions[bot]@users.noreply.github.com'
+          git commit -q -F - orca-plugin.json <<< "$MESSAGE"
+          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+
+      - name: Tag
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+          MESSAGE: ${{ steps.decide.outputs.tag_message }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG already exists; skipping"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898094+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -F - <<< "$MESSAGE"
+          git push origin "refs/tags/$TAG"
+
+      - name: GitHub Release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          VERSION: ${{ steps.decide.outputs.version }}
+          NOTES: ${{ steps.decide.outputs.notes }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping"
+            exit 0
+          fi
+          gh release create "$TAG" --verify-tag --title "Orca Flow $VERSION" --notes "$NOTES"

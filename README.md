@@ -191,6 +191,22 @@ Uninstall `cyucelen.flow` first so two copies don't run. `src/worker.ts` is the 
 transpiles TypeScript when it loads, so there is no build step. See Orca's
 [plugin authoring guide](https://github.com/stablyai/orca/blob/main/docs/reference/plugin-authoring.md).
 
+## Releasing
+
+Merging a PR into `main` releases it. A GitHub workflow bumps the patch version in
+`orca-plugin.json`, tags `vX.Y.Z`, and creates a GitHub Release whose note is the PR's title. Label
+the PR to change that:
+
+| Label | Release |
+| --- | --- |
+| `no-release` | None. The change ships with the next release. |
+| `release:minor` | Minor version, for example 0.2.30 to 0.3.0. |
+| `release:major` | Major version, for example 0.2.30 to 1.0.0. |
+
+A version you set by hand in `orca-plugin.json` is released as it is. Installed copies check every
+15 minutes and show the update in the status bar; two clicks install it. Orca asks for approval
+again only when a release needs different access.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
