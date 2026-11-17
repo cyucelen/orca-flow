@@ -57,18 +57,26 @@ html.light { --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --card: color-mix(in s
 .chip.warn .g-track { stroke: color-mix(in srgb, var(--warn) 25%, transparent); }
 .chip.warn .g-arc { stroke: var(--warn); }
 .tm { position: relative; }
-.tile { position: absolute; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; padding: 6px 7px; border-radius: 6px; overflow: hidden; container-type: inline-size; padding-inline: 6px;
+/* A tile's label is fitted in the view (fitLabel), which knows these sizes and paddings: the size is
+   never cut; the name, then the character give way first, then the type gets smaller (fit-sm, fit-xs);
+   a tile with no room shows nothing (bare). */
+.tile { position: absolute; display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; min-width: 0; padding: 6px 6px 5px; border-radius: 6px; overflow: hidden;
   background: color-mix(in srgb, var(--key) 30%, var(--bg)); transition: background .12s; }
 .tile::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: var(--key); }
 .tile:hover, .tile.lit { background: color-mix(in srgb, var(--key) 44%, var(--bg)); }
-.tile.mid { flex-direction: row; align-items: center; justify-content: flex-start; gap: 5px; padding: 3px 0 0 6px; }
-.tile:not(.big):not(.mid) { padding: 0; }
-.t-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
-/* A narrow tile keeps its numbers and drops its character. */
-@container (max-width: 56px) { .t-row .ch, .tile.mid .ch { display: none; } }
-.t-v { font-size: 12px; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.tile.mid .t-v { font-size: 11px; font-weight: 600; }
-.t-n { font-size: 10.5px; color: color-mix(in srgb, var(--ink) 72%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile.fit-sm, .tile.fit-xs { justify-content: center; padding: 3px 4px 0; }
+.tile.fit-xs { padding-inline: 3px; }
+.tile.bare { padding: 0; }
+.t-row { display: flex; align-items: center; gap: 4px; }
+.t-av { display: flex; margin-bottom: 3px; }
+.t-line { display: flex; align-items: baseline; white-space: nowrap; }
+.t-v { font-size: 12px; font-weight: 650; line-height: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fit-sm .t-v { font-size: 10.5px; font-weight: 600; line-height: 13px; }
+.fit-xs .t-v { font-size: 9.5px; font-weight: 600; line-height: 12px; }
+.t-n { max-width: 100%; font-size: 10.5px; line-height: 13px; color: color-mix(in srgb, var(--ink) 72%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-line { gap: 4px; }
+.t-line .t-n { overflow: visible; }
+.fit-xs .t-n { font-size: 9.5px; }
 .t-act { position: absolute; right: 4px; top: 7px; max-width: calc(100% - 8px); display: flex; }
 .t-act .rstatus { max-width: 100%; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--bg) 80%, transparent); }
 .t-sleep { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; opacity: .6;
@@ -81,6 +89,7 @@ html.light { --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --card: color-mix(in s
 .tile.rest::before { display: none; }
 .tile.rest:hover { background: color-mix(in srgb, var(--muted) 17%, var(--bg)); }
 .tile.free { background: none; box-shadow: inset 0 0 0 1px var(--line); align-items: center; justify-content: center; text-align: center; }
+.tile.free.fit-sm { padding-top: 0; }
 .tile.free::before { display: none; }
 .tile.free .t-v { color: var(--muted); font-weight: 600; }
 .tile.free .t-n { color: var(--faint); }

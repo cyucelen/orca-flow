@@ -255,14 +255,17 @@ document.addEventListener('pointerover', (e) => {
 })
 document.addEventListener('pointerleave', hideTip)
 
-// A memory tile and its legend pill light up together.
+// A memory tile and its legend pill light up together; the sliver of small consumers with all their pills.
 let lit = ''
 document.addEventListener('pointerover', (e) => {
-  const key = (e.target as Element).closest<HTMLElement>('[data-use]')?.dataset.use ?? ''
-  if (key === lit && (!key || document.querySelector('.lit'))) return
-  for (const el of document.querySelectorAll('.lit')) el.classList.remove('lit')
-  lit = key
-  if (key) for (const el of document.querySelectorAll(`[data-use="${CSS.escape(key)}"]`)) el.classList.add('lit')
+  const el = (e.target as Element).closest<HTMLElement>('[data-use]')
+  const use = el?.dataset.use ?? '', within = el?.dataset.in ?? ''
+  if (`${use}|${within}` === lit && (!use || document.querySelector('.lit'))) return
+  for (const x of document.querySelectorAll('.lit')) x.classList.remove('lit')
+  lit = `${use}|${within}`
+  if (!use) return
+  const q = (v: string) => CSS.escape(v)
+  for (const x of document.querySelectorAll(`[data-use="${q(use)}"],[data-in="${q(use)}"]${within ? `,[data-use="${q(within)}"]` : ''}`)) x.classList.add('lit')
 })
 document.addEventListener('focusin', (e) => {
   const target = (e.target as Element).closest<HTMLElement>('[data-tip]')

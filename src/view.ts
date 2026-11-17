@@ -303,13 +303,67 @@ function loader(): string {
 
 /** Chart colors for the heaviest consumers (panel.css --c0..--c2): three, the most a treemap's touching tiles tell apart for every reader. */
 const SERIES = 3
-/** Consumers that get a tile; the rest count as other. */
+/** Consumers that may get a tile of their own; the rest fold into the sliver. */
 const TILES = 6
-/** The treemap's layout box: laid out at 300 px wide, drawn in percentages, labels sized for 260 px. */
-const TM = { w: 300, h: 136, minW: 260 }
+/** The treemap's box: laid out at the narrowest it is drawn, 236 px (a 260 px panel less its padding),
+ *  and drawn in percentages, so a wider panel only gives labels more room. */
+const TM = { w: 236, h: 136 }
+/** How much wider than tall tiles aim to be. */
+const WIDE = 1.5
+
+/** What a consumer's tile shows; its legend pill shows the rest. */
+type Shows = { name: boolean; size: boolean; sleep: boolean }
+
+/** Text width in the panel's font, per character as measured in SF at the weights tiles use, rounded up. */
+export function textWidth(s: string, px: number): number {
+  let em = 0
+  for (const ch of s) {
+    em += /[0-9+]/.test(ch) ? 0.67 : /[.,:·]/.test(ch) ? 0.34 : ch === ' ' ? 0.27 : ch === '-' ? 0.48
+      : /[MW]/.test(ch) ? 0.92 : /[A-Z]/.test(ch) ? 0.76 : /[mw]/.test(ch) ? 0.9 : /[ijl|!']/.test(ch) ? 0.28 : /[frt()]/.test(ch) ? 0.44 : 0.62
+  }
+  return em * px + 1
+}
+
+/** A tile's label: its size in one of three type sizes, its character beside or above, its name below or after. */
+export type Fit = { value: 'md' | 'sm' | 'xs' | null; avatar: 'row' | 'stack' | null; name: 'below' | 'inline' | null; room: boolean }
+/** Type sizes with the padding around them (panel.css .tile, .fit-sm, .fit-xs). */
+const TYPE = { md: { px: 12, line: 16, side: 6, pad: 11 }, sm: { px: 10.5, line: 13, side: 4, pad: 3 }, xs: { px: 9.5, line: 12, side: 3, pad: 3 } }
+
+/**
+ * How a tile w×h px (its 2 px surface gap included) labels itself. The size is never cut: the name
+ * gives way first (shown whole, or at least its first 12 characters, never a stub), then the
+ * character, then the type gets smaller; a tile with no room for its size shows nothing. `room`
+ * says whether a 20 px button still fits above the label.
+ */
+export function fitLabel(w: number, h: number, value: string, name: string, avatar: boolean): Fit {
+  const AV = 16, NAME = 13
+  const options: { fit: Omit<Fit, 'room'>; width: number; height: number }[] = []
+  for (const kind of ['md', 'sm', 'xs'] as const) {
+    const t = TYPE[kind], v = textWidth(value, t.px)
+    const add = (av: Fit['avatar'], nm: Fit['name'], width: number, height: number) => options.push({ fit: { value: kind, avatar: av, name: nm }, width, height: height + t.pad })
+    if (kind === 'md' && name) {
+      if (avatar) add('row', 'below', AV + 4 + v, AV + 2 + NAME)
+      if (avatar) add('stack', 'below', Math.max(AV, v), AV + 3 + t.line + NAME)
+      add(null, 'below', v, t.line + NAME)
+    }
+    if (name) add(null, 'inline', v + textWidth(` · ${name}`, 10.5), t.line)
+    if (kind === 'md' && avatar) {
+      add('row', null, AV + 4 + v, AV)
+      add('stack', null, Math.max(AV, v), AV + 3 + t.line)
+    }
+    add(null, null, v, t.line)
+  }
+  for (const o of options) {
+    const cw = w - 2 - 2 * TYPE[o.fit.value!].side, spare = h - 2 - o.height
+    if (spare < 0 || o.width > cw) continue
+    if (o.fit.name === 'below' && textWidth(name, 10.5) > cw && textWidth(`${name.slice(0, 12)}…`, 10.5) > cw) continue
+    return { ...o.fit, room: o.fit.value === 'md' && spare >= 29 && cw >= 24 }
+  }
+  return { value: null, avatar: null, name: null, room: false }
+}
 
 /** What uses memory: a session with what it started, or what a sleeping agent left running. */
-type Consumer = { key: string; ch: string; small: string; name: string; mb: number; tip: string; pane: string | null }
+type Consumer = { key: string; ch: string; name: string; mb: number; tip: string; pane: string | null }
 type Box = { x: number; y: number; w: number; h: number }
 
 const hashOf = (s: string) => [...s].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0)
@@ -380,48 +434,80 @@ const place = (b: Box) => {
 }
 
 /**
- * All of RAM as tiles: each consumer sized by its memory, then everything else, then free. Also says
- * which consumers' tiles print their name, and which their size; the legend carries the rest.
+ * All of RAM as tiles: each consumer sized by its memory, the ones too small to label folded into one
+ * sliver, everything else, and free. Says what each consumer's tile shows (its name, its size, its
+ * sleep button) and which color it wears; its legend pill carries whatever the tile cannot.
  */
-function treemap(cs: Consumer[], slots: Map<string, number>, ram: { usedGB: number; totalGB: number }, ui: UiState): { html: string; named: Set<string>; sized: Set<string> } {
+function treemap(cs: Consumer[], ram: { usedGB: number; totalGB: number }, ui: UiState): { html: string; slots: Map<string, number>; shows: Map<string, Shows>; folded: Set<string> } {
   const totalMb = ram.totalGB * 1024
   const usedMb = Math.min(ram.usedGB * 1024, totalMb)
-  const shown = cs.slice(0, TILES)
-  // Footprints can count swapped memory, so together they may exceed what RAM reports as used.
-  const namedMb = shown.reduce((n, c) => n + c.mb, 0)
-  const scale = namedMb > usedMb ? usedMb / namedMb : 1
-  const restMb = Math.max(0, usedMb - namedMb * scale)
   const usedW = totalMb > 0 ? (TM.w * usedMb) / totalMb : 0
-  const values = [...shown.map((c) => c.mb * scale), ...(restMb >= 1 ? [restMb] : [])]
-  const boxes = squarify(values, { x: 0, y: 0, w: usedW, h: TM.h })
-  // Labels fit by the narrowest panel the layout holds at.
-  const fits = (b: Box, w: number, h: number) => (b.w * TM.minW) / TM.w >= w && b.h >= h
-  const named = new Set<string>(), sized = new Set<string>()
-  const tiles = shown.map((c, i) => {
-    const b = boxes[i]
-    const big = fits(b, 58, 44), mid = !big && fits(b, 50, 20)
-    if (big) named.add(c.key)
-    if (big || mid) sized.add(c.key)
-    const slot = slots.get(c.key)
-    // A session sleeps from its tile when the tile has room for its name, else from its legend pill.
-    const sleep = big && c.pane ? `<span class="t-act">${action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 't-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' })}</span>` : ''
-    const inner = big
-      ? `${sleep}<span class="t-row">${c.ch}<span class="t-v">${size(c.mb)}</span></span><span class="t-n">${esc(c.name)}</span>`
-      : mid ? `${c.small}<span class="t-v">${size(c.mb)}</span>` : ''
-    return `<div class="tile ${slot === undefined ? 'plain' : `c${slot}`}${big ? ' big' : mid ? ' mid' : ''}" style="${place(b)}" data-use="${esc(c.key)}" data-tip="${esc(c.tip)}">${inner}</div>`
-  })
-  if (restMb >= 1) {
-    const b = boxes[shown.length]
-    const big = fits(b, 52, 40), mid = !big && fits(b, 50, 18)
-    tiles.push(`<div class="tile rest${big ? ' big' : mid ? ' mid' : ''}" style="${place(b)}" data-tip="${esc(`Everything else · ${size(Math.round(restMb))}\nOther apps and sessions`)}">${big ? `<span class="t-v">${size(Math.round(restMb))}</span><span class="t-n">other</span>` : mid ? `<span class="t-v">${size(Math.round(restMb))}</span>` : ''}</div>`)
+  // Footprints can count swapped memory, so together they may exceed what RAM reports as used.
+  const allMb = cs.reduce((n, c) => n + c.mb, 0)
+  const scale = allMb > usedMb ? usedMb / allMb : 1
+  const restMb = Math.max(0, usedMb - allMb * scale)
+  type Part = { kind: 'own'; c: Consumer; mb: number } | { kind: 'sliver' | 'rest'; mb: number }
+  // The parts largest first, as squarify wants them. A sliver is drawn at least 2% of what is used, so
+  // it stays visible; the rest gives that room.
+  const layout = (own: Consumer[], folded: Consumer[]) => {
+    const foldedMb = folded.reduce((n, c) => n + c.mb, 0) * scale
+    const sliver = folded.length ? Math.max(foldedMb, usedMb * 0.02) : 0
+    const rest = Math.max(0, restMb - (sliver - foldedMb))
+    const parts: Part[] = [...own.map((c) => ({ kind: 'own' as const, c, mb: c.mb * scale })), ...(folded.length ? [{ kind: 'sliver' as const, mb: sliver }] : []), ...(rest >= 1 ? [{ kind: 'rest' as const, mb: rest }] : [])]
+      .sort((x, y) => y.mb - x.mb)
+    // Laid out squarified in a box squeezed by WIDE, then stretched back: tiles come out wider than
+    // tall, which is the shape a one-line label needs.
+    const boxes = squarify(parts.map((p) => p.mb), { x: 0, y: 0, w: usedW / WIDE, h: TM.h })
+    return parts.map((p, i) => ({ ...p, b: { x: boxes[i].x * WIDE, y: boxes[i].y, w: boxes[i].w * WIDE, h: boxes[i].h } }))
   }
+  // A consumer whose tile cannot show even its size folds into the sliver; repeat until the rest fit.
+  let own = cs.slice(0, TILES)
+  let folded = cs.slice(TILES)
+  let laid = layout(own, folded)
+  for (;;) {
+    const failing = laid.flatMap((p) => (p.kind === 'own' && !fitLabel(p.b.w, p.b.h, size(p.c.mb), p.c.name, true).value ? [p.c] : []))
+    if (!failing.length) break
+    own = own.filter((c) => !failing.includes(c))
+    folded = [...failing, ...folded].sort((x, y) => y.mb - x.mb)
+    laid = layout(own, folded)
+  }
+  const slots = colorSlots(own.slice(0, SERIES).map((c) => c.key), ui.colors)
+  const shows = new Map<string, Shows>()
+  const label = (fit: Fit, value: string, name: string, ch = '') => {
+    if (!fit.value) return ''
+    const v = `<span class="t-v">${value}</span>`
+    if (fit.name === 'inline') return `<span class="t-line">${v}<span class="t-n">· ${esc(name)}</span></span>`
+    const n = fit.name === 'below' ? `<span class="t-n">${esc(name)}</span>` : ''
+    return fit.avatar === 'row' ? `<span class="t-row">${ch}${v}</span>${n}` : fit.avatar === 'stack' ? `<span class="t-av">${ch}</span>${v}${n}` : `${v}${n}`
+  }
+  const fitClass = (fit: Fit) => (fit.value === 'md' ? '' : fit.value ? ` fit-${fit.value}` : ' bare')
+  const foldedMb = folded.reduce((n, c) => n + c.mb, 0)
   const free = +(ram.totalGB - ram.usedGB).toFixed(1)
+  const tiles = laid.map((p) => {
+    if (p.kind === 'own') {
+      const c = p.c
+      const fit = fitLabel(p.b.w, p.b.h, size(c.mb), c.name, true)
+      // A session sleeps from its tile when the tile shows its name and has room above it, else from its pill.
+      const sleep = Boolean(c.pane && fit.name && fit.room)
+      shows.set(c.key, { name: Boolean(fit.name), size: true, sleep })
+      const slot = slots.get(c.key)
+      const act = sleep ? `<span class="t-act">${action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 't-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' })}</span>` : ''
+      return `<div class="tile ${slot === undefined ? 'plain' : `c${slot}`}${fitClass(fit)}" style="${place(p.b)}" data-use="${esc(c.key)}" data-tip="${esc(c.tip)}">${act}${label(fit, size(c.mb), c.name, c.ch)}</div>`
+    }
+    if (p.kind === 'sliver') {
+      const fit = fitLabel(p.b.w, p.b.h, size(foldedMb), `${folded.length} small`, false)
+      const tip = `${folded.length} small · ${size(foldedMb)}\n${folded.map((c) => `${c.name}: ${size(c.mb)}`).join('\n')}`
+      return `<div class="tile plain folded${fitClass(fit)}" style="${place(p.b)}" data-use="small" data-tip="${esc(tip)}">${label(fit, size(foldedMb), `${folded.length} small`)}</div>`
+    }
+    const fit = fitLabel(p.b.w, p.b.h, size(Math.round(restMb)), 'other', false)
+    return `<div class="tile rest${fitClass(fit)}" style="${place(p.b)}" data-tip="${esc(`Everything else · ${size(Math.round(restMb))}\nOther apps and sessions`)}">${label(fit, size(Math.round(restMb)), 'other')}</div>`
+  })
   if (TM.w - usedW >= 1) {
     const b = { x: usedW, y: 0, w: TM.w - usedW, h: TM.h }
-    const big = fits(b, 52, 40), mid = !big && fits(b, 50, 18)
-    tiles.push(`<div class="tile free" style="${place(b)}" data-tip="${free} GB free of ${ram.totalGB} GB">${big ? `<span class="t-v">${free} GB</span><span class="t-n">free</span>` : mid ? `<span class="t-v">${free} GB</span>` : ''}</div>`)
+    const fit = fitLabel(b.w, b.h, `${free} GB`, 'free', false)
+    tiles.push(`<div class="tile free${fitClass(fit)}" style="${place(b)}" data-tip="${free} GB free of ${ram.totalGB} GB">${label(fit, `${free} GB`, 'free')}</div>`)
   }
-  return { named, sized, html: `<div class="tm" style="height:${TM.h}px" role="img" aria-label="${esc(`RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free`)}">${tiles.join('')}</div>`}
+  return { slots, shows, folded: new Set(folded.map((c) => c.key)), html: `<div class="tm" style="height:${TM.h}px" role="img" aria-label="${esc(`RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free`)}">${tiles.join('')}</div>` }
 }
 
 /** A small round gauge in a chip: swap used of total, warning when nearly full. */
@@ -454,33 +540,33 @@ function cockpitOpen(snap: Snapshot, ui: UiState): string {
       const p = placed(h.paneKey)
       const groups = started.filter((g) => g.paneKey === h.paneKey)
       const mb = h.memMB + groups.reduce((n, g) => n + g.memMB, 0)
-      const look = (s: number, badge: boolean) => (p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), s, badge) : character(colorOf(h.repo), 'solo', 'done', s, badge))
-      return {
-        key: `pane:${h.paneKey}`, ch: look(16, true), small: look(13, false), name: h.title, mb, pane: h.paneKey,
+            return {
+        key: `pane:${h.paneKey}`, ch: p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), 16) : character(colorOf(h.repo), 'solo', 'done', 16), name: h.title, mb, pane: h.paneKey,
         tip: [`${h.title} · ${size(mb)}`, `Session: ${size(h.memMB)}`, ...groups.map((g) => `${startedName(g)}: ${size(g.memMB)}`)].join('\n')
       }
     }),
     // Started by an agent that is not open any more (it slept): still running, still costing memory.
     ...started.filter((g) => !g.paneKey || !live.has(g.paneKey)).map((g) => ({
-      key: `started:${g.key}`, ch: character(colorOf(g.repo), 'solo', 'idle', 16), small: character(colorOf(g.repo), 'solo', 'idle', 13, false),
+      key: `started:${g.key}`, ch: character(colorOf(g.repo), 'solo', 'idle', 16),
       name: `${startedName(g)} · ${g.worktreeName}`, mb: g.memMB, pane: null,
       tip: `${startedName(g)} · ${size(g.memMB)}\nLeft running in ${g.worktreeName}`
     }))
   ].sort((x, y) => y.mb - x.mb)
-  const slots = colorSlots(consumers.slice(0, SERIES).map((c) => c.key), ui.colors)
   const ram = st.ram && st.ram.totalGB > 0 ? st.ram : null
   const swap = st.swap && st.swap.totalGB > 0 ? st.swap : null
-  const map = ram ? treemap(consumers, slots, ram, ui) : null
+  const map = ram ? treemap(consumers, ram, ui) : null
   const free = ram ? +(ram.totalGB - ram.usedGB).toFixed(1) : 0
   const head = ram || swap
     ? `<div class="mhead">${ram ? `<span class="mused${ram.usedGB / ram.totalGB >= 0.85 ? ' warn' : ''}" data-tip="RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free"><b>${ram.usedGB}</b> / ${ram.totalGB} GB used</span>` : '<span></span>'}${swap ? swapChip(swap) : ''}</div>`
     : ''
-  // A tile too small for its name leaves it to a legend pill, with the size it has no room for and,
-  // for a session, its sleep button. Without RAM figures there is no treemap, and every consumer is a pill.
-  const legend = consumers.filter((c) => !map?.named.has(c.key)).map((c) => {
-    const slot = slots.get(c.key)
-    const sleep = c.pane ? action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 'lg-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' }) : ''
-    return `<span class="lg ${slot === undefined ? 'plain' : `c${slot}`}" data-use="${esc(c.key)}" data-tip="${esc(c.tip)}"><i class="key"></i><span class="lg-n">${esc(c.name)}</span>${map?.sized.has(c.key) ? '' : `<span class="lg-v">${size(c.mb)}</span>`}${sleep}</span>`
+  // A pill carries what its consumer's tile cannot: the name, the size, the sleep button. Pills of the
+  // ones folded into the sliver light up with it. Without RAM figures there is no treemap, only pills.
+  const legend = consumers.map((c) => {
+    const shows = map?.shows.get(c.key) ?? { name: false, size: false, sleep: false }
+    if (shows.name && (shows.sleep || !c.pane)) return ''
+    const slot = map?.slots.get(c.key)
+    const sleep = c.pane && !shows.sleep ? action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 'lg-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' }) : ''
+    return `<span class="lg ${slot === undefined ? 'plain' : `c${slot}`}" data-use="${esc(c.key)}"${map?.folded.has(c.key) ? ' data-in="small"' : ''} data-tip="${esc(c.tip)}"><i class="key"></i><span class="lg-n">${esc(c.name)}</span>${shows.size ? '' : `<span class="lg-v">${size(c.mb)}</span>`}${sleep}</span>`
   }).join('')
   const memory = `<div class="cgroup mem"><span class="label">Memory${ui.statsLoading ? ' <span class="refreshing" aria-label="Refreshing"></span>' : ''}</span>${head}${map?.html ?? ''}${legend ? `<div class="legend">${legend}</div>` : ''}</div>`
   // What agents are doing right now, as small crowds.
