@@ -4,6 +4,7 @@
 import type { AgentInfo, CockpitStats, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
 import { busy, character, chatDigit, chatTargets, crew, emptyUi, faceOf, FOLDED_KEY, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
 import { pressGate } from './press.ts'
+import { canRemove } from '../rank.ts'
 
 const ui = emptyUi()
 let snap: Snapshot | null = null
@@ -479,7 +480,8 @@ function agentMenu(row: WorkspaceRow, a: AgentInfo): MenuItem[] {
   if (row.pr) items.push({ label: `Open PR #${row.pr.number}`, icon: 'pr', run: () => void orca.shell?.openExternal(row.pr!.url) })
   // Sleep is reversible (the chat is kept), so it neither looks destructive nor asks first.
   items.push({ label: 'Sleep', icon: 'moon', run: () => inline(target, 'Sleeping…', 'Asleep', () => orca.plugin.request('sidebar.closeSessions', { panes: [a.paneKey] })) }, 'separator')
-  if (!row.main) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
+  // Hidden while any agent in the worktree is mid-turn: removing it would end that agent too.
+  if (canRemove(row)) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
   return items
 }
 
@@ -489,7 +491,9 @@ function agentMenu(row: WorkspaceRow, a: AgentInfo): MenuItem[] {
  * removes anyway on yes.
  */
 async function removeWorktree(row: WorkspaceRow, target: string): Promise<void> {
-  if (!(await confirmAction('remove-worktree', `Remove ${row.name}?`, 'Its sessions end and the checkout is deleted. The branch is kept.', 'Remove'))) return
+  // A worktree can hold several chats; say they all go with it.
+  const chats = row.agents.length > 1 ? `Removes ${row.name} and its ${row.agents.length} chats. Their sessions end` : 'Its sessions end'
+  if (!(await confirmAction('remove-worktree', `Remove ${row.name}?`, `${chats} and the checkout is deleted. The branch is kept.`, 'Remove'))) return
   const remove = (force: boolean) => orca.plugin.request('sidebar.removeWorktree', { workspaceId: row.id, force }, { timeoutMs: 200_000 })
   // Set by the first try when what stands in the way can be waived.
   let waivable = null as { reason: string; dirty: string[] } | null

@@ -5,7 +5,7 @@
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
-import { asksYou, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
+import { asksYou, canRemove, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
 
 export type UiState = {
@@ -801,7 +801,7 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
  */
 export const removable = ({ a, row }: Placed, all: AgentInfo[]) =>
   a.summary?.role === 'lead' && (a.dispatch === 'settled' || row.pr?.state === 'merged') &&
-  !row.main && faceOf(a) === 'done' && !leadsOpenWork(a, all)
+  canRemove(row) && faceOf(a) === 'done' && !leadsOpenWork(a, all)
 
 /** A review of a worktree with an open PR: the PR is what to look at, one click away. */
 const reviewPr = ({ a, row }: Placed) =>

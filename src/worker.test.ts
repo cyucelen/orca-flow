@@ -950,7 +950,7 @@ test('a working agent stops removal, force or not, before any command runs', asy
   const path = await scratchCheckout(false)
   const [row] = main.fromPs([{ identity: { key: 'w' }, displayName: 'w', repo: 'shop', path, branch: 'refs/heads/me/w', agents: [{ paneKey: 't:1', state: 'done' }, { paneKey: 't:2', state: 'working' }] }])
   const { calls, run } = removalRun(['t:1', 't:2'])
-  assert.deepEqual(await removeWorktree(run, row, true), { removed: false, reason: 'an agent is working' })
+  assert.deepEqual(await removeWorktree(run, row, true), { removed: false, reason: 'Agent is working in this worktree' })
   assert.deepEqual(calls, [])
 })
 

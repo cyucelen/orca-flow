@@ -41,6 +41,12 @@ export const holdsWorkstream = (a: AgentInfo, pr?: WorkspaceRow['pr']) =>
 export const finished = (a: AgentInfo, pr?: WorkspaceRow['pr']) =>
   a.state !== 'working' && !asksYou(a) && !monitoring(a) && !holdsWorkstream(a, pr)
 
+/** An agent mid-turn in the worktree (Orca's working state, monitoring included): it keeps the worktree. */
+export const workingIn = (row: WorkspaceRow): AgentInfo | undefined => row.agents.find((a) => a.state === 'working')
+
+/** The sidebar offers to remove a worktree only when it is not the main checkout and no agent there is mid-turn. */
+export const canRemove = (row: WorkspaceRow): boolean => !row.main && !workingIn(row)
+
 /** The agent that speaks for the workspace: the one asking, else the most urgent state. */
 export function leadAgent(row: WorkspaceRow): AgentInfo | undefined {
   return row.agents.find(asksYou) ??

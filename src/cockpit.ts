@@ -3,7 +3,7 @@
 // and the GitHub checks take seconds on a busy machine.
 import { execFile, execFileSync } from 'node:child_process'
 import type { CockpitStats, SessionRef, StartedGroup, WorkspaceRow } from './protocol.ts'
-import { finished } from './rank.ts'
+import { finished, workingIn } from './rank.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 
 type Run = (args: string[], options?: { timeoutMs?: number }) => Promise<any>
@@ -144,7 +144,9 @@ export async function closeSessions(run: Run, panes: string[]): Promise<{ closed
  */
 export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, force = false): Promise<{ removed: boolean; reason?: string; dirty?: string[] }> {
   if (!row) return { removed: false, reason: 'workspace not found' }
-  if (row.agents.some((a) => a.state === 'working')) return { removed: false, reason: 'an agent is working' }
+  // The sidebar hides removal while an agent works; this catches one that started since.
+  const busy = workingIn(row)
+  if (busy) return { removed: false, reason: `${busy.title} is working in this worktree` }
   const check = await checkRemovable(row)
   // `force` waives a PR that is not merged and uncommitted files, after the person confirmed; a
   // main checkout or anything else still keeps the worktree.

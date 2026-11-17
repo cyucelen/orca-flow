@@ -864,6 +864,8 @@ test('a lead whose PR merged shows remove and finishes, even if it never reporte
   assert.deepEqual(finished(rows([lead, working])), [], 'a lead of open work stays in flight')
   assert.equal(inline(rows([lead], { main: true })), false, 'never the main checkout')
   assert.equal(inline(rows([{ ...lead, state: 'working' }])), false, 'not while the lead itself works')
+  const chat = agent('p-c', 'Alert watch', 'working', { workingMode: 'monitoring' })
+  assert.equal(inline(rows([{ ...lead, dispatch: 'settled' }, chat])), false, 'not while another chat in the worktree works, monitoring included')
   assert.equal(inline(rows([{ ...lead, dispatch: 'settled' }], { pr: null })), true, 'the settled path still works without a PR')
   assert.equal(inline(rows([{ ...lead, dispatch: 'settled' }], { pr: pr('open') })), true, 'and with any PR')
 })
@@ -873,7 +875,7 @@ test("removing a lead's worktree: only a lead mid-turn stops it, the rest is up 
   const at = (state: string, l = lead) => row('ob', 'mono', [l], { path: '/nonexistent/orca-flow-test', pr: { number: 6239, url: 'u', state, checks: null } })
   assert.deepEqual(await removeWorktree(async () => ({}), at('open')), { removed: false, reason: 'not a git checkout' }, 'open PR: the person confirmed, on to the checkout checks')
   assert.deepEqual(await removeWorktree(async () => ({}), at('merged')), { removed: false, reason: 'not a git checkout' }, 'merged: on to the checkout checks')
-  assert.deepEqual(await removeWorktree(async () => ({}), at('open', { ...lead, state: 'working' })), { removed: false, reason: 'an agent is working' })
+  assert.deepEqual(await removeWorktree(async () => ({}), at('open', { ...lead, state: 'working' })), { removed: false, reason: 'Draft shifts is working in this worktree' })
 })
 
 test('a redraw between pointerdown and pointerup waits until the click has run', () => {
@@ -1068,4 +1070,13 @@ test('Option+digit by physical key, without other modifiers', () => {
   assert.equal(key('Digit1', { metaKey: true }), null, "Cmd+Option is Orca's")
   assert.equal(key('Digit1', { ctrlKey: true }), null)
   assert.equal(key('Digit1', { shiftKey: true }), null)
+})
+
+test('Remove worktree is offered only while no agent in the worktree is mid-turn', async () => {
+  const { canRemove } = await import('./rank.ts')
+  const done = agent('p-a', 'Collaborator main push access', 'done')
+  for (const state of ['done', 'waiting', 'blocked'] as const)
+    assert.equal(canRemove(row('w', 'web-app', [done, agent('p-b', 'Other', state)])), true, `${state}: offered`)
+  assert.equal(canRemove(row('w', 'web-app', [done, agent('p-b', 'Alert watch', 'working', { workingMode: 'monitoring' })])), false, 'a monitoring chat in the same worktree hides it')
+  assert.equal(canRemove(row('w', 'web-app', [done], { main: true })), false, 'never the main checkout')
 })
