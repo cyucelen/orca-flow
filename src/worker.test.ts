@@ -966,6 +966,38 @@ test('no merged PR is refused with the uncommitted files, and removed when the p
   assert.deepEqual(forced.calls, ['terminal list', 'terminal close term-t:1', 'worktree rm --force'])
 })
 
+test('a development folder never links the skill; the installed copy repairs a dangling link only', async () => {
+  const { ensureOwnLinks } = await import('./install.ts')
+  const { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const t = mkdtempSync(join(tmpdir(), 'own-links-'))
+  const own = join(t, 'installed', 'skills', 'orca-flow')
+  const other = join(t, 'other', 'skills', 'orca-flow')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(other, { recursive: true })
+  const from = join(t, 'profile', 'skills', 'orca-flow')
+  const links = [{ from, to: own }]
+
+  assert.equal(ensureOwnLinks(links, false).length, 1, 'a dev folder says once that it leaves the link')
+  assert.equal(existsSync(join(t, 'profile')), false, 'and creates nothing')
+  mkdirSync(join(t, 'profile', 'skills'), { recursive: true })
+  symlinkSync(other, from)
+  assert.deepEqual(ensureOwnLinks(links, false, { repairOnly: true }), [], 'nor repairs, quietly')
+  assert.equal(readlinkSync(from), other)
+
+  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [], 'a link into another existing folder is kept by later checks')
+  assert.equal(readlinkSync(from), other)
+  rmSync(join(t, 'other'), { recursive: true })
+  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [`linked ${from}`], 'its folder was removed: repaired')
+  assert.equal(readlinkSync(from), own)
+  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [], 'then left alone')
+  rmSync(from)
+  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [`linked ${from}`], 'a missing link is created')
+  assert.ok(lstatSync(from).isSymbolicLink())
+  rmSync(t, { recursive: true })
+})
+
 test('update check: release tags, version order, the newest above the running one', async () => {
   const { compareVersions, newerVersion, versionsFromTags } = await import('./update.ts')
   const tags = ['abc\trefs/tags/v0.2.9', 'def\trefs/tags/v0.2.10', 'ghi\trefs/tags/v0.2.11-rc1', 'jkl\trefs/tags/latest', 'mno\trefs/tags/v0.3.0'].join('\n')

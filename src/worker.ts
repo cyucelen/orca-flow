@@ -21,7 +21,7 @@ import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLoo
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { findTranscript, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
-import { ensureLinks, ensureSeeds, linksFor, pluginDir, seedsFor } from './install.ts'
+import { ensureOwnLinks, ensureSeeds, linksFor, pluginDir, seedsFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 
@@ -536,7 +536,7 @@ const UPDATE_CHECK_MS = 15 * 60_000
  * Both start `orca plugin update` outside this worker through one path (updater in update.ts).
  * When the new version starts, it finds the result left behind and says how it went.
  */
-function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: UpdateState) => void): void {
+function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: UpdateState) => void, onCheck: () => void = () => {}): void {
   const key = installedKey(dir)
   let current = ''
   try {
@@ -565,6 +565,7 @@ function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: Updat
 
   let warned = false
   const check = () => {
+    onCheck()
     latestRelease()
       .then((versions) => update.found(newerVersion(current, versions)))
       // Offline or no git: one line, never a nag.
@@ -579,8 +580,16 @@ const disposers: (() => void)[] = []
 
 export default function activate(orca: OrcaWorkerApi): void {
   const dir = pluginDir(import.meta.url)
+  const installed = installedKey(dir) !== null
+  // Later checks only repair a missing or dangling link (say its worktree was removed).
+  const linkSkill = (repairOnly: boolean) => {
+    if (dir) for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
+  }
   if (!dir) orca.log(`plugin folder not found from ${import.meta.url}; skill and coordinator CLAUDE.md not set up`)
-  else for (const line of [...ensureLinks(linksFor(dir)), ...ensureSeeds(seedsFor(dir))]) orca.log(line)
+  else {
+    linkSkill(false)
+    for (const line of ensureSeeds(seedsFor(dir))) orca.log(line)
+  }
 
   let timer: ReturnType<typeof setTimeout> | null = null
   disposers.push(() => timer && clearTimeout(timer))
@@ -637,7 +646,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   updates(orca, dir, (state) => {
     updateState = state
     if (latest) orca.panels.post('sidebar.changed', shared(latest))
-  })
+  }, () => linkSkill(true))
 
   // No Orca event reports a tab switch inside a workspace, so the panel asks every few seconds while
   // it is visible; the border moves only when the front pane changed.
@@ -854,7 +863,10 @@ export default function activate(orca: OrcaWorkerApi): void {
     disposers.push(() => clearTimeout(later))
   })
   orca.events.on('workspace.created', refreshSoon)
-  orca.events.on('workspace.removed', refreshSoon)
+  orca.events.on('workspace.removed', () => {
+    linkSkill(true)
+    refreshSoon()
+  })
   // Focus moved to another workspace: move the border at once, read which tab is in front there,
   // then refresh the rest.
   orca.events.on('workspace.changed', (event) => {
