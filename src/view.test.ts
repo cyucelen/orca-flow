@@ -1,7 +1,7 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { askingRows, askKindOf, character, emptyUi, faceOf, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { askingRows, askKindOf, character, colorSlots, emptyUi, faceOf, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { removeWorktree } from './cockpit.ts'
@@ -140,7 +140,16 @@ test('monitoring comes from Orca: its working mode, even while its state says wo
   noMatch(main, /Up next/)
 })
 
-test('the opened cockpit: memory in parts, one line per consumer, counts and actions that confirm in place', () => {
+/** What a person can read in the panel's HTML: its text, and every tooltip. */
+const readable = (html: string) =>
+  `${html.replace(/<[^>]+>/g, ' ')}\n${[...html.matchAll(/data-tip="([^"]*)"/g)].map((m) => m[1]).join('\n')}`.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+/** The treemap's tiles: their classes, consumer key, tooltip and inner HTML. */
+const tilesOf = (html: string) =>
+  [...html.matchAll(/<div class="tile ([^"]*)" style="([^"]*)"(?: data-use="([^"]*)")? data-tip="([^"]*)">([\s\S]*?)<\/div>/g)].map((m) => ({ cls: m[1], style: m[2], use: m[3] ?? '', tip: m[4], inner: m[5] }))
+/** The legend's pills by consumer key. */
+const pillsOf = (html: string) => new Map([...html.matchAll(/<span class="lg ([^"]*)" data-use="([^"]*)" data-tip="([^"]*)">/g)].map((m) => [m[2], { cls: m[1], tip: m[3] }]))
+
+test('the opened cockpit: RAM as a treemap with a legend, agents, and clean up that confirms in place', () => {
   const stats: CockpitStats = {
     swap: { usedGB: 20.1, totalGB: 21 }, ram: { usedGB: 15.1, totalGB: 16 },
     started: [
@@ -158,20 +167,25 @@ test('the opened cockpit: memory in parts, one line per consumer, counts and act
   assert.match(render(snap, ui).copen, /class="copen"><div class="loader" aria-busy="true"[\s\S]*class="hop"[\s\S]*Checking what’s running…/, 'first open shows the hopping crew')
   ui.stats = stats
   ui.statsLoading = true
-  assert.match(render(snap, ui).copen, /class="refreshing"/, 'reopening keeps the last stats with a spinner')
+  assert.match(render(snap, ui).copen, /Memory <span class="refreshing" aria-label="Refreshing">/, 'reopening keeps the last stats with a spinner')
   ui.statsLoading = false
   const open = render(snap, ui).copen
-  assert.match(open, /meter-label">Swap<\/span><span class="bar warn"[^>]*><span style="width:95\.7%"><\/span><\/span><span class="num warn"[^>]*>20\.1 \/ 21 GB/)
-  assert.match(open, /class="num warn" data-tip="RAM: 15\.1 of 16 GB used, 0\.9 GB free">15\.1 \/ 16 GB/, 'RAM shows used and total, warning when nearly full')
-  // A session and what it started are one line: their total shown, the split on hover.
-  assert.match(open, /class="item static use" data-tip="Pricing page\nSession: 1\.5 GB\nnext-server \+3: 1\.3 GB">[\s\S]*?Pricing page<\/span><span class="r"><i class="key c0"><\/i>2\.7 GB<\/span><span class="aslot"><button class="act" data-yes="close:p-pricing">sleep/)
-  noMatch(open, /↳|item static started/, 'no separate row for what a session started')
-  assert.match(open, /data-tip="vite: 300 MB\nLeft running in old-feature">[\s\S]*?vite <span class="soft">old-feature<\/span><\/span><span class="r"><i class="key c1"><\/i>300 MB<\/span><span class="aslot"><\/span>/, 'what a sleeping agent left running keeps its worktree, and room where sleep would be')
-  assert.match(open, /class="bar mbar" data-tip="0\.9 GB free"><span class="seg c0" style="width:17\.1%" data-tip="Pricing page: 2\.7 GB"><\/span><span class="seg c1" style="width:1\.8%" data-tip="vite: 300 MB"><\/span><span class="seg rest" style="width:75\.5%" data-tip="Everything else: 12\.1 GB"><\/span><\/span>/, 'the RAM bar is the list in its colors, plus the rest of what is used')
-  assert.match(open, /<div class="tallies"><span class="label">Agents<\/span><span class="tally ask"><b>2<\/b> asking<\/span><span class="tally"><b>2<\/b> working<\/span><span class="tally"><b>1<\/b> finished<\/span><span class="act-sep">·<\/span><button class="act" data-act="closeall" data-tip="Sleep 1 finished session to free 430 MB">Free 430 MB<\/button><\/div>/, 'memory is tight here (agents-only): the counts and sleeping the finished share a line')
-  assert.match(open, /class="item static merged" data-tip="state-cleanup\nPR #1753 merged · clean"><span class="mglyph pr-merged"><svg[\s\S]*?<\/svg><\/span><button class="act" data-act="remove:cleanup">Remove state-cleanup<\/button><span class="r">#1753<\/span><\/div>/)
+  assert.match(open, /<span class="mused warn" data-tip="RAM: 15\.1 of 16 GB used, 0\.9 GB free"><b>15\.1<\/b> \/ 16 GB used<\/span>/, 'used and total, warning when nearly full')
+  assert.match(open, /<span class="chip warn" data-tip="Swap: 20\.1 of 21 GB used"><svg[\s\S]*?<\/svg>Swap 20\.1 \/ 21 GB<\/span>/, 'swap as a gauge chip, warning when nearly full')
+  const tiles = tilesOf(open)
+  const pricing = tiles.find((t) => t.use === 'pane:p-pricing')!
+  assert.equal(pricing.tip, 'Pricing page · 2.7 GB\nSession: 1.5 GB\nnext-server +3: 1.3 GB', 'a session and what it started are one tile; the split on hover')
+  assert.match(pricing.cls, /^c[0-2]\b/, 'the heaviest wear a chart color')
+  assert.equal(tiles.find((t) => t.use.startsWith('started:'))!.tip, 'vite · 300 MB\nLeft running in old-feature', 'what a sleeping agent left running')
+  assert.equal(tiles.find((t) => t.cls.startsWith('rest'))!.tip, 'Everything else · 12.1 GB\nOther apps and sessions')
+  assert.match(tiles.find((t) => t.cls === 'free')!.tip, /^0\.9 GB free of 16 GB$/)
+  assert.equal((open.match(/data-yes="close:p-pricing"/g) ?? []).length, 1, 'one sleep button per session, on its tile or its pill')
+  noMatch(open, /data-yes="close:p-gone"/, 'nothing to sleep for what is left running')
+  assert.match(open, /<span class="label">Agents<\/span><div class="tallies"><span class="tally ask"><span class="stack">(<span class="sav">[\s\S]*?<\/span>){2}<\/span><span><b>2<\/b> asking<\/span><\/span><span class="tally">[\s\S]*?<b>2<\/b> working/)
+  assert.match(open, /<span class="label">Clean up<\/span><div class="fin"><span class="stack">[\s\S]*?<\/span><span class="fin-n"><b>1<\/b> finished<\/span><button class="act pill" data-act="closeall" data-tip="Sleep 1 finished session to free 430 MB"><svg[\s\S]*?<\/svg>Sleep all · 430 MB<\/button><\/div>/, 'memory is tight here (agents-only)')
+  assert.match(open, /<div class="wt" data-tip="state-cleanup\nPR #1753 merged · clean"><span class="prb pr-merged"><svg[\s\S]*?<\/svg><\/span><span class="wt-main"><span class="wt-name">state-cleanup<\/span><span class="wt-sub">#1753 · merged · clean<\/span><\/span><button class="act ibtn danger" data-act="remove:cleanup" data-tip="Remove worktree" aria-label="Remove state-cleanup"><svg/)
   ui.confirming = 'remove:cleanup'
-  assert.match(render(snap, ui).copen, /<span class="confirm"><span class="q">Remove state-cleanup\?<\/span> <button class="yes" data-yes="remove:cleanup">Yes<\/button> <button class="no" data-no>No<\/button><\/span><span class="r">#1753/, 'removing confirms in place, on the same line')
+  assert.match(render(snap, ui).copen, /#1753 · merged · clean<\/span><\/span><span class="confirm"><span class="q">Remove\?<\/span> <button class="yes" data-yes="remove:cleanup">Yes<\/button> <button class="no" data-no>No<\/button><\/span><\/div>/, 'removing confirms in place, in the card')
   ui.confirming = null
   ui.pending = 'remove:cleanup'
   assert.match(render(snap, ui).copen, /class="rstatus pending"><span class="refreshing"><\/span>Removing…/, 'the same inline style as row actions')
@@ -180,14 +194,10 @@ test('the opened cockpit: memory in parts, one line per consumer, counts and act
   assert.match(render(snap, ui).copen, /class="rstatus ok">Removed/)
   ui.notice = null
   ui.pending = 'close:p-pricing'
-  assert.match(render(snap, ui).copen, /<span class="aslot"><span class="rstatus pending"><span class="refreshing"><\/span>Sleeping…/)
+  assert.match(render(snap, ui).copen, /class="rstatus pending"><span class="refreshing"><\/span>Sleeping…/, 'sleeping shows where its button was')
 })
 
-/** What a person can read in the panel's HTML: its text, and every tooltip. */
-const readable = (html: string) =>
-  `${html.replace(/<[^>]+>/g, ' ')}\n${[...html.matchAll(/data-tip="([^"]*)"/g)].map((m) => m[1]).join('\n')}`.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&')
-
-test('the compact cockpit keeps every number the longer one showed, at least on hover', () => {
+test('the treemap cockpit keeps every number, on its tiles, its pills or on hover', () => {
   // The numbers in the cockpit as it was: 6 finished sessions, two dev servers under their sessions,
   // two left running by sessions that slept, two merged worktrees.
   const titles = ['BOU-3949 PR 2', 'Require auth for downloading documents', 'Api-node staging secrets rotation', 'Fix flaky test', 'Lint', 'Docs']
@@ -208,31 +218,69 @@ test('the compact cockpit keeps every number the longer one showed, at least on 
   const open = render(s, ui).copen
   const seen = readable(open)
   for (const shown of [
-    '29.3 of 48 GB used', '13.6 of 15 GB used', // RAM and swap, used and total
-    'BOU-3949 PR 2\nSession: 199 MB\ndev-web.cjs +22: 6.3 GB', 'Require auth for downloading documents\nSession: 457 MB\nnode +5: 1.8 GB', 'Api-node staging secrets rotation\nSession: 472 MB',
-    'node +25: 6.7 GB\nLeft running in employee repo', 'node +23: 6.4 GB\nLeft running in add document cleanup job',
-    '6  finished', 'Free 2.0 GB', 'Sleep 6 finished sessions to free 2.0 GB',
-    'Remove bou-3949-durable-document-deletion', 'PR #6125 merged · clean', 'Remove employee repo', 'PR #6213 merged · clean'
+    'RAM: 29.3 of 48 GB used, 18.7 GB free', 'Swap: 13.6 of 15 GB used', '18.7 GB free of 48 GB', 'Everything else · 7.0 GB',
+    'BOU-3949 PR 2 · 6.5 GB\nSession: 199 MB\ndev-web.cjs +22: 6.3 GB', 'Require auth for downloading documents · 2.2 GB\nSession: 457 MB\nnode +5: 1.8 GB',
+    'Api-node staging secrets rotation · 472 MB\nSession: 472 MB', 'node +25 · 6.7 GB\nLeft running in employee repo', 'node +23 · 6.4 GB\nLeft running in add document cleanup job',
+    ' 6  finished', 'Sleep all · 2.0 GB', 'Sleep 6 finished sessions to free 2.0 GB',
+    'PR #6125 merged · clean', '#6125 · merged · clean', 'PR #6213 merged · clean', '#6213 · merged · clean'
   ]) assert.ok(seen.includes(shown), `${JSON.stringify(shown)} is readable`)
-  // One line per consumer, heaviest first, each with its total.
-  assert.deepEqual([...open.matchAll(/<i class="key (c\d|rest)"><\/i>([^<]+)</g)].map((m) => `${m[1]} ${m[2]}`), ['c0 6.7 GB', 'c1 6.5 GB', 'c2 6.4 GB', 'c3 2.2 GB', 'c4 472 MB'])
-  assert.equal((open.match(/data-yes="close:/g) ?? []).length, 3, 'every open session can still sleep')
-  assert.equal((open.match(/class="label"/g) ?? []).length, 2, 'two headings (Memory, Agents), down from four')
+  const text = open.replace(/<[^>]+>/g, ' ')
+  for (const total of ['29.3', '6.7 GB', '6.5 GB', '6.4 GB', '2.2 GB', '472 MB']) assert.ok(text.includes(total), `${total} is on screen, not only on hover`)
+  const tiles = tilesOf(open)
+  assert.equal(tiles.length, 7, 'five consumers, everything else, free')
+  const pills = pillsOf(open)
+  for (const t of tiles.filter((x) => x.use)) {
+    const named = / big/.test(t.cls)
+    assert.equal(pills.has(t.use), !named, `${t.use}: a tile without room for its name has a pill`)
+  }
+  for (const pane of ['p0', 'p1', 'p2']) assert.equal((open.match(new RegExp(`data-yes="close:${pane}"`, 'g')) ?? []).length, 1, `${pane} sleeps from one place`)
+  assert.equal(tiles.filter((t) => /^c[0-2]\b/.test(t.cls)).length, 3, 'three consumers in color, the rest neutral')
 })
 
-test('the RAM bar never shows more than is used, and colors five consumers at most', () => {
+test('chart colors stay with their consumer between refreshes', () => {
+  const memo = new Map<string, number>()
+  const first = colorSlots(['x', 'y', 'z'], memo)
+  assert.deepEqual(new Set(first.values()), new Set([0, 1, 2]))
+  assert.deepEqual(colorSlots(['z', 'x', 'y'], memo), new Map([['z', first.get('z')], ['x', first.get('x')], ['y', first.get('y')]]), 'a new order repaints nothing')
+  const later = colorSlots(['z', 'w', 'x'], memo)
+  assert.equal(later.get('w'), first.get('y'), 'a newcomer takes the color that was freed')
+  assert.equal(later.get('z'), first.get('z'))
+  assert.equal(colorSlots(['y', 'z', 'x'], memo).get('y'), first.get('y'), 'one that comes back gets its color back when it is free')
+  // In the panel: the same consumers, heaviest first one time and last the next, keep their tiles' colors.
+  const orphan = (i: number, memMB: number) => ({ key: `/w/o${i}|`, path: `/w/o${i}`, paneKey: null, workspaceId: `o${i}`, worktreeName: `o${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB })
+  const ui = emptyUi()
+  ui.cockpitOpen = true
+  const colorsAt = (sizes: number[]) => {
+    ui.stats = { ram: { usedGB: 12, totalGB: 16 }, swap: null, heaviest: [], finished: [], merged: [], started: sizes.map((mb, i) => orphan(i, mb)) }
+    return new Map(tilesOf(render(snap, ui).copen).filter((t) => t.use).map((t) => [t.use, t.cls.split(' ')[0]]))
+  }
+  const before = colorsAt([3000, 2000, 1000])
+  const after = colorsAt([1000, 2000, 3000])
+  assert.deepEqual(after, before)
+})
+
+test('the treemap never draws more than is used, folds a seventh consumer into other, and copes without figures', () => {
   const g = (i: number, memMB: number) => ({ key: `/w/x${i}|`, path: `/w/x${i}`, paneKey: null, workspaceId: `x${i}`, worktreeName: `x${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB })
   const ui = emptyUi()
   ui.cockpitOpen = true
   // Footprints can include swapped memory, so together they can exceed what RAM reports as used.
-  ui.stats = { ram: { usedGB: 4, totalGB: 16 }, swap: null, heaviest: [], finished: [], merged: [], started: [1, 2, 3, 4, 5, 6].map((i) => g(i, 1024)) }
-  const open = render(snap, ui).copen
-  const widths = [...open.matchAll(/class="seg [^"]+" style="width:([\d.]+)%"/g)].map((m) => Number(m[1]))
-  assert.equal(widths.length, 5, 'the sixth folds into the rest, which is empty here')
-  assert.ok(widths.reduce((n, w) => n + w, 0) <= 25.01, `parts ${widths} fit in the 25% used`)
-  assert.match(open, /proc6 <span class="soft">x6<\/span><\/span><span class="r"><i class="key rest"><\/i>1\.0 GB/, 'the sixth row wears the rest color')
-  noMatch(open, /meter-label">Swap/, 'no swap, no swap bar')
-  noMatch(open, /class="aslot"/, 'no row can sleep: no room kept for it')
+  ui.stats = { ram: { usedGB: 4, totalGB: 16 }, swap: null, heaviest: [], finished: [], merged: [], started: [1, 2, 3, 4, 5, 6, 7].map((i) => g(i, 1024)) }
+  let open = render(snap, ui).copen
+  const tiles = tilesOf(open)
+  assert.equal(tiles.filter((t) => t.use).length, 6, 'six consumers get tiles')
+  noMatch(open, /class="tile rest/, 'nothing else is left of the 4 GB used')
+  assert.match(tiles.find((t) => t.cls === 'free')!.style, /^left:calc\(25% \+ 1px\);top:calc\(0% \+ 1px\);width:calc\(75% - 2px\)/, 'free starts where used ends')
+  assert.match(open, /data-use="started:\/w\/x7\|" data-tip="proc7 · 1\.0 GB[^"]*"><i class="key"><\/i><span class="lg-n">proc7 · x7<\/span><span class="lg-v">1\.0 GB<\/span>/, 'the seventh is a pill with its size')
+  noMatch(open, /class="chip/, 'no swap, no swap chip')
+  ui.stats = { ...ui.stats, ram: null }
+  open = render(snap, ui).copen
+  noMatch(open, /class="tm"|class="mhead"/, 'no RAM figures: no headline, no treemap')
+  assert.equal((open.match(/<span class="lg-v">1\.0 GB<\/span>/g) ?? []).length, 7, 'every consumer a pill with its size')
+  ui.stats = { ...ui.stats, ram: { usedGB: 8, totalGB: 16 }, swap: { usedGB: 1, totalGB: 4 }, started: [] }
+  open = render(snap, ui).copen
+  assert.deepEqual(tilesOf(open).map((t) => t.cls), ['rest big', 'free'], 'no consumers: everything else and free')
+  noMatch(open, /class="legend"/)
+  assert.match(open, /<span class="chip" data-tip="Swap: 1 of 4 GB used">/, 'swap with room to spare is a quiet chip')
 })
 
 test('sleeping every finished session is offered only when memory is tight, and confirms in place', () => {
@@ -246,13 +294,13 @@ test('sleeping every finished session is offered only when memory is tight, and 
     finished: [{ paneKey: 'p-f1', terminal: 'term-1', workspaceId: 'f1', title: 'First done', repo: 'shop', memMB: 400 }, { paneKey: 'p-f2', terminal: 'term-2', workspaceId: 'f2', title: 'Second done', repo: 'shop', memMB: 700 }] }
   noMatch(render(at('ok'), ui).copen, /closeall/, 'room to spare: nothing to sleep in bulk')
   assert.match(render(at('ok'), ui).copen, /<b>2<\/b> finished<\/span><\/div>/)
-  for (const v of ['agents-only', 'full', 'pressure'] as const) assert.match(render(at(v), ui).copen, /<b>2<\/b> finished<\/span><span class="act-sep">·<\/span><button class="act" data-act="closeall" data-tip="Sleep 2 finished sessions to free 1\.1 GB">Free 1\.1 GB</, v)
+  for (const v of ['agents-only', 'full', 'pressure'] as const) assert.match(render(at(v), ui).copen, /<b>2<\/b> finished<\/span><button class="act pill" data-act="closeall" data-tip="Sleep 2 finished sessions to free 1\.1 GB"><svg[\s\S]*?<\/svg>Sleep all · 1\.1 GB</, v)
   assert.deepEqual(finishedAgents(at('full').rows).map((a) => a.paneKey), ['p-f1', 'p-f2'], 'the set Sleep all puts to sleep')
   ui.confirming = 'closeall'
   assert.match(render(at('full'), ui).copen, /<span class="q">Sleep 2 sessions\?<\/span> <button class="yes" data-yes="closeall">Yes/)
   ui.confirming = null
   ui.stats = { ...ui.stats, finished: [] }
-  assert.match(render(at('full'), ui).copen, /data-act="closeall" data-tip="Sleep 2 finished sessions">Sleep all</, 'memory not known yet')
+  assert.match(render(at('full'), ui).copen, /data-act="closeall" data-tip="Sleep 2 finished sessions"><svg[\s\S]*?<\/svg>Sleep all</, 'memory not known yet')
 })
 
 test('coordinators show no team characters on the right', () => {

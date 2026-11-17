@@ -27,11 +27,13 @@ export type UiState = {
   /** A row's inline action status: running, done, or failed (keyed like data-menu). */
   status: Map<string, { text: string; tone: 'pending' | 'ok' | 'bad' }>
   notice: { key: string; text: string; ok: boolean } | null
+  /** The chart color each memory consumer wears, kept between refreshes (see colorSlots). */
+  colors: Map<string, number>
 }
 
 export const emptyUi = (): UiState => ({
   opened: new Set(), closed: new Set(), folded: new Set(), unfolded: new Set(), query: '', now: Date.now(),
-  cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map()
+  cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map(), colors: new Map()
 })
 
 // ---------- small helpers ----------
@@ -277,12 +279,15 @@ function rowStatus(ui: UiState, key: string): string | null {
   return st.tone === 'pending' ? busy(st.text) : `<span class="rstatus ${st.tone}">${esc(st.text)}</span>`
 }
 
+type ActOpts = { ask?: boolean; tip?: string; cls?: string; icon?: string; aria?: string }
+
 /** An action that asks "Yes · No" in place (unless `ask` is false), then shows its result. */
-function action(key: string, label: string, question: string, ui: UiState, ask = true, tip = ''): string {
+function action(key: string, label: string, question: string, ui: UiState, o: ActOpts = {}): string {
   if (ui.pending === key) return busy(key.startsWith('remove:') ? 'Removing…' : 'Sleeping…')
   if (ui.notice?.key === key) return `<span class="rstatus ${ui.notice.ok ? 'ok' : 'bad'}">${esc(ui.notice.text)}</span>`
   if (ui.confirming === key) return `<span class="confirm"><span class="q">${esc(question)}</span> <button class="yes" data-yes="${esc(key)}">Yes</button> <button class="no" data-no>No</button></span>`
-  return `<button class="act" ${ask ? 'data-act' : 'data-yes'}="${esc(key)}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${esc(label)}</button>`
+  const attrs = `${o.ask === false ? 'data-yes' : 'data-act'}="${esc(key)}"${o.tip ? ` data-tip="${esc(o.tip)}"` : ''}${o.aria ? ` aria-label="${esc(o.aria)}"` : ''}`
+  return `<button class="act${o.cls ? ` ${o.cls}` : ''}" ${attrs}>${o.icon ?? ''}${esc(label)}</button>`
 }
 
 /** While Orca's memory report runs the first time: three characters hop in turn over a quiet line. */
@@ -296,11 +301,142 @@ function loader(): string {
   return `<div class="copen">${crew('Checking what’s running…')}</div><div class="hair"></div>`
 }
 
-/** Consumers that get their own color in the RAM bar, in the order of the chart palette (panel.css). */
-const SERIES = 5
+/** Chart colors for the heaviest consumers (panel.css --c0..--c2): three, the most a treemap's touching tiles tell apart for every reader. */
+const SERIES = 3
+/** Consumers that get a tile; the rest count as other. */
+const TILES = 6
+/** The treemap's layout box: laid out at 300 px wide, drawn in percentages, labels sized for 260 px. */
+const TM = { w: 300, h: 136, minW: 260 }
 
-/** One line in the memory list: a session with what it started, or what a sleeping agent left running. */
-type Consumer = { ch: string; name: string; where: string; mb: number; tip: string; sleep: string }
+/** What uses memory: a session with what it started, or what a sleeping agent left running. */
+type Consumer = { key: string; ch: string; small: string; name: string; mb: number; tip: string; pane: string | null }
+type Box = { x: number; y: number; w: number; h: number }
+
+const hashOf = (s: string) => [...s].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0)
+
+/**
+ * Stable chart colors. A consumer keeps its slot while it is among the colored ones, gets it back when
+ * it returns if the slot is free, and a new one starts from a slot picked by its key. `memo` lives in
+ * the UI state, so colors never jump when the order changes between refreshes.
+ */
+export function colorSlots(keys: string[], memo: Map<string, number>, n = SERIES): Map<string, number> {
+  const out = new Map<string, number>()
+  const taken = new Set<number>()
+  for (const k of keys) {
+    const s = memo.get(k)
+    if (s !== undefined && s < n && !taken.has(s)) { out.set(k, s); taken.add(s) }
+  }
+  for (const k of keys) {
+    if (out.has(k)) continue
+    const s = Array.from({ length: n }, (_, i) => (hashOf(k) + i) % n).find((slot) => !taken.has(slot))
+    if (s === undefined) break
+    out.set(k, s)
+    taken.add(s)
+  }
+  for (const [k, s] of out) { memo.delete(k); memo.set(k, s) }
+  for (const k of [...memo.keys()].slice(0, Math.max(0, memo.size - 64))) memo.delete(k)
+  return out
+}
+
+/** Squarified treemap: the values (largest first) as boxes filling `box`, each as square as it can be. */
+export function squarify(values: number[], box: Box): Box[] {
+  const total = values.reduce((a, v) => a + v, 0)
+  if (total <= 0) return values.map(() => ({ ...box, w: 0, h: 0 }))
+  const scale = (box.w * box.h) / total
+  const worst = (row: number[], side: number) => {
+    const s = row.reduce((a, v) => a + v, 0) * scale
+    return Math.max(...row.map((v) => Math.max((side * side * v * scale) / (s * s), (s * s) / (side * side * v * scale))))
+  }
+  const out: Box[] = []
+  let b = { ...box }
+  for (let i = 0; i < values.length;) {
+    const side = Math.min(b.w, b.h)
+    const row = [values[i]]
+    while (i + row.length < values.length && worst([...row, values[i + row.length]], side) <= worst(row, side)) row.push(values[i + row.length])
+    const area = row.reduce((a, v) => a + v, 0) * scale
+    if (b.w >= b.h) {
+      const w = area / b.h
+      let y = b.y
+      for (const v of row) { const h = (v * scale) / w; out.push({ x: b.x, y, w, h }); y += h }
+      b = { x: b.x + w, y: b.y, w: b.w - w, h: b.h }
+    } else {
+      const h = area / b.w
+      let x = b.x
+      for (const v of row) { const w = (v * scale) / h; out.push({ x, y: b.y, w, h }); x += w }
+      b = { x: b.x, y: b.y + h, w: b.w, h: b.h - h }
+    }
+    i += row.length
+  }
+  return out
+}
+
+const MOON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M13.2 9.6A5.4 5.4 0 0 1 6.4 2.8a5.4 5.4 0 1 0 6.8 6.8Z"/></svg>'
+const TRASH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.6 8.4a1 1 0 0 0 1 .85h4.3a1 1 0 0 0 1-.85l.6-8.4M6.75 7v4M9.25 7v4"/></svg>'
+
+/** A tile's place in the treemap, in percentages with a 2 px surface gap, so it fits any panel width. */
+const place = (b: Box) => {
+  const pct = (v: number, of: number) => Math.round((v / of) * 10000) / 100
+  return `left:calc(${pct(b.x, TM.w)}% + 1px);top:calc(${pct(b.y, TM.h)}% + 1px);width:calc(${pct(b.w, TM.w)}% - 2px);height:calc(${pct(b.h, TM.h)}% - 2px)`
+}
+
+/**
+ * All of RAM as tiles: each consumer sized by its memory, then everything else, then free. Also says
+ * which consumers' tiles print their name, and which their size; the legend carries the rest.
+ */
+function treemap(cs: Consumer[], slots: Map<string, number>, ram: { usedGB: number; totalGB: number }, ui: UiState): { html: string; named: Set<string>; sized: Set<string> } {
+  const totalMb = ram.totalGB * 1024
+  const usedMb = Math.min(ram.usedGB * 1024, totalMb)
+  const shown = cs.slice(0, TILES)
+  // Footprints can count swapped memory, so together they may exceed what RAM reports as used.
+  const namedMb = shown.reduce((n, c) => n + c.mb, 0)
+  const scale = namedMb > usedMb ? usedMb / namedMb : 1
+  const restMb = Math.max(0, usedMb - namedMb * scale)
+  const usedW = totalMb > 0 ? (TM.w * usedMb) / totalMb : 0
+  const values = [...shown.map((c) => c.mb * scale), ...(restMb >= 1 ? [restMb] : [])]
+  const boxes = squarify(values, { x: 0, y: 0, w: usedW, h: TM.h })
+  // Labels fit by the narrowest panel the layout holds at.
+  const fits = (b: Box, w: number, h: number) => (b.w * TM.minW) / TM.w >= w && b.h >= h
+  const named = new Set<string>(), sized = new Set<string>()
+  const tiles = shown.map((c, i) => {
+    const b = boxes[i]
+    const big = fits(b, 58, 44), mid = !big && fits(b, 50, 20)
+    if (big) named.add(c.key)
+    if (big || mid) sized.add(c.key)
+    const slot = slots.get(c.key)
+    // A session sleeps from its tile when the tile has room for its name, else from its legend pill.
+    const sleep = big && c.pane ? `<span class="t-act">${action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 't-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' })}</span>` : ''
+    const inner = big
+      ? `${sleep}<span class="t-row">${c.ch}<span class="t-v">${size(c.mb)}</span></span><span class="t-n">${esc(c.name)}</span>`
+      : mid ? `${c.small}<span class="t-v">${size(c.mb)}</span>` : ''
+    return `<div class="tile ${slot === undefined ? 'plain' : `c${slot}`}${big ? ' big' : mid ? ' mid' : ''}" style="${place(b)}" data-use="${esc(c.key)}" data-tip="${esc(c.tip)}">${inner}</div>`
+  })
+  if (restMb >= 1) {
+    const b = boxes[shown.length]
+    const big = fits(b, 52, 40), mid = !big && fits(b, 50, 18)
+    tiles.push(`<div class="tile rest${big ? ' big' : mid ? ' mid' : ''}" style="${place(b)}" data-tip="${esc(`Everything else · ${size(Math.round(restMb))}\nOther apps and sessions`)}">${big ? `<span class="t-v">${size(Math.round(restMb))}</span><span class="t-n">other</span>` : mid ? `<span class="t-v">${size(Math.round(restMb))}</span>` : ''}</div>`)
+  }
+  const free = +(ram.totalGB - ram.usedGB).toFixed(1)
+  if (TM.w - usedW >= 1) {
+    const b = { x: usedW, y: 0, w: TM.w - usedW, h: TM.h }
+    const big = fits(b, 52, 40), mid = !big && fits(b, 50, 18)
+    tiles.push(`<div class="tile free" style="${place(b)}" data-tip="${free} GB free of ${ram.totalGB} GB">${big ? `<span class="t-v">${free} GB</span><span class="t-n">free</span>` : mid ? `<span class="t-v">${free} GB</span>` : ''}</div>`)
+  }
+  return { named, sized, html: `<div class="tm" style="height:${TM.h}px" role="img" aria-label="${esc(`RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free`)}">${tiles.join('')}</div>`}
+}
+
+/** A small round gauge in a chip: swap used of total, warning when nearly full. */
+function swapChip(swap: { usedGB: number; totalGB: number }): string {
+  const r = 5.25, c = 2 * Math.PI * r
+  const warn = swap.usedGB / swap.totalGB >= 0.85
+  const arc = Math.min(1, swap.usedGB / swap.totalGB) * c
+  return `<span class="chip${warn ? ' warn' : ''}" data-tip="Swap: ${swap.usedGB} of ${swap.totalGB} GB used"><svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="${r}" class="g-track"/><circle cx="7" cy="7" r="${r}" class="g-arc" stroke-dasharray="${arc.toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 7 7)"/></svg>Swap ${swap.usedGB} / ${swap.totalGB} GB</span>`
+}
+
+/** Overlapping characters, at most `max`, then how many more. */
+function avatarStack(placed: Placed[], all: AgentInfo[], max = 6): string {
+  const faces = placed.slice(0, max).map((p) => `<span class="sav">${character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), 14, false)}</span>`).join('')
+  return `<span class="stack">${faces}${placed.length > max ? `<span class="sav more">+${placed.length - max}</span>` : ''}</span>`
+}
 
 function cockpitOpen(snap: Snapshot, ui: UiState): string {
   if (!ui.stats && ui.notice?.key === 'load') return `<div class="copen"><div class="empty">Could not check what’s running: ${esc(ui.notice.text)}</div></div><div class="hair"></div>`
@@ -317,79 +453,61 @@ function cockpitOpen(snap: Snapshot, ui: UiState): string {
     ...st.heaviest.map((h) => {
       const p = placed(h.paneKey)
       const groups = started.filter((g) => g.paneKey === h.paneKey)
+      const mb = h.memMB + groups.reduce((n, g) => n + g.memMB, 0)
+      const look = (s: number, badge: boolean) => (p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), s, badge) : character(colorOf(h.repo), 'solo', 'done', s, badge))
       return {
-        ch: p ? character(colorOf(p.row.repo), shapeOf(p.a, all), faceOf(p.a), 16) : character(colorOf(h.repo), 'solo', 'done', 16),
-        name: h.title,
-        where: '',
-        mb: h.memMB + groups.reduce((n, g) => n + g.memMB, 0),
-        tip: [h.title, `Session: ${size(h.memMB)}`, ...groups.map((g) => `${startedName(g)}: ${size(g.memMB)}`)].join('\n'),
-        sleep: action(`close:${h.paneKey}`, 'sleep', '', ui, false)
+        key: `pane:${h.paneKey}`, ch: look(16, true), small: look(13, false), name: h.title, mb, pane: h.paneKey,
+        tip: [`${h.title} · ${size(mb)}`, `Session: ${size(h.memMB)}`, ...groups.map((g) => `${startedName(g)}: ${size(g.memMB)}`)].join('\n')
       }
     }),
     // Started by an agent that is not open any more (it slept): still running, still costing memory.
     ...started.filter((g) => !g.paneKey || !live.has(g.paneKey)).map((g) => ({
-      ch: character(colorOf(g.repo), 'solo', 'idle', 16),
-      name: startedName(g),
-      where: g.worktreeName,
-      mb: g.memMB,
-      tip: `${startedName(g)}: ${size(g.memMB)}\nLeft running in ${g.worktreeName}`,
-      sleep: ''
+      key: `started:${g.key}`, ch: character(colorOf(g.repo), 'solo', 'idle', 16), small: character(colorOf(g.repo), 'solo', 'idle', 13, false),
+      name: `${startedName(g)} · ${g.worktreeName}`, mb: g.memMB, pane: null,
+      tip: `${startedName(g)} · ${size(g.memMB)}\nLeft running in ${g.worktreeName}`
     }))
   ].sort((x, y) => y.mb - x.mb)
-  // The heaviest consumers are parts of RAM used, in the colors their rows wear; the rest of what is
-  // used is one grey part. Footprints can count swapped memory, so the parts never exceed used.
-  const ram = st.ram ?? null
+  const slots = colorSlots(consumers.slice(0, SERIES).map((c) => c.key), ui.colors)
+  const ram = st.ram && st.ram.totalGB > 0 ? st.ram : null
   const swap = st.swap && st.swap.totalGB > 0 ? st.swap : null
-  const pctOf = (part: number, whole: number) => (whole > 0 ? Math.min(100, Math.round((part / whole) * 1000) / 10) : 0)
-  let ramMeter = ''
-  if (ram) {
-    const usedMb = ram.usedGB * 1024
-    const named = consumers.slice(0, SERIES)
-    const namedMb = named.reduce((n, c) => n + c.mb, 0)
-    const scale = namedMb > usedMb ? usedMb / namedMb : 1
-    const seg = (cls: string, widthMb: number, tip: string) => (widthMb >= 1 ? `<span class="seg ${cls}" style="width:${pctOf(widthMb, ram.totalGB * 1024)}%" data-tip="${esc(tip)}"></span>` : '')
-    const rest = Math.max(0, usedMb - namedMb * scale)
-    const free = Math.max(0, +(ram.totalGB - ram.usedGB).toFixed(1))
-    const warn = ram.usedGB / ram.totalGB >= 0.85
-    ramMeter = `<span class="meter-label">RAM</span><span class="bar mbar" data-tip="${free} GB free">${named.map((c, i) => seg(`c${i}`, c.mb * scale, `${c.name}: ${size(c.mb)}`)).join('')}${seg('rest', rest, `Everything else: ${size(Math.round(rest))}`)}</span><span class="num${warn ? ' warn' : ''}" data-tip="RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free">${ram.usedGB} / ${ram.totalGB} GB</span>`
-  }
-  const swapWarn = swap ? swap.usedGB / swap.totalGB >= 0.85 : false
-  const swapMeter = swap
-    ? `<span class="meter-label">Swap</span><span class="bar${swapWarn ? ' warn' : ''}" data-tip="Swap: ${swap.usedGB} of ${swap.totalGB} GB used"><span style="width:${pctOf(swap.usedGB, swap.totalGB)}%"></span></span><span class="num${swapWarn ? ' warn' : ''}" data-tip="Swap: ${swap.usedGB} of ${swap.totalGB} GB used">${swap.usedGB} / ${swap.totalGB} GB</span>`
+  const map = ram ? treemap(consumers, slots, ram, ui) : null
+  const free = ram ? +(ram.totalGB - ram.usedGB).toFixed(1) : 0
+  const head = ram || swap
+    ? `<div class="mhead">${ram ? `<span class="mused${ram.usedGB / ram.totalGB >= 0.85 ? ' warn' : ''}" data-tip="RAM: ${ram.usedGB} of ${ram.totalGB} GB used, ${free} GB free"><b>${ram.usedGB}</b> / ${ram.totalGB} GB used</span>` : '<span></span>'}${swap ? swapChip(swap) : ''}</div>`
     : ''
-  // Sizes line up: every row keeps room for sleep when any row has it.
-  const slot = consumers.some((c) => c.sleep)
-  const rows = consumers.map((c, i) =>
-    `<div class="item static use" data-tip="${esc(c.tip)}">${c.ch}<span class="t">${esc(c.name)}${c.where ? ` <span class="soft">${esc(c.where)}</span>` : ''}</span><span class="r"><i class="key ${i < SERIES ? `c${i}` : 'rest'}"></i>${size(c.mb)}</span>${slot ? `<span class="aslot">${c.sleep}</span>` : ''}</div>`
-  ).join('')
-  // Agents in one line: what each is doing, then, when memory is tight, sleeping the finished ones.
-  // Otherwise they cost nothing you need, and each one sleeps from its own menu. The same set the
-  // footer's Sleep all used.
+  // A tile too small for its name leaves it to a legend pill, with the size it has no room for and,
+  // for a session, its sleep button. Without RAM figures there is no treemap, and every consumer is a pill.
+  const legend = consumers.filter((c) => !map?.named.has(c.key)).map((c) => {
+    const slot = slots.get(c.key)
+    const sleep = c.pane ? action(`close:${c.pane}`, '', '', ui, { ask: false, icon: MOON, cls: 'lg-sleep', aria: `Sleep ${c.name}`, tip: 'Sleep' }) : ''
+    return `<span class="lg ${slot === undefined ? 'plain' : `c${slot}`}" data-use="${esc(c.key)}" data-tip="${esc(c.tip)}"><i class="key"></i><span class="lg-n">${esc(c.name)}</span>${map?.sized.has(c.key) ? '' : `<span class="lg-v">${size(c.mb)}</span>`}${sleep}</span>`
+  }).join('')
+  const memory = `<div class="cgroup mem"><span class="label">Memory${ui.statsLoading ? ' <span class="refreshing" aria-label="Refreshing"></span>' : ''}</span>${head}${map?.html ?? ''}${legend ? `<div class="legend">${legend}</div>` : ''}</div>`
+  // What agents are doing right now, as small crowds.
+  const doing = (['asks', 'working', 'monitoring'] as const).map((face) => {
+    const these = placedAll.filter((p) => faceOf(p.a) === face)
+    const word = { asks: 'asking', working: 'working', monitoring: 'monitoring' }[face]
+    return these.length ? `<span class="tally${face === 'asks' ? ' ask' : ''}">${avatarStack(these, all, 4)}<span><b>${these.length}</b> ${word}</span></span>` : ''
+  }).join('')
+  // Sleeping every finished session is offered only when memory is tight; otherwise they cost nothing
+  // you need, and each one sleeps from its own menu. The same set the footer's Sleep all used.
   const finished = finishedOf(placedAll)
   const n = finished.length
   const freedMb = finished.reduce((m, p) => m + (st.finished.find((f) => f.paneKey === p.a.paneKey)?.memMB ?? 0), 0)
   const tight = (snap.capacity?.verdict ?? 'ok') !== 'ok'
   const sessions = n === 1 ? 'session' : 'sessions'
   const sleepAll = tight && n > 0
-    ? action('closeall', freedMb ? `Free ${size(freedMb)}` : 'Sleep all', `Sleep ${n} ${sessions}?`, ui, true, `Sleep ${n} finished ${sessions}${freedMb ? ` to free ${size(freedMb)}` : ''}`)
+    ? action('closeall', freedMb ? `Sleep all · ${size(freedMb)}` : 'Sleep all', `Sleep ${n} ${sessions}?`, ui, { icon: MOON, cls: 'pill', tip: `Sleep ${n} finished ${sessions}${freedMb ? ` to free ${size(freedMb)}` : ''}` })
     : ''
-  const tally = (k: number, label: string, cls = '') => (k > 0 ? `<span class="tally${cls ? ` ${cls}` : ''}"><b>${k}</b> ${label}</span>` : '')
-  const counts = [
-    tally(all.filter((a) => faceOf(a) === 'asks').length, 'asking', 'ask'),
-    tally(all.filter((a) => faceOf(a) === 'working').length, 'working'),
-    tally(all.filter((a) => faceOf(a) === 'monitoring').length, 'monitoring'),
-    tally(n, 'finished')
-  ].filter(Boolean).join('')
-  // A merged, clean worktree: one line, its name cut short, the rest on hover.
+  const finishedRow = n ? `<div class="fin">${avatarStack(finished, all)}<span class="fin-n"><b>${n}</b> finished</span>${sleepAll}</div>` : ''
+  // A merged, clean worktree: a card with its PR, removed with the trash button after a Yes.
   const merged = st.merged.map((m) =>
-    `<div class="item static merged" data-tip="${esc(`${m.name}\nPR #${m.pr} merged · clean`)}"><span class="mglyph pr-merged">${PR_ICON.merged}</span>${action(`remove:${m.workspaceId}`, `Remove ${m.name}`, `Remove ${m.name}?`, ui)}<span class="r">#${m.pr}</span></div>`
+    `<div class="wt" data-tip="${esc(`${m.name}\nPR #${m.pr} merged · clean`)}"><span class="prb pr-merged">${PR_ICON.merged}</span><span class="wt-main"><span class="wt-name">${esc(m.name)}</span><span class="wt-sub">#${m.pr} · merged · clean</span></span>${action(`remove:${m.workspaceId}`, '', 'Remove?', ui, { icon: TRASH, cls: 'ibtn danger', aria: `Remove ${m.name}`, tip: 'Remove worktree' })}</div>`
   ).join('')
   return `<div class="copen">
-    <div class="cgroup"><span class="label">Memory${ui.statsLoading ? ' <span class="refreshing" aria-label="Refreshing"></span>' : ''}</span>
-      ${ramMeter || swapMeter ? `<div class="meters">${ramMeter}${swapMeter}</div>` : ''}
-      ${rows ? `<div class="uses">${rows}</div>` : ''}
-    </div>
-    ${counts || merged ? `<div class="cgroup">${counts ? `<div class="tallies"><span class="label">Agents</span>${counts}${sleepAll ? `<span class="act-sep">·</span>${sleepAll}` : ''}</div>` : ''}${merged}</div>` : ''}
+    ${memory}
+    ${doing ? `<div class="cgroup"><span class="label">Agents</span><div class="tallies">${doing}</div></div>` : ''}
+    ${finishedRow || merged ? `<div class="cgroup"><span class="label">Clean up</span>${finishedRow}${merged}</div>` : ''}
   </div><div class="hair"></div>`
 }
 

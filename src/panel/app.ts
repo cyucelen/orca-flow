@@ -254,6 +254,16 @@ document.addEventListener('pointerover', (e) => {
   if (target) tipTimer = setTimeout(() => showTip(target), 350)
 })
 document.addEventListener('pointerleave', hideTip)
+
+// A memory tile and its legend pill light up together.
+let lit = ''
+document.addEventListener('pointerover', (e) => {
+  const key = (e.target as Element).closest<HTMLElement>('[data-use]')?.dataset.use ?? ''
+  if (key === lit && (!key || document.querySelector('.lit'))) return
+  for (const el of document.querySelectorAll('.lit')) el.classList.remove('lit')
+  lit = key
+  if (key) for (const el of document.querySelectorAll(`[data-use="${CSS.escape(key)}"]`)) el.classList.add('lit')
+})
 document.addEventListener('focusin', (e) => {
   const target = (e.target as Element).closest<HTMLElement>('[data-tip]')
   target ? showTip(target) : hideTip()
