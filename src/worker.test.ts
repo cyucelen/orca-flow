@@ -904,6 +904,68 @@ test('remove anyway waives uncommitted files only, after the person confirmed', 
   assert.equal(calls.length, 0)
 })
 
+/** A real, empty git checkout with no remote: no PR can be merged, so only `force` removes it. */
+async function scratchCheckout(dirty: boolean): Promise<string> {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { execFileSync } = await import('node:child_process')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'rm-'))
+  execFileSync('git', ['init', '-q', dir], { encoding: 'utf8' })
+  if (dirty) writeFileSync(join(dir, 'notes.md'), 'draft')
+  return dir
+}
+
+/** Records the commands removal runs; `terminal list` shows one terminal per pane. */
+function removalRun(panes: string[]) {
+  const calls: string[] = []
+  const run = async (args: string[]) => {
+    calls.push(args.slice(0, 2).join(' ') + (args.includes('--terminal') ? ` ${args[args.indexOf('--terminal') + 1]}` : '') + (args.includes('--force') ? ' --force' : ''))
+    if (args[0] === 'terminal' && args[1] === 'list') return { terminals: panes.map((p) => ({ tabId: p.split(':')[0], leafId: p.split(':')[1], handle: `term-${p}` })) }
+    return {}
+  }
+  return { calls, run }
+}
+
+test('an idle, asking or blocked agent does not stop a confirmed removal; its terminal closes first', async () => {
+  const { removeWorktree } = await import('./cockpit.ts')
+  const path = await scratchCheckout(false)
+  const asking = { summary: { title: 'Release', glance: 'Ship it?', goal: '', since: '', needs: { type: 'decision', ask: 'Ship it?', options: [] }, effort: 'quick', priority: 'P1', role: 'lead', updatedAt: 1 } }
+  for (const [label, a] of [
+    ['idle', { paneKey: 't:1', state: 'done' }],
+    ['asking', { paneKey: 't:1', state: 'done', ...asking }],
+    ['waiting', { paneKey: 't:1', state: 'waiting' }],
+    ['blocked', { paneKey: 't:1', state: 'blocked' }],
+    ['monitoring', { paneKey: 't:1', state: 'done', workingMode: 'monitoring' }]
+  ] as const) {
+    const [row] = main.fromPs([{ identity: { key: 'rel' }, displayName: 'prod-release-prep', repo: 'web-app', path, branch: 'refs/heads/me/rel', agents: [a as never] }])
+    const { calls, run } = removalRun(['t:1'])
+    assert.deepEqual(await removeWorktree(run, row, true), { removed: true }, label)
+    assert.deepEqual(calls, ['terminal list', 'terminal close term-t:1', 'worktree rm --force'], `${label}: closed, then removed`)
+  }
+})
+
+test('a working agent stops removal, force or not, before any command runs', async () => {
+  const { removeWorktree } = await import('./cockpit.ts')
+  const path = await scratchCheckout(false)
+  const [row] = main.fromPs([{ identity: { key: 'w' }, displayName: 'w', repo: 'shop', path, branch: 'refs/heads/me/w', agents: [{ paneKey: 't:1', state: 'done' }, { paneKey: 't:2', state: 'working' }] }])
+  const { calls, run } = removalRun(['t:1', 't:2'])
+  assert.deepEqual(await removeWorktree(run, row, true), { removed: false, reason: 'an agent is working' })
+  assert.deepEqual(calls, [])
+})
+
+test('no merged PR is refused with the uncommitted files, and removed when the person waives it', async () => {
+  const { removeWorktree } = await import('./cockpit.ts')
+  const path = await scratchCheckout(true)
+  const [row] = main.fromPs([{ identity: { key: 'n' }, displayName: 'n', repo: 'shop', path, branch: 'refs/heads/me/n', agents: [{ paneKey: 't:1', state: 'done' }] }])
+  const refused = removalRun(['t:1'])
+  assert.deepEqual(await removeWorktree(refused.run, row), { removed: false, reason: 'PR not merged', dirty: ['notes.md'] })
+  assert.deepEqual(refused.calls, [], 'nothing closed or removed')
+  const forced = removalRun(['t:1'])
+  assert.deepEqual(await removeWorktree(forced.run, row, true), { removed: true })
+  assert.deepEqual(forced.calls, ['terminal list', 'terminal close term-t:1', 'worktree rm --force'])
+})
+
 test('update check: release tags, version order, the newest above the running one', async () => {
   const { compareVersions, newerVersion, versionsFromTags } = await import('./update.ts')
   const tags = ['abc\trefs/tags/v0.2.9', 'def\trefs/tags/v0.2.10', 'ghi\trefs/tags/v0.2.11-rc1', 'jkl\trefs/tags/latest', 'mno\trefs/tags/v0.3.0'].join('\n')

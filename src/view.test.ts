@@ -868,11 +868,12 @@ test('a lead whose PR merged shows remove and finishes, even if it never reporte
   assert.equal(inline(rows([{ ...lead, dispatch: 'settled' }], { pr: pr('open') })), true, 'and with any PR')
 })
 
-test("removing a merged lead's worktree gets past the active-agent guard to the checkout checks", async () => {
+test("removing a lead's worktree: only a lead mid-turn stops it, the rest is up to the checkout checks", async () => {
   const lead = agent('p-ob', 'Draft shifts', 'done', { dispatch: 'open', summary: summary({ role: 'lead' }) })
-  const at = (state: string) => row('ob', 'mono', [lead], { path: '/nonexistent/orca-flow-test', pr: { number: 6239, url: 'u', state, checks: null } })
-  assert.deepEqual(await removeWorktree(async () => ({}), at('open')), { removed: false, reason: 'an agent is still active' }, 'open PR: the lead holds it')
+  const at = (state: string, l = lead) => row('ob', 'mono', [l], { path: '/nonexistent/orca-flow-test', pr: { number: 6239, url: 'u', state, checks: null } })
+  assert.deepEqual(await removeWorktree(async () => ({}), at('open')), { removed: false, reason: 'not a git checkout' }, 'open PR: the person confirmed, on to the checkout checks')
   assert.deepEqual(await removeWorktree(async () => ({}), at('merged')), { removed: false, reason: 'not a git checkout' }, 'merged: on to the checkout checks')
+  assert.deepEqual(await removeWorktree(async () => ({}), at('open', { ...lead, state: 'working' })), { removed: false, reason: 'an agent is working' })
 })
 
 test('a redraw between pointerdown and pointerup waits until the click has run', () => {

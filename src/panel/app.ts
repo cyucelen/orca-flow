@@ -485,26 +485,33 @@ function agentMenu(row: WorkspaceRow, a: AgentInfo): MenuItem[] {
 
 /**
  * Removes a worktree after a confirm; the menu and a finished lead's remove button both use it. When
- * only uncommitted files stand in the way, asks once more, naming them, and removes anyway on yes.
+ * only a missing PR or uncommitted files stand in the way, asks once more, naming what is lost, and
+ * removes anyway on yes.
  */
 async function removeWorktree(row: WorkspaceRow, target: string): Promise<void> {
-  if (!(await confirmAction('remove-worktree', `Remove ${row.name}?`, "The checkout is deleted once it's clean and its PR is merged. The branch is kept.", 'Remove'))) return
+  if (!(await confirmAction('remove-worktree', `Remove ${row.name}?`, 'Its sessions end and the checkout is deleted. The branch is kept.', 'Remove'))) return
   const remove = (force: boolean) => orca.plugin.request('sidebar.removeWorktree', { workspaceId: row.id, force }, { timeoutMs: 200_000 })
-  let dirty: string[] = []
+  // Set by the first try when what stands in the way can be waived.
+  let waivable = null as { reason: string; dirty: string[] } | null
   await inline(target, 'Removing…', 'Removed', async () => {
     const r = await remove(false)
-    if (!r.removed && r.reason === 'uncommitted changes' && r.dirty?.length) {
-      dirty = r.dirty
+    if (!r.removed && (r.reason === 'PR not merged' || (r.reason === 'uncommitted changes' && r.dirty?.length))) {
+      waivable = { reason: r.reason, dirty: r.dirty ?? [] }
       return { ok: true }
     }
     return r
-  }, () => dirty.length === 0)
-  if (!dirty.length) return
+  }, () => waivable === null)
+  if (!waivable) return
   ui.status.delete(target)
   draw()
+  const { reason, dirty } = waivable
   const files = dirty.length <= 3 ? dirty.join(', ') : `${dirty.slice(0, 3).join(', ')} and ${dirty.length - 3} more`
+  const lost = dirty.length ? ` Uncommitted changes will be lost: ${files}.` : ''
+  const body = reason === 'PR not merged'
+    ? `${row.name} has no merged PR. The branch and its commits are kept.${lost}`
+    : `Uncommitted changes will be lost: ${files}. The branch is kept.`
   // Losing work is never remembered: this one always asks.
-  if (await confirmAction('remove-dirty', `Remove ${row.name} anyway?`, `Uncommitted changes will be lost: ${files}. The branch is kept.`, 'Remove anyway', 'trash', 'danger', false))
+  if (await confirmAction('remove-anyway', `Remove ${row.name} anyway?`, body, 'Remove anyway', 'trash', 'danger', false))
     await inline(target, 'Removing…', 'Removed', () => remove(true))
 }
 

@@ -64,7 +64,10 @@ export function swapUsage(): CockpitStats['swap'] {
   }
 }
 
-/** A worktree is offered for removal only when its checkout is clean and its PR merged on GitHub. */
+/**
+ * A worktree is offered for removal only when its checkout is clean and its PR merged on GitHub.
+ * Both refusals carry the uncommitted files, so the person can waive them in one confirm.
+ */
 export async function checkRemovable(row: WorkspaceRow): Promise<{ ok: boolean; pr?: number; reason?: string; dirty?: string[] }> {
   if (row.main || !row.path || !row.branch) return { ok: false, reason: 'main checkout' }
   const status = await sh('git', ['status', '--porcelain'], row.path)
@@ -73,11 +76,13 @@ export async function checkRemovable(row: WorkspaceRow): Promise<{ ok: boolean; 
   // Squash merges never make the branch an ancestor of main, so ask GitHub instead of git.
   const pr = await sh('gh', ['pr', 'list', '--head', row.branch, '--state', 'merged', '--json', 'number', '--limit', '1'], row.path)
   const number = pr.ok ? (JSON.parse(pr.out || '[]')[0]?.number as number | undefined) : undefined
-  if (!number) return { ok: false, reason: 'PR not merged' }
-  // Uncommitted files are the one thing the person may waive (Remove anyway).
+  if (!number) return { ok: false, reason: 'PR not merged', ...(dirty.length ? { dirty } : {}) }
   if (dirty.length) return { ok: false, pr: number, reason: 'uncommitted changes', dirty }
   return { ok: true, pr: number }
 }
+
+/** What the person may waive (Remove anyway): the branch and its commits are kept either way. */
+const WAIVABLE = new Set(['PR not merged', 'uncommitted changes'])
 
 /** Merge checks are slow (network); remember them for ten minutes. */
 const mergedCache = new Map<string, { at: number; result: Awaited<ReturnType<typeof checkRemovable>> }>()
@@ -133,19 +138,23 @@ export async function closeSessions(run: Run, panes: string[]): Promise<{ closed
   return { closed }
 }
 
-/** Re-checks right before removing: the worktree may have changed since the cockpit opened. */
+/**
+ * Re-checks right before removing: the worktree may have changed since the cockpit opened. Only an
+ * agent mid-turn (Orca's working state) stops it; an idle, asking or blocked one is closed first.
+ */
 export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, force = false): Promise<{ removed: boolean; reason?: string; dirty?: string[] }> {
   if (!row) return { removed: false, reason: 'workspace not found' }
-  if (!row.agents.every((a) => finished(a, row.pr))) return { removed: false, reason: 'an agent is still active' }
+  if (row.agents.some((a) => a.state === 'working')) return { removed: false, reason: 'an agent is working' }
   const check = await checkRemovable(row)
-  // `force` waives uncommitted files only, after the person confirmed losing them; a PR that is
-  // not merged, or anything else, still keeps the worktree.
-  const waived = force && check.dirty?.length && check.reason === 'uncommitted changes'
+  // `force` waives a PR that is not merged and uncommitted files, after the person confirmed; a
+  // main checkout or anything else still keeps the worktree.
+  const waived = !check.ok && force && WAIVABLE.has(check.reason ?? '')
   if (!check.ok && !waived) return { removed: false, reason: check.reason, ...(check.dirty ? { dirty: check.dirty } : {}) }
   mergedCache.delete(row.id)
-  // Removal stops sessions, runs the repo's orca.yaml archive hook (which can stop the worktree's
-  // services and clean up what setup created) and deletes the checkout. A failing hook blocks
-  // the removal. It all takes well over the usual timeout.
+  await closeSessions(run, row.agents.map((a) => a.paneKey))
+  // Removal runs the repo's orca.yaml archive hook (which can stop the worktree's services and
+  // clean up what setup created) and deletes the checkout; the branch is kept. A failing hook
+  // blocks the removal. It all takes well over the usual timeout.
   return run(['worktree', 'rm', '--worktree', row.id, '--run-hooks', ...(waived ? ['--force'] : [])], { timeoutMs: 180_000 }).then(
     () => ({ removed: true }),
     async (e: Error) => {
