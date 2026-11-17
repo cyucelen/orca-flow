@@ -196,6 +196,18 @@ test('remove refuses what it cannot verify, before running any command', async (
   assert.deepEqual(await removeWorktree(async () => ({}), undefined), { removed: false, reason: 'workspace not found' })
 })
 
+test('a row carries the PR Orca linked to its worktree: number, state, title, checks; none without one', () => {
+  const linkedPR = { number: 6080, state: 'merged', title: 'feat(documents): add private PDF storage pilot', url: 'https://github.com/o/mono/pull/6080', checksStatus: 'success', checksSummary: { state: 'success' } }
+  const [withPr, without, noUrl] = main.fromPs([
+    { identity: { key: 'a' }, displayName: 'a', repo: 'mono', linkedPR, agents: [{ paneKey: 'p', state: 'working' }] },
+    { identity: { key: 'b' }, displayName: 'b', repo: 'mono', linkedPR: null, agents: [] },
+    { identity: { key: 'c' }, displayName: 'c', repo: 'mono', linkedPR: { number: 1, state: 'open' }, agents: [] }
+  ])
+  assert.deepEqual(withPr.pr, { number: 6080, url: 'https://github.com/o/mono/pull/6080', state: 'merged', title: 'feat(documents): add private PDF storage pilot', checks: 'success' })
+  assert.equal(without.pr, null)
+  assert.equal(noUrl.pr, null, 'no link to open: no PR')
+})
+
 test('Orca\'s monitoring mode is carried through', () => {
   const [row] = main.fromPs([{ identity: { key: 'v' }, displayName: 'main', repo: 'shop', agents: [{ paneKey: 'p', state: 'working', workingMode: 'monitoring' }] }])
   assert.equal(row.agents[0].workingMode, 'monitoring')

@@ -1,9 +1,10 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { askingRows, askKindOf, character, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchChip, branchColor, branchName, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
+import { capGlyph } from './lines.ts'
 import { removeWorktree } from './cockpit.ts'
 
 const noMatch = (text: string, re: RegExp, message?: string) => assert.ok(!re.test(text), message ?? `unexpected ${re}`)
@@ -72,7 +73,9 @@ test('coordinators: a single-project coordinator is its project; multi-repo grou
 
 test('characters carry state; no status dots', () => {
   const { main } = render(snap, emptyUi())
-  assert.match(main, /class="spin"/, 'working characters carry a spinner badge')
+  assert.match(main, /class="beam b-working"/, 'working characters in the tree carry a shimmer on their ring')
+  assert.match(character('#fff', 'worker', 'working', 20), /class="spin"/, 'a character on its own still spins')
+  noMatch(character('#fff', 'worker', 'working', 20, true, 'question', false), /class="spin"/, 'unless the tree\'s ring shows it')
   noMatch(main, /class="dot/, 'no status dots')
   assert.equal(faceOf(agent('x', 'x', 'blocked')), 'asks')
   assert.equal(faceOf(agent('x', 'x', 'done', { summary: summary() })), 'done')
@@ -126,7 +129,7 @@ test('once you answer and the agent works again, it leaves Up next', () => {
   const s4: Snapshot = { ...snap, rows: [row('dup', 'shop', [answered])] }
   const { main } = render(s4, emptyUi())
   noMatch(main, /Up next/)
-  assert.match(main, /class="spin"/, 'it shows as working in the tree')
+  assert.match(main, /data-node="working"[\s\S]*?class="beam b-working"/, 'it shows as working in the tree')
 })
 
 test('monitoring comes from Orca: its working mode, even while its state says working', () => {
@@ -136,7 +139,7 @@ test('monitoring comes from Orca: its working mode, even while its state says wo
   assert.equal(faceOf(done), 'done', 'our own summary does not override Orca')
   const s5: Snapshot = { ...snap, rows: [row('m', 'shop', [watching])] }
   const { main } = render(s5, emptyUi())
-  assert.match(main, /class="spin slow"/)
+  assert.match(main, /class="node n-monitoring"[\s\S]*?class="beam b-monitoring"/)
   noMatch(main, /Up next/)
 })
 
@@ -526,6 +529,177 @@ test('PR indicators match Orca: checks color an open PR, the state colors the re
   assert.match(render(withPr, emptyUi()).main, /Checkout<\/span><span class="r">[\s\S]*?class="pr pr-pending"/, 'the row shows its worktree\'s PR')
 })
 
+test('the PR shows as its number in the state\'s color; the tooltip adds the state and the title', () => {
+  const chip = prBadge({ number: 6080, url: 'https://github.com/o/r/pull/6080', state: 'open', title: 'Private PDF storage', checks: 'pending' })
+  assert.equal(chip, '<span class="pr pr-pending" role="link" data-pr="https://github.com/o/r/pull/6080" data-tip="PR #6080 checks pending\nPrivate PDF storage" aria-label="PR #6080 checks pending">#6080</span>')
+  assert.match(prBadge({ number: 7, url: 'u', state: 'merged', title: 'a <b> & "c"', checks: null }), /data-tip="PR #7 merged\na &lt;b&gt; &amp; &quot;c&quot;"/, 'the title is escaped')
+  assert.match(prBadge({ number: 7, url: 'u', state: 'draft', checks: null }), /data-tip="PR #7 draft"/, 'no title, no second line')
+})
+
+test('a branch shows without its user/ prefix; its color is stable per repo and branch', () => {
+  assert.equal(branchName('berkantay/bou-4186-clock-terminal'), 'bou-4186-clock-terminal')
+  assert.equal(branchName('pr-on-rows'), 'pr-on-rows', 'no prefix: unchanged')
+  assert.equal(branchName('team/feat/x'), 'feat/x', 'only the first segment goes')
+  const c = branchColor('mono', 'berkantay/bou-4186-clock-terminal')
+  assert.ok(Number.isInteger(c) && c >= 0 && c < BRANCH_COLORS)
+  assert.equal(branchColor('mono', 'berkantay/bou-4186-clock-terminal'), c, 'the same branch, the same color, every time')
+  const spread = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].map((b) => branchColor('mono', `feat-${b}`)))
+  assert.equal(spread.size, BRANCH_COLORS, 'branches spread over the whole palette')
+  assert.equal(branchChip({ repo: 'mono', branch: null, pr: null }), '', 'no branch: nothing')
+  const chip = branchChip({ repo: 'mono', branch: 'berkantay/bou-4186-clock-terminal', pr: null })
+  assert.match(chip, /^<span class="br"><span class="br-b" data-tip="berkantay\/bou-4186-clock-terminal · mono"><svg class="gh" viewBox="0 0 16 16"[\s\S]*<\/svg><span class="br-n">bou-4186-clock-terminal<\/span><\/span><\/span>$/, 'the GitHub mark, the short branch, the whole one on hover')
+  noMatch(chip, /class="pr /, 'no PR: no number')
+  assert.match(branchChip({ repo: 'mono', branch: 'dev', pr: null }), /^<span class="br quiet">/, 'a long-lived branch shows quieter')
+  noMatch(chip, /style=|data-branch|--br/, 'the mark and the branch are never painted in the branch color')
+  assert.equal(laneColor({ repo: 'mono', branch: 'berkantay/bou-4186-clock-terminal' }), c, 'its tree lines wear its color')
+  assert.equal(laneColor({ repo: 'mono', branch: 'dev' }), null, 'a long-lived branch draws neutral lines')
+  assert.equal(laneColor({ repo: 'mono', branch: null }), null, 'no branch: neutral lines')
+  assert.match(branchChip({ repo: 'shop', branch: 'me/x', pr: { number: 9, url: 'u', state: 'open', checks: 'success' } }), /<span class="br-n">x<\/span><\/span><span class="pr pr-ok" role="link" data-pr="u"[^>]*>#9<\/span><\/span>$/, 'with a PR, its number follows the branch')
+})
+
+test('each chat shows its worktree\'s branch, colored per branch, with the PR number when there is one', () => {
+  const pr = (number: number, state: string, checks: 'success' | 'pending' | null = null) => ({ number, url: `https://github.com/o/r/pull/${number}`, state, title: `PR ${number}`, checks })
+  const lead = agent('p-lead', 'Clock terminal', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
+  const same = agent('p-same', 'Write tests', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const own = agent('p-own', 'Split migration', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const twin = agent('p-twin', 'Second chat on the clock branch', 'working', { coordinator: 'alpha' })
+  const bare = agent('p-bare', 'Spike', 'working', { coordinator: 'alpha' })
+  const gone = agent('p-gone', 'Document cleanup', 'done', { coordinator: 'alpha', dispatch: 'settled', summary: summary({ role: 'lead' }) })
+  const s: Snapshot = { ...snap, rows: [
+    row('clock', 'shop', [lead, same], { branch: 'berkantay/clock', pr: pr(6241, 'open', 'success'), createdAt: 1, lastActivityAt: 1 }),
+    row('split', 'shop', [own], { branch: 'berkantay/split', pr: pr(6250, 'draft'), createdAt: 2 }),
+    row('clock2', 'shop', [twin], { branch: 'berkantay/clock', createdAt: 3 }),
+    row('spike', 'shop', [bare], { branch: null, createdAt: 4, lastActivityAt: 1 }),
+    row('cleanup', 'shop', [gone], { branch: 'cleanup', pr: pr(6113, 'merged'), createdAt: 5, lastActivityAt: 1 })
+  ] }
+  const { main } = render(s, { ...emptyUi(), now: 3_600_001 })
+  const line = (pane: string) => new RegExp(`<(button|div) class="item[^"]*"[^>]*data-menu="agent:${pane}"[\\s\\S]*?</\\1>`).exec(main)![0]
+  const color = (pane: string) => /^<[^>]*data-branch="(\d)"/.exec(line(pane))?.[1] ?? null
+  const branch = (pane: string) => /class="br-n">([^<]*)</.exec(line(pane))?.[1] ?? null
+  const prs = (pane: string) => [...line(pane).matchAll(/class="pr [^"]*"[^>]*>#(\d+)</g)].map((m) => Number(m[1]))
+  const clock = String(branchColor('shop', 'berkantay/clock'))
+  assert.equal(branch('p-lead'), 'clock', 'the lead shows its branch, user/ prefix stripped')
+  assert.deepEqual(prs('p-lead'), [6241], 'and its PR\'s number')
+  assert.equal(color('p-lead'), clock, 'in its branch\'s color')
+  assert.match(line('p-lead'), /Clock terminal<\/span><span class="r"><span class="br">[\s\S]*?#6241<\/span><\/span><span class="age">1h<\/span><\/span><kbd class="num"[^>]*>⌥2<\/kbd>/, 'branch, then age; the shortcut badge stays last')
+  assert.equal(branch('p-same'), null, 'a worker in its lead\'s worktree does not repeat the branch')
+  assert.deepEqual(prs('p-same'), [])
+  assert.equal(color('p-same'), clock, 'but wears its color, so it groups with its lead')
+  assert.match(line('p-same'), /^<button class="item indent"/)
+  assert.equal(branch('p-own'), 'split', 'a worker in a worktree of its own shows that worktree\'s branch')
+  assert.deepEqual(prs('p-own'), [6250])
+  assert.equal(color('p-twin'), clock, 'another worktree on the same branch: the same color')
+  assert.equal(color('p-own'), String(branchColor('shop', 'berkantay/split')))
+  assert.deepEqual(prs('p-twin'), [], 'no PR: no number')
+  assert.equal(branch('p-bare'), null, 'no branch: nothing')
+  assert.equal(color('p-bare'), null)
+  noMatch(line('p-bare'), /class="(br|pr)[ "]|data-branch|class="gh"/)
+  assert.deepEqual(prs('p-gone'), [6113], 'a finished lead shows its merged PR')
+  assert.match(line('p-gone'), /class="pr pr-merged"[\s\S]*<button class="act" data-remove="cleanup"[^>]*>remove<\/button><kbd class="num"/, 'next to its remove button and shortcut')
+  const current: Snapshot = { ...s, rows: s.rows.map((r) => (r.id === 'clock' ? { ...r, active: true } : r)) }
+  assert.match(render(current, emptyUi()).main, /class="item current"[^>]*data-menu="agent:p-lead" aria-current="true" data-branch="\d"[\s\S]*?#6241</, 'the current row keeps its border and its branch')
+})
+
+test('a lead and its workers form one lane of tree lines, in the lead\'s branch color', () => {
+  const lead = agent('p-lead', 'Clock terminal', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
+  const same = agent('p-same', 'Write tests', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const own = agent('p-own', 'Split migration', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const dev = agent('p-dev', 'Presence verification', 'working', { coordinator: 'alpha' })
+  const bare = agent('p-bare', 'Spike', 'working', { coordinator: 'alpha' })
+  const s: Snapshot = { ...snap, rows: [
+    row('clock', 'shop', [lead, same], { branch: 'berkantay/clock', createdAt: 1 }),
+    row('split', 'shop', [own], { branch: 'berkantay/split', createdAt: 2 }),
+    row('dev', 'shop', [dev], { branch: 'dev', main: true, createdAt: 3 }),
+    row('spike', 'shop', [bare], { branch: null, createdAt: 4 })
+  ] }
+  const { main } = render(s, emptyUi())
+  const group = /<section class="coordinator"><div class="item coord"[^>]*data-menu="coordinator:alpha"[\s\S]*?<div class="group">([\s\S]*?)<\/div><\/section>/.exec(main)![1]
+  const lanes = [...group.matchAll(/<div class="lane"( data-branch="(\d)")?>([\s\S]*?)<\/div>(?=<div class="lane"|$)/g)].map((m) => ({ color: m[2] ?? null, panes: [...m[3].matchAll(/data-menu="agent:([^"]+)"/g)].map((x) => x[1]) }))
+  assert.deepEqual(lanes, [
+    { color: String(branchColor('shop', 'berkantay/clock')), panes: ['p-lead', 'p-same', 'p-own'] },
+    { color: null, panes: ['p-dev'] },
+    { color: null, panes: ['p-bare'] }
+  ], 'one lane per lead with its workers, colored by the lead\'s branch; dev and no branch stay neutral')
+  assert.equal([...group.matchAll(/<i class="tl" aria-hidden="true"><\/i>/g)].length, 5, 'every row carries its line')
+  const folded = render(s, { ...emptyUi(), folded: new Set(['alpha']) }).main
+  noMatch(/<section class="coordinator"><div class="item coord"[^>]*data-menu="coordinator:alpha"[\s\S]*?<\/section>/.exec(folded)![0], /class="lane"/, 'a folded team draws no lines')
+})
+
+test('a chat\'s node says its state: asking, working, done while in flight, finished', () => {
+  const at = (a: AgentInfo, rows: WorkspaceRow[]) => nodeOf(a, rows.find((r) => r.agents.includes(a))!, rows.flatMap((r) => r.agents))
+  const ask = agent('p-a', 'Ask', 'waiting')
+  const work = agent('p-w', 'Work', 'working')
+  const watch = agent('p-m', 'Watch', 'working', { workingMode: 'monitoring' })
+  const lead = agent('p-l', 'Lead', 'done', { summary: summary({ role: 'lead' }) })
+  const worker = agent('p-k', 'Worker', 'working', { leadPane: 'p-l' })
+  const solo = agent('p-s', 'Solo', 'done')
+  const rows = [row('a', 'shop', [ask]), row('w', 'shop', [work, watch]), row('l', 'shop', [lead, worker]), row('s', 'shop', [solo])]
+  assert.equal(at(ask, rows), 'asking')
+  assert.equal(at(work, rows), 'working')
+  assert.equal(at(watch, rows), 'monitoring')
+  assert.equal(at(lead, rows), 'done', 'a lead whose worker still works is done, not finished')
+  assert.equal(at(solo, rows), 'finished')
+  const openPr = [row('s', 'shop', [solo], { pr: { number: 1, url: 'u', state: 'open', checks: null } })]
+  assert.equal(at(solo, openPr), 'done', 'the owner of an open PR is still in flight')
+})
+
+test('Graph: each chat is a ring with one connector; the lead\'s PR is a bead on its ring', () => {
+  const lead = agent('p-lead', 'Clock terminal', 'done', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
+  const work = agent('p-a-work', 'Kiosk', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const asks = agent('p-b-ask', 'Schema', 'waiting', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const fin = agent('p-c-fin', 'API', 'done', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const s: Snapshot = { ...snap, rows: [row('clock', 'shop', [lead, work, asks, fin], { branch: 'me/clock', pr: { number: 6241, url: 'u', state: 'merged', checks: 'success' } })] }
+  const m = render(s, emptyUi()).main, graph = m.slice(m.indexOf('class="tree"'))
+  const rowOf = (html: string, pane: string) => new RegExp(`<(button|div) class="item[^"]*"[^>]*data-menu="agent:${pane}"[\\s\\S]*?</\\1>`).exec(html)![0]
+  assert.match(rowOf(graph, 'p-lead'), /data-node="done"[\s\S]*<svg class="tl-c"[^>]*><path class="fork"[^>]*\/><circle class="node n-done"/, 'a connector into a ring around the character')
+  assert.match(rowOf(graph, 'p-a-work'), /class="node n-working"/)
+  assert.match(rowOf(graph, 'p-b-ask'), /class="node n-asking k-question"/, 'asking wears its ask\'s color')
+  for (const pane of ['p-lead', 'p-a-work', 'p-b-ask', 'p-c-fin']) assert.equal([...rowOf(graph, pane).matchAll(/<path class="fork/g)].length, 1, `${pane}: exactly one connector`)
+  noMatch(graph, /merge"/, 'no second, merging connector')
+  assert.match(rowOf(graph, 'p-c-fin'), /data-node="finished"/, 'a finished one dims its one connector (panel.css)')
+  assert.match(rowOf(graph, 'p-lead'), /<circle class="node n-done"[^>]*\/><g class="tl-cap" transform="translate\([\d.]+ [\d.]+\)"><circle class="cap c-merged"/, 'the lead\'s PR is a bead on its ring')
+  assert.equal([...graph.matchAll(/class="tl-cap"/g)].length, 1, 'once, nothing trails past the last child')
+  assert.match(graph, /<svg class="tl-h"[^>]*><circle class="node n-sleeping"/, 'a sleeping coordinator\'s ring is dashed')
+  assert.equal([...graph.matchAll(/<i class="tl" aria-hidden="true"><\/i>/g)].length, 4, 'every row carries its runs')
+})
+
+test('a working ring carries a travelling shimmer instead of the character\'s spinning badge', () => {
+  const lead = agent('p-lead', 'Clock terminal', 'working', { coordinator: 'alpha' })
+  const watch = agent('p-watch', 'Deploy watch', 'working', { coordinator: 'alpha', leadPane: 'p-lead', workingMode: 'monitoring' })
+  const done = agent('p-done', 'Docs', 'done', { coordinator: 'alpha', leadPane: 'p-lead' })
+  const s: Snapshot = { ...snap, rows: [row('clock', 'shop', [lead, watch, done], { branch: 'me/clock' })] }
+  const m = render(s, emptyUi()).main, graph = m.slice(m.indexOf('class="tree"'))
+  const rowOf = (html: string, pane: string) => new RegExp(`<(button|div) class="item[^"]*"[^>]*data-menu="agent:${pane}"[\\s\\S]*?</\\1>`).exec(html)![0]
+  assert.match(rowOf(graph, 'p-lead'), /<i class="beam b-working" aria-hidden="true"><\/i>/)
+  assert.match(rowOf(graph, 'p-watch'), /class="node n-monitoring"[\s\S]*<i class="beam b-monitoring"/, 'monitoring: its own slower beam on a dashed ring')
+  noMatch(rowOf(graph, 'p-done'), /class="beam/, 'a done chat\'s ring is still')
+  for (const pane of ['p-lead', 'p-watch']) noMatch(rowOf(graph, pane), /class="spin/, `${pane}: no spinning badge beside the shimmer`)
+  assert.match(rowOf(graph, 'p-done'), /fill="#5fbf8a"/, 'the done badge stays')
+  assert.match(rowOf(graph, 'p-lead'), /viewBox="-1.6 -3.2 24.8 24.8"/, 'the character keeps its frame, so it does not grow')
+})
+
+test('the PR cap: a ring in the checks\' color while open, a dot once merged, a cross when failing', () => {
+  const pr = (state: string, checks: string | null = null) => capGlyph({ state, checks })
+  assert.equal(capGlyph(null), null)
+  assert.equal(pr('open', 'success'), 'open')
+  assert.equal(pr('open'), 'open')
+  assert.equal(pr('open', 'pending'), 'pending')
+  assert.equal(pr('open', 'failure'), 'failing')
+  assert.equal(pr('merged', 'failure'), 'merged')
+  assert.equal(pr('closed'), 'closed')
+  assert.equal(pr('draft'), 'draft')
+})
+
+test('the focused row wears a slim bar on its left edge, not a box', () => {
+  const lead = agent('p-lead', 'Clock terminal', 'working', { coordinator: 'alpha' })
+  const s: Snapshot = { ...snap, rows: [row('clock', 'shop', [lead], { branch: 'me/clock', active: true }), row('dev', 'shop', [agent('p-dev', 'Dev', 'working', { coordinator: 'alpha' })], { branch: 'dev' })],
+    coordinators: [{ ...snap.coordinators[0], active: true, session: agent('p-c', 'alpha', 'done') }, snap.coordinators[1]] }
+  const main = render({ ...s, focusedPanes: ['p-lead', 'p-c'] }, emptyUi()).main
+  assert.match(main, /class="item current"[^>]*data-menu="agent:p-lead"[^>]*>(?:<i class="tl"[^>]*><\/i>)?<svg class="tl-c"[\s\S]*?<\/svg>(?:<i class="beam[^"]*"[^>]*><\/i>)?<i class="fb" aria-hidden="true"><\/i>/)
+  assert.match(main, /<div class="item coord current" data-menu="coordinator:alpha" aria-current="true"><svg class="tl-h"[\s\S]*?<\/svg><i class="fb" aria-hidden="true"><\/i>/, 'a coordinator too')
+  assert.equal([...main.matchAll(/class="fb"/g)].length, 2, 'only the focused rows')
+})
+
 test('a lead whose worker is still working stays in the tree as available, with the worker under it', () => {
   const lead = agent('p-lead', 'Onboarding', 'done', { coordinator: 'alpha' })
   const reviewer = agent('p-rev', 'Review PR', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
@@ -544,7 +718,7 @@ test("a worker nested under its lead shows no project, PR or age; the lead keeps
   const s: Snapshot = { ...snap, rows: [row('bugs', 'orca-plugin', [lead, worker], { pr: { number: 42, url: 'u', state: 'open', checks: 'success' }, lastActivityAt: 1 })] }
   const { main } = render(s, { ...emptyUi(), now: 3_600_001 })
   const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span>(?:<kbd class="num"[^>]*>⌥\\d</kbd>)?</button>`).exec(main)![1]
-  assert.match(right('p-lead'), /<span class="soft">orca-plugin<\/span><span class="pr pr-ok"[\s\S]*<span>1h<\/span>$/, 'the lead row keeps project, PR and age')
+  assert.match(right('p-lead'), /<span class="soft">orca-plugin<\/span><span class="br">[\s\S]*class="pr pr-ok"[\s\S]*<span class="age">1h<\/span>$/, 'the lead row keeps project, PR and age')
   assert.equal(right('p-w'), '', 'the nested worker row has none of them')
 })
 

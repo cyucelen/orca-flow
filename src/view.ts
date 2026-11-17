@@ -6,6 +6,7 @@
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
 import { asksYou, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
+import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
 
 export type UiState = {
   /** Up-next items the person opened, and ones they closed (the first is open by default). */
@@ -63,8 +64,12 @@ export function colorOf(project: string): string {
 }
 const NEUTRAL = '#a6a6b0'
 
-/** An SVG character. An asking one wears the badge of what it asks (`ask`, a question by default). */
-export function character(color: string, shape: Shape, face: Face, size = 16, badge = true, ask: AskKind = 'question'): string {
+/**
+ * An SVG character. An asking one wears the badge of what it asks (`ask`, a question by default).
+ * Without `spinner`, a working or monitoring one leaves out its spinning badge (the tree's ring
+ * shows it instead) but keeps the badge's frame, so the body stays the same size.
+ */
+export function character(color: string, shape: Shape, face: Face, size = 16, badge = true, ask: AskKind = 'question', spinner = true): string {
   const s = size, ink = '#141416', sw = Math.max(1, s * 0.07)
   const queued = face === 'queued'
   const paint = queued ? `fill="none" stroke="${color}" stroke-width="${Math.max(1, s * 0.06)}" stroke-dasharray="${s * 0.12} ${s * 0.09}"` : `fill="${color}"`
@@ -120,7 +125,7 @@ export function character(color: string, shape: Shape, face: Face, size = 16, ba
   const room = badge && face === 'asks' && ask === 'review' ? s * REVIEW_ROOM : 0
   const grow = Math.round((room * s) / (s + pad * 1.5) * 100) / 100
   const box = reaches ? `${-pad / 2} ${-pad} ${s + pad * 1.5 + room} ${s + pad * 1.5 + room}` : `0 0 ${s} ${s}`
-  const svg = `<svg class="ch${face === 'idle' ? ' faded' : ''}" width="${s + grow}" height="${s + grow}"${grow ? ` style="margin:0 -${grow}px -${grow}px 0"` : ''} viewBox="${box}" aria-hidden="true">${body}${faces[face]}${hand}${badge ? (badges[face] ?? '') : ''}</svg>`
+  const svg = `<svg class="ch${face === 'idle' ? ' faded' : ''}" width="${s + grow}" height="${s + grow}"${grow ? ` style="margin:0 -${grow}px -${grow}px 0"` : ''} viewBox="${box}" aria-hidden="true">${body}${faces[face]}${hand}${badge && (spinner || (face !== 'working' && face !== 'monitoring')) ? (badges[face] ?? '') : ''}</svg>`
   return svg
 }
 
@@ -171,11 +176,11 @@ const ASK_BADGE: Record<AskKind, (rim: string, bx: number, by: number, br: numbe
 }
 
 /** An agent's character with its status: what Orca shows, in at most two words. */
-function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size = 20): string {
+function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size = 20, spinner = true): string {
   const face = faceOf(a)
   const ask = askKindOf(a)
   const tip = face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
-  return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask), tip, face === 'asks' ? ASK_TONE[ask] : '')
+  return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask, spinner), tip, face === 'asks' ? ASK_TONE[ask] : '')
 }
 
 // ---------- reading the model ----------
@@ -588,7 +593,7 @@ function cockpitOpen(snap: Snapshot, ui: UiState): string {
   const finishedRow = n ? `<div class="fin">${avatarStack(finished, all)}<span class="fin-n"><b>${n}</b> finished</span>${sleepAll}</div>` : ''
   // A merged, clean worktree: a card with its PR, removed with the trash button after a Yes.
   const merged = st.merged.map((m) =>
-    `<div class="wt" data-tip="${esc(`${m.name}\nPR #${m.pr} merged · clean`)}"><span class="prb pr-merged">${PR_ICON.merged}</span><span class="wt-main"><span class="wt-name">${esc(m.name)}</span><span class="wt-sub">#${m.pr} · merged · clean</span></span>${action(`remove:${m.workspaceId}`, '', 'Remove?', ui, { icon: TRASH, cls: 'ibtn danger', aria: `Remove ${m.name}`, tip: 'Remove worktree' })}</div>`
+    `<div class="wt" data-tip="${esc(`${m.name}\nPR #${m.pr} merged · clean`)}"><span class="prb pr-merged">${MERGED_ICON}</span><span class="wt-main"><span class="wt-name">${esc(m.name)}</span><span class="wt-sub">#${m.pr} · merged · clean</span></span>${action(`remove:${m.workspaceId}`, '', 'Remove?', ui, { icon: TRASH, cls: 'ibtn danger', aria: `Remove ${m.name}`, tip: 'Remove worktree' })}</div>`
   ).join('')
   return `<div class="copen">
     ${memory}
@@ -677,24 +682,58 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
 // ---------- your coordinators ----------
 
 /**
- * The worktree's PR the way Orca's own workspace card shows it: the icon says the state (open,
- * merged, closed, draft); an open PR is colored by its checks (failed red, pending yellow, passed
- * green), anything else by its state (merged purple, closed and draft grey).
+ * The worktree's PR as its number, colored the way Orca's own workspace card colors it: an open PR
+ * by its checks (failed red, pending yellow, passed green), anything else by its state (merged
+ * purple, closed and draft grey). The tooltip says the state and the title; a click opens the PR.
  */
 export function prBadge(pr: WorkspaceRow['pr']): string {
   if (!pr) return ''
   const state = pr.state === 'merged' || pr.state === 'closed' || pr.state === 'draft' ? pr.state : 'open'
   const tone = state === 'open' ? { failure: 'fail', pending: 'pending', success: 'ok', cancelled: 'closed' }[pr.checks ?? 'success'] ?? 'ok' : state
   const word = state === 'merged' ? 'merged' : state === 'closed' ? 'closed' : state === 'draft' ? 'draft' : pr.checks === 'failure' ? 'checks failed' : pr.checks === 'pending' ? 'checks pending' : 'open'
-  return `<span class="pr pr-${tone}" role="link" data-pr="${esc(pr.url)}" data-tip="PR #${pr.number} ${word}">${PR_ICON[state]}</span>`
+  const tip = `PR #${pr.number} ${word}${pr.title ? `\n${pr.title}` : ''}`
+  return `<span class="pr pr-${tone}" role="link" data-pr="${esc(pr.url)}" data-tip="${esc(tip)}" aria-label="${esc(`PR #${pr.number} ${word}`)}">#${pr.number}</span>`
 }
 
-const PR_ICON: Record<string, string> = {
-  open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/></svg>',
-  merged: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>',
-  closed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="m21 3-6 6"/><path d="m21 9-6-6"/><path d="M18 11.5V15"/><circle cx="18" cy="18" r="3"/></svg>',
-  draft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><path d="M6 9v12"/></svg>'
+/** GitHub's mark (Octicons mark-github, MIT), in the row's muted text color. */
+const GH_MARK = '<svg class="gh" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
+
+/** A branch as a row shows it: without its leading user/ prefix (berkantay/bou-4186 → bou-4186). */
+export const branchName = (branch: string) => branch.replace(/^[^/]+\/(?=[^/])/, '')
+
+/**
+ * How many branch colors there are (panel.css --c0..--c2). Any two branches can sit in neighboring
+ * lanes, so the palette was validated all-pairs (the dataviz validator, both modes): three is the
+ * most that pass, and the branch's name beside the mark is the second channel.
+ */
+export const BRANCH_COLORS = 3
+/** A branch's color slot: stable for the same repo and branch, so rows on one branch share it. */
+export const branchColor = (repo: string, branch: string) => hashOf(`${repo}\n${branch}`) % BRANCH_COLORS
+
+/** A long-lived branch (a main checkout's main or dev) shows quieter than feature work. */
+const BASE_BRANCH = /^(main|master|dev|develop|development|trunk|staging)$/
+
+/** The color a row's tree lines wear: its branch's, or none (neutral) without one or on a long-lived one. */
+export const laneColor = (row: Pick<WorkspaceRow, 'repo' | 'branch'>): number | null =>
+  row.branch && !BASE_BRANCH.test(row.branch) ? branchColor(row.repo, row.branch) : null
+const branchAttr = (row: Pick<WorkspaceRow, 'repo' | 'branch'>) => {
+  const c = laneColor(row)
+  return c === null ? '' : ` data-branch="${c}"`
 }
+
+/**
+ * The worktree a chat runs in, minimal: GitHub's mark, the branch without its user/ prefix (the
+ * whole branch and the project on hover), then the PR's number when there is one. Nothing without a
+ * branch.
+ */
+export function branchChip(row: Pick<WorkspaceRow, 'repo' | 'branch' | 'pr'>): string {
+  if (!row.branch) return prBadge(row.pr)
+  const quiet = BASE_BRANCH.test(row.branch)
+  return `<span class="br${quiet ? ' quiet' : ''}"><span class="br-b" data-tip="${esc(`${row.branch}${row.repo ? ` · ${row.repo}` : ''}`)}">${GH_MARK}<span class="br-n">${esc(branchName(row.branch))}</span></span>${prBadge(row.pr)}</span>`
+}
+
+/** A merged PR's icon, on the cockpit's clean-up cards. */
+const MERGED_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>'
 
 /**
  * Whether an agent's row wears the current border: its pane is in front in the focused workspace,
@@ -715,18 +754,44 @@ export const worktreeLead = (row: WorkspaceRow): AgentInfo | undefined =>
 const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined) =>
   Boolean(c.active) && (focused ? !!c.session && focused.includes(c.session.paneKey) : true)
 
-function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, indent: boolean, ui: UiState, done = false, current = false, num?: number): string {
+/**
+ * What a chat's node in the tree says (src/lines.ts): asking, working, monitoring, done while its
+ * work is still in flight, or finished.
+ */
+export function nodeOf(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): NodeState {
+  const face = faceOf(a)
+  return face === 'asks' ? 'asking' : face === 'working' ? 'working' : face === 'monitoring' ? 'monitoring' : inFlight(a, row, all) ? 'done' : 'finished'
+}
+
+/**
+ * A working (or monitoring) chat's ring carries a shimmer that travels around it, in place of the
+ * character's spinning badge (panel.css .beam, still under prefers-reduced-motion).
+ */
+const beam = (node: NodeState) => (BEAMS.includes(node) ? `<i class="beam b-${node}" aria-hidden="true"></i>` : '')
+
+/** The focused row's mark: a slim bar on its left edge, in its branch's color (panel.css .fb). */
+const FOCUS = '<i class="fb" aria-hidden="true"></i>'
+
+function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, num?: number, deco = ''): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
-  // A worker nested under its lead shares its worktree: the lead's row already shows project, PR and age.
-  const right = status ?? (indent ? '' : `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${prBadge(p.row.pr)}<span>${ago(p.row.lastActivityAt, ui.now)}</span>`)
+  const indent = Boolean(lead)
+  // A worker nested under its lead in the same worktree: the lead's row already shows project,
+  // branch, PR and age; the branch's color alone groups it with its lead. One working in a worktree
+  // of its own shows that worktree's branch.
+  const right = status ?? (lead
+    ? (lead.row.id === p.row.id ? '' : branchChip(p.row))
+    : `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${branchChip(p.row)}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
-  const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}`
+  // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
+  const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}"`
+  // Its lines and focus bar; its character leaves out the spinning badge, the ring's shimmer shows it working.
+  const lines = `${deco}${current ? FOCUS : ''}`
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button>${numBadge(num)}</div>`
+    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button>${numBadge(num)}</div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span>${numBadge(num)}</button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span>${numBadge(num)}</button>`
 }
 
 /**
@@ -790,21 +855,42 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   const ask = asking ? askKindOf(asking) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
   const done = (p: Placed) => faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all)
-  const body = lines.map(({ p, indent }) => agentLine(p, all, coordinators, !single, indent, ui, done(p), isCurrent(p.a, p.row, focused), nums.get(`agent:${p.a.paneKey}`))).join('')
+  // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
+  // lead's branch color, lit together on hover and while one of them is current.
+  const trunk = trunkX(face === 'idle')
+  const lanes: { root: Placed; rows: { p: Placed; lead?: Placed }[] }[] = []
+  for (const line of lines) {
+    if (line.lead && lanes.length) lanes[lanes.length - 1].rows.push(line)
+    else lanes.push({ root: line.p, rows: [line] })
+  }
+  const body = lanes.map(({ root, rows }) => {
+    // The lead wears its PR as a bead on its ring.
+    const cap = capGlyph(root.row.pr)
+    const html = rows.map(({ p, lead }) => {
+      const node = nodeOf(p.a, p.row, all)
+      const role = { nested: Boolean(lead), trunk, node, ask: faceOf(p.a) === 'asks' ? askKindOf(p.a) : undefined, cap: lead ? null : cap }
+      const deco = `<i class="tl" aria-hidden="true"></i>${rowLines(role)}${beam(node)}`
+      return agentLine(p, all, coordinators, !single, lead, ui, done(p), isCurrent(p.a, p.row, focused), nums.get(`agent:${p.a.paneKey}`), deco)
+    }).join('')
+    return `<div class="lane"${branchAttr(root.row)}>${html}</div>`
+  }).join('')
   const current = !c.you && coordinatorCurrent(c, focused)
   const folded = ui.folded.has(c.key)
-  const head = `${tipped(character(color, shape, face, 28, true, ask), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${numBadge(nums.get(`coordinator:${c.key}`))}`
+  const node: NodeState = face === 'idle' ? 'sleeping' : face === 'asks' ? 'asking' : face === 'done' ? 'done' : face === 'monitoring' ? 'monitoring' : 'working'
+  const ringed = !folded && mine.length > 0
+  const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
+  const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${numBadge(nums.get(`coordinator:${c.key}`))}`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
-    ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}><button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${head}</button>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${head}</button>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */
-type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; indent: boolean }[] }
+type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; lead?: Placed }[] }
 
 /**
  * The coordinators tree top to bottom: active coordinators (a session or a team), then You when you
@@ -825,7 +911,7 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
     if ('you' in c && mine.length === 0) return []
     const panes = new Set(mine.map((p) => p.a.paneKey))
     const roots = mine.filter((p) => !p.a.leadPane || !panes.has(p.a.leadPane))
-    const lines = roots.flatMap((p) => [{ p, indent: false }, ...mine.filter((w) => w.a.leadPane === p.a.paneKey).map((w) => ({ p: w, indent: true }))])
+    const lines = roots.flatMap((p) => [{ p }, ...mine.filter((w) => w.a.leadPane === p.a.paneKey).map((w) => ({ p: w, lead: p }))])
     return [{ c, mine, lines }]
   })
 }

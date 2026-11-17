@@ -18,8 +18,17 @@ macOS only for now.
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds.
-- **PR status:** each agent row shows its worktree's PR, colored the way Orca colors it. Click it
-  to open the PR.
+- **Branch and PR:** each agent row shows its worktree's branch after the GitHub mark (without its
+  `user/` prefix; hover for the whole branch), then its PR's number when there is one, colored the
+  way Orca colors it; hover for the title, click to open the PR.
+- **Tree lines:** drawn like a git graph: a neutral trunk from each coordinator, one connector into
+  each chat, and each lead's lane running on into its workers in the lead's branch color
+  (long-lived branches like `main` or `dev` stay neutral), quiet at rest and clear on hover and on
+  the current chat. Each chat is a ring around its character in its state: a shimmer travels around
+  it while working, it wears its ask's color while asking, and it fades once finished. The lead's PR
+  is a bead on its ring.
+- **Focus:** the chat or coordinator in front in Orca wears a slim bar on its left edge, in its
+  branch's color.
 - **The `orca-flow` skill:** teaches agents the coordinator, lead and worker roles, one priority
   vocabulary, and when there is room to start more.
 
@@ -84,8 +93,8 @@ square. The face and the badge at the bottom right show what Orca reports:
 amber when only another agent would fit (not a new worktree with its dev servers), and red when
 nothing fits. Disk turns amber under 25 GB and red under 10 GB.
 
-**PR icon.** An open PR is colored by its CI checks: red when they failed, yellow while they run,
-green when they passed. A merged PR is purple; closed and draft PRs are grey.
+**PR number.** An open PR's number is colored by its CI checks: red when they failed, yellow while
+they run, green when they passed. A merged PR is purple; closed and draft PRs are grey.
 
 ## How work flows
 

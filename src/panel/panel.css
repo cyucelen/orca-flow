@@ -140,10 +140,24 @@ html.light { --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --card: color-mix(in s
 .gauge.warn { color: var(--warn); }
 .gauge.danger { color: var(--danger); }
 .gauge svg { width: 13px; height: 13px; }
-/* PR indicator, colored as Orca's workspace card colors it. */
-.pr { display: inline-flex; flex: none; padding: 2px; margin: -2px; border-radius: 4px; cursor: pointer; }
-.pr:hover { background: var(--hover); }
-.pr svg { width: 13px; height: 13px; }
+/* A chat's branch: GitHub's mark and the branch in the row's muted text, then its PR's number. The
+   branch's color lives on the tree's lines (below), never on the text or the mark. */
+.br { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.br-b { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--muted); }
+.br .gh { width: 12px; height: 12px; flex: none; }
+/* The branch takes at most about a quarter of the row, so the title keeps priority. */
+.br-n { max-width: clamp(40px, 36vw - 48px, 160px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.br.quiet .br-b { color: var(--faint); }
+.br.quiet .gh { opacity: .6; }
+.item.finished .br { opacity: .7; }
+/* A row's PR number, colored as Orca's workspace card colors it. */
+.pr { display: inline-flex; flex: none; padding: 0 3px; margin: 0 -3px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 16px; font-variant-numeric: tabular-nums; }
+.pr:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
+/* Room goes to the title first: below 420 px a row with a branch drops its project and age; below
+   300 px one with a PR (or a remove button) keeps the mark and number and leaves the branch to its
+   tooltip. */
+@media (max-width: 420px) { .r:has(> .br) > :is(.soft, .age) { display: none; } }
+@media (max-width: 300px) { .br:has(> .pr) .br-n, .item:has(> [data-remove]) .br-n { display: none; } }
 .pr-ok { color: rgb(16 185 129 / .8); }
 .pr-pending { color: rgb(245 158 11 / .85); }
 .pr-fail { color: rgb(244 63 94 / .85); }
@@ -189,8 +203,7 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .r { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .soft { color: var(--faint); font-size: 11px; }
 .grow { flex: 1; min-width: 0; display: grid; }
-.indent { padding-left: 30px; position: relative; }
-.indent::before { content: ""; position: absolute; left: 15px; top: -2px; bottom: 50%; width: 6px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.indent { padding-left: 30px; }
 .hair { height: 1px; background: var(--line); margin-inline: -12px; }
 .label { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; padding-bottom: 4px; }
 .empty { color: var(--muted); padding: 4px 0; }
@@ -223,10 +236,90 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .tree > .label { padding-bottom: 0; margin-bottom: -4px; }
 .coord .name { font-weight: 500; }
 .coord .sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.coordinator > .group { padding-left: 6px; }
-/* a straight line from the coordinator's character down along the agents it runs */
-.coordinator > .group { margin-left: 13px; padding-left: 13px; border-left: 1px solid color-mix(in srgb, var(--ink) 16%, transparent); }
-.coordinator > .group > .item { width: 100%; margin-inline: 0; }
+/* Tree lines, drawn like a git graph. src/lines.ts draws each chat's connector, ring and PR bead;
+   this draws the straight runs and the colors. Rows start 6 px left of the coordinator's character
+   (--edge) and pad their own character back into place, so the lines live inside the row. Each row
+   draws its own height plus the 1 px gap below it, so rows join at any height with no gap or
+   overlap: ::before is the line it hangs from (the trunk for a lead, its lead's line for a worker),
+   .tl one more run (a lead's line down to its workers, or the trunk passing a lane's workers). A
+   lead and its workers form a lane (.lane, view.ts) in the lead's branch color: the
+   dataviz-validated categorical slots 1-3 (--c0..--c2, see BRANCH_COLORS); long-lived branches and
+   rows without one stay neutral. Quiet at rest, clear on hover and while one of its rows is current.
+   Geometry repeats lines.ts GEO: --tx the coordinator character's middle, --X1/--X2 a lead's and a
+   worker's, --dy how far an agent's body sits below its row's middle (--hdy a coordinator's),
+   --fork how far above it a chat's connector leaves the line, --hs where the trunk starts below the
+   coordinator's ring. */
+.coordinator { --edge: 6px; --tx: 13.1px; --dy: 1.3px; --hdy: 0.9px; --T: calc(var(--tx) + var(--edge)); --X1: 43.105px; --X2: 67.105px;
+  --tw: 1.5px; --lw: 2px; --fork: 11px; --hs: 17.5px; --mix: 62%; --rowbg: var(--bg);
+  --neutral: color-mix(in srgb, var(--ink) 40%, var(--bg)); --trunk-c: color-mix(in srgb, var(--ink) 22%, var(--bg)); }
+.coordinator:has(> .item.coord .ch.faded) { --tx: 14px; --hdy: 0px; }
+.coordinator > .group { padding-left: 0; }
+.coordinator > .group .item { width: calc(100% + var(--edge)); margin-inline: calc(-1 * var(--edge)) 0; padding-left: calc(var(--X1) - 9.355px); position: relative; isolation: isolate; }
+.coordinator > .group .item.indent { padding-left: calc(var(--X2) - 9.355px); }
+.coordinator > .group .item:hover, .coordinator .item.menu-open { --rowbg: var(--hover); }
+.lane { display: contents; }
+.lane[data-branch="0"] { --lane: var(--c0); } .lane[data-branch="1"] { --lane: var(--c1); } .lane[data-branch="2"] { --lane: var(--c2); }
+.lane .item[data-branch="0"] { --br: var(--c0); } .lane .item[data-branch="1"] { --br: var(--c1); } .lane .item[data-branch="2"] { --br: var(--c2); }
+.lane:has(> .item:hover), .lane:has(> .current) { --mix: 100%; }
+.lane > .item { --lane-c: color-mix(in srgb, var(--lane, var(--neutral)) var(--mix), var(--bg)); --own-c: color-mix(in srgb, var(--br, var(--neutral)) var(--mix), var(--bg)); }
+.lane > .item::before, .lane > .item > .tl { content: ""; position: absolute; box-sizing: border-box; pointer-events: none; }
+/* the line a row hangs from: through it, or down to its connector when it is the last */
+.lane > .item::before { left: calc(var(--T) - var(--tw) / 2); width: var(--tw); top: 0; bottom: -1px; background: var(--trunk-c); }
+.lane > .item.indent::before { left: calc(var(--X1) - var(--lw) / 2); width: var(--lw); background: var(--lane-c); }
+.group > .lane:last-child > .item:first-child::before, .lane > .item.indent:last-child::before { bottom: calc(50% - var(--dy) + var(--fork)); }
+/* a lead's line down to its workers */
+.lane > .item > .tl { display: none; bottom: -1px; left: calc(var(--X1) - var(--lw) / 2); width: var(--lw); top: calc(50% + var(--dy)); background: var(--lane-c); }
+.lane > .item:first-child:not(:last-child) > .tl { display: block; }
+/* the trunk passing a lane's workers when more lanes follow */
+.group > .lane:not(:last-child) > .item.indent > .tl { display: block; left: calc(var(--T) - var(--tw) / 2); width: var(--tw); top: 0; background: var(--trunk-c); }
+/* the trunk's start, under the coordinator's ring */
+.coordinator > .item.coord { position: relative; isolation: isolate; }
+.coordinator:has(> .group) > .item.coord::after { content: ""; position: absolute; pointer-events: none; left: calc(var(--T) - var(--tw) / 2); width: var(--tw); top: calc(50% + var(--hdy) + var(--hs)); bottom: 0; background: var(--trunk-c); }
+/* connectors, rings and beads: above the runs, under the characters */
+.tl-c, .tl-h { position: absolute; left: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 1; }
+.tl-c { top: calc(50% + var(--dy)); }
+.tl-h { top: calc(50% + var(--hdy)); }
+.coordinator .who { position: relative; z-index: 2; }
+/* Characters are commits: a ring around each, in its state, and one connector into it from the line
+   it hangs from. Working: a shimmer travels around the ring (the character drops its spinning
+   badge); monitoring: slower and dimmer, on a dashed ring; asking wears its ask's color with a notch
+   where the hand reaches out; done is still; finished fades to the trunk's grey, connector and all;
+   asleep is dashed. The lead's PR is a bead on its ring: a ring in its checks' color while open, a
+   dot once merged, a cross when checks fail. */
+.tl-c .fork { fill: none; stroke: var(--own-c); stroke-width: var(--lw); stroke-linecap: round; }
+.lane > .item[data-node="finished"] .fork { stroke: var(--trunk-c); }
+.node { fill: var(--rowbg); stroke: var(--own-c); stroke-width: 1.5px; }
+.tl-h .node { stroke: color-mix(in srgb, var(--neutral) var(--mix), var(--bg)); }
+.node.n-monitoring { stroke-dasharray: 2.5 3.5; }
+.node.n-asking { stroke-dasharray: 84 9 100; }
+.node.k-question { stroke: var(--ask); } .node.k-review { stroke: var(--review); } .node.k-approval { stroke: var(--warn); } .node.k-action { stroke: var(--action); }
+.node.n-finished { stroke: var(--trunk-c); }
+.node.n-sleeping { stroke: var(--trunk-c); stroke-dasharray: 3 4; }
+/* The shimmer: a bright head with a soft tail, a conic gradient masked to a 2px ring over the node's;
+   its head leans toward the text color, so it reads even on a lit ring. */
+.beam { position: absolute; z-index: 1; pointer-events: none; width: 26px; height: 26px; border-radius: 50%;
+  left: calc(var(--X1) - 13px); top: calc(50% + var(--dy) - 13px);
+  --beam: color-mix(in srgb, var(--br, var(--ink)) 55%, var(--ink));
+  background: conic-gradient(transparent 0 52%, color-mix(in srgb, var(--beam) 28%, transparent) 78%, var(--beam) 99.5%, transparent 100%);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px), #000 calc(100% - .5px), transparent 100%);
+  mask: radial-gradient(closest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px), #000 calc(100% - .5px), transparent 100%);
+  animation: beam 1.8s linear infinite; }
+.lane > .item.indent > .beam { left: calc(var(--X2) - 13px); }
+.item.coord > .beam { width: 34px; height: 34px; left: calc(var(--T) - 17px); top: calc(50% + var(--hdy) - 17px); }
+.beam.b-monitoring { opacity: .55; animation-duration: 3.6s; }
+@keyframes beam { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .beam { animation: none; } }
+.cap { stroke-width: 1.5px; fill: var(--rowbg); }
+.c-open { stroke: rgb(16 185 129 / .9); } .c-pending { stroke: rgb(245 158 11 / .9); }
+.c-merged { fill: rgb(192 132 252 / .85); stroke: none; } html.light .c-merged { fill: rgb(147 51 234 / .8); }
+.c-failing { fill: rgb(244 63 94 / .9); stroke: none; }
+.c-closed, .c-draft { stroke: color-mix(in srgb, var(--muted) 70%, transparent); } .c-draft { stroke-dasharray: 1.5 1.5; }
+.cap-x { stroke: var(--rowbg); stroke-width: 1.3px; stroke-linecap: round; }
+.c-closed + .cap-x { stroke: color-mix(in srgb, var(--muted) 70%, transparent); }
+/* The focused row: a slim bar on its left edge in its branch's color (neutral for coordinators and
+   long-lived branches). Never a box, so rows never shift. */
+.fb { position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 3px; z-index: 3; pointer-events: none;
+  background: var(--br, color-mix(in srgb, var(--ink) 55%, var(--bg))); }
 
 /* folds */
 .folds { display: grid; }
@@ -357,8 +450,6 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.ok { color: #5fbf8a; }
 .rstatus.bad { color: var(--danger); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
-/* The agent (or coordinator) whose workspace is focused in Orca. Inset, so rows never shift. */
-.item.current { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent); }
 /* A chat's Option+digit, quiet at the row's end; holding Option in the panel lights them all. */
 .num { font: 500 10px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; color: var(--faint); opacity: .8; padding: 2px 3px; border-radius: 3px; min-width: 18px; text-align: center; }
 body.option .num { opacity: 1; color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, transparent); }

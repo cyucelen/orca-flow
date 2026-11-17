@@ -62,7 +62,7 @@ export type PsWorktree = {
   workspaceStatus?: string | null
   lastActivityAt?: number | null
   sortOrder?: number
-  linkedPR?: { number?: number; url?: string; state?: string; checksStatus?: string | null; checksSummary?: { state?: string } | null } | null
+  linkedPR?: { number?: number; url?: string; state?: string; title?: string; checksStatus?: string | null; checksSummary?: { state?: string } | null } | null
   agents?: PsAgent[]
 }
 
@@ -166,7 +166,7 @@ export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summ
         workspaceStatus: w.workspaceStatus ?? null,
         lastActivityAt: w.lastActivityAt ?? null,
         createdAt: w.sortOrder ?? 0,
-        pr: w.linkedPR?.number && w.linkedPR.url ? { number: w.linkedPR.number, url: w.linkedPR.url, state: w.linkedPR.state ?? '', checks: checksOf(w.linkedPR) } : null
+        pr: w.linkedPR?.number && w.linkedPR.url ? { number: w.linkedPR.number, url: w.linkedPR.url, state: w.linkedPR.state ?? '', title: w.linkedPR.title ?? '', checks: checksOf(w.linkedPR) } : null
       }
     })
 }

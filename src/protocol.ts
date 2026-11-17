@@ -86,9 +86,8 @@ export type WorkspaceRow = {
   lastActivityAt: number | null
   /** When the workstream started (Orca's sortOrder); a stable order that activity never changes. */
   createdAt: number
-  /** The pull request Orca has linked to this workspace. */
-  /** Orca's linked PR: its state (open, merged, closed, draft) and, for an open one, its CI checks. */
-  pr: { number: number; url: string; state: string; checks: 'success' | 'pending' | 'failure' | 'cancelled' | null } | null
+  /** Orca's linked PR: its state (open, merged, closed, draft), its title and, for an open one, its CI checks. */
+  pr: { number: number; url: string; state: string; title?: string; checks: 'success' | 'pending' | 'failure' | 'cancelled' | null } | null
   /** Set on the queue row that stands for a coordinator's own session (see askingRows in view.ts). */
   coordinator?: string
 }
