@@ -1,13 +1,16 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
+import { readFileSync } from 'node:fs'
 import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchChip, branchColor, branchName, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { type UiState, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchChip, branchColor, branchName, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { capGlyph } from './lines.ts'
 import { removeWorktree } from './cockpit.ts'
 
 const noMatch = (text: string, re: RegExp, message?: string) => assert.ok(!re.test(text), message ?? `unexpected ${re}`)
+/** The tree and, pinned under it, what asks you (Up next), in the order the page shows them. */
+const page = (s: Snapshot, ui: UiState) => { const r = render(s, ui); return r.main + r.attention }
 
 const summary = (over: Partial<AgentSummary> = {}): AgentSummary => ({
   title: 'Work', about: 'What this is for.', glance: '', goal: '', since: 'Did a thing',
@@ -39,7 +42,7 @@ const snap: Snapshot = {
 }
 
 test('up next: the first briefing is open with about, the glance and one jump; the rest are one line', () => {
-  const { main } = render(snap, emptyUi())
+  const main = page(snap, emptyUi())
   assert.match(main, /Up next · 2/)
   const brief = main.slice(main.indexOf('class="brief"'), main.indexOf('</div><button class="item"', main.indexOf('class="brief"')) + 1)
   assert.match(brief, /About Merge accounts by email\?\./)
@@ -50,11 +53,27 @@ test('up next: the first briefing is open with about, the glance and one jump; t
   noMatch(main, /data-tip="Pick a headline"/, 'rows have no long tooltips')
 })
 
+test('Up next is pinned under the tree, so the tree never moves when an ask comes or goes', () => {
+  const asking = render(snap, emptyUi())
+  assert.match(asking.main, /^<div class="tree"><div class="label">Coordinators<\/div>/, 'the scrolling part starts with the tree')
+  noMatch(asking.main, /Up next|class="upnext"|data-brief=/, 'nothing from Up next above or inside it')
+  assert.match(asking.attention, /^<section class="upnext"><div class="label">Up next · 2<\/div>/)
+  const html = readFileSync(new URL('./panel/index.html', import.meta.url).pathname, 'utf8')
+  const at = (id: string) => html.indexOf(`id="${id}"`)
+  assert.ok(at('main') > 0 && at('main') < at('attention') && at('attention') < at('footer'), 'the page: tree, then Up next, then the footer')
+  // With no asks the tree starts the same way, and Up next is empty (the page hides its slot).
+  const calm: Snapshot = { ...snap, rows: snap.rows.map((r) => ({ ...r, agents: r.agents.map((a) => ({ ...a, summary: a.summary ? summary() : null })) })) }
+  const quiet = render(calm, emptyUi())
+  assert.equal(quiet.attention, '')
+  assert.match(quiet.main, /^<div class="tree"><div class="label">Coordinators<\/div>/)
+  assert.equal(render(snap, { ...emptyUi(), query: 'headline' }).attention, '', 'search shows only what it found')
+})
+
 test('closing the first and opening another follows the person', () => {
   const ui = emptyUi()
   ui.closed.add('p-dup')
   ui.opened.add('p-hook')
-  const { main } = render(snap, ui)
+  const main = page(snap, ui)
   assert.match(main, /About Pick a headline/)
   noMatch(main, /About Merge accounts by email/)
 })
@@ -98,7 +117,7 @@ test('cockpit flags only what is over and explains on demand; search replaces th
   assert.deepEqual(gaugesOf({ ...roomy, freeGB: null, diskFreeGB: null }).map((g) => g.key), ['idle'], 'no number before it is measured')
   for (const g of gaugesOf(snap.capacity!)) assert.ok(g.tip.split(' ').length <= 5, `"${g.tip}" is over five words`)
   ui.query = 'headline'
-  const { main } = render(snap, ui)
+  const main = page(snap, ui)
   assert.match(main, /Launch post headline/)
   noMatch(main, /Up next/)
 })
@@ -107,7 +126,7 @@ test('old summaries cannot claim an ask, and leaked ids are never shown', () => 
   const old = { ...summary({ needs: { type: 'review', ask: 'Agent is running in term_2cab2e54-96b7. Check it?', options: [] } }) } as AgentSummary
   delete (old as { glance?: string }).glance
   const s2: Snapshot = { ...snap, rows: [row('x', 'shop', [agent('p-x', 'Fix bug', 'done', { summary: old })])] }
-  const { main } = render(s2, emptyUi())
+  const main = page(s2, emptyUi())
   noMatch(main, /Up next/, 'an old-format summary does not put anything in Up next')
   noMatch(main, /term_2cab/)
 })
@@ -118,7 +137,7 @@ test('blocked always asks; a summary cannot hide Orca\'s waiting', () => {
     row('w', 'shop', [agent('p-w', 'Live preview', 'waiting', { summary: calm })]),
     row('b', 'shop', [agent('p-b', 'Permission', 'blocked', { summary: calm })])
   ] }
-  const { main } = render(s3, emptyUi())
+  const main = page(s3, emptyUi())
   assert.match(main, /Up next · 2/, 'both count: Orca says both wait on you')
   assert.match(main, /Approve a permission prompt|Answer its question/)
   noMatch(main, /Wait for E2E results/)
@@ -127,7 +146,7 @@ test('blocked always asks; a summary cannot hide Orca\'s waiting', () => {
 test('once you answer and the agent works again, it leaves Up next', () => {
   const answered = agent('p-dup', 'Duplicate accounts', 'working', { summary: asks('Merge accounts by email?') })
   const s4: Snapshot = { ...snap, rows: [row('dup', 'shop', [answered])] }
-  const { main } = render(s4, emptyUi())
+  const main = page(s4, emptyUi())
   noMatch(main, /Up next/)
   assert.match(main, /data-node="working"[\s\S]*?class="beam b-working"/, 'it shows as working in the tree')
 })
@@ -138,7 +157,7 @@ test('monitoring comes from Orca: its working mode, even while its state says wo
   assert.equal(faceOf(watching), 'monitoring')
   assert.equal(faceOf(done), 'done', 'our own summary does not override Orca')
   const s5: Snapshot = { ...snap, rows: [row('m', 'shop', [watching])] }
-  const { main } = render(s5, emptyUi())
+  const main = page(s5, emptyUi())
   assert.match(main, /class="node n-monitoring"[\s\S]*?class="beam b-monitoring"/)
   noMatch(main, /Up next/)
 })
@@ -439,7 +458,7 @@ test('Orca\'s waiting always means waiting on you, and its question shows in Up 
   const calm = summary({ needs: { type: 'none', ask: '', options: [] } })
   const asking = agent('p-q', 'Orca plugin UI', 'waiting', { summary: calm, question: 'Which agent-row actions do you want in the menu?' })
   assert.equal(faceOf(asking), 'asks', 'a summary saying nothing is needed does not override Orca')
-  const { main } = render({ ...snap, rows: [row('q', 'orca-plugin', [asking])] }, emptyUi())
+  const main = page({ ...snap, rows: [row('q', 'orca-plugin', [asking])] }, emptyUi())
   assert.match(main, /Asks · question[\s\S]*Which agent-row actions do you want in the menu\?/)
   noMatch(main, /Finished/)
 })
@@ -458,7 +477,7 @@ test('a worker that sent worker_done never asks: its "decision for you" is for i
   const lead = agent('p-lead', 'Analytics activation tracking', 'done', { coordinator: 'alpha', dispatch: 'open', summary: summary({ role: 'lead' }) })
   const worker = (dispatch: AgentInfo['dispatch'], state: AgentInfo['state'] = 'done') =>
     agent('p-w', 'PR 1778 code-smells sweep', state, { coordinator: 'alpha', leadPane: 'p-lead', dispatch, summary: decision })
-  const at = (w: AgentInfo) => render({ ...snap, rows: [row('at', 'web-app', [lead, w])] }, emptyUi()).main
+  const at = (w: AgentInfo) => page({ ...snap, rows: [row('at', 'web-app', [lead, w])] }, emptyUi())
 
   assert.notEqual(faceOf(worker('settled')), 'asks', 'a settled dispatch: no ask on its face')
   const main = at(worker('settled'))
@@ -477,7 +496,7 @@ test('Up next lists every asking agent, even several in one workspace', () => {
     agent('p-a', 'State test: question', 'waiting', { question: 'Which color?' }),
     agent('p-b', 'State test: decision', 'done', { summary: asks('Merge the test branch?') })
   ])
-  const { main } = render({ ...snap, rows: [two] }, emptyUi())
+  const main = page({ ...snap, rows: [two] }, emptyUi())
   assert.match(main, /Up next · 2/)
   assert.match(main, /data-brief="p-a"[\s\S]*data-brief="p-b"|data-brief="p-b"[\s\S]*data-brief="p-a"/)
 })
@@ -753,7 +772,7 @@ test("each agent row, Up next's Jump and Finished rows open that agent's own ter
   const slept = agent('p-old', 'Old task', 'done', { coordinator: 'alpha', leadPane: 'p-lead', terminal: null })
   const done = agent('p-d', 'Done task', 'done', { coordinator: 'alpha', leadPane: 'p-lead', terminal: 'term-d' })
   const s: Snapshot = { ...snap, rows: [row('ob', 'shop', [lead, worker, slept, done])] }
-  const { main } = render(s, emptyUi())
+  const main = page(s, emptyUi())
   assert.match(main, /class="jump" data-open="ob" data-terminal="term-lead">Jump to session/)
   assert.match(main, /data-open="ob" data-terminal="term-w"[^>]*>[\s\S]*?Fix copy/)
   assert.match(main, /class="item indent finished" data-open="ob" data-terminal="term-d"[^>]*>[\s\S]*?Done task/)
@@ -918,7 +937,7 @@ test('a to-do for the user ("rename the project, tell me when done") is an actio
   assert.match(badge, /class="action-badge"/)
   noMatch(badge, /ask-badge|>\?<\/text>/, 'not the question badge')
   assert.match(badge, /width="20" height="20"/, 'keeps the usual frame')
-  const { main } = render({ ...snap, rows: [row('w', 'shop', [a])] }, emptyUi())
+  const main = page({ ...snap, rows: [row('w', 'shop', [a])] }, emptyUi())
   assert.match(main, /data-tip="Asks you to do something" data-tone="action"[\s\S]*?class="action-badge"/)
   const brief = main.slice(main.indexOf('class="brief"'))
   assert.match(brief, /<span class="kicker">Asks · action<\/span><span>Rename the project to katos in Orca settings\.<\/span>/)
@@ -946,19 +965,18 @@ test("a coordinator's badge is the kind of the ask it shows; a review with a PR 
   assert.match(head, /data-tip="Wants a review" data-tone="review"[\s\S]*?class="review-badge"/)
   const lead = agent('p-l', 'Checkout', 'done', { summary: review })
   const pr = { number: 7, url: 'https://pr/7', state: 'open', checks: 'success' as const }
-  const withPr = render({ ...snap, rows: [row('w', 'shop', [lead], { pr })] }, emptyUi()).main
+  const withPr = page({ ...snap, rows: [row('w', 'shop', [lead], { pr })] }, emptyUi())
   assert.match(withPr, /class="jump" data-open="w">Jump to session<\/button><button class="jump" data-pr="https:\/\/pr\/7">Open PR<\/button>/)
-  noMatch(render({ ...snap, rows: [row('w', 'shop', [lead])] }, emptyUi()).main, /Open PR/, 'no PR, no button')
+  noMatch(page({ ...snap, rows: [row('w', 'shop', [lead])] }, emptyUi()), /Open PR/, 'no PR, no button')
   const question = agent('p-q', 'Checkout', 'waiting', { question: 'Which one?' })
-  noMatch(render({ ...snap, rows: [row('w', 'shop', [question], { pr })] }, emptyUi()).main, /Open PR/, 'a question is answered in the session')
+  noMatch(page({ ...snap, rows: [row('w', 'shop', [question], { pr })] }, emptyUi()), /Open PR/, 'a question is answered in the session')
 })
 
 test('every asking face in the tree has an Up next entry, a coordinator asking you included', () => {
   const ask = summary({ glance: 'Unblock the worktree?', role: 'coordinator', priority: 'P1', needs: { type: 'decision', ask: 'Unblock the worktree?', options: [] } })
   const session = agent('p-home', 'Bounti coordination', 'done', { summary: ask, terminal: 'term-home' })
   const s: Snapshot = { ...snap, coordinators: [{ ...snap.coordinators[0], session }, snap.coordinators[1]] }
-  const { main } = render(s, emptyUi())
-  const [upnext, tree] = main.split('<div class="label">Coordinators</div>')
+  const { main: tree, attention: upnext } = render(s, emptyUi())
   const askingInTree = (tree.match(/data-tip="(Asks a question|Wants a review|Needs a yes\/no)"/g) ?? []).length
   const entries = (upnext.match(/data-brief=/g) ?? []).length
   assert.equal(askingInTree, 3, 'two agents and the coordinator ask')
@@ -967,7 +985,7 @@ test('every asking face in the tree has an Up next entry, a coordinator asking y
   assert.match(upnext, /Unblock the worktree\?/)
   const ui = emptyUi()
   ui.opened.add('p-home')
-  assert.match(render(s, ui).main, /<button class="jump" data-coordinator="alpha">Jump to session<\/button>/, 'opens it the way its row does')
+  assert.match(render(s, ui).attention, /<button class="jump" data-coordinator="alpha">Jump to session<\/button>/, 'opens it the way its row does')
 })
 
 test('update button: hidden with nothing to update, then what the update needs or how it went', () => {
@@ -1013,7 +1031,7 @@ test('chat numbers follow the tree: each coordinator, its leads with their worke
   assert.deepEqual([...tree.matchAll(/⌥(\d)/g)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8])
   assert.match(tree, /data-coordinator="alpha"[^>]*>.*?⌥1<\/kbd>/)
   assert.match(tree, /data-open="pricing"[^>]*>.*?<kbd class="num" data-tip="Option\+7 opens this chat">⌥7<\/kbd>/)
-  noMatch(main.slice(0, main.indexOf('class="tree"')), /⌥\d/, 'Up next has no numbers')
+  noMatch(render(sleepy, emptyUi()).attention, /⌥\d/, 'Up next has no numbers')
 })
 
 test("a folded group's team gives its numbers to the rows below; a terminal goes along", () => {

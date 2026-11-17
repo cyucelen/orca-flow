@@ -11,6 +11,7 @@ const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
 const footerEl = $('footer')
+const attentionEl = $('attention')
 const searchEl = $('search') as HTMLInputElement
 const searchBox = $('searchbox')
 const searchOpen = $('search-open')
@@ -44,11 +45,14 @@ function paintRows(): void {
     return
   }
   ui.now = Date.now()
-  const { cockpit, copen, main, footer } = render(snap, ui)
+  const { cockpit, copen, main, attention, footer } = render(snap, ui)
   cockpitEl.innerHTML = cockpit
   copenEl.innerHTML = copen
   copenEl.hidden = !copen // an empty slot would still take a gap in the column
   mainEl.innerHTML = main
+  // What asks you, pinned under the tree, so the tree never moves when an ask comes or goes.
+  attentionEl.innerHTML = attention
+  attentionEl.hidden = !attention
   footerEl.innerHTML = footer
   footerEl.hidden = !footer
   if (typeof markTarget === 'function') markTarget()

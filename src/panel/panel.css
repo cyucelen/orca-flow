@@ -22,6 +22,9 @@ button { all: unset; cursor: pointer; box-sizing: border-box; }
 /* The middle scrolls; the footer stays pinned to the bottom and grows up to a cap. */
 main { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; margin-inline: -12px; padding: 0 12px 12px; }
 footer { flex: none; margin-inline: -12px; padding: 6px 12px 10px; border-top: 1px solid var(--line); }
+/* What asks you (Up next): pinned under the tree and above the footer, so the tree never moves when
+   an ask comes or goes. Capped so the tree keeps most of a short panel; several asks scroll here. */
+.attention { flex: none; max-height: min(45vh, 360px); overflow-y: auto; margin: -6px -12px 0; padding: 10px 12px 0; border-top: 1px solid var(--line); }
 .fold-list { max-height: 40vh; overflow-y: auto; margin-inline: -12px; padding-inline: 12px; }
 
 /* cockpit */

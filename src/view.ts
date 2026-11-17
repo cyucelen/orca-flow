@@ -676,7 +676,7 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
     const about = aboutOf(p)
     return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">Asks · ${esc(askType(p))}</span><span>${esc(glanceOf(p))}</span></div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
   })
-  return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section><div class="hair"></div>`
+  return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }
 
 // ---------- your coordinators ----------
@@ -956,9 +956,13 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
 
 // ---------- the panel ----------
 
-/** The parts the page places separately: the cockpit row (beside the static search control in the
- *  top bar), its opened stats below the bar, the scrolling middle, and the pinned footer. */
-export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: string; main: string; footer: string } {
+/**
+ * The parts the page places separately: the cockpit row (beside the static search control in the top
+ * bar), its opened stats below the bar, the scrolling middle (the tree), what asks you (Up next),
+ * pinned below it, and the pinned footer. Up next sits at the bottom so the tree never moves when an
+ * ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
+ */
+export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: string; main: string; attention: string; footer: string } {
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   const all = snap.rows.flatMap((r) => r.agents)
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
@@ -972,7 +976,7 @@ export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: s
       found.length
         ? found.map((r) => `<button class="item" data-open="${esc(r.id)}">${character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
         : '<div class="empty">No matching workspaces</div>'
-    }</div>`, footer: '' }
+    }</div>`, attention: '', footer: '' }
   }
 
   // Sleep and remove are in the rows' menus. The first nine chats wear their Option+digit.
@@ -982,10 +986,13 @@ export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: s
 
   const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 
-  return { cockpit: cockpit(snap, ui), copen, main: [
-    upNext(asking, all, snap.coordinators, ui),
-    `<div class="tree"><div class="label">Coordinators</div>${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`
-  ].join(''), footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : '' }
+  return {
+    cockpit: cockpit(snap, ui),
+    copen,
+    main: `<div class="tree"><div class="label">Coordinators</div>${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
+    attention: upNext(asking, all, snap.coordinators, ui),
+    footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : ''
+  }
 }
 
 // ---------- looks for new coordinators ----------
