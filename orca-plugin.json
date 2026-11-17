@@ -42,12 +42,86 @@
       {
         "id": "flow.update",
         "title": "Update Orca Flow"
+      },
+      {
+        "id": "chat.1",
+        "title": "Open chat 1 in Orca Flow"
+      },
+      {
+        "id": "chat.2",
+        "title": "Open chat 2 in Orca Flow"
+      },
+      {
+        "id": "chat.3",
+        "title": "Open chat 3 in Orca Flow"
+      },
+      {
+        "id": "chat.4",
+        "title": "Open chat 4 in Orca Flow"
+      },
+      {
+        "id": "chat.5",
+        "title": "Open chat 5 in Orca Flow"
+      },
+      {
+        "id": "chat.6",
+        "title": "Open chat 6 in Orca Flow"
+      },
+      {
+        "id": "chat.7",
+        "title": "Open chat 7 in Orca Flow"
+      },
+      {
+        "id": "chat.8",
+        "title": "Open chat 8 in Orca Flow"
+      },
+      {
+        "id": "chat.9",
+        "title": "Open chat 9 in Orca Flow"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "chat.1",
+        "key": "Alt+1"
+      },
+      {
+        "command": "chat.2",
+        "key": "Alt+2"
+      },
+      {
+        "command": "chat.3",
+        "key": "Alt+3"
+      },
+      {
+        "command": "chat.4",
+        "key": "Alt+4"
+      },
+      {
+        "command": "chat.5",
+        "key": "Alt+5"
+      },
+      {
+        "command": "chat.6",
+        "key": "Alt+6"
+      },
+      {
+        "command": "chat.7",
+        "key": "Alt+7"
+      },
+      {
+        "command": "chat.8",
+        "key": "Alt+8"
+      },
+      {
+        "command": "chat.9",
+        "key": "Alt+9"
       }
     ],
     "statusBarItems": [
       {
         "id": "queue",
-        "text": "…",
+        "text": "\u2026",
         "icon": "bell",
         "tooltip": "Workspaces waiting on you",
         "command": "sidebar.next"

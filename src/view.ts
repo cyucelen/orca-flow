@@ -715,7 +715,7 @@ export const worktreeLead = (row: WorkspaceRow): AgentInfo | undefined =>
 const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined) =>
   Boolean(c.active) && (focused ? !!c.session && focused.includes(c.session.paneKey) : true)
 
-function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, indent: boolean, ui: UiState, done = false, current = false): string {
+function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, indent: boolean, ui: UiState, done = false, current = false, num?: number): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
   // A worker nested under its lead shares its worktree: the lead's row already shows project, PR and age.
   const right = status ?? (indent ? '' : `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${prBadge(p.row.pr)}<span>${ago(p.row.lastActivityAt, ui.now)}</span>`)
@@ -724,9 +724,9 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
+    return `<div class="${cls}" ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button>${numBadge(num)}</div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${agentCharacter(p.a, p.row, all)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span>${numBadge(num)}</button>`
 }
 
 /**
@@ -775,10 +775,7 @@ const finishedOf = (placed: Placed[]) => {
 /** Rows keep the order their workstreams started in; agent activity never moves them. */
 const byStart = (x: Placed, y: Placed) => x.row.createdAt - y.row.createdAt || x.a.paneKey.localeCompare(y.a.paneKey)
 
-function coordinatorBlock(c: Coordinator & { you?: boolean }, mine: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused?: string[] | null): string {
-  // You only shows when you have chats; a coordinator always shows, so you can open it.
-  if (c.you && mine.length === 0) return ''
-  mine = [...mine].sort(byStart)
+function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined, nums: Map<string, number>): string {
   const single = c.repos.length === 1 ? c.repos[0] : null
   const color = c.look?.color ?? (single ? colorOf(single) : NEUTRAL)
   const shape: Shape = c.you ? 'solo' : (c.look?.shape ?? 'pentagon')
@@ -792,22 +789,78 @@ function coordinatorBlock(c: Coordinator & { you?: boolean }, mine: Placed[], al
   const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
   const ask = asking ? askKindOf(asking) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
-  const panes = new Set(mine.map((p) => p.a.paneKey))
-  const roots = mine.filter((p) => !p.a.leadPane || !panes.has(p.a.leadPane))
   const done = (p: Placed) => faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all)
-  const line = (p: Placed, indent: boolean) => agentLine(p, all, coordinators, !single, indent, ui, done(p), isCurrent(p.a, p.row, focused))
-  const body = roots
-    .map((p) => line(p, false) + mine.filter((w) => w.a.leadPane === p.a.paneKey).map((w) => line(w, true)).join(''))
-    .join('')
+  const body = lines.map(({ p, indent }) => agentLine(p, all, coordinators, !single, indent, ui, done(p), isCurrent(p.a, p.row, focused), nums.get(`agent:${p.a.paneKey}`))).join('')
   const current = !c.you && coordinatorCurrent(c, focused)
   const folded = ui.folded.has(c.key)
-  const head = `${tipped(character(color, shape, face, 28, true, ask), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
+  const head = `${tipped(character(color, shape, face, 28, true, ask), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${numBadge(nums.get(`coordinator:${c.key}`))}`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${head}</button>`
     : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}><button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${head}</button>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
+
+// ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
+
+/** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */
+type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; indent: boolean }[] }
+
+/**
+ * The coordinators tree top to bottom: active coordinators (a session or a team), then You when you
+ * have chats, then sleeping ones. Each group keeps a stable order, so nothing moves until a
+ * coordinator wakes up or goes to sleep. The tree holds every open session in its place: what runs,
+ * done agents with work in flight, and finished ones (dimmed) that still hold a terminal.
+ */
+function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] {
+  const all = snap.rows.flatMap((r) => r.agents)
+  const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
+  const live = placed.filter((p) => faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
+  const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
+  const awake = (c: Coordinator) => Boolean(c.session) || teamOf(c.key).length > 0
+  const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
+  return [...snap.coordinators.filter(awake), you, ...snap.coordinators.filter((c) => !awake(c))].flatMap((c) => {
+    const mine = teamOf(c.key).sort(byStart)
+    // You only shows when you have chats; a coordinator always shows, so you can open it.
+    if ('you' in c && mine.length === 0) return []
+    const panes = new Set(mine.map((p) => p.a.paneKey))
+    const roots = mine.filter((p) => !p.a.leadPane || !panes.has(p.a.leadPane))
+    const lines = roots.flatMap((p) => [{ p, indent: false }, ...mine.filter((w) => w.a.leadPane === p.a.paneKey).map((w) => ({ p: w, indent: true }))])
+    return [{ c, mine, lines }]
+  })
+}
+
+/** How many chats get a shortcut: Option+1 to Option+9. */
+export const CHAT_KEYS = 9
+/** Where the panel keeps its folded groups (plugin storage), so the worker's numbers skip them too. */
+export const FOLDED_KEY = 'folded'
+
+/** What a chat shortcut opens, the way a click on its row does; `key` is the row's data-menu. */
+export type ChatTarget = { key: string } & ({ coordinator: string } | { workspaceId: string; terminal?: string })
+
+/**
+ * The chats Option+1..9 open, in the order the tree shows them: each coordinator, then its leads
+ * with their workers, then the chats you started, then sleeping coordinators. A folded group's team
+ * is hidden, so it takes no numbers. The panel's badges and the worker's commands both read this.
+ */
+export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
+  return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
+    ...('you' in c ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
+    ...(folded.has(c.key) ? [] : lines.map(({ p }): ChatTarget => p.row.coordinator
+      ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
+      : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
+  ]).slice(0, CHAT_KEYS)
+}
+
+/** The chat number of an Option+digit press (by physical key: on a Mac, Option+1 types "¡"), or null. */
+export function chatDigit(e: { code: string; altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }): number | null {
+  if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return null
+  const m = /^Digit([1-9])$/.exec(e.code)
+  return m && Number(m[1]) <= CHAT_KEYS ? Number(m[1]) : null
+}
+
+/** A row's shortcut, shown on its right; brighter while Option is held in the panel. */
+const numBadge = (n: number | undefined) => (n ? `<kbd class="num" data-tip="Option+${n} opens this chat">⌥${n}</kbd>` : '')
 
 function foldList(key: string, title: string, rows: string[], ui: UiState, count = rows.length): string {
   if (count === 0) return ''
@@ -822,7 +875,6 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
 export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: string; main: string; footer: string } {
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   const all = snap.rows.flatMap((r) => r.agents)
-  const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.
   const asking = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
@@ -837,20 +889,10 @@ export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: s
     }</div>`, footer: '' }
   }
 
-  // The tree holds every open session in its place: what runs, done agents with work in flight, and
-  // finished ones (dimmed) that still hold a terminal. Sleep and remove are in their menus.
-  const live = placed.filter((p) => faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
+  // Sleep and remove are in the rows' menus. The first nine chats wear their Option+digit.
   const idleRows = snap.rows.filter((r) => r.agents.length === 0 && !needsYou(r)).sort((x, y) => x.createdAt - y.createdAt)
-  // Active coordinators (a session or a team) and You lead; sleeping coordinators follow, just above
-  // New coordinator. Each group keeps a stable order, so nothing moves until a
-  // coordinator wakes up or goes to sleep.
-  const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
-  const awake = (c: Coordinator) => Boolean(c.session) || teamOf(c.key).length > 0
-  const active = snap.coordinators.filter(awake)
-  const sleeping = snap.coordinators.filter((c) => !awake(c))
-  const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
-  // Sleeping coordinators use the same full row; they only come after the active ones.
-  const tree = [...active, you, ...sleeping].map((c) => coordinatorBlock(c, teamOf(c.key), all, snap.coordinators, ui, snap.focusedPanes)).join('')
+  const nums = new Map(chatTargets(snap, ui.folded).map((t, i) => [t.key, i + 1]))
+  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes, nums)).join('')
 
   const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 

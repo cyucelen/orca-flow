@@ -1,7 +1,8 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
-// All UI state (what is open or folded) lives here; the worker only sends data.
+// All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
+// from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
-import { busy, character, crew, emptyUi, faceOf, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
+import { busy, character, chatDigit, chatTargets, crew, emptyUi, faceOf, FOLDED_KEY, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
 import { pressGate } from './press.ts'
 
 const ui = emptyUi()
@@ -128,7 +129,10 @@ document.addEventListener('click', (event) => {
     const isOpen = el.getAttribute('aria-expanded') === 'true'
     if (isOpen) { ui.opened.delete(d.brief); ui.closed.add(d.brief) } else { ui.closed.delete(d.brief); ui.opened.add(d.brief) }
   }
-  if (d.fold) toggle(ui.folded, d.fold)
+  if (d.fold) {
+    toggle(ui.folded, d.fold)
+    sendFolds()
+  }
   if (d.unfold) {
     // One footer fold open at a time keeps the footer from taking over the panel.
     const wasOpen = ui.unfolded.has(d.unfold)
@@ -214,6 +218,37 @@ searchOpen.addEventListener('click', () => setSearching(true))
 $('search-close').addEventListener('click', () => setSearching(false))
 searchEl.addEventListener('input', () => { ui.query = searchEl.value.trim(); draw() })
 searchEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearching(false) })
+
+// ---------- Option+1..9: open the nth chat of the tree ----------
+// Orca runs the chat.N commands (contributes.keybindings) anywhere outside this panel. Keys pressed
+// in the panel stay in its frame, so it opens the chat itself, the way a click on the row does.
+// Holding Option brightens the number badges.
+
+/** The worker numbers the chats too, and a folded group gives its team's numbers away: store the folds where it reads them. */
+function sendFolds(): void {
+  void orca.storage.set(FOLDED_KEY, [...ui.folded]).catch(() => null)
+}
+sendFolds()
+
+function openNth(n: number): void {
+  const t = snap ? chatTargets(snap, ui.folded)[n - 1] : undefined
+  if (!t) return
+  if ('coordinator' in t) void wake(t.coordinator)
+  else void orca.plugin.request('sidebar.open', t.terminal ? { workspaceId: t.workspaceId, terminal: t.terminal } : { workspaceId: t.workspaceId })
+}
+
+const holdingOption = (on: boolean) => document.body.classList.toggle('option', on)
+document.addEventListener('keydown', (e) => {
+  holdingOption(e.altKey && !e.metaKey && !e.ctrlKey)
+  // Typing in the search or name field keeps its characters.
+  if ((e.target as Element).closest('input, textarea')) return
+  const n = chatDigit(e)
+  if (n === null) return
+  e.preventDefault()
+  openNth(n)
+})
+document.addEventListener('keyup', (e) => holdingOption(e.altKey && !e.metaKey && !e.ctrlKey))
+window.addEventListener('blur', () => holdingOption(false))
 
 // ---------- tooltips (cockpit gauges, character status) ----------
 // One floating element for every [data-tip], in its tone: shown after a short hover, at once on keyboard

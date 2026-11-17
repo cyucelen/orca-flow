@@ -17,7 +17,7 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, scaffoldCoordinator, validateName, writeLook, type Lineage } from './coordinators.ts'
-import { askingRows, finishedAgents, freeLooks, showable } from './view.ts'
+import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { findTranscript, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
@@ -185,6 +185,24 @@ export async function openAgent(
   await orca.host.call('workspace.open', { workspaceId: input.workspaceId })
   if (input.terminal) await run(['terminal', 'switch', '--terminal', input.terminal]).catch((e: Error) => orca.log(`terminal switch failed: ${e.message}`))
   return { opened: true }
+}
+
+/**
+ * Option+N: opens the nth chat through the path a click on its row takes (a coordinator wakes or
+ * shows its session; an agent shows its workspace and its own tab). Says why when nothing opened.
+ */
+export async function openNthChat(
+  targets: ChatTarget[],
+  n: number,
+  open: { coordinator: (key: string) => Promise<{ ok: boolean; error?: string }>; chat: (input: { workspaceId: string; terminal?: string }) => Promise<unknown> }
+): Promise<string | undefined> {
+  const t = targets[n - 1]
+  if (!t) return `Orca Flow has no chat ${n}`
+  if ('coordinator' in t) {
+    const r = await open.coordinator(t.coordinator)
+    return r.ok ? undefined : r.error
+  }
+  await open.chat(t.terminal ? { workspaceId: t.workspaceId, terminal: t.terminal } : { workspaceId: t.workspaceId })
 }
 
 function runPs(): Promise<PsWorktree[]> {
@@ -697,7 +715,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   // Orca data, not the last snapshot (it can predate a wake or a worker restart), and ignore repeat
   // clicks in flight. A session the snapshot shows live opens at once.
   const opening = new Map<string, Promise<{ ok: boolean; error?: string }>>()
-  orca.panels.handle('sidebar.openCoordinator', async ({ key }) => {
+  const openCoordinator = async (key: string): Promise<{ ok: boolean; error?: string }> => {
     const c = readCoordinators().find((x) => x.key === key)
     if (!c) return { ok: false, error: `No coordinator ${key}` }
     const inFlight = opening.get(key)
@@ -711,7 +729,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     })().catch((e: Error) => ({ ok: false, error: e.message })).finally(() => opening.delete(key))
     opening.set(key, job)
     return job
-  })
+  }
+  orca.panels.handle('sidebar.openCoordinator', ({ key }) => openCoordinator(key))
 
   // ---------- context menu actions ----------
   orca.panels.handle('sidebar.setPriority', async ({ workspaceId, priority }) => {
@@ -765,12 +784,22 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
-  orca.panels.handle('sidebar.open', async (input) => {
+  const openChat = async (input: { workspaceId: string; terminal?: string }) => {
     const opened = await openAgent(orca, run, input)
     // A read already in flight predates the switch; read again after it.
     void (focusReading ?? Promise.resolve()).then(rereadFocus)
     return opened
-  })
+  }
+  orca.panels.handle('sidebar.open', (input) => openChat(input))
+
+  // Option+1..9 (contributes.keybindings): open the nth chat of the tree, as a click on its row does.
+  // The panel stores its folded groups, so the numbers skip what it hides, as its badges do.
+  for (let n = 1; n <= CHAT_KEYS; n++)
+    orca.commands.register(`chat.${n}`, async () => {
+      const folded = await orca.storage.get(FOLDED_KEY).catch(() => null)
+      const targets = chatTargets(latest ?? (await refresh()), new Set(Array.isArray(folded) ? folded.map(String) : []))
+      return openNthChat(targets, n, { coordinator: openCoordinator, chat: openChat })
+    })
 
   const summarizer = turnSummarizer({
     run: (job) => summarizePane({ ...job, goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),

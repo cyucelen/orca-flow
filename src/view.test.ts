@@ -1,7 +1,7 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { askingRows, askKindOf, character, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { askingRows, askKindOf, character, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { removeWorktree } from './cockpit.ts'
@@ -543,7 +543,7 @@ test("a worker nested under its lead shows no project, PR or age; the lead keeps
   const worker = agent('p-w', 'Fix card ask logic', 'working', { coordinator: 'main', leadPane: 'p-lead' })
   const s: Snapshot = { ...snap, rows: [row('bugs', 'orca-plugin', [lead, worker], { pr: { number: 42, url: 'u', state: 'open', checks: 'success' }, lastActivityAt: 1 })] }
   const { main } = render(s, { ...emptyUi(), now: 3_600_001 })
-  const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span></button>`).exec(main)![1]
+  const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span>(?:<kbd class="num"[^>]*>⌥\\d</kbd>)?</button>`).exec(main)![1]
   assert.match(right('p-lead'), /<span class="soft">orca-plugin<\/span><span class="pr pr-ok"[\s\S]*<span>1h<\/span>$/, 'the lead row keeps project, PR and age')
   assert.equal(right('p-w'), '', 'the nested worker row has none of them')
 })
@@ -641,7 +641,7 @@ test('only a lead that reported worker_done shows remove on its row; progress sh
   const inline = (agents: AgentInfo[], over: Partial<WorkspaceRow> = {}) => /data-remove=/.test(render({ ...snap, rows: [row('ob', 'shop', agents, over)] }, emptyUi()).main)
   const ui = emptyUi()
   const s: Snapshot = { ...snap, rows: [row('ob', 'shop', [lead()])] }
-  assert.match(render(s, ui).main, /<div class="item finished" data-menu="agent:p-ob"[^>]*>[\s\S]*?<span class="t" data-open="ob" data-terminal="term-1" role="button" tabindex="0">Onboarding<\/span>[\s\S]*?<button class="act" data-remove="ob" data-target="agent:p-ob">remove<\/button><\/div>/)
+  assert.match(render(s, ui).main, /<div class="item finished" data-menu="agent:p-ob"[^>]*>[\s\S]*?<span class="t" data-open="ob" data-terminal="term-1" role="button" tabindex="0">Onboarding<\/span>[\s\S]*?<button class="act" data-remove="ob" data-target="agent:p-ob">remove<\/button>(<kbd class="num"[^>]*>⌥\d<\/kbd>)?<\/div>/)
   assert.equal(inline([lead({ dispatch: 'open' })]), false, 'not before worker_done')
   assert.equal(inline([lead({ dispatch: null })]), false, 'not without a known dispatch')
   assert.equal(inline([lead({ summary: summary({ role: 'worker' }) })]), false, 'a worker keeps it in the menu')
@@ -817,4 +817,62 @@ test('update button: hidden with nothing to update, then what the update needs o
   const failed = updateButton({ kind: 'failed', version: '0.2.16', reason: 'Could not read <github.com>' })
   assert.match(failed, /data-tip="Update to 0\.2\.16 failed: Could not read &lt;github\.com&gt;\nClick to try again" data-tone="danger"/, 'the reason, escaped, and a retry')
   assert.match(failed, /class="icon update failed"/)
+})
+
+// ---------- Option+1..9 ----------
+
+test('chat numbers follow the tree: each coordinator, its leads with their workers, your chats, then sleeping coordinators', () => {
+  const sleepy = { ...snap, coordinators: [...snap.coordinators, { key: 'zzz', name: 'zzz', repos: [], workspaceId: 'ws-z' }] }
+  const targets = chatTargets(sleepy)
+  assert.deepEqual(targets.map((t) => t.key), [
+    'coordinator:alpha', 'agent:p-coord', 'agent:p-dup', // alpha, its lead and the worker nested under it
+    'coordinator:main', 'agent:p-hook',
+    'agent:p-cleanup', 'agent:p-pricing', // You has no session: only your chats, in start order, are numbered
+    'coordinator:zzz' // asleep, below You
+  ])
+  // Each opens what a click on its row opens.
+  assert.deepEqual(targets[0], { key: 'coordinator:alpha', coordinator: 'alpha' })
+  assert.deepEqual(targets[1], { key: 'agent:p-coord', workspaceId: 'coord' })
+  // The badges read the same list, top to bottom.
+  const { main } = render(sleepy, emptyUi())
+  const tree = main.slice(main.indexOf('class="tree"'))
+  assert.deepEqual([...tree.matchAll(/⌥(\d)/g)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8])
+  assert.match(tree, /data-coordinator="alpha"[^>]*>.*?⌥1<\/kbd>/)
+  assert.match(tree, /data-open="pricing"[^>]*>.*?<kbd class="num" data-tip="Option\+7 opens this chat">⌥7<\/kbd>/)
+  noMatch(main.slice(0, main.indexOf('class="tree"')), /⌥\d/, 'Up next has no numbers')
+})
+
+test("a folded group's team gives its numbers to the rows below; a terminal goes along", () => {
+  const withTerm = { ...snap, rows: snap.rows.map((r) => (r.id === 'pricing' ? { ...r, agents: [{ ...r.agents[0], terminal: 'term-p' }] } : r)) }
+  const ui = emptyUi()
+  ui.folded.add('alpha')
+  const targets = chatTargets(withTerm, ui.folded)
+  assert.deepEqual(targets.map((t) => t.key), ['coordinator:alpha', 'coordinator:main', 'agent:p-hook', 'agent:p-cleanup', 'agent:p-pricing'])
+  assert.deepEqual(targets[4], { key: 'agent:p-pricing', workspaceId: 'pricing', terminal: 'term-p' })
+  const tree = render(withTerm, ui).main
+  assert.deepEqual([...tree.matchAll(/⌥(\d)/g)].map((m) => Number(m[1])), [1, 2, 3, 4, 5])
+})
+
+test('only the first nine chats get a number', () => {
+  const many = { ...snap, coordinators: [], rows: Array.from({ length: 12 }, (_, i) => row(`w${i}`, 'shop', [agent(`p${i}`, `Chat ${i}`, 'working')], { createdAt: i })) }
+  const targets = chatTargets(many)
+  assert.equal(targets.length, 9)
+  assert.deepEqual(targets.map((t) => t.key).slice(-1), ['agent:p8'])
+  const { main } = render(many, emptyUi())
+  assert.equal((main.match(/class="num"/g) ?? []).length, 9)
+  assert.equal(chatTargets({ rows: [], coordinators: [] }).length, 0)
+})
+
+test('Option+digit by physical key, without other modifiers', () => {
+  const key = (code: string, over: Partial<{ altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }> = {}) =>
+    chatDigit({ code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false, ...over })
+  assert.equal(key('Digit1'), 1)
+  assert.equal(key('Digit9'), 9)
+  assert.equal(key('Digit0'), null)
+  assert.equal(key('KeyA'), null)
+  assert.equal(key('Numpad1'), null)
+  assert.equal(key('Digit1', { altKey: false }), null, 'a plain digit types')
+  assert.equal(key('Digit1', { metaKey: true }), null, "Cmd+Option is Orca's")
+  assert.equal(key('Digit1', { ctrlKey: true }), null)
+  assert.equal(key('Digit1', { shiftKey: true }), null)
 })

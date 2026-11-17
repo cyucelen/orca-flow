@@ -359,3 +359,6 @@ button.item.coord { padding: 5px 6px; }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
 /* The agent (or coordinator) whose workspace is focused in Orca. Inset, so rows never shift. */
 .item.current { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 28%, transparent); }
+/* A chat's Option+digit, quiet at the row's end; holding Option in the panel lights them all. */
+.num { font: 500 10px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; color: var(--faint); opacity: .8; padding: 2px 3px; border-radius: 3px; min-width: 18px; text-align: center; }
+body.option .num { opacity: 1; color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, transparent); }

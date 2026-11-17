@@ -941,3 +941,40 @@ test("a session in a coordinator's folder is a coordinator, even before it start
       summary: { title: 'Bounti', glance: 'Unblock?', goal: '', since: '', needs: { type: 'decision', ask: 'Unblock?', options: [] }, effort: 'quick', priority: 'P2', role: 'coordinator', updatedAt: 1 } } }] })
   assert.equal(status.text, '1 waiting', 'the status bar counts a coordinator asking you')
 })
+
+test('Option+1..9 run chat.1..9, which open the nth chat the way a click on its row does', async () => {
+  const { readFileSync } = await import('node:fs')
+  const manifest = JSON.parse(readFileSync(decodeURIComponent(new URL('../orca-plugin.json', import.meta.url).pathname), 'utf8'))
+  const ids = new Set(manifest.contributes.commands.map((c: { id: string }) => c.id))
+  assert.deepEqual(manifest.contributes.keybindings, Array.from({ length: 9 }, (_, i) => ({ command: `chat.${i + 1}`, key: `Alt+${i + 1}` })))
+  for (const k of manifest.contributes.keybindings) assert.ok(ids.has(k.command), `${k.command} is a contributed command`)
+
+  const calls: unknown[] = []
+  const open = {
+    coordinator: async (key: string) => (calls.push(['coordinator', key]), key === 'gone' ? { ok: false, error: 'No coordinator gone' } : { ok: true }),
+    chat: async (input: { workspaceId: string; terminal?: string }) => calls.push(['chat', input])
+  }
+  const targets = [
+    { key: 'coordinator:alpha', coordinator: 'alpha' },
+    { key: 'agent:p1', workspaceId: 'identity:w1', terminal: 'term-1' },
+    { key: 'agent:p2', workspaceId: 'identity:w2' },
+    { key: 'coordinator:gone', coordinator: 'gone' }
+  ]
+  assert.equal(await main.openNthChat(targets, 1, open), undefined)
+  assert.equal(await main.openNthChat(targets, 2, open), undefined)
+  assert.equal(await main.openNthChat(targets, 3, open), undefined)
+  assert.equal(await main.openNthChat(targets, 4, open), 'No coordinator gone')
+  assert.equal(await main.openNthChat(targets, 5, open), 'Orca Flow has no chat 5')
+  assert.deepEqual(calls, [
+    ['coordinator', 'alpha'],
+    ['chat', { workspaceId: 'identity:w1', terminal: 'term-1' }],
+    ['chat', { workspaceId: 'identity:w2' }],
+    ['coordinator', 'gone']
+  ])
+})
+
+test('the worker may register every chat command', async () => {
+  const worker = await mountWorker(main, { host: mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } }) })
+  assert.deepEqual(worker.refusals, [], 'chat.1..9 are declared, so registering them is allowed')
+  await worker.deactivate()
+})
