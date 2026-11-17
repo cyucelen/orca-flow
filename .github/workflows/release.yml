@@ -7,7 +7,10 @@ on:
     types: [closed]
     branches: [main]
 
-# One release at a time, in merge order. Never cancel a release halfway.
+# One release at a time, in merge order. Never cancel a release halfway. GitHub keeps only one
+# waiting run per group and cancels the older waiting one, so when PRs merge quickly some get no run
+# of their own. Nothing is lost: each release's notes list every commit on main since the newest
+# tag, so the next run names them (and commits pushed straight to main).
 concurrency:
   group: release
   cancel-in-progress: false

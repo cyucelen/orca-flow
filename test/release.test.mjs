@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { commitMessage, decide, newestTag, outputs, prFromEvent, tagMessage, withVersion } from '../scripts/release.mjs'
+import { commitMessage, decide, newestTag, notesFrom, outputs, prFromEvent, tagMessage, withVersion } from '../scripts/release.mjs'
 
 const tag = (v, message = `Orca Flow ${v}\n\n- something`) => ({ name: `v${v}`, message })
 const tags = [tag('0.2.9'), tag('0.2.28'), tag('0.2.30')]
 const pr = (extra = {}) => ({ number: 12, title: 'X', labels: [], head: 'feature', body: '', ...extra })
-const at = (manifest, p = pr(), t = tags, handNotes = '') => decide({ manifest, tags: t, pr: p, handNotes })
+const at = (manifest, p = pr(), t = tags, handNotes = '', commits = []) => decide({ manifest, tags: t, pr: p, handNotes, commits })
 
 test('newest tag compares numbers, not text, and ignores other tags', () => {
   assert.equal(newestTag(['v0.2.9', 'v0.2.30', 'v0.2.28', 'latest', 'v1.0.0-rc1']), '0.2.30')
@@ -72,6 +72,8 @@ test('the manifest rewrite only changes the version and keeps the formatting', (
   const version = JSON.parse(text).version
   assert.equal(out, text.replace(`"version": "${version}"`, '"version": "9.9.9"'))
   assert.ok(out.endsWith('}\n'))
+  // Escapes stay as written.
+  assert.equal(withVersion('{\n  "version": "0.1.0",\n  "text": "\\u2026"\n}\n', '0.1.1'), '{\n  "version": "0.1.1",\n  "text": "\\u2026"\n}\n')
 })
 
 test('outputs: plain values as key=value, notes and messages as heredocs', () => {
@@ -81,4 +83,25 @@ test('outputs: plain values as key=value, notes and messages as heredocs', () =>
 test('PR fields come from the pull_request event', () => {
   const event = { pull_request: { number: 12, title: 'X', body: null, head: { ref: 'feature' }, labels: [{ name: 'release:minor' }] } }
   assert.deepEqual(prFromEvent(event), { number: 12, title: 'X', body: '', head: 'feature', labels: ['release:minor'] })
+})
+
+const commit = (subject, author = 'Someone') => ({ subject, author })
+
+test('notes list every commit on main since the newest tag, oldest first', () => {
+  const commits = [commit('Option+1..9 opens chats (#13)'), commit('A resumed agent keeps its lead'), commit('X (#12)')]
+  assert.equal(at('0.2.30', pr(), tags, '', commits).notes, '- Option+1..9 opens chats (#13)\n- A resumed agent keeps its lead\n- X (#12)')
+})
+
+test('notes skip release commits and bot commits', () => {
+  const commits = [commit('Orca Flow 0.2.31'), commit('Orca Flow 0.2.32 (#20)'), commit('Tidy', 'github-actions[bot]'), commit('X (#12)')]
+  assert.equal(notesFrom(commits), '- X (#12)')
+  assert.equal(notesFrom([commit('Orca Flow 0.2.31')]), '')
+})
+
+test('an empty range, or one with only release commits, falls back to the PR line', () => {
+  assert.equal(at('0.2.30', pr(), tags, '', []).notes, '- X (#12)')
+  assert.equal(at('0.2.30', pr(), tags, '', [commit('Orca Flow 0.2.30')]).notes, '- X (#12)')
+  // A hand-bumped version lists the commits too, unless its own release commit has notes.
+  assert.equal(at('0.3.0', pr(), tags, '', [commit('Y (#11)'), commit('X (#12)')]).notes, '- Y (#11)\n- X (#12)')
+  assert.equal(at('0.3.0', pr(), tags, '- Hand-written', [commit('X (#12)')]).notes, '- Hand-written')
 })

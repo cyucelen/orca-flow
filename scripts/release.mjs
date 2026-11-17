@@ -17,6 +17,10 @@
 //   release. Release PRs never bump.
 // - Otherwise bump from max(newest tag, manifest): patch, or minor/major with `release:minor` or
 //   `release:major`.
+//
+// The notes list every first-parent commit on main since the newest tag, one "- <subject>" line
+// each, so a release also names commits pushed straight to main and PRs whose own run GitHub
+// cancelled. Release commits and bot commits are left out. An empty range falls back to the PR.
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -60,6 +64,16 @@ export function noteLine({ number, title }) {
   return `- ${title.trim()} (#${number})`
 }
 
+const RELEASE_COMMIT = /^Orca Flow \d+\.\d+\.\d+( \(#\d+\))?$/
+
+/** Note lines for commits since the newest tag ({ subject, author }, oldest first), or '' when none count. */
+export function notesFrom(commits = []) {
+  return commits
+    .filter((c) => !RELEASE_COMMIT.test(c.subject.trim()) && !/\[bot\]$/.test(c.author ?? ''))
+    .map((c) => `- ${c.subject.trim()}`)
+    .join('\n')
+}
+
 /** The commit message, as earlier release commits read: "Orca Flow X.Y.Z", a blank line, the notes. */
 export function commitMessage(version, notes) {
   return `Orca Flow ${version}\n\n${notes}`
@@ -83,10 +97,11 @@ export function releasedPrs(tags) {
 /**
  * The release for one merged PR.
  * input: { manifest, tags: [{ name, message }], pr: { number, title, labels, head, body },
+ *          commits?: first-parent commits on main since the newest tag, [{ subject, author }] oldest first,
  *          handNotes?: notes written for a hand-bumped version (the body of its "Orca Flow X.Y.Z" commit) }
  * returns { release: false, reason } or { release: true, version, bump, notes, reason }
  */
-export function decide({ manifest, tags, pr, handNotes }) {
+export function decide({ manifest, tags, pr, commits, handNotes }) {
   const labels = pr.labels ?? []
   if (labels.includes('no-release')) return { release: false, reason: 'no-release label' }
   if (!parseVersion(manifest)) throw new Error(`manifest version is not X.Y.Z: ${manifest}`)
@@ -101,21 +116,26 @@ export function decide({ manifest, tags, pr, handNotes }) {
   const newest = newestTag(tags.map((t) => t.name))
   const release = isReleasePr(pr)
   if (!newest || compareVersions(manifest, newest) > 0) {
-    const notes = handNotes?.trim() || (release && pr.body?.trim()) || noteLine(pr)
+    const notes = handNotes?.trim() || notesFrom(commits) || (release && pr.body?.trim()) || noteLine(pr)
     return { release: true, version: manifest, bump: false, notes, reason: `manifest ${manifest} is above the newest tag ${newest ?? '(none)'}` }
   }
   if (release) return { release: false, reason: `release PR for ${manifest}, already tagged` }
 
   // Here the manifest is at or below the newest tag, so max(newest tag, manifest) is the tag.
   const level = bumpLevel(labels)
-  return { release: true, version: bumpVersion(newest, level), bump: true, notes: noteLine(pr), reason: `${level} bump from ${newest}` }
+  return { release: true, version: bumpVersion(newest, level), bump: true, notes: notesFrom(commits) || noteLine(pr), reason: `${level} bump from ${newest}` }
 }
 
-/** The manifest text with a new version, formatted as the file is: 2-space JSON and a trailing newline. */
+/**
+ * The manifest text with a new top-level version and every other byte unchanged. A JSON round trip
+ * would not do: it rewrites escapes such as "\u2026" in the file.
+ */
 export function withVersion(text, version) {
-  const json = JSON.parse(text)
-  json.version = version
-  return `${JSON.stringify(json, null, 2)}\n`
+  const top = /^(  "version"\s*:\s*")[^"]*(")/m
+  if (!top.test(text)) throw new Error('no top-level "version" in the manifest')
+  const out = text.replace(top, `$1${version}$2`)
+  if (JSON.parse(out).version !== version) throw new Error('the manifest version did not change')
+  return out
 }
 
 /** $GITHUB_OUTPUT lines; multi-line values use a heredoc with a delimiter they cannot contain. */
@@ -142,6 +162,16 @@ function gitTags() {
     .map((s) => ({ name: s.split('\0')[0], message: s.split('\0')[1] ?? '' }))
 }
 
+/** First-parent commits on HEAD since the tag, oldest first; none without a tag. */
+function commitsSince(tag) {
+  if (!tag) return []
+  return git('log', '--first-parent', '--reverse', '--format=%an%x00%s%x01', `${tag}..HEAD`)
+    .split('\x01')
+    .map((s) => s.replace(/^\n/, ''))
+    .filter(Boolean)
+    .map((s) => ({ author: s.split('\0')[0], subject: s.split('\0')[1] ?? '' }))
+}
+
 /** The body of the newest commit titled "Orca Flow <version>" (squashed: "... (#n)"), without trailers, or ''. */
 function handNotesFor(version) {
   const title = `^Orca Flow ${version.replaceAll('.', '\\.')}( \\(#[0-9]+\\))?$`
@@ -159,7 +189,8 @@ function main(argv) {
   const text = readFileSync(manifestPath, 'utf8')
   const manifest = JSON.parse(text).version
   const tags = gitTags()
-  const r = decide({ manifest, tags, pr, handNotes: handNotesFor(manifest) })
+  const newest = newestTag(tags.map((t) => t.name))
+  const r = decide({ manifest, tags, pr, commits: commitsSince(newest && `v${newest}`), handNotes: handNotesFor(manifest) })
   console.error(`release: ${r.release ? `v${r.version}` : 'none'} (${r.reason})`)
   if (!r.release) return process.stdout.write(outputs({ release: false }))
 
