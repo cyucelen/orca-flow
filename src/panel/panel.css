@@ -453,6 +453,3 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.ok { color: #5fbf8a; }
 .rstatus.bad { color: var(--danger); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
-/* A chat's Option+digit, quiet at the row's end; holding Option in the panel lights them all. */
-.num { font: 500 10px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; color: var(--faint); opacity: .8; padding: 2px 3px; border-radius: 3px; min-width: 18px; text-align: center; }
-body.option .num { opacity: 1; color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, transparent); }

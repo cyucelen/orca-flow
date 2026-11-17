@@ -227,7 +227,6 @@ searchEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearchi
 // ---------- Option+1..9: open the nth chat of the tree ----------
 // Orca runs the chat.N commands (contributes.keybindings) anywhere outside this panel. Keys pressed
 // in the panel stay in its frame, so it opens the chat itself, the way a click on the row does.
-// Holding Option brightens the number badges.
 
 /** The worker numbers the chats too, and a folded group gives its team's numbers away: store the folds where it reads them. */
 function sendFolds(): void {
@@ -242,9 +241,7 @@ function openNth(n: number): void {
   else void orca.plugin.request('sidebar.open', t.terminal ? { workspaceId: t.workspaceId, terminal: t.terminal } : { workspaceId: t.workspaceId })
 }
 
-const holdingOption = (on: boolean) => document.body.classList.toggle('option', on)
 document.addEventListener('keydown', (e) => {
-  holdingOption(e.altKey && !e.metaKey && !e.ctrlKey)
   // Typing in the search or name field keeps its characters.
   if ((e.target as Element).closest('input, textarea')) return
   const n = chatDigit(e)
@@ -252,8 +249,6 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault()
   openNth(n)
 })
-document.addEventListener('keyup', (e) => holdingOption(e.altKey && !e.metaKey && !e.ctrlKey))
-window.addEventListener('blur', () => holdingOption(false))
 
 // ---------- tooltips (cockpit gauges, character status) ----------
 // One floating element for every [data-tip], in its tone: shown after a short hover, at once on keyboard

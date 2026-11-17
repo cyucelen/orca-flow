@@ -600,7 +600,7 @@ test('each chat shows its worktree\'s branch, colored per branch, with the PR nu
   assert.equal(branch('p-lead'), 'clock', 'the lead shows its branch, user/ prefix stripped')
   assert.deepEqual(prs('p-lead'), [6241], 'and its PR\'s number')
   assert.equal(color('p-lead'), clock, 'in its branch\'s color')
-  assert.match(line('p-lead'), /Clock terminal<\/span><span class="r"><span class="br">[\s\S]*?#6241<\/span><\/span><span class="age">1h<\/span><\/span><kbd class="num"[^>]*>⌥2<\/kbd>/, 'branch, then age; the shortcut badge stays last')
+  assert.match(line('p-lead'), /Clock terminal<\/span><span class="r"><span class="br">[\s\S]*?#6241<\/span><\/span><span class="age">1h<\/span><\/span><\/button>$/, 'branch, then age, last on the row')
   assert.equal(branch('p-same'), null, 'a worker in its lead\'s worktree does not repeat the branch')
   assert.deepEqual(prs('p-same'), [])
   assert.equal(color('p-same'), clock, 'but wears its color, so it groups with its lead')
@@ -614,7 +614,7 @@ test('each chat shows its worktree\'s branch, colored per branch, with the PR nu
   assert.equal(color('p-bare'), null)
   noMatch(line('p-bare'), /class="(br|pr)[ "]|data-branch|class="gh"/)
   assert.deepEqual(prs('p-gone'), [6113], 'a finished lead shows its merged PR')
-  assert.match(line('p-gone'), /class="pr pr-merged"[\s\S]*<button class="act" data-remove="cleanup"[^>]*>remove<\/button><kbd class="num"/, 'next to its remove button and shortcut')
+  assert.match(line('p-gone'), /class="pr pr-merged"[\s\S]*<button class="act" data-remove="cleanup"[^>]*>remove<\/button><\/div>$/, 'next to its remove button, last on the row')
   const current: Snapshot = { ...s, rows: s.rows.map((r) => (r.id === 'clock' ? { ...r, active: true } : r)) }
   assert.match(render(current, emptyUi()).main, /class="item current"[^>]*data-menu="agent:p-lead" aria-current="true" data-branch="\d"[\s\S]*?#6241</, 'the current row keeps its border and its branch')
 })
@@ -736,7 +736,7 @@ test("a worker nested under its lead shows no project, PR or age; the lead keeps
   const worker = agent('p-w', 'Fix card ask logic', 'working', { coordinator: 'main', leadPane: 'p-lead' })
   const s: Snapshot = { ...snap, rows: [row('bugs', 'orca-plugin', [lead, worker], { pr: { number: 42, url: 'u', state: 'open', checks: 'success' }, lastActivityAt: 1 })] }
   const { main } = render(s, { ...emptyUi(), now: 3_600_001 })
-  const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span>(?:<kbd class="num"[^>]*>⌥\\d</kbd>)?</button>`).exec(main)![1]
+  const right = (pane: string) => new RegExp(`data-menu="agent:${pane}"[\\s\\S]*?<span class="r">([\\s\\S]*?)</span></button>`).exec(main)![1]
   assert.match(right('p-lead'), /<span class="soft">orca-plugin<\/span><span class="br">[\s\S]*class="pr pr-ok"[\s\S]*<span class="age">1h<\/span>$/, 'the lead row keeps project, PR and age')
   assert.equal(right('p-w'), '', 'the nested worker row has none of them')
 })
@@ -834,7 +834,7 @@ test('only a lead that reported worker_done shows remove on its row; progress sh
   const inline = (agents: AgentInfo[], over: Partial<WorkspaceRow> = {}) => /data-remove=/.test(render({ ...snap, rows: [row('ob', 'shop', agents, over)] }, emptyUi()).main)
   const ui = emptyUi()
   const s: Snapshot = { ...snap, rows: [row('ob', 'shop', [lead()])] }
-  assert.match(render(s, ui).main, /<div class="item finished" data-menu="agent:p-ob"[^>]*>[\s\S]*?<span class="t" data-open="ob" data-terminal="term-1" role="button" tabindex="0">Onboarding<\/span>[\s\S]*?<button class="act" data-remove="ob" data-target="agent:p-ob">remove<\/button>(<kbd class="num"[^>]*>⌥\d<\/kbd>)?<\/div>/)
+  assert.match(render(s, ui).main, /<div class="item finished" data-menu="agent:p-ob"[^>]*>[\s\S]*?<span class="t" data-open="ob" data-terminal="term-1" role="button" tabindex="0">Onboarding<\/span>[\s\S]*?<button class="act" data-remove="ob" data-target="agent:p-ob">remove<\/button><\/div>/)
   assert.equal(inline([lead({ dispatch: 'open' })]), false, 'not before worker_done')
   assert.equal(inline([lead({ dispatch: null })]), false, 'not without a known dispatch')
   assert.equal(inline([lead({ summary: summary({ role: 'worker' }) })]), false, 'a worker keeps it in the menu')
@@ -1016,6 +1016,9 @@ test('update button: hidden with nothing to update, then what the update needs o
 
 // ---------- Option+1..9 ----------
 
+/** The tree's chat rows (coordinators and agents), top to bottom, by the data-menu key chatTargets uses. */
+const treeChats = (main: string) => [...main.slice(main.indexOf('class="tree"')).matchAll(/data-menu="((?:coordinator|agent):[^"]+)"/g)].map((m) => m[1])
+
 test('chat numbers follow the tree: each coordinator, its leads with their workers, your chats, then sleeping coordinators', () => {
   const sleepy = { ...snap, coordinators: [...snap.coordinators, { key: 'zzz', name: 'zzz', repos: [], workspaceId: 'ws-z' }] }
   const targets = chatTargets(sleepy)
@@ -1028,13 +1031,11 @@ test('chat numbers follow the tree: each coordinator, its leads with their worke
   // Each opens what a click on its row opens.
   assert.deepEqual(targets[0], { key: 'coordinator:alpha', coordinator: 'alpha' })
   assert.deepEqual(targets[1], { key: 'agent:p-coord', workspaceId: 'coord' })
-  // The badges read the same list, top to bottom.
-  const { main } = render(sleepy, emptyUi())
-  const tree = main.slice(main.indexOf('class="tree"'))
-  assert.deepEqual([...tree.matchAll(/⌥(\d)/g)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8])
-  assert.match(tree, /data-coordinator="alpha"[^>]*>.*?⌥1<\/kbd>/)
-  assert.match(tree, /data-open="pricing"[^>]*>.*?<kbd class="num" data-tip="Option\+7 opens this chat">⌥7<\/kbd>/)
-  noMatch(render(sleepy, emptyUi()).attention, /⌥\d/, 'Up next has no numbers')
+  // Option+N opens the Nth row of the tree, top to bottom; the rows show no number.
+  const { main, attention } = render(sleepy, emptyUi())
+  assert.deepEqual(treeChats(main), targets.map((t) => t.key))
+  noMatch(main, /⌥|class="num"|<kbd/, 'no shortcut labels on the rows')
+  noMatch(attention, /⌥|class="num"|<kbd/, 'nor in Up next')
 })
 
 test("a folded group's team gives its numbers to the rows below; a terminal goes along", () => {
@@ -1044,8 +1045,9 @@ test("a folded group's team gives its numbers to the rows below; a terminal goes
   const targets = chatTargets(withTerm, ui.folded)
   assert.deepEqual(targets.map((t) => t.key), ['coordinator:alpha', 'coordinator:main', 'agent:p-hook', 'agent:p-cleanup', 'agent:p-pricing'])
   assert.deepEqual(targets[4], { key: 'agent:p-pricing', workspaceId: 'pricing', terminal: 'term-p' })
-  const tree = render(withTerm, ui).main
-  assert.deepEqual([...tree.matchAll(/⌥(\d)/g)].map((m) => Number(m[1])), [1, 2, 3, 4, 5])
+  const { main } = render(withTerm, ui)
+  assert.deepEqual(treeChats(main), targets.map((t) => t.key), 'the numbers still follow the rows shown')
+  noMatch(main, /⌥|class="num"/)
 })
 
 test('only the first nine chats get a number', () => {
@@ -1054,7 +1056,9 @@ test('only the first nine chats get a number', () => {
   assert.equal(targets.length, 9)
   assert.deepEqual(targets.map((t) => t.key).slice(-1), ['agent:p8'])
   const { main } = render(many, emptyUi())
-  assert.equal((main.match(/class="num"/g) ?? []).length, 9)
+  assert.deepEqual(treeChats(main).slice(0, 9), targets.map((t) => t.key), 'the first nine rows, top to bottom')
+  assert.equal(treeChats(main).length, 12, 'the rest show, without a shortcut')
+  noMatch(main, /⌥|class="num"/)
   assert.equal(chatTargets({ rows: [], coordinators: [] }).length, 0)
 })
 

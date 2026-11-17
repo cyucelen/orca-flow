@@ -772,7 +772,7 @@ const beam = (node: NodeState) => (BEAMS.includes(node) ? `<i class="beam b-${no
 /** The focused row's mark: a slim bar on its left edge, in its branch's color (panel.css .fb). */
 const FOCUS = '<i class="fb" aria-hidden="true"></i>'
 
-function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, num?: number, deco = ''): string {
+function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, deco = ''): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
   const indent = Boolean(lead)
   // A worker nested under its lead in the same worktree: the lead's row already shows project,
@@ -789,9 +789,9 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button>${numBadge(num)}</div>`
+    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span>${numBadge(num)}</button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
 }
 
 /**
@@ -840,7 +840,7 @@ const finishedOf = (placed: Placed[]) => {
 /** Rows keep the order their workstreams started in; agent activity never moves them. */
 const byStart = (x: Placed, y: Placed) => x.row.createdAt - y.row.createdAt || x.a.paneKey.localeCompare(y.a.paneKey)
 
-function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined, nums: Map<string, number>): string {
+function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined): string {
   const single = c.repos.length === 1 ? c.repos[0] : null
   const color = c.look?.color ?? (single ? colorOf(single) : NEUTRAL)
   const shape: Shape = c.you ? 'solo' : (c.look?.shape ?? 'pentagon')
@@ -870,7 +870,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
       const node = nodeOf(p.a, p.row, all)
       const role = { nested: Boolean(lead), trunk, node, ask: faceOf(p.a) === 'asks' ? askKindOf(p.a) : undefined, cap: lead ? null : cap }
       const deco = `<i class="tl" aria-hidden="true"></i>${rowLines(role)}${beam(node)}`
-      return agentLine(p, all, coordinators, !single, lead, ui, done(p), isCurrent(p.a, p.row, focused), nums.get(`agent:${p.a.paneKey}`), deco)
+      return agentLine(p, all, coordinators, !single, lead, ui, done(p), isCurrent(p.a, p.row, focused), deco)
     }).join('')
     return `<div class="lane"${branchAttr(root.row)}>${html}</div>`
   }).join('')
@@ -879,7 +879,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   const node: NodeState = face === 'idle' ? 'sleeping' : face === 'asks' ? 'asking' : face === 'done' ? 'done' : face === 'monitoring' ? 'monitoring' : 'working'
   const ringed = !folded && mine.length > 0
   const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
-  const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${numBadge(nums.get(`coordinator:${c.key}`))}`
+  const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
@@ -927,7 +927,7 @@ export type ChatTarget = { key: string } & ({ coordinator: string } | { workspac
 /**
  * The chats Option+1..9 open, in the order the tree shows them: each coordinator, then its leads
  * with their workers, then the chats you started, then sleeping coordinators. A folded group's team
- * is hidden, so it takes no numbers. The panel's badges and the worker's commands both read this.
+ * is hidden, so it takes no numbers. The panel's key handler and the worker's commands both read this.
  */
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
   return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
@@ -944,9 +944,6 @@ export function chatDigit(e: { code: string; altKey: boolean; metaKey: boolean; 
   const m = /^Digit([1-9])$/.exec(e.code)
   return m && Number(m[1]) <= CHAT_KEYS ? Number(m[1]) : null
 }
-
-/** A row's shortcut, shown on its right; brighter while Option is held in the panel. */
-const numBadge = (n: number | undefined) => (n ? `<kbd class="num" data-tip="Option+${n} opens this chat">⌥${n}</kbd>` : '')
 
 function foldList(key: string, title: string, rows: string[], ui: UiState, count = rows.length): string {
   if (count === 0) return ''
@@ -979,10 +976,9 @@ export function render(snap: Snapshot, ui: UiState): { cockpit: string; copen: s
     }</div>`, attention: '', footer: '' }
   }
 
-  // Sleep and remove are in the rows' menus. The first nine chats wear their Option+digit.
+  // Sleep and remove are in the rows' menus.
   const idleRows = snap.rows.filter((r) => r.agents.length === 0 && !needsYou(r)).sort((x, y) => x.createdAt - y.createdAt)
-  const nums = new Map(chatTargets(snap, ui.folded).map((t, i) => [t.key, i + 1]))
-  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes, nums)).join('')
+  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes)).join('')
 
   const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 
