@@ -5,13 +5,15 @@
 // run -> dispatching terminal -> one of the user's coordinators, or another agent whose own
 // coordinator we look up the same way. Anything nobody dispatched belongs to 'you'.
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Coordinator, Look, WorkspaceRow } from './protocol.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
+/** Who each agent worked for, remembered so an agent resumed in a new terminal keeps its place. */
+export const OWNERS_FILE = join(homedir(), '.orca-flow', 'owners.json')
 
 export type CoordinatorInfo = Coordinator & { dir: string; about: string }
 
@@ -85,8 +87,12 @@ const SETTLED = new Set(['succeeded', 'failed', 'abandoned', 'cancelled', 'cance
  * Orca's own parent pane comes first: a lead can start its worker inside its coordinator's run, so
  * the run's coordinator terminal says nothing about which agent started it. The run lineage is
  * the fallback for an agent with no known parent pane.
+ *
+ * An agent resumed in a new terminal has neither (Orca gives the new pane no parent, and its old
+ * dispatch failed when the old terminal closed). For it, the remembered owner (`owners`, see
+ * `rememberOwners`) applies: live lineage wins, memory only replaces 'you'.
  */
-export function assignCoordinators(rows: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage): WorkspaceRow[] {
+export function assignCoordinators(rows: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: Owners = {}): WorkspaceRow[] {
   // A coordinator's session is whatever agent runs in its own folder workspace.
   const coordinatorByPane = new Map<string, string>()
   for (const c of coordinators) for (const row of rows) if (row.path === c.dir) for (const a of row.agents) coordinatorByPane.set(a.paneKey, c.key)
@@ -98,7 +104,22 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
   }
   const agentPanes = new Set(rows.flatMap((r) => r.agents.map((a) => a.paneKey)))
   const parentOf = new Map(rows.flatMap((r) => r.agents.filter((a) => a.parentPane).map((a) => [a.paneKey, a.parentPane!])))
+  const known = new Set(coordinators.map((c) => c.key))
+  const agents = rows.flatMap((r) => r.agents)
+  const sessionOf = new Map(agents.filter((a) => a.orcaSession).map((a) => [a.paneKey, a.orcaSession!]))
+  const paneOfSession = new Map([...sessionOf].map(([pane, session]) => [session, pane]))
+  // The remembered owner: by the agent's Orca session, or by its pane when Orca gave it no session.
+  const remembered = (pane: string): { coordinator: string; leadPane: string | null } | null => {
+    const owner = owners[sessionOf.get(pane) ?? pane]
+    if (!owner || !known.has(owner.coordinator)) return null
+    const lead = owner.leadSession ? (paneOfSession.get(owner.leadSession) ?? (agentPanes.has(owner.leadSession) ? owner.leadSession : null)) : null
+    return { coordinator: owner.coordinator, leadPane: lead && lead !== pane ? lead : null }
+  }
   const coordinatorOfPane = (pane: string, depth = 0): { coordinator: string; leadPane: string | null } => {
+    const live = liveCoordinatorOfPane(pane, depth)
+    return live.coordinator === 'you' ? (remembered(pane) ?? live) : live
+  }
+  const liveCoordinatorOfPane = (pane: string, depth: number): { coordinator: string; leadPane: string | null } => {
     const parent = parentOf.get(pane)
     // A parent pane that is no longer open (a coordinator that slept) says nothing; use the runs.
     if (parent && agentPanes.has(parent) && depth <= 4) {
@@ -120,6 +141,57 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
     // task title): a worker the user talks to directly drifts from the last task it was handed.
     agents: row.agents.map((a) => ({ ...a, ...coordinatorOfPane(a.paneKey), terminal: terminalOf.get(a.paneKey) ?? null, dispatch: lineage.dispatchOf?.get(a.paneKey) ?? null }))
   }))
+}
+
+// ---------- remembered owners ----------
+
+/**
+ * Agent -> the coordinator it worked for and the lead it nested under. Keyed by the agent's Orca
+ * session (`orcaSessionId`, which survives a resume); an agent Orca gave no session is keyed by its
+ * pane. `leadSession` is the lead's Orca session (its pane when it has none). `seen` is the day the
+ * agent was last open, so entries for long-gone agents can be dropped.
+ */
+export type Owner = { coordinator: string; leadSession: string | null; seen?: string }
+export type Owners = Record<string, Owner>
+
+/** Entries for agents not open for this long are dropped. */
+const FORGET_AFTER_DAYS = 30
+
+/**
+ * Pure: the owners store after these assignments, or null when nothing changed (so it is written
+ * only on change). Every open agent with a coordinator is remembered; an agent that resolved to
+ * 'you' leaves its entry alone, since that is exactly the case memory is for.
+ */
+export function rememberOwners(rows: WorkspaceRow[], owners: Owners, today = new Date().toISOString().slice(0, 10)): Owners | null {
+  const agents = rows.flatMap((r) => r.agents)
+  const sessionOf = new Map(agents.map((a) => [a.paneKey, a.orcaSession]))
+  const next: Owners = {}
+  const cutoff = new Date(Date.parse(today) - FORGET_AFTER_DAYS * 86_400_000).toISOString().slice(0, 10)
+  for (const [key, owner] of Object.entries(owners)) if (!owner.seen || owner.seen >= cutoff) next[key] = owner
+  let changed = Object.keys(next).length !== Object.keys(owners).length
+  for (const a of agents) {
+    if (a.coordinator === 'you' || !a.paneKey) continue
+    const key = a.orcaSession ?? a.paneKey
+    const leadSession = a.leadPane ? (sessionOf.get(a.leadPane) ?? a.leadPane) : null
+    const old = next[key]
+    if (old && old.coordinator === a.coordinator && old.leadSession === leadSession && old.seen === today) continue
+    next[key] = { coordinator: a.coordinator, leadSession, seen: today }
+    changed = true
+  }
+  return changed ? next : null
+}
+
+export function readOwners(path = OWNERS_FILE): Owners {
+  const data = readJson<Owners>(path)
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+}
+
+/** Write via a temp file and rename, so a reader never sees half a file. */
+export function writeOwners(owners: Owners, path = OWNERS_FILE): void {
+  mkdirSync(join(path, '..'), { recursive: true })
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(owners, null, 2) + '\n')
+  renameSync(tmp, path)
 }
 
 // ---------- loading the lineage from the orca CLI (slow on a busy machine, so cached) ----------

@@ -44,6 +44,8 @@ export type AgentInfo = {
   leadPane: string | null
   /** Orca's record of the pane that started this agent (`parentPaneKey` in `orca worktree ps`). */
   parentPane: string | null
+  /** Orca's id for its conversation (`orcaSessionId`), kept when the agent is resumed in a new terminal; null when Orca has none. */
+  orcaSession: string | null
   /**
    * Its Orca orchestration dispatch: open until it reports worker_done (or is abandoned), then
    * settled; null when it has none or the lineage has not loaded.

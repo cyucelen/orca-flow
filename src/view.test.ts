@@ -17,7 +17,7 @@ const summary = (over: Partial<AgentSummary> = {}): AgentSummary => ({
   needs: { type: 'none', ask: '', options: [] }, effort: 'quick', priority: 'P2', role: 'solo', updatedAt: 1, ...over
 })
 const agent = (paneKey: string, title: string, state: AgentInfo['state'], over: Partial<AgentInfo> = {}): AgentInfo => ({
-  paneKey, title, state, agentType: 'claude', summary: null, workingMode: null, coordinator: 'you', leadPane: null, parentPane: null, dispatch: null, terminal: null, question: null, ...over
+  paneKey, title, state, agentType: 'claude', summary: null, workingMode: null, coordinator: 'you', leadPane: null, parentPane: null, orcaSession: null, dispatch: null, terminal: null, question: null, ...over
 })
 const row = (id: string, repo: string, agents: AgentInfo[], over: Partial<WorkspaceRow> = {}): WorkspaceRow => ({
   id, name: id, branch: id, repo, path: `/w/${id}`, main: false, agents, state: agents[0]?.state ?? null, priority: null, card: null, parentId: null,

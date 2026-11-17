@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
-import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, scaffoldCoordinator, validateName, writeLook, type Lineage } from './coordinators.ts'
+import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLook, writeOwners, type Lineage } from './coordinators.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -35,6 +35,8 @@ type PsAgent = {
   paneKey?: string
   /** The pane that started this agent (a lead's or coordinator's), when Orca knows it. */
   parentPaneKey?: string | null
+  /** Orca's id for the conversation; survives `claude --resume` in a new terminal. */
+  orcaSessionId?: string | null
   toolName?: string | null
   toolInput?: string | null
   state?: string
@@ -121,6 +123,7 @@ function toAgent(a: PsAgent, store: Store): AgentInfo | null {
     coordinator: 'you',
     leadPane: null,
     parentPane: a.parentPaneKey ?? null,
+    orcaSession: a.orcaSessionId ?? null,
     dispatch: null,
     terminal: null,
     question: questionOf(a),
@@ -416,7 +419,11 @@ export async function snapshot(
       const listed = await orca.host.call('workspace.list').catch(() => null)
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
-    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath), onDisk, lineage)
+    const owners = readOwners()
+    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath), onDisk, lineage, owners)
+    // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
+    const remembered = rememberOwners(all, owners)
+    if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }
     allRows = all
     // A coordinator's own workspace is its row in the panel, not an agent in the tree.
     const dirs = new Map(onDisk.map((c, i) => [c.dir, i]))

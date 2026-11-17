@@ -2,7 +2,7 @@
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker.ts'
 import { nextTarget, waitingQueue } from './rank.ts'
-import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, scaffoldCoordinator, validateName, writeLook } from './coordinators.ts'
+import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
 import { emptyUi, render } from './view.ts'
 
@@ -155,6 +155,83 @@ test("a lead's worker started inside its coordinator's run nests under the lead,
     { identity: { key: 'x' }, displayName: 'x', repo: 'isola', agents: [{ paneKey: 'p-worker', state: 'working' }] }
   ])
   assert.deepEqual(assignCoordinators(noParent, coordinators, lineage)[1].agents.map((a) => [a.coordinator, a.leadPane, a.dispatch]), [['isola', null, 'open']])
+})
+
+test('a resumed agent keeps its remembered coordinator; live lineage wins and updates the memory', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const coordinators = [
+    { key: 'alpha', name: 'alpha', repos: [], about: '', dir: '/c/alpha', workspaceId: null },
+    { key: 'beta', name: 'beta', repos: [], about: '', dir: '/c/beta', workspaceId: null }
+  ]
+  const noLineage = { dispatcherOf: new Map(), paneOf: new Map() }
+  // After a resume: new panes, no parent pane, no open dispatch, same Orca sessions.
+  const resumed = main.fromPs([
+    { identity: { key: 'home' }, displayName: 'alpha', repo: 'alpha', path: '/c/alpha', agents: [{ paneKey: 'p-home', orcaSessionId: 's-home', state: 'working' }] },
+    { identity: { key: 'w' }, displayName: 'store', repo: 'shop', agents: [
+      { paneKey: 'p-lead2', orcaSessionId: 's-lead', state: 'working' },
+      { paneKey: 'p-work2', orcaSessionId: 's-work', state: 'working' },
+      { paneKey: 'p-codex', orcaSessionId: null, state: 'working' },
+      { paneKey: 'p-new', orcaSessionId: 's-new', state: 'working' }
+    ] }
+  ])
+  const owners = {
+    's-lead': { coordinator: 'alpha', leadSession: null },
+    's-work': { coordinator: 'alpha', leadSession: 's-lead' },
+    'p-codex': { coordinator: 'beta', leadSession: null },
+    // A pane-key entry is used only when the agent has no Orca session.
+    'p-new': { coordinator: 'beta', leadSession: null },
+    // A coordinator that no longer exists is ignored.
+    's-gone': { coordinator: 'gamma', leadSession: null }
+  }
+  const byPane = (rows: ReturnType<typeof assignCoordinators>) => Object.fromEntries(rows.flatMap((r) => r.agents).map((a) => [a.paneKey, [a.coordinator, a.leadPane]]))
+  assert.deepEqual(byPane(assignCoordinators(resumed, coordinators, noLineage))['p-lead2'], ['you', null], 'without memory it falls to you')
+  const restored = assignCoordinators(resumed, coordinators, noLineage, owners)
+  assert.deepEqual(byPane(restored), {
+    'p-home': ['you', null],
+    'p-lead2': ['alpha', null],
+    'p-work2': ['alpha', 'p-lead2'],
+    'p-codex': ['beta', null],
+    'p-new': ['you', null]
+  }, 'memory restores the coordinator and nests the worker under its lead again')
+
+  // A worker the resumed lead dispatches inherits the lead's remembered coordinator through the run.
+  const dispatched = main.fromPs([
+    { identity: { key: 'w' }, displayName: 'store', repo: 'shop', agents: [
+      { paneKey: 'p-lead2', orcaSessionId: 's-lead', state: 'working' },
+      { paneKey: 'p-fresh', orcaSessionId: 's-fresh', state: 'working' }
+    ] }
+  ])
+  const viaLead = { dispatcherOf: new Map([['p-fresh', 'term-lead2']]), paneOf: new Map([['term-lead2', 'p-lead2']]) }
+  assert.deepEqual(byPane(assignCoordinators(dispatched, coordinators, viaLead, owners))['p-fresh'], ['alpha', 'p-lead2'])
+
+  // Live lineage wins: the lead is now dispatched by beta's coordinator.
+  const live = main.fromPs([
+    { identity: { key: 'home' }, displayName: 'beta', repo: 'beta', path: '/c/beta', agents: [{ paneKey: 'p-beta', orcaSessionId: 's-beta', state: 'working' }] },
+    { identity: { key: 'w' }, displayName: 'store', repo: 'shop', agents: [{ paneKey: 'p-lead2', orcaSessionId: 's-lead', parentPaneKey: 'p-beta', state: 'working' }] }
+  ])
+  const won = assignCoordinators(live, coordinators, noLineage, owners)
+  assert.deepEqual(byPane(won)['p-lead2'], ['beta', null])
+
+  // Remembering: written only on change, keyed by session, else by pane, with the lead's session.
+  const next = rememberOwners(restored, {}, '2026-11-17')
+  assert.deepEqual(next, {
+    's-lead': { coordinator: 'alpha', leadSession: null, seen: '2026-11-17' },
+    's-work': { coordinator: 'alpha', leadSession: 's-lead', seen: '2026-11-17' },
+    'p-codex': { coordinator: 'beta', leadSession: null, seen: '2026-11-17' }
+  })
+  assert.equal(rememberOwners(restored, next, '2026-11-17'), null, 'nothing changed, nothing to write')
+  assert.deepEqual(rememberOwners(won, next!, '2026-11-17')?.['s-lead'], { coordinator: 'beta', leadSession: null, seen: '2026-11-17' }, 'live lineage updates the memory')
+  // An agent that falls to you keeps its entry; entries not seen for a month are dropped.
+  const later = rememberOwners(main.fromPs([]), { ...next!, old: { coordinator: 'alpha', leadSession: null, seen: '2026-09-01' } }, '2026-11-17')
+  assert.deepEqual(Object.keys(later ?? {}).sort(), ['p-codex', 's-lead', 's-work'])
+
+  const dir = mkdtempSync(join(tmpdir(), 'owners-'))
+  writeOwners(next!, join(dir, 'owners.json'))
+  assert.deepEqual(readOwners(join(dir, 'owners.json')), next)
+  assert.deepEqual(readOwners(join(dir, 'missing.json')), {})
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('your coordinators are folders under the coordinator home; new ones are validated and scaffolded', async () => {
@@ -949,7 +1026,7 @@ test("a session in a coordinator's folder is a coordinator, even before it start
   assert.equal(at(`${home}/bounti`), 'coordinator')
   assert.equal(at('/w/shop'), 'solo', 'elsewhere it takes a worker-start to coordinate')
   const status = main.statusOf({ rows: [], source: 'cli', capacity: null, coordinators: [{ key: 'b', name: 'bounti', repos: [], workspaceId: 'ws-b',
-    session: { paneKey: 'p', workingMode: null, coordinator: 'you', leadPane: null, parentPane: null, dispatch: null, terminal: 't', question: null, state: 'done', title: 'Bounti', agentType: 'claude',
+    session: { paneKey: 'p', workingMode: null, coordinator: 'you', leadPane: null, parentPane: null, orcaSession: null, dispatch: null, terminal: 't', question: null, state: 'done', title: 'Bounti', agentType: 'claude',
       summary: { title: 'Bounti', glance: 'Unblock?', goal: '', since: '', needs: { type: 'decision', ask: 'Unblock?', options: [] }, effort: 'quick', priority: 'P2', role: 'coordinator', updatedAt: 1 } } }] })
   assert.equal(status.text, '1 waiting', 'the status bar counts a coordinator asking you')
 })
