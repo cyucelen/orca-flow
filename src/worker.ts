@@ -809,7 +809,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('sidebar.open', (input) => openChat(input))
 
   // Option+1..9 (contributes.keybindings): open the nth chat of the tree, as a click on its row does.
-  // The panel stores its folded groups, so the numbers skip what it hides, as its badges do.
+  // The panel stores its folded groups, so the numbers skip what it hides, as its own key handler does.
   for (let n = 1; n <= CHAT_KEYS; n++)
     orca.commands.register(`chat.${n}`, async () => {
       const folded = await orca.storage.get(FOLDED_KEY).catch(() => null)
