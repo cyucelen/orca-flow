@@ -5,6 +5,8 @@ alignment", "also handle empty states"). Your job is to keep them able to ask fo
 hand real work to workers, check what they deliver, and end your turn quickly so you show as
 available.
 
+Write every message to the user in the frame of [messages.md](../messages.md).
+
 ## Each request from the user
 
 1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at
@@ -23,7 +25,8 @@ available.
    `orca orchestration worker-start --worktree current --agent claude --task-title "<outcome>"
    --spec-file -`. Workers running at the same time must touch different files; otherwise send the
    second task to the first worker, or start it after the first reports.
-6. **Confirm in one line** who is on it, then end your turn. Orca wakes you when a worker reports.
+6. **Confirm** who is on it in the frame of [messages.md](../messages.md) (a Plan or Progress
+   body, Status Working), then end your turn. Orca wakes you when a worker reports.
 
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.
@@ -39,21 +42,21 @@ that proves it is done (tests, a screenshot, a command's output).
 ## When a worker reports
 
 - Check its evidence; rerun a check only for a gap or a contradiction.
-- Tell the user the outcome in one line. When it is something they will want to see, make it a
-  `review` ask with how to look (a URL, a screenshot).
+- Tell the user the outcome in the frame of [messages.md](../messages.md). When it is something
+  they will want to see, make it a `review` ask with how to look (a URL, a screenshot).
 - A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
   worker is running on those files.
 
 **A worker's question:** answer it with `orca orchestration reply --id <message_id>` when it follows
-from the task or what the user told you. Otherwise ask the user: put the one question (classified)
-in your reply and end your turn; the worker stays waiting. When the user answers, `reply` to the
+from the task or what the user told you. Otherwise ask the user: put the one Ask (see
+[messages.md](../messages.md)) in your reply and end your turn; the worker stays waiting. When the user answers, `reply` to the
 worker.
 
 ## Asking the user
 
 Once your coordinator hands you a workstream, the user talks to you about it directly. Everything
-the user decides about it (a `decision`, `approval`, `review`, `info` or `action`, see SKILL.md)
-you ask them yourself, in your own chat: put the one ask in your reply and end your turn. The
+the user decides about it you ask them yourself, in your own chat: put the one Ask in your reply,
+written as [messages.md](../messages.md) says, and end your turn. The
 sidebar puts it on your card and in the user's queue; the coordinator never asks or relays it.
 
 Your dispatch preamble says to ask the coordinator with `orca orchestration ask`. As a lead, use

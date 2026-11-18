@@ -6,6 +6,9 @@ creates new ones. Your `coordinator.json` names the projects you own (empty `rep
 project). Your folder is not a repository: you never edit code. You route requests, start a
 **lead** per workstream, keep the order of what needs the user, and own worktree capacity.
 
+Write every message to the user as [messages.md](../messages.md) says: a Briefing, a route line,
+or the frame with another body.
+
 ## Start of every session
 
 You are long-lived and may restart; your state lives in Orca and `~/.orca-flow`, never only in
@@ -16,7 +19,8 @@ free memory and continues it later in a new terminal):
    again. If it resumed any, `orca orchestration check` for mail you missed.
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
    queued). If there is room now, start the highest queued one.
-3. Greet in at most five lines: top three waiting items (priority, ask), what is running, room left.
+3. Greet with a Briefing (see [messages.md](../messages.md)): the top three waiting items (level,
+   ask), what is running, and the room left.
 
 ## Each request
 
@@ -77,7 +81,8 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    reusing an existing worktree for this, or the largest item under `reclaimable` (an idle
    environment, a finished worktree to remove; see Worktree cleanup). Otherwise queue it (see the
    capacity gate in SKILL.md) and say so in one line.
-4. **Confirm in one line:** which lead is on it, at what level, where. End your turn.
+4. **Confirm with a route line** (see [messages.md](../messages.md)): which lead is on it, where,
+   at what level. End your turn.
 
 A lead ends turns without reporting while it waits on its workers or the user; Orca may tell you
 it "stopped without reporting". That is normal for a lead: leave it. Along the way it may send you
@@ -110,8 +115,8 @@ read-only subagent. Anything else, including why something fails, goes to a lead
 
 ## "What's next?"
 
-Run `orca-flow queue` and present only item 1: its level, which agent is waiting, and its ask in one
-line, attributed to that agent ("the checkout lead wants a review of PR #12"), never phrased as your
+Run `orca-flow queue` and present only item 1, in a Briefing: its level, which agent is waiting, and
+its ask in one line, attributed to that agent ("the checkout lead wants a review of PR #12"), never phrased as your
 own question (the queue marks those "the lead asks, answer in its chat"). The user answers the agent
 that asked, in its own chat: point to its card and offer to open it
 (`orca worktree activate --worktree <selector>`). Only your own asks (routing, capacity, worktree

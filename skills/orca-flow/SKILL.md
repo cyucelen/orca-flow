@@ -58,19 +58,12 @@ Use these words exactly, in cards, specs, summaries and when talking to the user
   card at once.
 - When unsure between two levels, pick the lower one and say so in one line.
 
-Every time you need the user, classify the ask:
+Every time you need the user, use one of the ask types in [messages.md](messages.md): `decision`,
+`approval`, `review` or `info`. Something only the user can do outside the chat is Status Blocked
+with steps (the sidebar shows it as an `action`).
 
-| Ask type   | Meaning                                                                          |
-| ---------- | -------------------------------------------------------------------------------- |
-| `decision` | Pick between options; needs thought.                                             |
-| `approval` | Yes/no on something already prepared.                                            |
-| `review`   | Look at a diff, PR, artifact or result.                                          |
-| `info`     | A fact only the user has.                                                        |
-| `action`   | Something only the user can do outside the chat (a setting, a login, a command). |
-
-Queue order for the user: level, then asks that unblock other agents, then `approval`/`info`/`action`
-before `decision`/`review`, then longest waiting. Ask one question at a time. Phrase an `action` as
-what to do ("Rename the project to katos in Orca settings, tell me when done."), not as a question.
+Queue order for the user: level, then asks that unblock other agents, then `approval`, `info` and
+Blocked before `decision` and `review`, then longest waiting.
 
 ## Spawning
 
@@ -149,6 +142,9 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 
 ## Keeping the user's attention cheap
 
+- Coordinators and leads write every message to the user in the frame of
+  [messages.md](messages.md): read it before your first message. Workers' `worker_done` reports
+  to their lead are exempt.
 - Relay outcomes, not logs: what changed, the evidence in one line, what is next.
 - End your turn as soon as work is handed off; Orca wakes you when workers report. Never poll.
 - Answer a worker's question yourself when it follows from the task or the user's instructions;

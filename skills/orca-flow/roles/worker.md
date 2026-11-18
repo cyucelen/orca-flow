@@ -14,5 +14,6 @@ says which files you may change, what other workers own, and what evidence prove
    ask instead of expanding it.
 5. **Commit** your work on the worktree's branch. Do not push or open a PR; your lead does.
 6. **Report** with `worker_done`: the outcome in one line, the evidence (test output, screenshot,
-   the commit), and anything left open. Then end your turn. Orca closes you when you are done and
+   the commit), and anything left open. It is exempt from the user message frame in
+   [messages.md](../messages.md). Then end your turn. Orca closes you when you are done and
    reopens you, with this conversation, if a follow-up comes.
