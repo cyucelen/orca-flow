@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
 import type { AgentSummary } from './protocol.ts'
-import { checkFrame, parseFrame } from '../skills/orca-flow/scripts/frame.mjs'
+import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
 const AGENTS = join(DATA_DIR, 'agents')
@@ -361,8 +361,8 @@ const NO_ASK: Needs = { type: 'none', ask: '', options: [] }
 /**
  * The ask exactly as a coordinator or lead wrote it, when its final message has a valid frame
  * (skills/orca-flow/messages.md); null for another role or a message without one. Working, Idle,
- * Done, a route line and a Briefing ask nothing. Blocked is an action: its Ask, else its Problem, with "Done" as the
- * button when the Reply line is "done".
+ * Done and a route line ask nothing. Blocked is an action: its Ask, else the first sentence of its
+ * context, with "Done" as the button when the Reply line is "done".
  */
 export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string } | null {
   if ((d.role !== 'coordinator' && d.role !== 'lead') || !d.lastMessage.trim()) return null
@@ -375,7 +375,10 @@ export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Need
   if (!f || type === 'none') return { needs: NO_ASK, reply: '' }
   const reply = f.reply ?? ''
   const options = type === 'action' && /^done\.?$/i.test(reply) ? ['Done'] : f.options
-  return { needs: { type, ask: f.ask ?? (type === 'action' ? f.problem : null) ?? '', options }, reply }
+  const first = sentencesOf(f.context)[0]
+  // A pointer to detail above the frame ("(error above)") means nothing on a card.
+  const ask = f.ask ?? (type === 'action' && first ? `${first.replace(/\s*\([^()]*\babove\)/g, '')}.` : '')
+  return { needs: { type, ask, options }, reply }
 }
 
 const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4))

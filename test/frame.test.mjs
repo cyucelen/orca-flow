@@ -12,191 +12,141 @@ import { optedIn, readTranscript } from '../skills/orca-flow/scripts/stop-check.
 
 const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
 
-// The spec's examples (agent-message-format.md, messages.md), one message each.
-const ROUTE = 'BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today'
-
-const PLAN = `**BOU-4206 · Split short docs into lessons · today**
-**Status:** Working
-
-**Plan:**
-1. Find why the Kaimug PDF gives 1 lesson.
-2. Change the planner so a short topic can be a lesson.
-3. Run the plan eval on the corpus and on Kaimug.
-
-**Next:** nothing needed from you. I write again when I know the cause.`
-
-const DECISION = `**BOU-4206 · Split short docs into lessons · today**
-**Status:** Waiting on you: decision
-
-**Problem:** the Kaimug PDF gives 1 lesson. Expected: about 4.
-**Cause:** the planner merges each lesson under 400 tokens into a neighbor. 4 of the 5 Kaimug topics are under 400 tokens.
-**Evidence:** plan.ts:173 sets LESSON_FLOOR to 400. Topic sizes are 103, 181, 15, 411 and 93 tokens.
-
-**Ask:** make 1 topic = 1 lesson, with a minimum of 80 tokens. Which documents get this rule?
-- **A. All documents (recommended).** Hygiene changes from 1–3 lessons to 6–10.
-- **B. Only documents under 1,200 tokens.** Long manuals do not change. The planner gets a special case.
-**Reply:** A or B
-
-**Caution:** the plan eval uses Azure OpenAI credits. I ask before I run it.
-**Next:** I change the prompt, the minimum, the screen count and the quiz size. Then I run the tests.`
-
-const PROCEDURE = `**Isola on-demand services · soon**
-**Status:** Blocked
-
-**Problem:** the iPhone build stops at Xcode. Developer Mode is off on the phone.
-
-**Steps:**
-1. On the iPhone, open Settings > Privacy & Security > Developer Mode.
-2. Turn on Developer Mode. Let the phone restart.
-3. After the restart, tap Turn On and enter the passcode.
-4. If "Trust This Computer?" shows, tap Trust.
-5. Keep the phone unlocked and on the same Wi-Fi as the Mac.
-
-**Reply:** done
-**Next:** I run the device build again.`
-
-const REVIEW = `**Isola on-demand services · soon**
-**Status:** Ready for review
-
-**Result:** every isola service in mono starts on demand. A Metro service runs the Expo app.
-**Evidence:** pnpm dev:native works on the iOS simulator and the Android emulator. A real iPhone run is not tested.
-**Link:** PR #6227
-
-**Ask:** review the PR. Look first at the on-demand config in isola.yaml.
-**Reply:** approve, or your comments
-**Next:** I fix your comments. I send worker_done when the PR merges.`
-
-const PROGRESS = `**AI Create v2 production readiness · today**
-**Status:** Working
-
-**Done:**
-- Runs are durable and rate-limited.
-- Image dedup is in. 2 workers measure course memory now.
-
-**Next:** nothing needed from you. I write again when the memory numbers are in.`
-
-const IDLE = `**orca-flow · message format · today**
-**Status:** Idle
-
-**Done:**
-- PR #23 merged. Orca Flow 0.2.39 is released.
-- The sidebar reads Status, Ask and Reply from a valid frame.
-
-**Next:** nothing needed from you. Send feedback here.`
-
-const ANSWER = `**orca-flow · sidebar**
-**Status:** Idle
-
-**Answer:** the row is gray because the worker finished. A finished session stays in its place, dimmed, until Orca closes it.
-**Evidence:** view.ts marks the row finished. panel.css:105 sets its opacity to 0.55.
-
-**Next:** nothing needed from you.`
-
-const BRIEFING = `**bounti · briefing**
-
-**Waiting:**
-1. today · BOU-4206 needs a decision: 1 topic = 1 lesson for all documents?
-2. soon · Isola on-demand services needs a review: PR #6227.
-**Running:** AI Create v2 production readiness, Draft shifts missing from calendar.
-**Room:** 1 more worktree, or 4 more agents.
-
-**Next:** nothing needed from you. Say "next" to open item 1.`
+// The examples in messages.md are the fixtures: the spec and the checker cannot drift apart.
+const SPEC = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
+const EXAMPLES = [...SPEC.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
+const [DECISION, PLAN, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
 
 const rules = (text, role = 'lead') => checkFrame(text, { role }).misses.map((m) => m.rule)
+const ok = (text, role = 'lead') => assert.deepEqual(checkFrame(text, { role }), { ok: true, misses: [] }, text.split('\n').find((l) => l.startsWith('**')))
 
-test('every spec example passes: the route line and the briefing as a coordinator', () => {
-  assert.deepEqual(checkFrame(ROUTE, { role: 'coordinator' }), { ok: true, misses: [] })
-  assert.deepEqual(checkFrame(`${ROUTE}\n\nISO-12 → lead in mono/isola · soon\n`, { role: 'coordinator' }).ok, true, 'several route lines')
-  for (const [name, text] of Object.entries({ PLAN, DECISION, PROCEDURE, REVIEW, PROGRESS, IDLE, ANSWER })) {
-    assert.deepEqual(checkFrame(text, { role: 'lead' }), { ok: true, misses: [] }, name)
-    assert.deepEqual(checkFrame(text, { role: 'coordinator' }), { ok: true, misses: [] }, `${name} from a coordinator`)
+test('every example in messages.md passes: the briefing and the route line as a coordinator', () => {
+  assert.equal(EXAMPLES.length, 9)
+  for (const example of EXAMPLES) ok(example, 'coordinator')
+  for (const example of [DECISION, PLAN, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
+  ok(`${ROUTE}\n\nISO-12 → lead in mono/isola · soon\n`, 'coordinator')
+  assert.deepEqual(rules(ROUTE), ['status'], 'only a coordinator routes')
+  assert.deepEqual(rules(BRIEFING), ['detail'], "only a coordinator lists waiting items")
+})
+
+// The BOU-4206 lead's eval message in the old shape, with the faults the user found.
+const OLD_EVAL = `I counted the passages per document (table above).
+
+**BOU-4206 · Split short docs into lessons · today**
+**Status:** Waiting on you: approval
+
+**Answer:** the repo has 10 eval documents. Most passages are under 400 tokens.
+**Evidence:** see the table above. peri has 212 passages.
+
+**Ask:** run the plan eval on Azure OpenAI?
+**Reply:** yes or no
+
+**Caution:** the eval uses Azure credits ($). We could leave peri out.
+**Next:** I run it after your yes.`
+
+test("the BOU-4206 eval message in the old shape fails: header, its labels, a cost with no number", () => {
+  const misses = checkFrame(OLD_EVAL, { role: 'lead' }).misses
+  const got = misses.map((m) => m.rule)
+  for (const rule of ['header', 'label', 'cost-number']) assert.ok(got.includes(rule), `${rule} in ${got}`)
+  assert.deepEqual(misses.filter((m) => m.rule === 'label').map((m) => m.detail.match(/\*\*(\w+):/)[1]), ['Status', 'Answer', 'Evidence'])
+  assert.deepEqual(got, ['header', 'context', 'label', 'label', 'label', 'cost-number'], 'and it has no context paragraph')
+  assert.equal(parseFrame(OLD_EVAL), null, 'the old shape is not read: the sidebar falls back to Haiku')
+})
+
+test('status: a bold status phrase, the last one outside code fences', () => {
+  assert.deepEqual(rules('Done. The PR is up.'), ['status'])
+  assert.deepEqual(rules(PLAN.replace('**Working**', '**In progress**')), ['status'])
+  assert.deepEqual(rules(PLAN.replace('**Working**', '**working**')), ['status'], 'the words never change')
+  assert.deepEqual(rules(PLAN.replace('**Working**', 'Working')), ['status'], 'bold as a whole')
+  assert.deepEqual(rules(DECISION.replace('**Waiting on you: decision**', '**Waiting on you: choice**')), ['status'])
+  assert.deepEqual(rules(PLAN.replace('**Working**', '**Working.**')), [], 'one trailing period')
+  assert.deepEqual(rules('```\n' + RELEASED + '\n```'), ['status'], 'a frame inside a code block does not count')
+  assert.deepEqual(rules(`**Blocked**\n\nOld frame.\n\n**Steps:**\n1. x\n\n**Reply:** done\n\n${RELEASED}`), [], 'the last frame counts')
+})
+
+test('header: the old header line above the status line', () => {
+  assert.deepEqual(rules(`**BOU-4206 · Split short docs into lessons · today**\n${PLAN.slice(PLAN.indexOf('**Working**'))}`), ['header'])
+  assert.deepEqual(rules(`**Note** · fine\n\nThe text.\n\n${ANSWER}`), [], 'a bold line further up is detail, not a header')
+})
+
+test('context: a plain paragraph of at most 4 sentences', () => {
+  assert.deepEqual(rules('**Idle**\n\n**Next:** nothing.'), ['context'])
+  assert.deepEqual(rules('**Idle**'), ['context'])
+  assert.deepEqual(rules('**Idle**\n\n- PR merged.\n- Released.'), ['context', 'detail'], 'a list is not context')
+  const five = 'The PR merged. Release 0.2.40 is out. Nothing runs. Send feedback here. I am idle.'
+  assert.deepEqual(rules(`**Idle**\n\n${five}`), ['context-long'])
+  assert.deepEqual(rules('**Idle**\n\nVersion 0.2.40 of plan.ts and isola.yaml is out. See ~/x/y.md for it.'), [], 'dots in numbers and paths do not end a sentence')
+  assert.deepEqual(rules('**Idle**\n\nThe PR merged.\nRelease 0.2.40 is out.\nNothing runs.'), [], 'one paragraph may span lines')
+})
+
+test('detail: tables, headings, code, lists and a second paragraph go above the frame', () => {
+  const idle = (extra) => rules(`**Idle**\n\nThe PR merged, and the release is out.\n\n${extra}`)
+  assert.deepEqual(idle('| a | b |\n| --- | --- |'), ['detail'])
+  assert.deepEqual(idle('## Changes'), ['detail'])
+  assert.deepEqual(idle('```\nnpm test\n```'), ['detail'])
+  assert.deepEqual(idle('It took 3 rounds of review.'), ['detail'], 'a second paragraph')
+  assert.deepEqual(idle('- the sidebar\n- the hook'), ['detail'], 'a list outside Ask and Steps')
+  assert.deepEqual(rules(`${BLOCKED.replace('**Reply:** done', '**Reply:** done\n- or skip it')}`), ['detail'], 'a list under Reply')
+  assert.match(checkFrame('**Idle**\n\nThe release is out.\n\n| a |', { role: 'lead' }).misses[0].detail, /a table above the status line/)
+  assert.deepEqual(rules(`${ANSWER}\n\nAnything else?`), ['detail'], 'text after the frame')
+})
+
+test('label: only Ask, Reply, Steps, Warning, Caution and Next', () => {
+  const bad = checkFrame(ANSWER.replace('The row is gray', '**Answer:** the row is gray'), { role: 'lead' }).misses
+  assert.deepEqual(bad.map((m) => m.rule), ['context', 'label'])
+  assert.match(bad[1].detail, /\*\*Answer:\*\*/)
+  for (const label of ['Done', 'Plan', 'Problem', 'Cause', 'Evidence', 'Result', 'Link', 'Waiting', 'Running', 'Room', 'Status']) {
+    assert.deepEqual(rules(`${RELEASED}\n**${label}:** x`), ['label'], label)
   }
-  assert.deepEqual(checkFrame(BRIEFING, { role: 'coordinator' }), { ok: true, misses: [] })
+  assert.deepEqual(rules(`**Notes:** above the frame\n\n${RELEASED}`), [], 'detail above the frame is free')
 })
 
-test("messages.md's examples are the fixtures above, and each one passes", () => {
-  const spec = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
-  const blocks = [...spec.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
-  assert.deepEqual(blocks, [ROUTE, PLAN, DECISION, PROCEDURE, REVIEW, PROGRESS, IDLE, ANSWER, BRIEFING])
-  for (const b of blocks) assert.deepEqual(checkFrame(b, { role: 'coordinator' }), { ok: true, misses: [] }, b.split('\n')[0])
+test('ask, reply and ask-status: an ask needs a waiting status and a Reply', () => {
+  assert.deepEqual(rules(DECISION.replace('**Reply:** A, B or no', '')), ['ask'])
+  assert.deepEqual(rules(REVIEW.replace(/\*\*Ask:\*\*.*\n/, '')), ['ask'])
+  assert.deepEqual(rules(APPROVAL.replace('**Reply:** yes or no\n', '')), ['ask'])
+  assert.deepEqual(rules(BLOCKED.replace('**Reply:** done\n', '')), ['reply'])
+  assert.deepEqual(rules(BLOCKED.replace(/\*\*Steps:\*\*\n(\d\..*\n)+/, '')), ['reply'], 'Blocked says what to do')
+  assert.deepEqual(rules(`${RELEASED}\n\n**Ask:** any feedback?\n**Reply:** your feedback`), ['ask-status'])
+  assert.deepEqual(rules(PLAN), [], 'Working needs no ask')
 })
 
-test('Idle: nothing runs, nothing asked, no Reply needed; Done stays a status word', () => {
-  assert.deepEqual(rules(IDLE), [])
-  assert.doesNotMatch(IDLE, /\*\*Reply:\*\*/)
-  assert.deepEqual(rules(IDLE.replace('Idle', 'Done')), [])
-  assert.deepEqual(rules(IDLE.replace('Idle', 'idle')), ['status-word'])
+test('options and recommended: a decision gives 2 or more options, one recommended', () => {
+  assert.deepEqual(rules(DECISION.replace(/- \*\*B\..*\n/, '')), ['options'])
+  assert.deepEqual(rules(DECISION.replace(' (recommended)', '')), ['recommended'])
+  assert.deepEqual(rules(DECISION.replace('**B. Without peri.**', '**B. Without peri (recommended).**')), ['recommended'])
+  assert.match(checkFrame(DECISION.replace(' (recommended)', ''), { role: 'lead' }).misses[0].detail, /0 are marked/)
 })
 
-test('detail above the frame and code blocks in it are fine; the last frame counts', () => {
-  const above = `I read plan.ts and the eval logs.\n\n\`\`\`ts\n**Status:** Nonsense\n**Bogus:** x\n\`\`\`\n\n**Old · thing · now**\n**Status:** Bad\n\n${DECISION}`
-  assert.deepEqual(rules(above), [])
-  assert.deepEqual(rules(`${DECISION}\n`), [], 'a trailing newline')
-  assert.deepEqual(rules(PLAN.replace('Working', 'Working.')), [], 'one trailing period')
+test('cost-number: a cost warning gives the amount', () => {
+  const warn = (text) => rules(`${APPROVAL}\n**Warning:** ${text}`)
+  assert.deepEqual(warn('the eval costs Azure credits.'), ['cost-number'])
+  assert.deepEqual(warn('this spends money ($).'), ['cost-number'])
+  assert.deepEqual(warn('it costs about €4.'), [])
+  assert.deepEqual(warn('it deletes the staging data.'), [], 'not about cost')
 })
 
-test('header: no frame header, or only a route line from a lead', () => {
-  assert.deepEqual(rules('Done. The PR is up.'), ['header'])
-  assert.deepEqual(rules(ROUTE), ['header'], 'only a coordinator routes')
-  assert.deepEqual(rules(BRIEFING), ['header'], 'only a coordinator briefs')
-  assert.deepEqual(rules(PLAN.replace('**BOU-4206 · Split short docs into lessons · today**', '**BOU-4206 Split short docs**')), ['header'], 'a header has " · "')
-  assert.deepEqual(rules(PLAN.replace('**Status:** Working\n', '')), ['header'], 'a header is followed by Status')
-  assert.deepEqual(rules('```\n' + PLAN + '\n```'), ['header'], 'a frame inside a code block does not count')
-  assert.deepEqual(rules(`${ROUTE}\nAlso, I looked at the queue.`, 'coordinator'), ['header'], 'a route message is route lines only')
+test('next-last: Next is optional, and last when it is there', () => {
+  assert.deepEqual(rules(REVIEW.replace(/\n\*\*Next:\*\*.*$/, '')), [])
+  assert.deepEqual(rules(`${REVIEW}\n**Caution:** it can break the Android build.`), ['next-last'])
 })
 
-test('status-word: one of the five, with an ask type after Waiting on you', () => {
-  assert.deepEqual(rules(PLAN.replace('Working', 'In progress')), ['status-word'])
-  assert.deepEqual(rules(PLAN.replace('Working', 'working')), ['status-word'], 'the words never change')
-  assert.deepEqual(rules(DECISION.replace('Waiting on you: decision', 'Waiting on you: choice')), ['status-word'])
-  assert.deepEqual(rules(DECISION.replace('Waiting on you: decision', 'Waiting on you')), ['status-word'])
-})
-
-test('briefing: Running and Room', () => {
-  const missing = checkFrame(BRIEFING.replace(/\*\*Room:\*\*.*\n/, ''), { role: 'coordinator' }).misses
-  assert.deepEqual(missing.map((m) => m.rule), ['briefing'])
-  assert.match(missing[0].detail, /\*\*Room:\*\*/)
-})
-
-test('next-last: the frame ends the message with Next', () => {
-  assert.deepEqual(rules(PLAN.replace(/\n\*\*Next:\*\*.*$/, '')), ['next-last'])
-  assert.deepEqual(rules(`${PLAN}\n\nLet me know.`), ['next-last'])
-  assert.deepEqual(rules(`${PLAN}\n\`\`\`sh\nls\n\`\`\``), ['next-last'], 'a code block after the frame')
-})
-
-test('reply: an agent that waits on the user says what to type', () => {
-  assert.deepEqual(rules(DECISION.replace('**Reply:** A or B\n', '')), ['reply'])
-  assert.deepEqual(rules(PROCEDURE.replace('**Reply:** done\n', '')), ['reply'])
-  assert.deepEqual(rules(REVIEW.replace('**Reply:** approve, or your comments\n', '')), ['reply'])
-  assert.deepEqual(rules(PLAN), [], 'Working needs none')
-})
-
-test('label: only the frame labels; option bullets are not labels, and detail above the frame is free', () => {
-  const bad = checkFrame(PLAN.replace('**Plan:**', '**Summary:**'), { role: 'lead' }).misses
-  assert.deepEqual(bad, [{ rule: 'label', detail: '**Summary:** is not a frame label' }])
-  assert.deepEqual(rules(DECISION.replace('**Caution:**', '**Fault:**')), ['label'], 'Fault became Problem')
-  assert.deepEqual(rules(`**Notes:** above the frame\n\n${PLAN}`), [])
-})
-
-test('several misses are all named', () => {
-  assert.deepEqual(rules(DECISION.replace('**Reply:** A or B\n', '').replace('**Cause:**', '**Why:**') + '\nThanks!'), ['next-last', 'reply', 'label'])
-})
-
-test('parseFrame reads status, problem, ask, its option labels, reply and next', () => {
+test('parseFrame reads the new shape: status, context, ask, options, reply, steps, next, warning', () => {
   assert.deepEqual(parseFrame(DECISION), {
-    header: 'BOU-4206 · Split short docs into lessons · today',
     status: 'Waiting on you: decision',
-    problem: 'the Kaimug PDF gives 1 lesson. Expected: about 4.',
-    ask: 'make 1 topic = 1 lesson, with a minimum of 80 tokens. Which documents get this rule?',
-    options: ['A. All documents', 'B. Only documents under 1,200 tokens'],
-    reply: 'A or B',
-    next: 'I change the prompt, the minimum, the screen count and the quiz size. Then I run the tests.'
+    context: 'The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so option A changes long documents too. We must test A and B before we choose. The A/B decision is held until this test ends.',
+    ask: 'run the plan eval on Azure OpenAI?',
+    options: ['A. All 10 documents + Kaimug', 'B. Without peri'],
+    reply: 'A, B or no',
+    steps: [],
+    next: null,
+    warning: null
   })
-  assert.deepEqual(parseFrame(PLAN), { header: 'BOU-4206 · Split short docs into lessons · today', status: 'Working', problem: null, ask: null, options: [], reply: null, next: 'nothing needed from you. I write again when I know the cause.' })
-  assert.deepEqual(parseFrame(PROCEDURE).options, [], 'Steps are not options')
-  assert.equal(parseFrame(PROCEDURE).reply, 'done')
-  assert.equal(parseFrame(BRIEFING).status, null)
-  assert.equal(parseFrame(BRIEFING).header, 'bounti · briefing')
+  assert.deepEqual(parseFrame(BLOCKED).steps.length, 4)
+  assert.equal(parseFrame(BLOCKED).steps[1], 'Turn on Developer Mode. Let the phone restart.')
+  assert.equal(parseFrame(BLOCKED).next, 'I run the device build again.')
+  assert.match(parseFrame(APPROVAL).warning, /^the migration changes 1,240/)
+  assert.equal(parseFrame(BRIEFING).status, 'Idle')
   assert.equal(parseFrame('just text'), null)
   assert.equal(parseFrame(ROUTE), null)
 })
@@ -265,11 +215,11 @@ test('stop hook: blocks a lead that misses the frame, names the rule and the spe
   const w = world({ config: { messageFormat: 'all' } })
   const out = hook(w, {})
   assert.equal(out.decision, 'block')
-  assert.match(out.reason, /^- header: /m)
+  assert.match(out.reason, /^- status: /m)
   assert.ok(out.reason.includes(join(w.home, '.claude', 'skills', 'orca-flow', 'messages.md')), 'the spec through the link, not resolved')
   assert.match(out.reason, /rewrite the message with the frame last/)
   const [logged] = misses(w)
-  assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', rules: ['header'] })
+  assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', rules: ['status'] })
   rmSync(w.home, { recursive: true })
 })
 

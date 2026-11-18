@@ -59,8 +59,8 @@ Use these words exactly, in cards, specs, summaries and when talking to the user
 - When unsure between two levels, pick the lower one and say so in one line.
 
 Every time you need the user, use one of the ask types in [messages.md](messages.md): `decision`,
-`approval`, `review` or `info`. Something only the user can do outside the chat is Status Blocked
-with steps (the sidebar shows it as an `action`).
+`approval`, `review` or `info`. Something only the user can do outside the chat is Blocked
+with Steps (the sidebar shows it as an `action`).
 
 Queue order for the user: level, then asks that unblock other agents, then `approval`, `info` and
 Blocked before `decision` and `review`, then longest waiting.

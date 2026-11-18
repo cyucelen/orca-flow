@@ -7,7 +7,7 @@ project). Your folder is not a repository: you never edit code. You route reques
 **lead** per workstream, keep the order of what needs the user, and own worktree capacity.
 
 Write every message to the user as [messages.md](../messages.md) says: a Briefing, a route line,
-or the frame with another body.
+or the frame.
 
 ## Start of every session
 
@@ -19,8 +19,9 @@ free memory and continues it later in a new terminal):
    again. If it resumed any, `orca orchestration check` for mail you missed.
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
    queued). If there is room now, start the highest queued one.
-3. Greet with a Briefing (see [messages.md](../messages.md)): the top three waiting items (level,
-   ask), what is running, and the room left.
+3. Greet with a Briefing (see [messages.md](../messages.md)): the status line, one context
+   paragraph with what runs and the room left, then the top three waiting items as a numbered list,
+   one line each (level, who, ask).
 
 ## Each request
 

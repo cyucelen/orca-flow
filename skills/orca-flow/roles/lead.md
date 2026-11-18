@@ -25,8 +25,8 @@ Write every message to the user in the frame of [messages.md](../messages.md).
    `orca orchestration worker-start --worktree current --agent claude --task-title "<outcome>"
    --spec-file -`. Workers running at the same time must touch different files; otherwise send the
    second task to the first worker, or start it after the first reports.
-6. **Confirm** who is on it in the frame of [messages.md](../messages.md) (a Plan or Progress
-   body, Status Working), then end your turn. Orca wakes you when a worker reports. When nothing
+6. **Confirm** who is on it in the frame of [messages.md](../messages.md): the status line
+   `**Working**` and a context paragraph that names the worker and its plan, then end your turn. Orca wakes you when a worker reports. When nothing
    runs any more and nothing is asked (after a release, or while you wait for the user's
    feedback), use Status Idle, not Working or Done.
 

@@ -19,7 +19,7 @@ macOS only for now.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds.
   When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
-  Status, Ask and Reply are read as written, and Up next shows the Reply under the ask.
+  status, Ask and Reply are read as written, and Up next shows the Reply under the ask.
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
   has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
   the PR), the project and the age. The branch shows only as the color of the row's tree lines.
@@ -125,15 +125,17 @@ orca-flow resume             # a woken coordinator takes back the runs it was co
 
 ## Message format
 
-Coordinators and leads end each message with a fixed frame: a header, a **Status:** word, one body,
-an **Ask:** with its **Reply:** when they need you, and **Next:** as the last line. The spec is
+Coordinators and leads end each message with a fixed frame: a bold status line (one of six status
+words), a context paragraph of 2-4 sentences, and an **Ask:** with its options and **Reply:** when
+they need you. Detail stays above the frame, and the frame points to it. The spec is
 [`skills/orca-flow/messages.md`](skills/orca-flow/messages.md); agents read it from the skill.
 
 The Stop hook checks that frame when a coordinator or a lead ends its turn. On a miss, it names each
-failed rule and has the agent rewrite the message, once per turn. It checks that the header and a
-Status line are there, that the status word is one of the six, that **Next:** is last, that an
-agent waiting on you gives a **Reply:** line, and that every label is a frame label. A coordinator
-can also answer with route lines only. Workers and your own chats are never checked.
+failed rule and has the agent rewrite the message, once per turn. It checks the status line, that
+there is no header line, a short context paragraph and no detail inside the frame, the labels, that
+an ask has a waiting status and a **Reply:** line, that a decision has options with one
+recommended, and that a cost warning gives a number. A coordinator can also answer with route lines
+only. Workers and your own chats are never checked.
 
 The check is off until you turn it on in `~/.orca-flow/config.json`, for every agent or only for
 agents working in some folders (a folder and everything under it):
