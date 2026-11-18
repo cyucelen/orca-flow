@@ -573,6 +573,18 @@ test('an optional invitation ("tell me how") is not an ask', async () => {
   assert.ok(SUMMARIZER_VERSION >= 5, 'cards that read an invitation as an ask refresh')
 })
 
+/**
+ * Waits until `cond` holds, checking every millisecond, and fails after `ms`. Use it, not a fixed
+ * sleep, to wait on the summarizer's timers: under load a fixed sleep ends before a retry chain does.
+ */
+async function until(cond: () => boolean, what: string, ms = 2000): Promise<void> {
+  const end = Date.now() + ms
+  while (!cond()) {
+    if (Date.now() > end) assert.fail(`timed out after ${ms} ms waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 1))
+  }
+}
+
 test("a transcript Claude creates a moment after the turn's status is found on a retry, without a warning", async () => {
   const { turnSummarizer } = await import('./summarize.ts')
   const runs: string[] = []
@@ -585,9 +597,10 @@ test("a transcript Claude creates a moment after the turn's status is found on a
     findTranscript: () => (++lookups < 3 ? { path: null, why: 'names /t/new.jsonl, which does not exist' } : { path: '/t/new.jsonl' }),
     run: async (job) => void runs.push(job.transcript)
   })
-  await new Promise((r) => setTimeout(r, 60))
   s.onStatus({ paneKey: 'p-new', workspaceId: null, state: 'done' })
-  await new Promise((r) => setTimeout(r, 60))
+  // The run starts in the same timer callback as the lookup that found it, so once it is in, no
+  // lookup or warning is still to come.
+  await until(() => runs.length > 0, 'the run after the third lookup')
   assert.equal(lookups, 3)
   assert.deepEqual(runs, ['/t/new.jsonl'])
   assert.deepEqual(logs, [])
@@ -598,32 +611,39 @@ test('turns are summarized once per burst, one run per pane, newest job after a 
   const { turnSummarizer } = await import('./summarize.ts')
   const runs: string[] = []
   const logs: string[] = []
+  const lookups: string[] = []
   let release = () => {}
   const s = turnSummarizer({
     delayMs: 5,
     retryMs: [5],
     log: (m) => logs.push(m),
-    findTranscript: (pane) => (pane.startsWith('none') ? { path: null, why: 'no entry' } : { path: `/t/${pane}` }),
+    findTranscript: (pane) => {
+      lookups.push(pane)
+      return pane.startsWith('none') ? { path: null, why: 'no entry' } : { path: `/t/${pane}` }
+    },
     run: (job) => {
       runs.push(`${job.pane}@${job.worktreeId}`)
       return new Promise<void>((r) => (release = r))
     }
   })
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  // A lookup and what follows from it (the run, or the warning) happen in one timer callback, so
+  // counting lookups tells when a timer has fired and done all it will.
+  const looked = (pane: string) => lookups.filter((p) => p === pane).length
   s.onStatus({ paneKey: 'p1', workspaceId: 'w1', state: 'working' })
   s.onStatus({ paneKey: 'none', workspaceId: null, state: 'done' })
   s.onStatus({ paneKey: 'p1', workspaceId: 'w1', state: 'waiting' })
   s.onStatus({ paneKey: 'p1', workspaceId: 'w1', state: 'done' })
-  await wait(20)
+  await until(() => looked('p1') === 1 && looked('none') === 2, "p1's lookup and none's lookup and retry")
   assert.deepEqual(runs, ['p1@w1'])
   s.onStatus({ paneKey: 'p1', workspaceId: 'w2', state: 'done' })
-  await wait(20)
-  assert.deepEqual(runs, ['p1@w1'])
+  await until(() => looked('p1') === 2, "p1's second lookup")
+  assert.deepEqual(runs, ['p1@w1'], 'no second run while the first is running')
   release()
-  await wait(5)
+  await until(() => runs.length === 2, 'the queued run after the first ends')
   assert.deepEqual(runs, ['p1@w1', 'p1@w2'])
+  assert.equal(looked('p1'), 2, 'the waiting and done of one burst are looked up once')
   s.onStatus({ paneKey: 'none-2', workspaceId: null, state: 'done' })
-  await wait(20)
+  await until(() => looked('none-2') === 2, "none-2's lookup and retry")
   assert.equal(logs.length, 1, 'a missing transcript is logged once, not every turn')
   assert.match(logs[0], /SUMMARIES OFF: no Claude transcript found for pane none\b.*no entry/)
   release()
