@@ -5,6 +5,7 @@ import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, Lin
 import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
+import { openerToggle } from './opener.ts'
 import { canRemove } from '../rank.ts'
 
 const ui = emptyUi()
@@ -137,8 +138,9 @@ document.addEventListener('click', (event) => {
     if (d.lmore) toggle(ui.unfolded, d.lmore)
     if (d.lgroup) { toggle(ui.linearGroupFolds, d.lgroup); saveLinearUi() }
     if ('lprojectsClear' in d) { ui.linearDisplay = { ...ui.linearDisplay, projects: [] }; saveLinearUi() }
-    if ('ldisplay' in d) { openMenu(displayMenu, 0, 0, 'display', lin.getBoundingClientRect(), 'display'); return }
-    if (d.lsend) { openMenu(sendMenu(d.lsend), 0, 0, `linear:${d.lsend}`, lin.getBoundingClientRect()); return }
+    // A second click on the button closes its menu: the press already did, and the click must not open it again.
+    if ('ldisplay' in d) { if (opener.shouldOpen('display')) openMenu(displayMenu, 0, 0, 'display', lin.getBoundingClientRect(), 'display'); return }
+    if (d.lsend) { if (opener.shouldOpen(`linear:${d.lsend}`)) openMenu(sendMenu(d.lsend), 0, 0, `linear:${d.lsend}`, lin.getBoundingClientRect()); return }
     draw()
     return
   }
@@ -696,9 +698,23 @@ document.addEventListener('contextmenu', (e) => {
   const a = row?.agents.find((x) => x.paneKey === id)
   if (row && a) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
 })
-document.addEventListener('pointerdown', (e) => { if (!ctx.hidden && !ctx.contains(e.target as Node)) closeMenu() }, true)
-// Scrolling the page closes a menu; scrolling inside a long one (Display's projects) does not.
-document.addEventListener('scroll', (e) => { if (!ctx.contains(e.target as Node)) closeMenu() }, true)
+/** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
+function openerOf(target: EventTarget | null): string | null {
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend]') : null
+  if (!el) return null
+  return 'ldisplay' in el.dataset ? 'display' : `linear:${el.dataset.lsend}`
+}
+const opener = openerToggle()
+// A press outside the open menu closes it; one on the button that opened it also keeps the click
+// that follows from opening it again (src/panel/opener.ts).
+document.addEventListener('pointerdown', (e) => {
+  opener.press(ctx.hidden ? null : menuTarget, e.button === 0 ? openerOf(e.target) : null)
+  if (!ctx.hidden && !ctx.contains(e.target as Node)) closeMenu()
+}, true)
+// Scrolling the page by hand closes a menu; scrolling inside a long one (Display's projects) does not.
+// Listen for the wheel, not for scroll: a redraw that shortens a scrolled list (a Display option
+// that hides issues, a Linear refresh) moves its scroll position too, and that must not close the menu.
+document.addEventListener('wheel', (e) => { if (!ctx.hidden && !ctx.contains(e.target as Node)) closeMenu() }, { capture: true, passive: true })
 const menuKeys = (menu: HTMLElement) => (e: KeyboardEvent) => {
   const items = [...menu.querySelectorAll<HTMLElement>('.mi')]
   const i = items.indexOf(document.activeElement as HTMLElement)

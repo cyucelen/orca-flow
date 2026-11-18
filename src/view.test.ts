@@ -5,6 +5,7 @@ import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, Worksp
 import { type UiState, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
+import { openerToggle } from './panel/opener.ts'
 import { capGlyph } from './lines.ts'
 import { DEFAULT_DISPLAY } from './linear.ts'
 import { removeWorktree } from './cockpit.ts'
@@ -892,6 +893,54 @@ test('a redraw between pointerdown and pointerup waits until the click has run',
   assert.equal(fired.length, 3, 'a release after the safety flush schedules nothing')
   gate.draw()
   assert.equal(paints.length, 4, 'and drawing is immediate again')
+})
+
+test("a menu's button toggles it: one click opens, the next click on it closes, never a reopen", () => {
+  // The panel's order: a pointerdown records the press, then closes the open menu when the press is
+  // outside it; the click that follows opens the button's menu unless that press just closed it.
+  const toggle = openerToggle()
+  let open: string | null = null
+  const opened: string[] = []
+  const clickButton = (key: string) => {
+    toggle.press(open, key)
+    open = null
+    if (toggle.shouldOpen(key)) { open = key; opened.push(key) }
+  }
+  const clickInsideMenu = () => toggle.press(open, null) // pointerdown in the menu closes nothing
+  const clickElsewhere = () => { toggle.press(open, null); open = null }
+
+  clickButton('display')
+  assert.equal(open, 'display', 'the first click opens Display')
+  clickButton('display')
+  assert.equal(open, null, 'the second click on the icon closes it')
+  assert.deepEqual(opened, ['display'], 'and does not open it again')
+  clickButton('display')
+  assert.equal(open, 'display', 'a third click opens it again')
+
+  clickInsideMenu()
+  clickInsideMenu()
+  assert.equal(open, 'display', 'Group by, Sort by, Show, projects and Reset keep it open')
+  clickButton('display')
+  assert.equal(open, null, 'the icon still closes it after clicks inside')
+
+  clickButton('linear:ENG-1')
+  clickButton('display')
+  assert.equal(open, 'display', 'another menu open: the icon closes that one and opens Display')
+  clickButton('linear:ENG-1')
+  assert.equal(open, 'linear:ENG-1', 'and a row closes Display and opens its send menu')
+  clickButton('linear:ENG-2')
+  assert.equal(open, 'linear:ENG-2', 'a different row opens its own menu')
+  clickButton('linear:ENG-2')
+  assert.equal(open, null, 'the same row again closes it')
+  clickElsewhere()
+  clickButton('linear:ENG-2')
+  assert.equal(open, 'linear:ENG-2')
+
+  // A press that closed the menu but never became a click (dragged off the icon) is forgotten at the next press.
+  toggle.press(open, 'linear:ENG-2')
+  open = null
+  clickButton('linear:ENG-2')
+  assert.equal(open, 'linear:ENG-2', 'the next click opens it')
 })
 
 test('an ask wears its kind: an eye for a review, a check on amber for a yes/no, an arrow for an action, ? for a question', () => {

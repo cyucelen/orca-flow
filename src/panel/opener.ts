@@ -1,0 +1,23 @@
+// Lets a menu's button close the menu it opened. Any press outside an open menu closes it, on
+// pointerdown, before the click; without this the click on the button that follows would open the
+// same menu again at once, so the button could never close it (it blinks off and on).
+
+/**
+ * `press(open, opener)` runs on every pointerdown, before the menu closes: `open` is the open menu's
+ * key (null when none is open), `opener` the key of the menu the pressed button opens (null when it
+ * opens none). `shouldOpen(key)` runs on the click that follows: false, once, when that press closed
+ * this very menu.
+ */
+export function openerToggle() {
+  let closedByPress: string | null = null
+  return {
+    press(open: string | null, opener: string | null): void {
+      closedByPress = open !== null && open === opener ? open : null
+    },
+    shouldOpen(key: string): boolean {
+      const skip = closedByPress === key
+      closedByPress = null
+      return !skip
+    }
+  }
+}
