@@ -16,6 +16,10 @@ export type AgentSummary = {
   goal: string
   since: string
   needs: { type: AskType; ask: string; options: string[] }
+  /** The frame's Reply line, the exact words the agent asks for ("A or B"); only with an ask from a frame. */
+  reply?: string
+  /** Where the ask came from: a valid message frame, or Haiku reading the message. Older cards lack it. */
+  source?: 'frame' | 'summarizer'
   effort: 'quick' | 'deep'
   priority: Priority
   role: 'lead' | 'coordinator' | 'worker' | 'solo'

@@ -18,6 +18,8 @@ macOS only for now.
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds.
+  When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
+  Status, Ask and Reply are read as written, and Up next shows the Reply under the ask.
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
   has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
   the PR), the project and the age. The branch shows only as the color of the row's tree lines.

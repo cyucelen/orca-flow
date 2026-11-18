@@ -86,28 +86,36 @@ export function checkFrame(text, { role } = {}) {
   return { ok: misses.length === 0, misses }
 }
 
+/** An option bullet's label: "- **A. All documents (recommended).** …" gives "A. All documents". */
+const OPTION = /^[-*] \*\*([^*]+)\*\*/
+const optionLabel = (line) => {
+  const bold = OPTION.exec(line)?.[1]
+  return bold ? bold.replace(/\s*\([^)]*\)/g, '').replace(/[.:]\s*$/, '').trim() : null
+}
+
 /**
- * Reads the frame's header, status, ask, reply and next, or null when the message has no frame
- * header. It does not judge the frame: pair it with checkFrame to know the frame is valid.
- * `status` is null for a Briefing; `ask` keeps its option lines, one per line.
+ * Reads the frame's header, status, problem, ask, its options, reply and next, or null when the
+ * message has no frame header. It does not judge the frame: pair it with checkFrame to know the
+ * frame is valid. `status` is null for a Briefing; `ask` is the Ask line without its option
+ * bullets, and `options` holds those bullets' labels.
  */
 export function parseFrame(text) {
   const frame = findFrame(linesOf(text), true)
   if (!frame) return null
-  const out = { header: frame.header.slice(2, -2).trim(), status: null, ask: null, reply: null, next: null }
-  let open = null
+  const out = { header: frame.header.slice(2, -2).trim(), status: null, problem: null, ask: null, options: [], reply: null, next: null }
+  let inAsk = false
   for (const line of frame.lines) {
     const label = labelOf(line)
     if (label) {
-      open = null
       const value = valueOf(line)
+      inAsk = label === 'Ask'
       if (label === 'Status') out.status = value.replace(/\.$/, '')
-      else if (label === 'Ask') (out.ask = value), (open = 'ask')
+      else if (label === 'Problem') out.problem = value
+      else if (label === 'Ask') out.ask = value
       else if (label === 'Reply') out.reply = value
       else if (label === 'Next') out.next = value
-    } else if (open === 'ask' && line !== '') {
-      out.ask = out.ask ? `${out.ask}\n${line}` : line
-    } else if (line === '') open = null
+    } else if (inAsk && optionLabel(line)) out.options.push(optionLabel(line))
+    else if (line === '') inAsk = false
   }
   return out
 }

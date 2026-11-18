@@ -1306,3 +1306,12 @@ test("IDs share their neighbours' baseline whatever the monospace font: the chip
   assert.match(chip, /display: inline-block;/)
   assert.match(chip, /height: 17px;[\s\S]*font: 10\.5px\/17px /)
 })
+
+test("a framed ask shows its Reply under it, small; Orca's own question does not", () => {
+  const framed = summary({ glance: 'Which documents get this rule?', reply: 'A or B', source: 'frame', needs: { type: 'decision', ask: 'Which documents get this rule?', options: ['A. All documents', 'B. Short ones'] } })
+  const brief = (a: AgentInfo) => { const p = page({ ...snap, rows: [row('w', 'shop', [a])] }, emptyUi()); return p.slice(p.indexOf('class="brief"')) }
+  assert.match(brief(agent('p-f', 'Split lessons', 'done', { summary: framed })), /<span>Which documents get this rule\?<\/span><span class="reply">Reply: A or B<\/span><\/div>/)
+  noMatch(brief(agent('p-f', 'Split lessons', 'done', { summary: { ...framed, reply: undefined } })), /class="reply"/, 'no Reply line, none shown')
+  noMatch(brief(agent('p-f', 'Split lessons', 'waiting', { summary: framed, question: 'Allow the edit?' })), /class="reply"/, "Orca's question is another ask")
+  noMatch(brief(agent('p-f', 'Split lessons', 'done', { summary: { ...framed, reply: 'look at /Users/me/x/y' } })), /class="reply"/, 'a path is never shown')
+})

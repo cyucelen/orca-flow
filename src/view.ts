@@ -235,6 +235,15 @@ export function glanceOf({ a }: Placed): string {
   return a.state === 'blocked' ? 'Approve a permission prompt.' : a.state === 'waiting' ? 'Answer its question.' : 'Waiting for your input.'
 }
 
+/**
+ * The words a framed ask wants back ("Reply: A or B"), under the ask it belongs to: only when the
+ * ask shown is the summary's, not Orca's own question or permission prompt.
+ */
+export function replyOf({ a }: Placed): string {
+  if (a.state === 'waiting' || a.state === 'blocked' || !claimsAsk(a)) return ''
+  return showable(a.summary?.reply) ? clip(a.summary!.reply!, 60) : ''
+}
+
 const askType = ({ a }: Placed) =>
   a.state === 'waiting' ? 'question' : a.state === 'blocked' ? 'approval' : a.summary && a.summary.needs.type !== 'none' ? a.summary.needs.type : 'info'
 
@@ -682,7 +691,7 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
     const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
-    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">Asks · ${esc(askType(p))}</span><span>${esc(glanceOf(p))}</span></div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
+    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">Asks · ${esc(askType(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
   })
   return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }

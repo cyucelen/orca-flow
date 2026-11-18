@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
+import type { AgentSummary } from './protocol.ts'
+import { checkFrame, parseFrame } from '../skills/orca-flow/scripts/frame.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
 const AGENTS = join(DATA_DIR, 'agents')
@@ -103,8 +105,11 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
 /** A command that sends worker_done, not one that merely mentions it (in a heredoc, a grep, a test). */
 const SENDS_DONE = /^(?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration send\b.*--type[= ]['"]?worker_done\b/
 
-/** `reported`: a dispatched worker that sent worker_done in the latest turn; its final message is its report to its lead. */
-export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; turnAt: string | null; reported: boolean }
+/**
+ * `reported`: a dispatched worker that sent worker_done in the latest turn; its final message is its
+ * report to its lead. `lastMessage` is that final message whole (lastAssistant is clipped for Haiku).
+ */
+export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; lastMessage: string; turnAt: string | null; reported: boolean }
 
 /** Condense a Claude Code transcript into what the summarizer needs. */
 export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null {
@@ -157,6 +162,7 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
     context: clip(render(earlier), 4000),
     turn: clip(render(turn), 10_000),
     lastAssistant: lastAssistant ? clip(lastAssistant.text, 4000) : '',
+    lastMessage: lastAssistant?.text ?? '',
     turnAt: events.at(-1)?.at ?? null,
     reported: role === 'worker' && turn.some((e) => e.reports)
   }
@@ -347,6 +353,57 @@ export function withFacts<S extends object>(d: Digest, summary: S): S {
   return d.reported ? { ...summary, needs: { type: 'none', ask: '', options: [] }, glance: '' } : summary
 }
 
+// ---------- the message frame ----------
+
+type Needs = AgentSummary['needs']
+const NO_ASK: Needs = { type: 'none', ask: '', options: [] }
+
+/**
+ * The ask exactly as a coordinator or lead wrote it, when its final message has a valid frame
+ * (skills/orca-flow/messages.md); null for another role or a message without one. A route line
+ * or a Briefing asks nothing. Blocked is an action: its Ask, else its Problem, with "Done" as the
+ * button when the Reply line is "done".
+ */
+export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string } | null {
+  if ((d.role !== 'coordinator' && d.role !== 'lead') || !d.lastMessage.trim()) return null
+  if (!checkFrame(d.lastMessage, { role: d.role }).ok) return null
+  const f = parseFrame(d.lastMessage)
+  const status = f?.status ?? ''
+  const type: Needs['type'] = status.startsWith('Waiting on you: ')
+    ? (status.slice('Waiting on you: '.length) as Needs['type'])
+    : status === 'Blocked' ? 'action' : status === 'Ready for review' ? 'review' : 'none'
+  if (!f || type === 'none') return { needs: NO_ASK, reply: '' }
+  const reply = f.reply ?? ''
+  const options = type === 'action' && /^done\.?$/i.test(reply) ? ['Done'] : f.options
+  return { needs: { type, ask: f.ask ?? (type === 'action' ? f.problem : null) ?? '', options }, reply }
+}
+
+const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4))
+
+/** The ask in a few words: its question sentence (else its first), clipped to ten words. */
+export function shortAsk(ask: string): string {
+  const sentences = ask.split(/(?<=[.?!])\s+/).filter(Boolean)
+  const pick = [...sentences].reverse().find((s) => s.endsWith('?')) ?? sentences[0] ?? ''
+  const w = pick.split(/\s+/)
+  const short = w.length > 10 ? `${w.slice(0, 10).join(' ')}…` : pick
+  return short.charAt(0).toUpperCase() + short.slice(1)
+}
+
+/**
+ * A valid frame decides the ask, not Haiku: needs and reply come from the frame, and Haiku's glance
+ * stays only when it is about the same ask (same type, a word in common), else the Ask's short
+ * form. `source` says where the ask came from, so drift between the two shows on the card.
+ */
+export function withFrame<S extends { needs: Needs; glance?: string }>(d: Pick<Digest, 'role' | 'lastMessage'>, summary: S): S & { reply?: string; source: 'frame' | 'summarizer' } {
+  const framed = frameAsk(d)
+  if (!framed) return { ...summary, source: 'summarizer' }
+  const { needs, reply } = framed
+  const theirs = summary.glance ?? ''
+  const same = summary.needs?.type === needs.type && [...words(theirs)].some((w) => words(needs.ask).has(w))
+  const glance = needs.type === 'none' ? '' : same ? theirs : shortAsk(needs.ask)
+  return { ...summary, needs, glance, ...(reply && needs.type !== 'none' ? { reply } : {}), source: 'frame' }
+}
+
 /**
  * Summarizes one pane's latest turn into ~/.orca-flow/agents/<pane>.json. Skips a turn already
  * summarized (unless forced), and keeps the newest when two finish close together (even when
@@ -358,7 +415,8 @@ export async function summarizePane(input: { pane: string; transcript: string; w
   if (!d) return 'empty'
   const previous = readJson(out)
   if (!input.force && previous?.turnAt && d.turnAt && previous.turnAt >= d.turnAt) return 'skipped'
-  const summary = withFacts(d, (await callHaiku(promptFor(d, previous, input.goal))).summary)
+  // Haiku still writes the title, about, since, watching and priority; a valid frame decides the ask.
+  const summary = withFrame(d, withFacts(d, (await callHaiku(promptFor(d, previous, input.goal))).summary))
   // A newer turn may have finished while Haiku ran; keep the newest, even when forced.
   const latest = readJson(out)
   if (latest?.turnAt && d.turnAt && latest.turnAt > d.turnAt) return 'skipped'

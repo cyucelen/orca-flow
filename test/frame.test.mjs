@@ -159,15 +159,19 @@ test('several misses are all named', () => {
   assert.deepEqual(rules(DECISION.replace('**Reply:** A or B\n', '').replace('**Cause:**', '**Why:**') + '\nThanks!'), ['next-last', 'reply', 'label'])
 })
 
-test('parseFrame reads status, ask with its options, reply and next', () => {
+test('parseFrame reads status, problem, ask, its option labels, reply and next', () => {
   assert.deepEqual(parseFrame(DECISION), {
     header: 'BOU-4206 · Split short docs into lessons · today',
     status: 'Waiting on you: decision',
-    ask: 'make 1 topic = 1 lesson, with a minimum of 80 tokens. Which documents get this rule?\n- **A. All documents (recommended).** Hygiene changes from 1–3 lessons to 6–10.\n- **B. Only documents under 1,200 tokens.** Long manuals do not change. The planner gets a special case.',
+    problem: 'the Kaimug PDF gives 1 lesson. Expected: about 4.',
+    ask: 'make 1 topic = 1 lesson, with a minimum of 80 tokens. Which documents get this rule?',
+    options: ['A. All documents', 'B. Only documents under 1,200 tokens'],
     reply: 'A or B',
     next: 'I change the prompt, the minimum, the screen count and the quiz size. Then I run the tests.'
   })
-  assert.deepEqual(parseFrame(PLAN), { header: 'BOU-4206 · Split short docs into lessons · today', status: 'Working', ask: null, reply: null, next: 'nothing needed from you. I write again when I know the cause.' })
+  assert.deepEqual(parseFrame(PLAN), { header: 'BOU-4206 · Split short docs into lessons · today', status: 'Working', problem: null, ask: null, options: [], reply: null, next: 'nothing needed from you. I write again when I know the cause.' })
+  assert.deepEqual(parseFrame(PROCEDURE).options, [], 'Steps are not options')
+  assert.equal(parseFrame(PROCEDURE).reply, 'done')
   assert.equal(parseFrame(BRIEFING).status, null)
   assert.equal(parseFrame(BRIEFING).header, 'bounti · briefing')
   assert.equal(parseFrame('just text'), null)
