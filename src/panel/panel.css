@@ -192,6 +192,9 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .t.strong { font-weight: 600; }
 .t.muted, .muted { color: var(--muted); }
 .r { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The texts on a row's right side share one baseline whatever their font: the Linear chip is
+   monospace, and centering line boxes of different fonts leaves their text at different heights. */
+.r > :is(.idchip, .pr, .soft, .age) { align-self: baseline; }
 .soft { color: var(--faint); font-size: 11px; }
 .grow { flex: 1; min-width: 0; display: grid; }
 .indent { padding-left: 30px; }
@@ -471,6 +474,8 @@ button.item.coord { padding: 5px 6px; }
 .lic { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--muted); }
 .lic svg { width: 14px; height: 14px; }
 .lid { flex: none; font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--faint); font-variant-numeric: tabular-nums; }
+/* A Linear row's ID sits on its title's baseline, not centered by its own font's line box. */
+.lrow > :is(.lid, .t) { align-self: baseline; }
 .lrow .r { max-width: 45%; height: 18px; }
 .lrow .r > span:not(.who):not(.act) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lrow .send { display: none; height: 18px; padding: 0 8px; margin-left: 0; font-size: 11px; }
@@ -479,8 +484,10 @@ button.item.coord { padding: 5px 6px; }
 .lrow:hover .rest, .lrow:focus-visible .rest, .lrow.menu-open .rest { display: none; }
 .lrow.menu-open { background: var(--hover); }
 /* A worktree's Linear issue, before its row's title in the tree. */
-.idchip { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 5px; height: 17px; border-radius: 4px; font: 10.5px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
-.idchip .lmark { width: 10px; height: 10px; }
+/* A block of one 17 px line: its text is centered by its line height and its baseline is the text's,
+   so the row's right side can line it up with the PR, project and age. */
+.idchip { display: inline-block; flex: none; padding: 0 5px; height: 17px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
+.idchip .lmark { width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; }
 /* The send menu: a header line, characters for icons, a note at the end (the suggestion in the accent). */
 .ctx .mh { padding: 5px 9px 4px; font-size: 11.5px; color: var(--muted); }
 .ctx .mh b { color: var(--ink); font: 600 11px ui-monospace, "SF Mono", Menlo, monospace; }

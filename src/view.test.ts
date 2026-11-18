@@ -1247,3 +1247,13 @@ test('a Linear row keeps its height when hovered: rows are a fixed height, and t
   // .item pads a row 5px above and below.
   assert.ok(line + 10 <= row, `the line (${line}px) fits the row (${row}px)`)
 })
+
+test("IDs share their neighbours' baseline whatever the monospace font: the chip with the PR, project and age, a Linear row's ID with its title", () => {
+  const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
+  assert.match(css, /\n\.r > :is\(\.idchip, \.pr, \.soft, \.age\) \{ align-self: baseline; \}/)
+  assert.match(css, /\n\.lrow > :is\(\.lid, \.t\) \{ align-self: baseline; \}/)
+  // The chip's baseline is its text's: one line box as tall as the chip, not a flex box centering it.
+  const chip = /\n\.idchip \{([^}]*)\}/.exec(css)?.[1] ?? ''
+  assert.match(chip, /display: inline-block;/)
+  assert.match(chip, /height: 17px;[\s\S]*font: 10\.5px\/17px /)
+})
