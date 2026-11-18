@@ -167,14 +167,39 @@ function partsOf(frame) {
   return parts
 }
 
-const miss = (rule, detail) => ({ rule, detail })
+/**
+ * Each rule's tier. "block": the sidebar cannot read the status, ask or reply, or the user cannot
+ * answer; the Stop hook stops the turn once. "silent": length, style and wording; the hook only
+ * logs it and reminds the agent quietly at its next prompt. messages.md lists the same tiers.
+ */
+export const TIERS = {
+  status: 'block',
+  'status-old': 'block',
+  'status-label': 'block',
+  ask: 'block',
+  'ask-status': 'block',
+  options: 'block',
+  letters: 'block',
+  header: 'silent',
+  context: 'silent',
+  'context-long': 'silent',
+  detail: 'silent',
+  label: 'silent',
+  recommended: 'silent',
+  above: 'silent',
+  'code-term': 'silent',
+  'cost-number': 'silent',
+  'next-last': 'silent'
+}
+
+const miss = (rule, detail) => ({ rule, tier: TIERS[rule], detail })
 
 /**
  * Checks the last message of a turn against the frame. `role` is 'coordinator', 'lead' or another
  * role: only a coordinator may write route lines or a numbered list of waiting items.
- * Returns { ok, misses: [{ rule, detail }] }. Rules: status, header, context, context-long, detail,
+ * Returns { ok, misses: [{ rule, tier, detail }] }; TIERS gives each rule's tier. Rules: status, header, context, context-long, detail,
  * label, ask, ask-status, options, recommended, letters, above, code-term, cost-number, next-last,
- * status-old.
+ * status-old, status-label.
  */
 export function checkFrame(text, { role } = {}) {
   const lines = linesOf(text)
@@ -193,8 +218,9 @@ export function checkFrame(text, { role } = {}) {
   const said = statusKind(status)
   if (said.old) misses.push(miss('status-old', `write the need in plain words: **${OLD_STATUS[status]}**, not "${status}"`))
 
+  if (frame.old) misses.push(miss('status-label', `write the status as a bold line of its own, **${said.old ? OLD_STATUS[status] : status}**, not after a **Status:** label`))
+
   const parts = partsOf(frame)
-  if (frame.old) parts.blocks.unshift({ label: 'Status', value: frame.status, line: '', items: [] })
   if (parts.context.length === 0) misses.push(miss('context', 'add a context paragraph of 2-4 sentences under the status line'))
   else {
     const n = sentencesOf(parts.context.join(' ')).length

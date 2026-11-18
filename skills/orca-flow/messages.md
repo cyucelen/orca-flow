@@ -315,41 +315,58 @@ BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today
   looks for the status line.
 - A coordinator message made only of route lines (`X → lead in <repo>/<worktree> · <level>`)
   passes with no frame.
-- **status:** the frame starts at the last line that is bold as a whole and is a status line:
-  `Working`, `Working · needs <thing> later`, `Needs <plain words>`, `Idle` or `Done`. The frame
-  runs to the end of the message. Text above it is free. **status-old:** an old status word
-  (Waiting on you: <type>, Blocked, Ready for review) is a miss that names the plain line to use.
-- **header:** no header line (bold, with ` · `) right above the status line.
-- **context:** a plain paragraph comes after the status line, before the first label.
-  **context-long:** it has at most 4 sentences.
-- **above:** in the context, the Ask and its options, "above" never replaces the point: no "is
-  above", "see above", "as above", "shown above", and no context that starts with "Above". A
-  pointer in parentheses after the point, such as "(detail above)", is fine.
-- **code-term:** a backticked code name (with `_`, `.`, `/`, `:`, `()`, camelCase, or ALL_CAPS) in
-  the context, the Ask, its options, or a Warning or Caution has plain words in parentheses right
-  after it: `LESSON_FLOOR` (the smallest lesson size). The Reply, Steps and Next may hold exact
-  commands and paths.
-- **detail:** after the status line, no table, heading, code fence or second paragraph. The only
-  lists are the options under Ask, the Steps, and a coordinator's numbered waiting items.
-- **label:** every bold label at the start of a frame line is one of: Ask, Reply, Steps, Warning,
-  Caution, Next. Option bullets such as `- **A. ...**` are not labels.
-- **ask:** `Needs ...` and `Working · needs ... later` have an Ask and a Reply. A hand action
-  (`Needs you to ...`) has Steps (or an Ask) and a Reply. **ask-status:** Working, Idle and Done
-  have no Ask.
-- **options:** an ask with lettered options, or a status line that asks for a pick, has 2 or more
-  option bullets. **recommended:** exactly one of them is marked (recommended).
-- **cost-number:** a Warning or Caution about cost, credits or money gives a number.
-- **letters:** when the Ask has lettered options, no line outside code fences (the detail above
-  the frame included) says "option A", "options A and B" or "A/B". Only the option bullets and the
-  Reply use the letters; elsewhere a current option is named by its bare letter ("C is the
+- Where it runs: a Claude Code Stop hook and a UserPromptSubmit hook that the plugin installs.
+  They run only in Orca agent terminals, only for coordinators and leads, and only where the user
+  opted in: `"messageFormat"` in `~/.orca-flow/config.json` is `"all"`, or a list of worktree or
+  coordinator folder paths.
+- Each rule has a tier:
+  - **block:** the sidebar cannot read the status, the ask or the reply, or the user cannot
+    answer. The Stop hook stops the turn one time and names each miss with what to fix (the
+    silent ones too). Rewrite only the frame at the bottom, from the status line down, and end the
+    turn again. Do not repeat the detail above it: the user already read it.
+  - **silent:** length, style and wording. The turn ends as usual and the user sees nothing. At
+    your next prompt, the UserPromptSubmit hook gives you a quiet reminder of what you missed, one
+    time. Do not rewrite the old message and do not mention the reminder; follow the rules in your
+    next message.
+- Every miss is logged to `~/.orca-flow/format-misses.jsonl` with its tier.
+
+Rules that block:
+
+- **status** (block): the frame starts at the last line that is bold as a whole and is a status
+  line: `Working`, `Working · needs <thing> later`, `Needs <plain words>`, `Idle` or `Done`. The
+  frame runs to the end of the message. Text above it is free.
+- **status-old** (block): no old status word (Waiting on you: <type>, Blocked, Ready for review).
+  The miss names the plain line to use.
+- **status-label** (block): the status line stands alone, bold, not after a `**Status:**` label.
+- **ask** (block): `Needs ...` and `Working · needs ... later` have an Ask and a Reply. A hand
+  action (`Needs you to ...`) has Steps (or an Ask) and a Reply.
+- **ask-status** (block): Working, Idle and Done have no Ask: the sidebar would not show it.
+- **options** (block): an ask with lettered options, or a status line that asks for a pick, has 2
+  or more option bullets.
+- **letters** (block): when the Ask has lettered options, no line outside code fences (the detail
+  above the frame included) says "option A", "options A and B" or "A/B". Only the option bullets
+  and the Reply use the letters; elsewhere a current option is named by its bare letter ("C is the
   earlier rule").
-- **next-last:** when there is a Next line, it is the last line.
-- Where it runs: a Claude Code Stop hook that the plugin installs. It runs only in Orca agent
-  terminals, only for coordinators and leads, and only where the user opted in: `"messageFormat"`
-  in `~/.orca-flow/config.json` is `"all"`, or a list of worktree or coordinator folder paths.
-- On a miss, it stops the turn one time and names each rule with what to fix. Rewrite only the
-  frame at the bottom, from the status line down, and end the turn again. Do not repeat the detail
-  above it: the user already read it. It logs misses to `~/.orca-flow/format-misses.jsonl`.
+
+Rules that are silent:
+
+- **header** (silent): no header line (bold, with ` · `) right above the status line.
+- **context** (silent): a plain paragraph comes after the status line, before the first label.
+- **context-long** (silent): the context has at most 4 sentences.
+- **detail** (silent): after the status line, no table, heading, code fence or second paragraph.
+  The only lists are the options under Ask, the Steps, and a coordinator's numbered waiting items.
+- **label** (silent): every bold label at the start of a frame line is one of: Ask, Reply, Steps,
+  Warning, Caution, Next. Option bullets such as `- **A. ...**` are not labels.
+- **recommended** (silent): exactly one option is marked (recommended).
+- **above** (silent): in the context, the Ask and its options, "above" never replaces the point:
+  no "is above", "see above", "as above", "shown above", and no context that starts with "Above".
+  A pointer in parentheses after the point, such as "(detail above)", is fine.
+- **code-term** (silent): a backticked code name (with `_`, `.`, `/`, `:`, `()`, camelCase, or
+  ALL_CAPS) in the context, the Ask, its options, or a Warning or Caution has plain words in
+  parentheses right after it: `LESSON_FLOOR` (the smallest lesson size). The Reply, Steps and Next
+  may hold exact commands and paths.
+- **cost-number** (silent): a Warning or Caution about cost, credits or money gives a number.
+- **next-last** (silent): when there is a Next line, it is the last line.
 
 The format changes with the user's feedback. Each change updates this file and the checker
-(`scripts/frame.mjs`) together.
+(`scripts/frame.mjs`, whose `TIERS` gives each rule's tier) together.

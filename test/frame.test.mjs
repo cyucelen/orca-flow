@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { checkFrame, parseFrame } from '../skills/orca-flow/scripts/frame.mjs'
+import { checkFrame, parseFrame, TIERS } from '../skills/orca-flow/scripts/frame.mjs'
 import { optedIn, readTranscript } from '../skills/orca-flow/scripts/stop-check.mjs'
 
 const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
@@ -48,8 +48,8 @@ test("the BOU-4206 eval message in the old shape fails: header, its labels, a co
   const misses = checkFrame(OLD_EVAL, { role: 'lead' }).misses
   const got = misses.map((m) => m.rule)
   for (const rule of ['header', 'label', 'cost-number']) assert.ok(got.includes(rule), `${rule} in ${got}`)
-  assert.deepEqual(misses.filter((m) => m.rule === 'label').map((m) => m.detail.match(/\*\*(\w+):/)[1]), ['Status', 'Answer', 'Evidence'])
-  assert.deepEqual(got, ['header', 'status-old', 'context', 'label', 'label', 'label', 'cost-number'], 'and it has no context paragraph')
+  assert.deepEqual(misses.filter((m) => m.rule === 'label').map((m) => m.detail.match(/\*\*(\w+):/)[1]), ['Answer', 'Evidence'])
+  assert.deepEqual(got, ['header', 'status-old', 'status-label', 'context', 'label', 'label', 'cost-number'], 'and it has no context paragraph')
   assert.equal(parseFrame(OLD_EVAL), null, 'the old shape is not read: the sidebar falls back to Haiku')
 })
 
@@ -312,8 +312,8 @@ function world({ config, firstPrompt = 'Your role: lead. Fix BOU-1.', last = 'Al
   return { home, data, worktree, transcript }
 }
 
-function hook(w, input, env = { ORCA_AGENT_PANE: 'tab:1' }) {
-  const script = join(w.home, '.claude', 'skills', 'orca-flow', 'scripts', 'stop-check.mjs')
+function hook(w, input, env = { ORCA_AGENT_PANE: 'tab:1' }, name = 'stop-check.mjs') {
+  const script = join(w.home, '.claude', 'skills', 'orca-flow', 'scripts', name)
   const r = spawnSync(process.execPath, [script], {
     input: JSON.stringify({ session_id: 's1', transcript_path: w.transcript, cwd: w.worktree, stop_hook_active: false, ...input }),
     env: { PATH: process.env.PATH, HOME: w.home, ...env },
@@ -335,7 +335,7 @@ test('stop hook: blocks a lead that misses the frame, names the rule and the spe
   assert.ok(out.reason.includes('Rewrite only the frame at the bottom, from the status line down. Do not repeat the detail above it: the user already read it.'), 'frame-only rewrite')
   assert.match(out.reason, /^The rules are in .*messages\.md\.$/m)
   const [logged] = misses(w)
-  assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', rules: ['status'] })
+  assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', tier: 'block', rules: ['status'] })
   rmSync(w.home, { recursive: true })
 })
 
@@ -382,6 +382,90 @@ test('stop hook: ORCA_FLOW_DIR moves the data folder; bad input exits 0 quietly'
   assert.equal(hook(w, {}, { ORCA_AGENT_PANE: 'tab:1', ORCA_FLOW_DIR: data }).decision, 'block')
   assert.equal(readFileSync(join(data, 'format-misses.jsonl'), 'utf8').split('\n').filter(Boolean).length, 1)
   const r = spawnSync(process.execPath, [join(SCRIPTS, 'stop-check.mjs')], { input: 'not json', env: { PATH: process.env.PATH, HOME: w.home, ORCA_AGENT_PANE: 'x' }, encoding: 'utf8' })
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', ''])
+  rmSync(w.home, { recursive: true })
+})
+
+// ---------- two tiers: block, or log and remind quietly ----------
+
+test('every rule has a tier, and messages.md states the same tier', () => {
+  const source = readFileSync(new URL('../skills/orca-flow/scripts/frame.mjs', import.meta.url), 'utf8')
+  const used = [...new Set([...source.matchAll(/miss\('([a-z-]+)'/g)].map((m) => m[1]))].sort()
+  assert.deepEqual(Object.keys(TIERS).sort(), used, 'TIERS names exactly the rules checkFrame uses')
+  for (const [rule, tier] of Object.entries(TIERS)) {
+    assert.ok(['block', 'silent'].includes(tier), rule)
+    assert.match(SPEC, new RegExp(`\\*\\*${rule}\\*\\* \\(${tier}\\)`), `messages.md says ${rule} (${tier})`)
+  }
+  const tiers = checkFrame(`${OLD_EVAL}`, { role: 'lead' }).misses.map((m) => `${m.rule}:${m.tier}`)
+  assert.deepEqual(tiers, ['header:silent', 'status-old:block', 'status-label:block', 'context:silent', 'label:silent', 'label:silent', 'cost-number:silent'])
+})
+
+const LONG = PLAN.replace('I write again when it reports.', 'I write again when it reports. The tests take about 5 minutes. The Kaimug fixture runs last.')
+const reminder = (w, session = 's1') => join(w.data, 'reminders', `${session}.json`)
+
+test('stop hook, block tier only: blocks, logs tier block, leaves no reminder', () => {
+  const w = world({ config: { messageFormat: 'all' } })
+  assert.equal(hook(w, { last_assistant_message: INFO.replace(/\*\*Reply:\*\*.*/, '') }).decision, 'block')
+  assert.deepEqual(misses(w).map((l) => [l.tier, l.rules]), [['block', ['ask']]])
+  assert.equal(existsSync(reminder(w)), false)
+  rmSync(w.home, { recursive: true })
+})
+
+test('stop hook, silent tier only: no block, logs tier silent, stores the reminder', () => {
+  const w = world({ config: { messageFormat: 'all' } })
+  assert.deepEqual(rules(LONG), ['context-long'])
+  assert.equal(hook(w, { last_assistant_message: LONG }), null, 'a 5-sentence context does not stop the turn')
+  assert.deepEqual(misses(w).map((l) => [l.tier, l.rules, l.session]), [['silent', ['context-long'], 's1']])
+  const stored = JSON.parse(readFileSync(reminder(w), 'utf8'))
+  assert.deepEqual(stored.rules.map((r) => r.rule), ['context-long'])
+  assert.match(stored.rules[0].detail, /it has 5/)
+  rmSync(w.home, { recursive: true })
+})
+
+test('stop hook, both tiers: blocks once naming all, logs both tiers, no reminder', () => {
+  const w = world({ config: { messageFormat: 'all' } })
+  const both = LONG.replace('**Working**', '**Working**\n\n**Ask:** may I start?\n**Reply:** yes or no').replace(/\n\n\*\*Ask:\*\*[^\n]*\n\*\*Reply:\*\*[^\n]*/, '') + '\n\n**Ask:** may I start?\n**Reply:** yes or no'
+  assert.deepEqual(rules(both), ['context-long', 'ask-status'])
+  const out = hook(w, { last_assistant_message: both })
+  assert.equal(out.decision, 'block')
+  assert.match(out.reason, /- ask-status: [\s\S]*Fix these too while you rewrite:\n- context-long: /)
+  assert.deepEqual(misses(w).map((l) => [l.tier, l.rules]), [['block', ['ask-status']], ['silent', ['context-long']]])
+  assert.equal(existsSync(reminder(w)), false, 'the rewrite already covers the silent misses')
+  rmSync(w.home, { recursive: true })
+})
+
+test('prompt hook: hands the reminder over once, unseen by the user, then clears it', () => {
+  const w = world({ config: { messageFormat: 'all' } })
+  hook(w, { last_assistant_message: LONG })
+  const prompt = (input = {}, env) => hook(w, { prompt: 'go on', hook_event_name: 'UserPromptSubmit', ...input }, env, 'prompt-check.mjs')
+  assert.equal(prompt({ session_id: 'other' }), null, 'another session has no reminder')
+  assert.equal(prompt({}, {}), null, 'not in an Orca pane: no output')
+  assert.ok(existsSync(reminder(w)), 'and the reminder waits')
+  const out = prompt()
+  assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit')
+  const text = out.hookSpecificOutput.additionalContext
+  assert.match(text, /not for the user/)
+  assert.match(text, /^- context-long: cut the context to 4 sentences/m)
+  assert.ok(text.includes(join(w.home, '.claude', 'skills', 'orca-flow', 'messages.md')))
+  assert.equal(existsSync(reminder(w)), false, 'consumed')
+  assert.equal(prompt(), null, 'given once')
+  rmSync(w.home, { recursive: true })
+})
+
+test('prompt hook: the same gates as the Stop hook; bad input exits 0 quietly', () => {
+  const w = world({ config: { messageFormat: 'all' }, firstPrompt: 'fix the bug' })
+  mkdirSync(join(w.data, 'reminders'))
+  writeFileSync(reminder(w), JSON.stringify({ rules: [{ rule: 'above', detail: 'x' }] }))
+  const prompt = (input = {}, env) => hook(w, { prompt: 'go on', ...input }, env, 'prompt-check.mjs')
+  assert.equal(prompt(), null, 'not a lead nor a coordinator')
+  writeFileSync(join(w.data, 'config.json'), JSON.stringify({ messageFormat: [join(w.home, 'other')] }))
+  assert.equal(prompt({ cwd: join(w.home, 'orca', 'coordinators', 'bounti') }), null, 'not opted in here')
+  writeFileSync(join(w.data, 'config.json'), JSON.stringify({ messageFormat: 'all' }))
+  assert.ok(existsSync(reminder(w)), 'nothing consumed while a gate is off')
+  assert.match(prompt({ cwd: join(w.home, 'orca', 'coordinators', 'bounti') }).hookSpecificOutput.additionalContext, /- above: x/, 'a coordinator')
+  writeFileSync(reminder(w), '{broken')
+  assert.equal(prompt({ cwd: join(w.home, 'orca', 'coordinators', 'bounti') }), null, 'a broken reminder is skipped')
+  const r = spawnSync(process.execPath, [join(SCRIPTS, 'prompt-check.mjs')], { input: 'not json', env: { PATH: process.env.PATH, HOME: w.home, ORCA_AGENT_PANE: 'x' }, encoding: 'utf8' })
   assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', ''])
   rmSync(w.home, { recursive: true })
 })

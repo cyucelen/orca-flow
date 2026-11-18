@@ -58,7 +58,7 @@ On its first start the plugin sets up three things outside its own folder:
 | --- | --- |
 | `<Claude profile>/skills/orca-flow` | A link to the plugin's skill, so every Orca agent can load it. It follows the plugin across updates. |
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
-| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format). It runs only in Orca's agent panes and does nothing until you opt in. Your other settings and hooks stay as they are. |
+| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent. Both run only in Orca's agent panes and do nothing until you opt in. Your other settings and hooks stay as they are. |
 
 A real file already at the skill or `CLAUDE.md` path is left alone, and a `settings.json` that is not
 valid JSON is not changed. The Claude profile is the one Orca's agents use
@@ -133,9 +133,12 @@ later"), a context paragraph of 2-4 sentences that says why first, and an **Ask:
 and **Reply:** when they need you. Detail stays above the frame, and the frame points to it. The spec is
 [`skills/orca-flow/messages.md`](skills/orca-flow/messages.md); agents read it from the skill.
 
-The Stop hook checks that frame when a coordinator or a lead ends its turn. On a miss, it names each
-failed rule and has the agent rewrite only the frame, once per turn, so you never read the detail
-twice. It checks the status line (and names the plain line for an old status word), that there is
+The Stop hook checks that frame when a coordinator or a lead ends its turn. Only a miss that makes
+the message unusable (no status line, an old status word, an ask without its Reply or options,
+reused option letters) stops the turn: the hook names it and has the agent rewrite only the frame,
+once per turn, so you never read the detail twice. Any other miss (length, style, wording) is
+silent: you see nothing, and the agent gets a quiet reminder at its next prompt through a
+UserPromptSubmit hook. It checks the status line (and names the plain line for an old status word), that there is
 no header line, a short context paragraph and no detail inside the frame, the labels, that an ask
 has a "Needs" status and a **Reply:** line, that a pick has options with one recommended, that
 option letters name only the current Ask's options, that "above" points to detail but never
@@ -155,7 +158,8 @@ agents working in some folders (a folder and everything under it):
 ```
 
 Each miss adds a line to `~/.orca-flow/format-misses.jsonl`: when, the pane, the worktree, the role,
-the session and the rules missed.
+the session, the tier (`block` or `silent`) and the rules missed. Pending reminders wait in
+`~/.orca-flow/reminders/` until the agent's next prompt.
 
 ## Capacity
 
@@ -205,8 +209,8 @@ orca plugin uninstall cyucelen.flow
 ```
 
 Then remove what it set up outside its folder, if you no longer want it: the `orca-flow` link in
-your Claude profile's `skills` folder, the Stop hook that runs `stop-check.mjs` in its
-`settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
+your Claude profile's `skills` folder, the hooks that run `stop-check.mjs` and `prompt-check.mjs`
+in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
 
 ## Limitations
 

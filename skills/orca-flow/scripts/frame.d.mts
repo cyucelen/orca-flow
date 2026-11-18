@@ -1,5 +1,7 @@
 // Types for frame.mjs, so the plugin's TypeScript (src/summarize.ts) can import it.
-export type Miss = { rule: string; detail: string }
+export type Tier = 'block' | 'silent'
+export type Miss = { rule: string; tier: Tier; detail: string }
+export const TIERS: Record<string, Tier>
 export type Frame = {
   status: string
   /** The ask's kind, derived from the frame's shape: never shown to the user. */

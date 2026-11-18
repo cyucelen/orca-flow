@@ -3,7 +3,7 @@ import { assert, test } from 'orca/testing'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureOwnStopHook, ensureStopHook, stopHookFor } from './install.ts'
+import { ensureOwnStopHook, ensureStopHook, promptHookFor, stopHookFor } from './install.ts'
 
 const profile = () => {
   const home = mkdtempSync(join(tmpdir(), 'stop-hook-'))
@@ -76,6 +76,32 @@ test('a settings.json that is a link stays a link; a development folder writes n
   const dev = stopHookFor(home, join(home, 'dev-profile'))
   assert.equal(ensureOwnStopHook(dev, false).length, 1)
   assert.equal(existsSync(dev.path), false)
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the UserPromptSubmit hook in ${hook.path}`], 'the installed copy adds the prompt hook next to the Stop hook')
   assert.deepEqual(ensureOwnStopHook(hook, true), [])
+  assert.ok(lstatSync(hook.path).isSymbolicLink())
+  rmSync(home, { recursive: true })
+})
+
+test('the UserPromptSubmit hook runs the reminder script through the skill link, only in an Orca pane', () => {
+  const { path, event, entry } = promptHookFor('/h', '/h/.claude')
+  assert.deepEqual([path, event], ['/h/.claude/settings.json', 'UserPromptSubmit'])
+  assert.deepEqual(entry, {
+    hooks: [{ type: 'command', command: 'if [ -n "${ORCA_AGENT_PANE-}" ]; then node "/h/.claude/skills/orca-flow/scripts/prompt-check.mjs"; fi', timeout: 10 }]
+  })
+})
+
+test('both hooks go in once, next to Orca\'s own hooks, each updated in place', () => {
+  const { home, hook } = profile()
+  const prompt = promptHookFor(home, join(home, '.claude'))
+  const orcaStop = { hooks: [{ type: 'command', command: '/orca/agent-hooks/stop.sh' }] }
+  const orcaPrompt = { hooks: [{ type: 'command', command: '/orca/agent-hooks/prompt.sh' }] }
+  const old = { type: 'command', command: 'node "/old/skills/orca-flow/scripts/prompt-check.mjs"', timeout: 5 }
+  writeFileSync(hook.path, JSON.stringify({ model: 'opus', hooks: { Stop: [orcaStop], UserPromptSubmit: [orcaPrompt, { hooks: [old] }, { hooks: [old] }] } }))
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `updated the UserPromptSubmit hook in ${hook.path}`])
+  assert.deepEqual(read(hook.path), { model: 'opus', hooks: { Stop: [orcaStop, hook.entry], UserPromptSubmit: [orcaPrompt, prompt.entry] } })
+  assert.deepEqual(ensureOwnStopHook(hook, true), [], 'a second run changes nothing')
+  assert.equal(readFileSync(hook.path, 'utf8'), `${JSON.stringify(read(hook.path), null, 2)}\n`)
+  writeFileSync(hook.path, '{"hooks":{"UserPromptSubmit":{}}}')
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`])
   rmSync(home, { recursive: true })
 })

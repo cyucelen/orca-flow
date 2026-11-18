@@ -3,7 +3,8 @@
 // the installed plugin wherever Orca put it; a development folder never takes it. The CLAUDE.md every coordinator folder inherits is copied
 // once from a template and then belongs to the user: coordinators keep project notes in it. The
 // profile's settings.json gets one Stop hook that checks coordinators' and leads' messages against
-// the message frame (skills/orca-flow/scripts/stop-check.mjs; it does nothing until the user opts in).
+// the message frame (skills/orca-flow/scripts/stop-check.mjs) and one UserPromptSubmit hook that
+// passes its quiet reminders to the agent (prompt-check.mjs); both do nothing until the user opts in.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -93,28 +94,44 @@ export function ensureOwnLinks(links: Link[], installed: boolean, options: { rep
 
 /** Finds our Stop hook among the others in settings.json. */
 export const STOP_HOOK_MARK = 'skills/orca-flow/scripts/stop-check.mjs'
+/** Finds our UserPromptSubmit hook, which gives the agent the Stop hook's quiet reminders. */
+export const PROMPT_HOOK_MARK = 'skills/orca-flow/scripts/prompt-check.mjs'
 
-export type StopHook = { path: string; entry: { hooks: { type: 'command'; command: string; timeout: number }[] } }
+export type HookEvent = 'Stop' | 'UserPromptSubmit'
+export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { hooks: { type: 'command'; command: string; timeout: number }[] } }
 
-/** The profile's settings.json and our Stop hook entry, which runs the script through the skill link. */
-export function stopHookFor(home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): StopHook {
-  const script = join(claudeDir, STOP_HOOK_MARK)
+/** One of our hook entries: it runs the script through the skill link, only in an Orca agent pane. */
+function hookFor(claudeDir: string, event: HookEvent, mark: string): StopHook {
+  const script = join(claudeDir, mark)
   return {
     path: join(claudeDir, 'settings.json'),
+    event,
+    mark,
     entry: { hooks: [{ type: 'command', command: `if [ -n "\${ORCA_AGENT_PANE-}" ]; then node "${script}"; fi`, timeout: 10 }] }
   }
 }
 
+/** The profile's settings.json and our Stop hook entry. */
+export function stopHookFor(home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): StopHook {
+  return hookFor(claudeDir, 'Stop', STOP_HOOK_MARK)
+}
+
+/** The profile's settings.json and our UserPromptSubmit hook entry. */
+export function promptHookFor(home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): StopHook {
+  return hookFor(claudeDir, 'UserPromptSubmit', PROMPT_HOOK_MARK)
+}
+
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v)
-const ours = (hook: any) => typeof hook?.command === 'string' && hook.command.includes(STOP_HOOK_MARK)
 
 /**
- * Makes settings.json hold our Stop hook exactly once: added when missing, updated in place when it
- * differs, a second copy removed. Every other key and hook stays as it is (Orca keeps its own hooks
- * here). A file it cannot read as a JSON object is left alone; a missing one is created with only
- * our hook. Written atomically, 2-space JSON. Returns what it did, one line each, for the log.
+ * Makes settings.json hold one of our hooks exactly once under its event (Stop unless the hook
+ * names another): added when missing, updated in place when it differs, a second copy removed.
+ * Every other key and hook stays as it is (Orca keeps its own hooks here). A file it cannot read
+ * as a JSON object is left alone; a missing one is created with only our hook. Written atomically,
+ * 2-space JSON. Returns what it did, one line each, for the log.
  */
-export function ensureStopHook({ path, entry }: StopHook): string[] {
+export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_MARK }: StopHook): string[] {
+  const ours = (hook: any) => typeof hook?.command === 'string' && hook.command.includes(mark)
   let text: string | null = null
   try {
     text = readFileSync(path, 'utf8')
@@ -127,19 +144,19 @@ export function ensureStopHook({ path, entry }: StopHook): string[] {
     try {
       settings = JSON.parse(text)
     } catch (e) {
-      return [`left ${path}: not valid JSON (${(e as Error).message}); the Stop hook is not installed`]
+      return [`left ${path}: not valid JSON (${(e as Error).message}); the ${event} hook is not installed`]
     }
-    if (!isObject(settings)) return [`left ${path}: not a JSON object; the Stop hook is not installed`]
+    if (!isObject(settings)) return [`left ${path}: not a JSON object; the ${event} hook is not installed`]
   }
   const hooks = settings.hooks ?? {}
-  const stop = hooks.Stop ?? []
-  if (!isObject(hooks) || !Array.isArray(stop)) return [`left ${path}: hooks.Stop is not a list; the Stop hook is not installed`]
+  const list = hooks[event] ?? []
+  if (!isObject(hooks) || !Array.isArray(list)) return [`left ${path}: hooks.${event} is not a list; the ${event} hook is not installed`]
 
   const want = entry.hooks[0]
   let found = false
   let changed = false
   const groups: any[] = []
-  for (const group of stop) {
+  for (const group of list) {
     if (!isObject(group) || !Array.isArray(group.hooks) || !group.hooks.some(ours)) {
       groups.push(group)
       continue
@@ -158,7 +175,7 @@ export function ensureStopHook({ path, entry }: StopHook): string[] {
   }
   if (found && !changed) return []
   if (!found) groups.push(entry)
-  settings.hooks = { ...hooks, Stop: groups }
+  settings.hooks = { ...hooks, [event]: groups }
 
   try {
     // Through a link to settings.json, write the file it points at, keeping the link.
@@ -171,10 +188,15 @@ export function ensureStopHook({ path, entry }: StopHook): string[] {
   } catch (e) {
     return [`could not write ${path}: ${(e as Error).message}`]
   }
-  return [`${found ? 'updated' : 'added'} the Stop hook in ${path}`]
+  return [`${found ? 'updated' : 'added'} the ${event} hook in ${path}`]
 }
 
-/** Like ensureOwnLinks: only the installed copy writes the hook, never a development folder. */
+/**
+ * Like ensureOwnLinks: only the installed copy writes our hooks, never a development folder. With
+ * the Stop hook goes its UserPromptSubmit partner, in the same settings.json.
+ */
 export function ensureOwnStopHook(hook: StopHook, installed: boolean): string[] {
-  return installed ? ensureStopHook(hook) : [`left the Stop hook in ${hook.path} to the installed copy: this is a development folder`]
+  if (!installed) return [`left the Stop and UserPromptSubmit hooks in ${hook.path} to the installed copy: this is a development folder`]
+  const claudeDir = join(hook.path, '..')
+  return [...ensureStopHook(hook), ...ensureStopHook(promptHookFor(undefined, claudeDir))]
 }
