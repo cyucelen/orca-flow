@@ -5,7 +5,7 @@
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
-import { asksYou, canRemove, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
+import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
 import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
@@ -244,8 +244,23 @@ export function replyOf({ a }: Placed): string {
   return showable(a.summary?.reply) ? clip(a.summary!.reply!, 60) : ''
 }
 
-const askType = ({ a }: Placed) =>
-  a.state === 'waiting' ? 'question' : a.state === 'blocked' ? 'approval' : a.summary && a.summary.needs.type !== 'none' ? a.summary.needs.type : 'info'
+/** Each kind of ask in plain words: the user never sees the kind's name. */
+const NEEDS_WORDS: Record<string, string> = {
+  decision: 'Needs your pick', approval: 'Needs your yes', review: 'Needs your review', info: 'Needs info from you', action: 'Needs you to act'
+}
+
+/**
+ * What the ask needs, as Up next labels it: the frame's own status line ("Needs 2 files from you")
+ * when the ask came from a frame, else the kind in plain words. Orca's own question and permission
+ * prompt need an answer and a yes.
+ */
+export function needsLabel({ a }: Placed): string {
+  if (a.state === 'waiting') return 'Needs your answer'
+  if (a.state === 'blocked') return NEEDS_WORDS.approval
+  const s = a.summary
+  if (s?.source === 'frame' && claimsAsk(a) && showable(s.status)) return s.status!
+  return NEEDS_WORDS[s && s.needs.type !== 'none' ? s.needs.type : 'info']
+}
 
 // ---------- cockpit ----------
 
@@ -676,6 +691,17 @@ export function askingRows(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Works
   return waitingQueue([...snap.rows, ...own])
 }
 
+/**
+ * Up next's order: every ask that stops work, most urgent first, then the asks needed only later
+ * (laterAsk), from finished turns and from working agents alike.
+ */
+export function upNextOrder(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Placed[] {
+  const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
+  const working = [...snap.rows].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
+  return [...queued.filter((p) => !laterAsk(p.a)), ...later]
+}
+
 function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState): string {
   if (placed.length === 0) return ''
   const items = placed.map((p, i) => {
@@ -691,7 +717,7 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
     const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
-    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">Asks · ${esc(askType(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
+    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
   })
   return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }
@@ -983,7 +1009,7 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
   const all = snap.rows.flatMap((r) => r.agents)
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.
-  const asking = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
+  const asking = upNextOrder(snap)
 
   if (ui.query) {
     const q = ui.query.toLowerCase()

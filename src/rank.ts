@@ -25,6 +25,14 @@ export const asksYou = (a: AgentInfo) =>
   // A working agent has its answer: the last summary's ask is stale until its next turn ends.
   a.state === 'blocked' || a.state === 'waiting' || (a.state !== 'working' && claimsAsk(a))
 
+/**
+ * An ask that does not stop the agent ("Working · needs 2 files later"): the answer is needed only
+ * later. Up next lists it after every ask that stops work, even while the agent works. Orca's own
+ * question or permission prompt always stops it.
+ */
+export const laterAsk = (a: AgentInfo) =>
+  claimsAsk(a) && a.summary!.needs.blocking === false && a.state !== 'blocked' && a.state !== 'waiting'
+
 /** Orca marks it monitoring (its dashed circle): waiting on tests, CI, a deploy or its workers. */
 export const monitoring = (a: AgentInfo) => a.workingMode === 'monitoring' && !asksYou(a)
 

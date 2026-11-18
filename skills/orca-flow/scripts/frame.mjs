@@ -2,13 +2,29 @@
 // to a status word, label or rule there changes the constants and rules here, in the same commit.
 // Pure functions, no dependencies: the Stop hook (stop-check.mjs) and the plugin import this file.
 //
-// The frame: a status line (bold as a whole, one status phrase), a short context paragraph, then
-// the Ask with its options and Reply when there is an ask. Steps for Blocked, Warning or Caution
-// only when needed, Next last and only when needed. Detail goes above the frame.
+// The frame: a status line (bold as a whole) that names the user's need in plain words, a short
+// context paragraph that says why first, then the Ask with its options and Reply when there is an
+// ask. Steps for a hand action, Warning or Caution only when needed, Next last and only when
+// needed. Detail goes above the frame.
 
-/** The six status words; `Waiting on you` takes one of the ask types after it. */
-export const STATUS_WORDS = ['Working', 'Idle', 'Waiting on you', 'Blocked', 'Ready for review', 'Done']
-export const ASK_TYPES = ['decision', 'approval', 'review', 'info']
+/**
+ * The status lines: Working, Idle and Done as they are; `Working · needs <thing> later` for an ask
+ * that does not stop the work; `Needs <plain words>` for one that does (`Needs you to <action>` for
+ * a hand action).
+ */
+export const STATUS_WORDS = ['Working', 'Idle', 'Done', 'Working · needs <thing> later', 'Needs <plain words>']
+/** The ask kinds, derived from the frame's shape; the user never sees them. */
+export const ASK_TYPES = ['decision', 'approval', 'review', 'info', 'action']
+/** Status words from before round 4, and the plain line that replaces each. */
+export const OLD_STATUS = {
+  'Waiting on you: decision': 'Needs your pick',
+  'Waiting on you: approval': 'Needs your yes',
+  'Waiting on you: review': 'Needs your review',
+  'Waiting on you: info': 'Needs <the thing> from you',
+  'Waiting on you': 'Needs <the thing> from you',
+  Blocked: 'Needs you to <action>',
+  'Ready for review': 'Needs your review'
+}
 /** Every bold label a frame line may start with. */
 export const LABELS = ['Ask', 'Reply', 'Steps', 'Warning', 'Caution', 'Next']
 /** The priority words that end a route line. */
@@ -23,7 +39,14 @@ export const LETTERED = [/\b(?:[Oo]ption|OPTION)s?\s+[A-Z]\b/, /\b[A-F](?:\/[A-F
 /** A Warning or Caution about money must give a number. */
 export const COST = /cost|credit|money|\$|€/i
 
-const PHRASE = new RegExp(`^(${STATUS_WORDS.filter((w) => w !== 'Waiting on you').join('|')}|Waiting on you: (${ASK_TYPES.join('|')}))\\.?$`)
+const PLAIN = /^(?:Working|Idle|Done|Working · needs \S.* later|Needs \S.*)$/
+const LATER = /^Working · needs \S.* later$/
+const HAND = /^Needs you to /
+/** A status phrase, new or old, without one trailing period; null when the text is none. */
+const phraseOf = (text) => {
+  const phrase = text.trim().replace(/\.$/, '')
+  return PLAIN.test(phrase) || Object.hasOwn(OLD_STATUS, phrase) ? phrase : null
+}
 const ROUTE = new RegExp(`^\\S.* → lead in [^\\s/]+/\\S+ · (${LEVELS.join('|')})$`)
 const BOLD = /^\*\*([^*].*)\*\*$/
 const LABEL = /^\*\*([^*:]+):\*\*/
@@ -47,11 +70,41 @@ function linesOf(text) {
 const labelOf = (line) => LABEL.exec(line)?.[1]?.trim() ?? null
 const valueOf = (line) => line.replace(LABEL, '').trim()
 const statusOf = (line) => {
-  const phrase = BOLD.exec(line)?.[1]?.trim()
-  return phrase && PHRASE.test(phrase) ? phrase.replace(/\.$/, '') : null
+  const inner = BOLD.exec(line)?.[1]
+  return inner ? phraseOf(inner) : null
 }
 /** The old shape's `**Status:** Working`: found so the checker can say what to change. */
-const oldStatusOf = (line) => (labelOf(line) === 'Status' && PHRASE.test(valueOf(line)) ? valueOf(line).replace(/\.$/, '') : null)
+const oldStatusOf = (line) => (labelOf(line) === 'Status' ? phraseOf(valueOf(line)) : null)
+
+/** What a status line says about the ask: whether it stops the work, and whether it is a hand action. */
+function statusKind(status) {
+  const old = Object.hasOwn(OLD_STATUS, status)
+  const plain = old ? OLD_STATUS[status] : status
+  return {
+    old,
+    asks: plain.startsWith('Needs ') || LATER.test(plain),
+    blocking: plain.startsWith('Needs '),
+    hand: HAND.test(plain),
+    pick: /\b(pick|choice|choose|decide|decision)\b/i.test(status)
+  }
+}
+
+/**
+ * The ask's kind, from its shape: lettered options are a decision, `Reply: yes or no` an approval,
+ * a Reply that starts with "approve" a review, Steps or `Reply: done` a hand action, any other ask
+ * info. No ask: 'none'.
+ */
+function kindOf(parts) {
+  const block = (label) => parts.blocks.find((b) => b.label === label)
+  const ask = block('Ask')
+  const reply = block('Reply')?.value ?? ''
+  if ((ask?.items ?? []).some((l) => OPTION.test(l))) return 'decision'
+  if (!ask && !block('Steps') && !reply) return 'none'
+  if (/^yes or no\b/i.test(reply)) return 'approval'
+  if (/^approve\b/i.test(reply)) return 'review'
+  if (block('Steps') || /^done\.?$/i.test(reply)) return 'action'
+  return ask ? 'info' : 'none'
+}
 
 /** Sentences of a paragraph: a . ? or ! ends one only before a space or the end (not 0.2.40, plan.ts). */
 export const sentencesOf = (text) => text.split(/[.?!]+(?=\s|$)/).map((s) => s.trim()).filter(Boolean)
@@ -108,7 +161,7 @@ const miss = (rule, detail) => ({ rule, detail })
  * Checks the last message of a turn against the frame. `role` is 'coordinator', 'lead' or another
  * role: only a coordinator may write route lines or a numbered list of waiting items.
  * Returns { ok, misses: [{ rule, detail }] }. Rules: status, header, context, context-long, detail,
- * label, ask, reply, ask-status, options, recommended, letters, cost-number, next-last.
+ * label, ask, ask-status, options, recommended, letters, cost-number, next-last, status-old.
  */
 export function checkFrame(text, { role } = {}) {
   const lines = linesOf(text)
@@ -117,11 +170,15 @@ export function checkFrame(text, { role } = {}) {
   if (coordinator && filled.length > 0 && filled.every((l) => ROUTE.test(l.line))) return { ok: true, misses: [] }
 
   const frame = findFrame(lines, { old: true })
-  if (!frame) return { ok: false, misses: [miss('status', `end with a bold status line, e.g. **Working** (one of: ${STATUS_WORDS.join(', ')})`)] }
+  if (!frame) return { ok: false, misses: [miss('status', `end with a bold status line that names the need in plain words: ${STATUS_WORDS.map((w) => `**${w}**`).join(', ')}`)] }
 
   const misses = []
   const before = lines.slice(0, frame.at).filter((l) => !l.fenced && l.line !== '').at(-1)?.line ?? ''
   if (BOLD.test(before) && before.includes(' · ')) misses.push(miss('header', 'remove the header line (ticket · workstream · level) above the status'))
+
+  const status = frame.status
+  const said = statusKind(status)
+  if (said.old) misses.push(miss('status-old', `write the need in plain words: **${OLD_STATUS[status]}**, not "${status}"`))
 
   const parts = partsOf(frame)
   if (frame.old) parts.blocks.unshift({ label: 'Status', value: frame.status, line: '', items: [] })
@@ -144,14 +201,17 @@ export function checkFrame(text, { role } = {}) {
   for (const b of parts.blocks) if (!LABELS.includes(b.label)) misses.push(miss('label', `drop the **${b.label}:** label; its content goes in the context paragraph`))
 
   const has = (label) => parts.blocks.some((b) => b.label === label)
-  const status = frame.status
-  const waits = status.startsWith('Waiting on you: ') || status === 'Ready for review'
-  if (waits && (!has('Ask') || !has('Reply'))) misses.push(miss('ask', `"${status}" needs ${[!has('Ask') && '**Ask:**', !has('Reply') && '**Reply:**'].filter(Boolean).join(' and ')}`))
-  if (status === 'Blocked' && (!has('Reply') || !(has('Steps') || has('Ask')))) misses.push(miss('reply', 'Blocked needs **Steps:** (or **Ask:**) and **Reply:** done'))
-  if (['Working', 'Idle', 'Done'].includes(status) && has('Ask')) misses.push(miss('ask-status', `an **Ask:** needs a waiting status, not ${status}: use Waiting on you: <type>`))
+  if (said.hand && (!has('Reply') || !(has('Steps') || has('Ask')))) {
+    misses.push(miss('ask', `"${status}" needs **Steps:** (or **Ask:**) and **Reply:** done`))
+  } else if (said.asks && !said.hand && (!has('Ask') || !has('Reply'))) {
+    misses.push(miss('ask', `"${status}" needs ${[!has('Ask') && '**Ask:**', !has('Reply') && '**Reply:**'].filter(Boolean).join(' and ')}`))
+  }
+  if (!said.asks && has('Ask')) {
+    misses.push(miss('ask-status', `an **Ask:** needs a status that names the need: **Needs ...**, or **Working · needs ... later** while work goes on (not ${status})`))
+  }
 
-  if (status === 'Waiting on you: decision') {
-    const options = parts.blocks.filter((b) => b.label === 'Ask').flatMap((b) => b.items).filter((l) => OPTION.test(l))
+  const options = parts.blocks.filter((b) => b.label === 'Ask').flatMap((b) => b.items).filter((l) => OPTION.test(l))
+  if (said.asks && (options.length > 0 || said.pick)) {
     if (options.length < 2) misses.push(miss('options', 'a decision needs 2 or more options as bullets: - **A. ...**'))
     else {
       const marked = options.filter((l) => /\(recommended\)/i.test(l)).length
@@ -186,19 +246,24 @@ const optionLabel = (line) => {
 }
 
 /**
- * Reads the frame: status, context paragraph, ask, its option labels, reply, steps, next and the
- * Warning or Caution text; null when the message has no status line (an old-shape message with a
- * header and **Status:** too). It does not judge the frame: pair it with checkFrame.
+ * Reads the frame: status line, the ask's kind (derived, or 'none') and whether it stops the work,
+ * context paragraph, ask, its option labels, reply, steps, next and the Warning or Caution text;
+ * null when the message has no plain status line (an old status word, or the old header and
+ * **Status:** shape). It does not judge the frame: pair it with checkFrame.
  */
 export function parseFrame(text) {
   const frame = findFrame(linesOf(text))
-  if (!frame) return null
+  if (!frame || statusKind(frame.status).old) return null
   const parts = partsOf(frame)
+  const said = statusKind(frame.status)
+  const kind = said.asks ? kindOf(parts) : 'none'
   const block = (label) => parts.blocks.find((b) => b.label === label)
   const ask = block('Ask')
   const warning = parts.blocks.find((b) => b.label === 'Warning' || b.label === 'Caution')
   return {
     status: frame.status,
+    kind,
+    blocking: kind !== 'none' && said.blocking,
     context: parts.context.join(' '),
     ask: ask?.value ?? null,
     options: (ask?.items ?? []).map(optionLabel).filter(Boolean),

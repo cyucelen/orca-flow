@@ -12,6 +12,8 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 const LEAD = /your role: lead\b/i
+/** After a miss the agent rewrites only the frame: the user already read the detail above it. */
+export const FRAME_ONLY = 'Rewrite only the frame at the bottom, from the status line down. Do not repeat the detail above it: the user already read it.'
 
 const readJson = (path, fallback) => {
   try {
@@ -98,7 +100,8 @@ export function judge(input, { env = process.env, home = homedir(), script = pro
   const reason = [
     'Your last message does not follow the agent message frame:',
     ...misses.map((m) => `- ${m.rule}: ${m.detail}`),
-    `Read ${spec}, then rewrite the message with the frame last.`
+    FRAME_ONLY,
+    `The rules are in ${spec}.`
   ].join('\n')
   return {
     output: { decision: 'block', reason },

@@ -48,7 +48,7 @@ test('up next: the first briefing is open with about, the glance and one jump; t
   assert.match(main, /Up next · 2/)
   const brief = main.slice(main.indexOf('class="brief"'), main.indexOf('</div><button class="item"', main.indexOf('class="brief"')) + 1)
   assert.match(brief, /About Merge accounts by email\?\./)
-  assert.match(brief, /Asks · decision/)
+  assert.match(brief, /<span class="kicker">Needs your pick<\/span>/)
   assert.match(brief, /Merge accounts by email\?/)
   assert.equal((brief.match(/data-open=/g) ?? []).length, 1, 'the only action is Jump to session')
   noMatch(main, /⌘⇧N/, 'no keyboard shortcut shown')
@@ -461,7 +461,7 @@ test('Orca\'s waiting always means waiting on you, and its question shows in Up 
   const asking = agent('p-q', 'Orca plugin UI', 'waiting', { summary: calm, question: 'Which agent-row actions do you want in the menu?' })
   assert.equal(faceOf(asking), 'asks', 'a summary saying nothing is needed does not override Orca')
   const main = page({ ...snap, rows: [row('q', 'orca-plugin', [asking])] }, emptyUi())
-  assert.match(main, /Asks · question[\s\S]*Which agent-row actions do you want in the menu\?/)
+  assert.match(main, /Needs your answer[\s\S]*Which agent-row actions do you want in the menu\?/)
   noMatch(main, /Finished/)
 })
 
@@ -979,8 +979,8 @@ test('a to-do for the user ("rename the project, tell me when done") is an actio
   const main = page({ ...snap, rows: [row('w', 'shop', [a])] }, emptyUi())
   assert.match(main, /data-tip="Asks you to do something" data-tone="action"[\s\S]*?class="action-badge"/)
   const brief = main.slice(main.indexOf('class="brief"'))
-  assert.match(brief, /<span class="kicker">Asks · action<\/span><span>Rename the project to katos in Orca settings\.<\/span>/)
-  noMatch(brief, /Asks · (info|question)/)
+  assert.match(brief, /<span class="kicker">Needs you to act<\/span><span>Rename the project to katos in Orca settings\.<\/span>/)
+  noMatch(brief, /Needs (info from you|your answer)/)
 })
 
 test('the review badge is a larger white eye, and only its frame grows to fit it', () => {
@@ -1314,4 +1314,34 @@ test("a framed ask shows its Reply under it, small; Orca's own question does not
   noMatch(brief(agent('p-f', 'Split lessons', 'done', { summary: { ...framed, reply: undefined } })), /class="reply"/, 'no Reply line, none shown')
   noMatch(brief(agent('p-f', 'Split lessons', 'waiting', { summary: framed, question: 'Allow the edit?' })), /class="reply"/, "Orca's question is another ask")
   noMatch(brief(agent('p-f', 'Split lessons', 'done', { summary: { ...framed, reply: 'look at /Users/me/x/y' } })), /class="reply"/, 'a path is never shown')
+})
+
+test('Up next labels an ask in plain words: the frame\'s status line, else the kind; never the kind\'s name', () => {
+  const brief = (a: AgentInfo) => { const p = page({ ...snap, rows: [row('w', 'shop', [a])] }, emptyUi()); return p.slice(p.indexOf('class="brief"')) }
+  const framed = summary({ glance: 'Where are the 2 source PDFs?', status: 'Needs 2 files from you', source: 'frame', needs: { type: 'info', ask: 'where are the 2 source PDFs?', options: [] } })
+  assert.match(brief(agent('p-f', 'Split lessons', 'done', { summary: framed })), /<span class="kicker">Needs 2 files from you<\/span>/)
+  const words: [AgentSummary['needs']['type'], string][] = [['decision', 'Needs your pick'], ['approval', 'Needs your yes'], ['review', 'Needs your review'], ['info', 'Needs info from you'], ['action', 'Needs you to act']]
+  for (const [type, label] of words) {
+    const html = brief(agent('p-h', 'Work', 'done', { summary: summary({ glance: 'Go?', source: 'summarizer', needs: { type, ask: 'Go?', options: [] } }) }))
+    assert.match(html, new RegExp(`<span class="kicker">${label}</span>`), type)
+    noMatch(html, /Asks ·|decision|approval/, `no kind name for ${type}`)
+  }
+})
+
+test('a later ask comes after every ask that stops work, even from a working agent', async () => {
+  const { upNextOrder } = await import('./view.ts')
+  const later = (title: string) => summary({ glance: title, status: 'Working · needs 2 files later', source: 'frame', priority: 'P0', needs: { type: 'info', ask: title, options: [], blocking: false } })
+  const rows = [
+    row('w-later', 'shop', [agent('p-later', 'Plan eval', 'working', { summary: later('Where are the PDFs?') })], { priority: 'P0' }),
+    row('w-done-later', 'shop', [agent('p-done-later', 'Plan eval 2', 'done', { summary: later('Where is the key?') })], { priority: 'P1' }),
+    row('w-pick', 'blog', [agent('p-pick', 'Headline', 'done', { summary: asks('Pick a headline', 'P2') })], { priority: 'P2' }),
+    row('w-yes', 'shop', [agent('p-yes', 'Merge', 'done', { summary: asks('Merge accounts?') })], { priority: 'P1' }),
+    row('w-busy', 'shop', [agent('p-busy', 'Busy', 'working', { summary: asks('Stale ask?') })], { priority: 'P0' })
+  ]
+  const order = upNextOrder({ rows, coordinators: [] }).map((p) => p.a.paneKey)
+  assert.deepEqual(order, ['p-yes', 'p-pick', 'p-later', 'p-done-later'], 'blocking by urgency first, then later asks; a working agent\'s blocking ask is stale')
+  const html = page({ ...snap, rows }, emptyUi())
+  const upnext = html.slice(html.indexOf('class="upnext"'))
+  assert.ok(upnext.indexOf('Merge') < upnext.indexOf('Plan eval'), 'the P0 later ask still comes after the P1 blocking one')
+  assert.match(upnext, /Up next · 4/)
 })

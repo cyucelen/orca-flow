@@ -19,7 +19,9 @@ macOS only for now.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds.
   When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
-  status, Ask and Reply are read as written, and Up next shows the Reply under the ask.
+  status, Ask and Reply are read as written: Up next labels the ask with the message's own status
+  line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later
+  ("Working · needs 2 files later") comes after every ask that stops work.
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
   has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
   the PR), the project and the age. The branch shows only as the color of the row's tree lines.
@@ -125,16 +127,17 @@ orca-flow resume             # a woken coordinator takes back the runs it was co
 
 ## Message format
 
-Coordinators and leads end each message with a fixed frame: a bold status line (one of six status
-words), a context paragraph of 2-4 sentences, and an **Ask:** with its options and **Reply:** when
-they need you. Detail stays above the frame, and the frame points to it. The spec is
+Coordinators and leads end each message with a fixed frame: a bold status line that names what
+they need from you in plain words (Working, Idle, Done, "Needs your pick", "Working · needs 2 files
+later"), a context paragraph of 2-4 sentences that says why first, and an **Ask:** with its options
+and **Reply:** when they need you. Detail stays above the frame, and the frame points to it. The spec is
 [`skills/orca-flow/messages.md`](skills/orca-flow/messages.md); agents read it from the skill.
 
 The Stop hook checks that frame when a coordinator or a lead ends its turn. On a miss, it names each
-failed rule and has the agent rewrite the message, once per turn. It checks the status line, that
-there is no header line, a short context paragraph and no detail inside the frame, the labels, that
-an ask has a waiting status and a **Reply:** line, that a decision has options with one
-recommended, that option letters name only the current Ask's options, and that a cost warning gives
+failed rule and has the agent rewrite only the frame, once per turn, so you never read the detail
+twice. It checks the status line (and names the plain line for an old status word), that there is
+no header line, a short context paragraph and no detail inside the frame, the labels, that an ask
+has a "Needs" status and a **Reply:** line, that a pick has options with one recommended, that option letters name only the current Ask's options, and that a cost warning gives
 a number. A coordinator can also answer with route lines
 only. Workers and your own chats are never checked.
 

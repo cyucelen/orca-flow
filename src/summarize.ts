@@ -360,25 +360,26 @@ const NO_ASK: Needs = { type: 'none', ask: '', options: [] }
 
 /**
  * The ask exactly as a coordinator or lead wrote it, when its final message has a valid frame
- * (skills/orca-flow/messages.md); null for another role or a message without one. Working, Idle,
- * Done and a route line ask nothing. Blocked is an action: its Ask, else the first sentence of its
- * context, with "Done" as the button when the Reply line is "done".
+ * (skills/orca-flow/messages.md); null for another role or a message without one. Its kind comes
+ * from the frame's shape (frame.mjs), its status line is kept for Up next's label, and an ask
+ * under `Working · needs ... later` is not blocking. Working, Idle, Done and a route line ask
+ * nothing. A hand action without an Ask takes its ask from the status line ("Needs you to turn on
+ * Developer Mode"), else from the context's first sentence, with "Done" as the button when the
+ * Reply line is "done".
  */
-export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string } | null {
+export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string; status: string } | null {
   if ((d.role !== 'coordinator' && d.role !== 'lead') || !d.lastMessage.trim()) return null
   if (!checkFrame(d.lastMessage, { role: d.role }).ok) return null
   const f = parseFrame(d.lastMessage)
-  const status = f?.status ?? ''
-  const type: Needs['type'] = status.startsWith('Waiting on you: ')
-    ? (status.slice('Waiting on you: '.length) as Needs['type'])
-    : status === 'Blocked' ? 'action' : status === 'Ready for review' ? 'review' : 'none'
-  if (!f || type === 'none') return { needs: NO_ASK, reply: '' }
+  if (!f || f.kind === 'none') return { needs: NO_ASK, reply: '', status: f?.status ?? '' }
+  const type = f.kind as Needs['type']
   const reply = f.reply ?? ''
   const options = type === 'action' && /^done\.?$/i.test(reply) ? ['Done'] : f.options
-  const first = sentencesOf(f.context)[0]
+  const todo = /^Needs you to (.+)$/.exec(f.status)?.[1]
   // A pointer to detail above the frame ("(error above)") means nothing on a card.
-  const ask = f.ask ?? (type === 'action' && first ? `${first.replace(/\s*\([^()]*\babove\)/g, '')}.` : '')
-  return { needs: { type, ask, options }, reply }
+  const first = sentencesOf(f.context)[0]?.replace(/\s*\([^()]*\babove\)/g, '')
+  const ask = f.ask ?? (type !== 'action' ? '' : todo ? `${todo.charAt(0).toUpperCase()}${todo.slice(1)}.` : first ? `${first}.` : '')
+  return { needs: { type, ask, options, ...(f.blocking ? {} : { blocking: false }) }, reply, status: f.status }
 }
 
 const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4))
@@ -397,14 +398,15 @@ export function shortAsk(ask: string): string {
  * stays only when it is about the same ask (same type, a word in common), else the Ask's short
  * form. `source` says where the ask came from, so drift between the two shows on the card.
  */
-export function withFrame<S extends { needs: Needs; glance?: string }>(d: Pick<Digest, 'role' | 'lastMessage'>, summary: S): S & { reply?: string; source: 'frame' | 'summarizer' } {
+export function withFrame<S extends { needs: Needs; glance?: string }>(d: Pick<Digest, 'role' | 'lastMessage'>, summary: S): S & { reply?: string; status?: string; source: 'frame' | 'summarizer' } {
   const framed = frameAsk(d)
   if (!framed) return { ...summary, source: 'summarizer' }
-  const { needs, reply } = framed
+  const { needs, reply, status } = framed
   const theirs = summary.glance ?? ''
   const same = summary.needs?.type === needs.type && [...words(theirs)].some((w) => words(needs.ask).has(w))
   const glance = needs.type === 'none' ? '' : same ? theirs : shortAsk(needs.ask)
-  return { ...summary, needs, glance, ...(reply && needs.type !== 'none' ? { reply } : {}), source: 'frame' }
+  const asks = needs.type !== 'none'
+  return { ...summary, needs, glance, ...(asks && reply ? { reply } : {}), ...(asks ? { status } : {}), source: 'frame' }
 }
 
 /**

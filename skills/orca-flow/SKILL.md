@@ -58,12 +58,14 @@ Use these words exactly, in cards, specs, summaries and when talking to the user
   card at once.
 - When unsure between two levels, pick the lower one and say so in one line.
 
-Every time you need the user, use one of the ask types in [messages.md](messages.md): `decision`,
-`approval`, `review` or `info`. Something only the user can do outside the chat is Blocked
-with Steps (the sidebar shows it as an `action`).
+Every time you need the user, name the need in plain words on the status line, as
+[messages.md](messages.md) says: `Needs your pick`, `Needs your yes`, `Needs your review`,
+`Needs <the thing> from you`, or `Needs you to <action>` with Steps for what only the user can do
+outside the chat. When work runs on and the answer is needed only later, write
+`Working · needs <thing> later`: the sidebar shows it after every ask that stops work.
 
-Queue order for the user: level, then asks that unblock other agents, then `approval`, `info` and
-Blocked before `decision` and `review`, then longest waiting.
+Queue order for the user: level, then asks that unblock other agents, then yes-or-no asks, facts
+and hand actions before picks and reviews, then longest waiting.
 
 ## Spawning
 
@@ -114,7 +116,7 @@ shows none, `run-create --objective "<goal>"` first. Then `orca orchestration ta
 --task-title "<outcome>" --spec-file -`. Queued tasks show in `orca orchestration task-list
 --ready`; start the highest first when a slot frees, with `worker-start --task <id>` plus the place
 flags it needs. **P0 preempts:** if a P0 is queued, propose pausing
-the lowest-priority idle agent as an `approval` ask; never stop one without the user's yes.
+the lowest-priority idle agent as a yes-or-no ask (`Needs your yes`); never stop one without the user's yes.
 
 ## Workstream cards
 

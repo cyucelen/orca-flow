@@ -15,15 +15,15 @@ const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.met
 // The examples in messages.md are the fixtures: the spec and the checker cannot drift apart.
 const SPEC = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
 const EXAMPLES = [...SPEC.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
-const [DECISION, PLAN, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
+const [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
 
 const rules = (text, role = 'lead') => checkFrame(text, { role }).misses.map((m) => m.rule)
 const ok = (text, role = 'lead') => assert.deepEqual(checkFrame(text, { role }), { ok: true, misses: [] }, text.split('\n').find((l) => l.startsWith('**')))
 
 test('every example in messages.md passes: the briefing and the route line as a coordinator', () => {
-  assert.equal(EXAMPLES.length, 9)
+  assert.equal(EXAMPLES.length, 11)
   for (const example of EXAMPLES) ok(example, 'coordinator')
-  for (const example of [DECISION, PLAN, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
+  for (const example of [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
   ok(`${ROUTE}\n\nISO-12 → lead in mono/isola · soon\n`, 'coordinator')
   assert.deepEqual(rules(ROUTE), ['status'], 'only a coordinator routes')
   assert.deepEqual(rules(BRIEFING), ['detail'], "only a coordinator lists waiting items")
@@ -49,19 +49,33 @@ test("the BOU-4206 eval message in the old shape fails: header, its labels, a co
   const got = misses.map((m) => m.rule)
   for (const rule of ['header', 'label', 'cost-number']) assert.ok(got.includes(rule), `${rule} in ${got}`)
   assert.deepEqual(misses.filter((m) => m.rule === 'label').map((m) => m.detail.match(/\*\*(\w+):/)[1]), ['Status', 'Answer', 'Evidence'])
-  assert.deepEqual(got, ['header', 'context', 'label', 'label', 'label', 'cost-number'], 'and it has no context paragraph')
+  assert.deepEqual(got, ['header', 'status-old', 'context', 'label', 'label', 'label', 'cost-number'], 'and it has no context paragraph')
   assert.equal(parseFrame(OLD_EVAL), null, 'the old shape is not read: the sidebar falls back to Haiku')
 })
 
-test('status: a bold status phrase, the last one outside code fences', () => {
+test('status: a bold status line in plain words, the last one outside code fences', () => {
   assert.deepEqual(rules('Done. The PR is up.'), ['status'])
   assert.deepEqual(rules(PLAN.replace('**Working**', '**In progress**')), ['status'])
   assert.deepEqual(rules(PLAN.replace('**Working**', '**working**')), ['status'], 'the words never change')
   assert.deepEqual(rules(PLAN.replace('**Working**', 'Working')), ['status'], 'bold as a whole')
-  assert.deepEqual(rules(DECISION.replace('**Waiting on you: decision**', '**Waiting on you: choice**')), ['status'])
+  assert.deepEqual(rules(INFO.replace('**Needs 2 files from you**', '**needs 2 files from you**')), ['status'])
+  assert.deepEqual(rules(LATER.replace('**Working · needs 2 files later**', '**Working · needs 2 files**')), ['status'], 'a later need says "later"')
   assert.deepEqual(rules(PLAN.replace('**Working**', '**Working.**')), [], 'one trailing period')
   assert.deepEqual(rules('```\n' + RELEASED + '\n```'), ['status'], 'a frame inside a code block does not count')
-  assert.deepEqual(rules(`**Blocked**\n\nOld frame.\n\n**Steps:**\n1. x\n\n**Reply:** done\n\n${RELEASED}`), [], 'the last frame counts')
+  assert.deepEqual(rules(`**Needs you to restart**\n\nOld frame.\n\n**Steps:**\n1. x\n\n**Reply:** done\n\n${RELEASED}`), [], 'the last frame counts')
+})
+
+test('status-old: the old status words name the plain line to use', () => {
+  const old = (status, text) => checkFrame(text.replace(/^\*\*(Needs|Working ·)[^\n]*\*\*$/m, `**${status}**`), { role: 'lead' }).misses
+  const info = old('Waiting on you: info', INFO)
+  assert.deepEqual(info.map((m) => m.rule), ['status-old'], 'the BOU-4206 3:08 PM message')
+  assert.match(info[0].detail, /\*\*Needs <the thing> from you\*\*/)
+  assert.match(old('Waiting on you: decision', DECISION)[0].detail, /\*\*Needs your pick\*\*/)
+  assert.match(old('Waiting on you: approval', APPROVAL)[0].detail, /\*\*Needs your yes\*\*/)
+  assert.match(old('Ready for review', REVIEW)[0].detail, /\*\*Needs your review\*\*/)
+  assert.match(old('Blocked', BLOCKED)[0].detail, /\*\*Needs you to <action>\*\*/)
+  assert.deepEqual(old('Blocked', BLOCKED).map((m) => m.rule), ['status-old'], 'the rest of the old frame still checks out')
+  assert.equal(parseFrame(INFO.replace('**Needs 2 files from you**', '**Waiting on you: info**')), null, 'the sidebar falls back to Haiku')
 })
 
 test('header: the old header line above the status line', () => {
@@ -101,17 +115,26 @@ test('label: only Ask, Reply, Steps, Warning, Caution and Next', () => {
   assert.deepEqual(rules(`**Notes:** above the frame\n\n${RELEASED}`), [], 'detail above the frame is free')
 })
 
-test('ask, reply and ask-status: an ask needs a waiting status and a Reply', () => {
+test('ask and ask-status: a need has an Ask and a Reply; Working, Idle and Done have no Ask', () => {
   assert.deepEqual(rules(DECISION.replace('**Reply:** A, B or no', '')), ['ask'])
   assert.deepEqual(rules(REVIEW.replace(/\*\*Ask:\*\*.*\n/, '')), ['ask'])
   assert.deepEqual(rules(APPROVAL.replace('**Reply:** yes or no\n', '')), ['ask'])
-  assert.deepEqual(rules(BLOCKED.replace('**Reply:** done\n', '')), ['reply'])
-  assert.deepEqual(rules(BLOCKED.replace(/\*\*Steps:\*\*\n(\d\..*\n)+/, '')), ['reply'], 'Blocked says what to do')
+  assert.deepEqual(rules(INFO.replace(/\*\*Ask:\*\*.*\n/, '')), ['ask'])
+  assert.deepEqual(rules(LATER.replace(/\*\*Reply:\*\*.*/, '')), ['ask'], 'a later need asks too')
+  assert.deepEqual(rules(BLOCKED.replace('**Reply:** done\n', '')), ['ask'])
+  const bare = checkFrame(BLOCKED.replace(/\*\*Steps:\*\*\n(\d\..*\n)+/, ''), { role: 'lead' }).misses
+  assert.deepEqual(bare.map((m) => m.rule), ['ask'], 'a hand action without Steps or an Ask')
+  assert.match(bare[0].detail, /\*\*Steps:\*\* \(or \*\*Ask:\*\*\) and \*\*Reply:\*\* done/)
+  assert.deepEqual(rules(`${PLAN}\n\n**Ask:** where are the 2 PDFs?\n**Reply:** the file paths`), ['ask-status'], 'Working with an Ask')
+  assert.match(checkFrame(`${PLAN}\n\n**Ask:** x?\n**Reply:** y`, { role: 'lead' }).misses[0].detail, /Working · needs \.\.\. later/)
   assert.deepEqual(rules(`${RELEASED}\n\n**Ask:** any feedback?\n**Reply:** your feedback`), ['ask-status'])
   assert.deepEqual(rules(PLAN), [], 'Working needs no ask')
 })
 
-test('options and recommended: a decision gives 2 or more options, one recommended', () => {
+test('options and recommended: a pick gives 2 or more options, one recommended', () => {
+  const pick = APPROVAL.replace('**Needs your yes**', '**Needs your pick**')
+  assert.deepEqual(rules(pick), ['options'], '"Needs your pick" without options')
+  assert.deepEqual(rules(LATER.replace('needs 2 files later', 'needs your pick later')), ['options'])
   assert.deepEqual(rules(DECISION.replace(/- \*\*B\..*\n/, '')), ['options'])
   assert.deepEqual(rules(DECISION.replace(' (recommended)', '')), ['recommended'])
   assert.deepEqual(rules(DECISION.replace('**B. Without peri.**', '**B. Without peri (recommended).**')), ['recommended'])
@@ -124,7 +147,7 @@ const COMPARE = (columns, context) => `${columns}
 | Kaimug | 4 | 4 |
 | peri | 31 | 11 |
 
-**Waiting on you: decision**
+**Needs your pick**
 
 ${context}
 
@@ -173,10 +196,12 @@ test('next-last: Next is optional, and last when it is there', () => {
   assert.deepEqual(rules(`${REVIEW}\n**Caution:** it can break the Android build.`), ['next-last'])
 })
 
-test('parseFrame reads the new shape: status, context, ask, options, reply, steps, next, warning', () => {
+test('parseFrame reads status, kind, blocking, context, ask, options, reply, steps, next, warning', () => {
   assert.deepEqual(parseFrame(DECISION), {
-    status: 'Waiting on you: decision',
-    context: 'The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so the 1 topic = 1 lesson rule changes long documents too. We must test it on all documents and on courses under 1,200 tokens before we choose. The decision on 1 topic = 1 lesson is held until this test ends.',
+    status: 'Needs your pick',
+    kind: 'decision',
+    blocking: true,
+    context: 'The plan eval shows if the 1 topic = 1 lesson rule is safe for long documents, and it costs money. Most passages in the 10 eval documents are under 400 tokens (table above), so the rule changes long documents too. The decision on 1 topic = 1 lesson is held until this test ends.',
     ask: 'run the plan eval on Azure OpenAI?',
     options: ['A. All 10 documents + Kaimug', 'B. Without peri'],
     reply: 'A, B or no',
@@ -184,6 +209,8 @@ test('parseFrame reads the new shape: status, context, ask, options, reply, step
     next: null,
     warning: null
   })
+  const kinds = [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING].map((e) => { const f = parseFrame(e); return `${f.kind}${f.blocking ? '' : ' later'}` })
+  assert.deepEqual(kinds, ['decision', 'info', 'none later', 'info later', 'action', 'review', 'none later', 'none later', 'approval', 'none later'])
   assert.deepEqual(parseFrame(BLOCKED).steps.length, 4)
   assert.equal(parseFrame(BLOCKED).steps[1], 'Turn on Developer Mode. Let the phone restart.')
   assert.equal(parseFrame(BLOCKED).next, 'I run the device build again.')
@@ -259,7 +286,8 @@ test('stop hook: blocks a lead that misses the frame, names the rule and the spe
   assert.equal(out.decision, 'block')
   assert.match(out.reason, /^- status: /m)
   assert.ok(out.reason.includes(join(w.home, '.claude', 'skills', 'orca-flow', 'messages.md')), 'the spec through the link, not resolved')
-  assert.match(out.reason, /rewrite the message with the frame last/)
+  assert.ok(out.reason.includes('Rewrite only the frame at the bottom, from the status line down. Do not repeat the detail above it: the user already read it.'), 'frame-only rewrite')
+  assert.match(out.reason, /^The rules are in .*messages\.md\.$/m)
   const [logged] = misses(w)
   assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', rules: ['status'] })
   rmSync(w.home, { recursive: true })

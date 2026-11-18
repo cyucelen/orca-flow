@@ -28,7 +28,8 @@ Write every message to the user in the frame of [messages.md](../messages.md).
 6. **Confirm** who is on it in the frame of [messages.md](../messages.md): the status line
    `**Working**` and a context paragraph that names the worker and its plan, then end your turn. Orca wakes you when a worker reports. When nothing
    runs any more and nothing is asked (after a release, or while you wait for the user's
-   feedback), use Status Idle, not Working or Done.
+   feedback), use the status line `**Idle**`, not Working or Done. When work runs on but you will
+   need something from the user later, ask now with `**Working · needs <thing> later**`.
 
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.

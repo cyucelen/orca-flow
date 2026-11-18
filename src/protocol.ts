@@ -15,9 +15,12 @@ export type AgentSummary = {
   watching?: string
   goal: string
   since: string
-  needs: { type: AskType; ask: string; options: string[] }
+  /** `blocking` false: the agent works on and needs the answer only later ("Working · needs 2 files later"); absent means it waits. */
+  needs: { type: AskType; ask: string; options: string[]; blocking?: boolean }
   /** The frame's Reply line, the exact words the agent asks for ("A or B"); only with an ask from a frame. */
   reply?: string
+  /** The frame's status line for an ask from a frame ("Needs your pick"); Up next shows it as the ask's label. */
+  status?: string
   /** Where the ask came from: a valid message frame, or Haiku reading the message. Older cards lack it. */
   source?: 'frame' | 'summarizer'
   effort: 'quick' | 'deep'
