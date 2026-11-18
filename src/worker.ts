@@ -22,7 +22,7 @@ import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLoo
 import type { AgentInfo, AgentState, AgentSummary, Capacity, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { findTranscript, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
-import { ensureOwnLinks, ensureSeeds, linksFor, pluginDir, seedsFor } from './install.ts'
+import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 
@@ -593,8 +593,12 @@ export default function activate(orca: OrcaWorkerApi): void {
   const dir = pluginDir(import.meta.url)
   const installed = installedKey(dir) !== null
   // Later checks only repair a missing or dangling link (say its worktree was removed).
+  // The message-format Stop hook goes in with the first link, under the same rule; a hook the user
+  // removed comes back only at the next start.
   const linkSkill = (repairOnly: boolean) => {
-    if (dir) for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
+    if (!dir) return
+    for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
+    if (!repairOnly) for (const line of ensureOwnStopHook(stopHookFor(), installed)) orca.log(line)
   }
   if (!dir) orca.log(`plugin folder not found from ${import.meta.url}; skill and coordinator CLAUDE.md not set up`)
   else {

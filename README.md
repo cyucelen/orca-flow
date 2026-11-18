@@ -48,14 +48,16 @@ Orca lists the access the plugin asks for: running its own worker process, readi
 workspaces, getting agent status changes, and starting agents (to open coordinator sessions).
 Approve it, then open **Orca Flow** from the right sidebar (the layers icon).
 
-On its first start the plugin sets up two things outside its own folder:
+On its first start the plugin sets up three things outside its own folder:
 
 | Path | What it is |
 | --- | --- |
 | `<Claude profile>/skills/orca-flow` | A link to the plugin's skill, so every Orca agent can load it. It follows the plugin across updates. |
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
+| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format). It runs only in Orca's agent panes and does nothing until you opt in. Your other settings and hooks stay as they are. |
 
-A real file already at either path is left alone. The Claude profile is the one Orca's agents use
+A real file already at the skill or `CLAUDE.md` path is left alone, and a `settings.json` that is not
+valid JSON is not changed. The Claude profile is the one Orca's agents use
 (Orca's selected profile, else `~/.claude`).
 
 ## Getting started
@@ -119,6 +121,32 @@ orca-flow resume             # a woken coordinator takes back the runs it was co
 
 (`orca-flow` here means `node <skill folder>/scripts/orca-flow.mjs`.)
 
+## Message format
+
+Coordinators and leads end each message with a fixed frame: a header, a **Status:** word, one body,
+an **Ask:** with its **Reply:** when they need you, and **Next:** as the last line. The spec is
+[`skills/orca-flow/messages.md`](skills/orca-flow/messages.md); agents read it from the skill.
+
+The Stop hook checks that frame when a coordinator or a lead ends its turn. On a miss, it names each
+failed rule and has the agent rewrite the message, once per turn. It checks that the header and a
+Status line are there, that the status word is one of the five, that **Next:** is last, that an
+agent waiting on you gives a **Reply:** line, and that every label is a frame label. A coordinator
+can also answer with route lines only. Workers and your own chats are never checked.
+
+The check is off until you turn it on in `~/.orca-flow/config.json`, for every agent or only for
+agents working in some folders (a folder and everything under it):
+
+```json
+{ "messageFormat": "all" }
+```
+
+```json
+{ "messageFormat": ["~/orca/workspaces/mono/bou-4206-aic-split-lessons", "~/orca/coordinators"] }
+```
+
+Each miss adds a line to `~/.orca-flow/format-misses.jsonl`: when, the pane, the worktree, the role,
+the session and the rules missed.
+
 ## Capacity
 
 Capacity is memory, not a count of worktrees or agents: a worktree on disk costs nothing, while
@@ -146,6 +174,7 @@ messages, and the commands and file paths its tools used. The result is written 
 - `~/.orca-flow/agents/`: one summary per agent session.
 - `~/.orca-flow/cards/`: a card per worktree (priority, goal), written by coordinators.
 - `~/.orca-flow/config.json`: your settings, if you change any.
+- `~/.orca-flow/format-misses.jsonl`: one line per message that missed the message frame.
 - `~/orca/coordinators/<name>/`: one folder per coordinator, with its `coordinator.json`.
 - `~/orca/coordinators/CLAUDE.md`: shared coordinator instructions and your project notes.
 
@@ -166,8 +195,8 @@ orca plugin uninstall cyucelen.flow
 ```
 
 Then remove what it set up outside its folder, if you no longer want it: the `orca-flow` link in
-your Claude profile's `skills` folder, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators
-and notes).
+your Claude profile's `skills` folder, the Stop hook that runs `stop-check.mjs` in its
+`settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
 
 ## Limitations
 
