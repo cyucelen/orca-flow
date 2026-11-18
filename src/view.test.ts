@@ -1239,3 +1239,17 @@ test('grouped by project: a color dot per project, "No project" last; a project 
   assert.match(two, /data-lprojects-clear[^>]*>2 projects<svg/)
   assert.match(render(snap, linearUi({ linearDisplay: { ...DEFAULT_DISPLAY, projects: ['Gone'] } }), d).linear, /Nothing open in these projects/)
 })
+
+test('a Linear row keeps its height when hovered: rows are a fixed height, and the Send pill and right side fit in them', () => {
+  const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
+  const px = (selector: string, prop: string) => {
+    const rule = new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? ''
+    const m = new RegExp(`(?:^|;)\\s*${prop}:\\s*([\\d.]+)px`).exec(rule)
+    return m ? Number(m[1]) : NaN
+  }
+  const row = px('.lrow', 'height'), line = px('.lrow .r', 'height'), pill = px('.lrow .send', 'height')
+  assert.ok(row > 0, '.lrow has a fixed height')
+  assert.ok(line > 0 && pill > 0 && pill <= line, `the pill (${pill}px) fits the right side's line (${line}px)`)
+  // .item pads a row 5px above and below.
+  assert.ok(line + 10 <= row, `the line (${line}px) fits the row (${row}px)`)
+})

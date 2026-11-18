@@ -477,13 +477,15 @@ button.item.coord { padding: 5px 6px; }
 .seg button[aria-pressed="true"] { background: var(--bg); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
 .lsec > .group { margin-top: 2px; }
 .lsec .fold { margin-top: 2px; }
-.lrow { gap: 7px; }
+/* Every Linear row is one fixed height and its right side one fixed line, so nothing shown on hover
+   (the Send pill) or by state (a lead, starting) can make a row taller and shift what is below. */
+.lrow { gap: 7px; height: 29px; }
 .lic { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--muted); }
 .lic svg { width: 14px; height: 14px; }
 .lid { flex: none; font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--faint); font-variant-numeric: tabular-nums; }
-.lrow .r { max-width: 45%; }
+.lrow .r { max-width: 45%; height: 18px; }
 .lrow .r > span:not(.who):not(.act) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.lrow .send { display: none; height: 20px; padding: 0 8px; margin-left: 0; font-size: 11px; }
+.lrow .send { display: none; height: 18px; padding: 0 8px; margin-left: 0; font-size: 11px; }
 .lrow .send svg { width: 10px; height: 10px; }
 .lrow:hover .send, .lrow:focus-visible .send, .lrow.menu-open .send { display: inline-flex; }
 .lrow:hover .rest, .lrow:focus-visible .rest, .lrow.menu-open .rest { display: none; }
