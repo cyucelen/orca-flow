@@ -1182,3 +1182,15 @@ test('coordinators in tree order: awake ones first, then sleeping', () => {
   const s: Snapshot = { ...snap, coordinators: [{ key: 'zz', name: 'zz', repos: [], workspaceId: null }, ...snap.coordinators] }
   assert.deepEqual(coordinatorOrder(s).map((c) => c.key), ['alpha', 'main', 'zz'])
 })
+
+test('a worktree created without --linear-issue is linked by its branch: the section shows its lead, the tree its ID', () => {
+  const lead = agent('p-l', 'Planner staff-hour totals', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
+  const s: Snapshot = { ...snap, rows: [row('wt-hours', 'mono', [lead], { branch: 'bou-4179-planned-hours' })] }
+  const r = render(s, emptyUi(), linearData([lin('BOU-4179'), lin('BOU-1')]))
+  assert.match(r.linear, /class="item lrow linked" data-open="wt-hours"/)
+  noMatch(r.linear.slice(r.linear.indexOf('BOU-4179')), /data-lsend="BOU-4179"/)
+  assert.deepEqual(shownIds(r.linear), ['BOU-1', 'BOU-4179'])
+  assert.match(r.main, /class="idchip">.*BOU-4179<\/span><span class="t">Planner staff-hour totals</)
+  // Without Linear data no team is known, so a branch links nothing.
+  noMatch(render(s, emptyUi()).main, /idchip/)
+})

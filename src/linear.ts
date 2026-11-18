@@ -58,6 +58,45 @@ export function linkedIssueOf(linked: unknown): string | null {
   return m ? m[1].toUpperCase() : null
 }
 
+/** Pure: the team keys of the loaded issues, the only ones a branch name may link to. */
+export const teamsOf = (data: Pick<LinearData, 'issues'> | null): Set<string> => new Set((data?.issues ?? []).map((i) => i.team))
+
+/**
+ * Pure: the first issue identifier in a branch name (bou-4179-planned-hours, cyucelen/BOU-4179) of
+ * one of these teams, as a whole token: not inside a longer word or number.
+ */
+export function issueOfBranch(branch: string | null | undefined, teams: ReadonlySet<string>): string | null {
+  if (!branch || teams.size === 0) return null
+  for (const m of branch.matchAll(/(?:^|[^a-z0-9])([a-z][a-z0-9]*)-(\d+)(?=[^0-9]|$)/gi)) {
+    const team = m[1].toUpperCase()
+    if (teams.has(team)) return `${team}-${m[2]}`
+  }
+  return null
+}
+
+/**
+ * Pure: rows with the Linear issue each works on. Orca's link (`--linear-issue`) wins; a worktree
+ * created without one is linked by an issue identifier in its branch name.
+ */
+export function linkRows<R extends { branch: string | null; linearIssue?: string | null }>(rows: R[], teams: ReadonlySet<string>): R[] {
+  return rows.map((r) => {
+    if (r.linearIssue) return r
+    const fromBranch = issueOfBranch(r.branch, teams)
+    return fromBranch ? { ...r, linearIssue: fromBranch } : r
+  })
+}
+
+/** Pure: the worktree each linked issue shows: of several, the most recently active. */
+export function rowsByIssue<R extends { linearIssue?: string | null; lastActivityAt: number | null }>(rows: R[]): Map<string, R> {
+  const out = new Map<string, R>()
+  for (const r of rows) {
+    if (!r.linearIssue) continue
+    const seen = out.get(r.linearIssue)
+    if (!seen || (r.lastActivityAt ?? 0) > (seen.lastActivityAt ?? 0)) out.set(r.linearIssue, r)
+  }
+  return out
+}
+
 /**
  * Pure: a team's active cycle, from its open issues. The CLI names a cycle only by id and says
  * nothing of dates, so the active one is the cycle most of the team's started issues are in (Linear

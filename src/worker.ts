@@ -17,7 +17,7 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, type CoordinatorInfo, type Lineage } from './coordinators.ts'
-import { linkedIssueOf, loadLinear, pruneSent, sendIssue } from './linear.ts'
+import { linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -843,7 +843,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** The data with the sends still starting: a send a worktree now links (or an old one) is forgotten. */
   const withSends = (data: LinearData): LinearData => {
     const memory = readLinearMemory()
-    const pruned = pruneSent(memory.sent, new Set(allRows.map((r) => r.linearIssue ?? '').filter(Boolean)))
+    const pruned = pruneSent(memory.sent, new Set(linkRows(allRows, teamsOf(data)).map((r) => r.linearIssue ?? '').filter(Boolean)))
     if (pruned) {
       memory.sent = pruned
       try { writeLinearMemory(memory) } catch (e) { orca.log(`saving Linear sends failed: ${(e as Error).message}`) }

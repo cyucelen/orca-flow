@@ -1,7 +1,7 @@
 // The Linear section's rules: reading issues, filters and order, routing, the message, a send.
 import { assert, test } from 'orca/testing'
 import type { LinearData, LinearIssue } from './protocol.ts'
-import { activeCycle, linearMessage, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
+import { activeCycle, issueOfBranch, linearMessage, linkRows, rowsByIssue, teamsOf, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
 
 const ME = 'u-me'
 const issue = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
@@ -184,4 +184,37 @@ test("Linear's glyphs: rings by state, bars by priority; a state name cannot bre
   assert.equal((priorityIcon(2).match(/opacity="0.9"/g) ?? []).length, 3)
   assert.equal((priorityIcon(4).match(/opacity="0.9"/g) ?? []).length, 1)
   assert.match(priorityIcon(0), /class="lic none"/)
+})
+
+test('a branch name links its issue as a whole token, any case, only for teams in the loaded issues', () => {
+  const teams = new Set(['BOU', 'DES'])
+  assert.equal(issueOfBranch('bou-4179-planned-hours', teams), 'BOU-4179')
+  assert.equal(issueOfBranch('cyucelen/BOU-4179', teams), 'BOU-4179')
+  assert.equal(issueOfBranch('feat/des-12_fix', teams), 'DES-12')
+  assert.equal(issueOfBranch('rebou-4179', teams), null, 'not inside a longer word')
+  assert.equal(issueOfBranch('bou-41790x', teams), 'BOU-41790', 'the whole number, never a prefix of it')
+  assert.equal(issueOfBranch('bou-4179x', teams), 'BOU-4179')
+  assert.equal(issueOfBranch('eng-12-thing', teams), null, 'a team not in the loaded issues')
+  assert.equal(issueOfBranch('eng-12-bou-7', teams), 'BOU-7', 'the first token of a known team')
+  assert.equal(issueOfBranch('main', teams), null)
+  assert.equal(issueOfBranch(null, teams), null)
+  assert.equal(issueOfBranch('bou-4179', new Set()), null)
+})
+
+test("Orca's link wins over the branch; an issue on several worktrees shows the most recently active", () => {
+  const rows = [
+    { id: 'a', branch: 'bou-4179-planned-hours', linearIssue: null, lastActivityAt: 10 },
+    { id: 'b', branch: 'bou-4179-follow-up', linearIssue: null, lastActivityAt: 30 },
+    { id: 'c', branch: 'bou-4179-other', linearIssue: 'BOU-9', lastActivityAt: 50 },
+    { id: 'd', branch: 'main', linearIssue: null, lastActivityAt: 99 }
+  ]
+  const linked = linkRows(rows, new Set(['BOU']))
+  assert.deepEqual(linked.map((r) => r.linearIssue), ['BOU-4179', 'BOU-4179', 'BOU-9', null])
+  assert.equal(rows[0].linearIssue, null, 'the rows given are not changed')
+  const by = rowsByIssue(linked)
+  assert.equal(by.get('BOU-4179')?.id, 'b')
+  assert.equal(by.get('BOU-9')?.id, 'c')
+  assert.equal(by.size, 2)
+  assert.deepEqual([...teamsOf({ issues: [issue('BOU-1'), issue('DES-2'), issue('BOU-3')] })], ['BOU', 'DES'])
+  assert.equal(teamsOf(null).size, 0)
 })

@@ -7,7 +7,7 @@
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
 import { asksYou, canRemove, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
-import { FILTER_NAME, FILTERS, LINEAR_MARK, priorityIcon, statusIcon, viewOf, type LinearFilter } from './linear.ts'
+import { FILTER_NAME, FILTERS, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, statusIcon, teamsOf, viewOf, type LinearFilter } from './linear.ts'
 
 export type UiState = {
   /** Up-next items the person opened, and ones they closed (the first is open by default). */
@@ -979,7 +979,9 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
  * pinned below it, and the pinned footer. Up next sits at the bottom so the tree never moves when an
  * ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
  */
-export function render(snap: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; linear: string; footer: string } {
+export function render(given: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; linear: string; footer: string } {
+  // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
+  const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)) } : given
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   const all = snap.rows.flatMap((r) => r.agents)
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
@@ -1062,8 +1064,7 @@ function linearRow(i: LinearIssue, snap: Snapshot, ui: UiState, data: LinearData
  */
 export function linearSection(snap: Snapshot, ui: UiState, data: LinearData | null): string {
   if (!data) return ''
-  const linked = new Map<string, WorkspaceRow>()
-  for (const r of snap.rows) if (r.linearIssue && !linked.has(r.linearIssue)) linked.set(r.linearIssue, r)
+  const linked = rowsByIssue(snap.rows)
   const ids = new Set(linked.keys())
   const views = Object.fromEntries(FILTERS.map((f) => [f, viewOf(data, f, ids)])) as Record<LinearFilter, ReturnType<typeof viewOf>>
   const f = ui.linearFilter
