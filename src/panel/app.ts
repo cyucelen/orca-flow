@@ -2,8 +2,8 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
-import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
-import { FILTERS, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, type LinearFilter } from '../linear.ts'
+import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton } from '../view.ts'
+import { DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { canRemove } from '../rank.ts'
 
@@ -99,12 +99,15 @@ orca.storage.get(LINEAR_UI_KEY).then((stored) => {
   const saved = linearUiOf(stored)
   ui.linearFolded = saved.folded
   ui.linearFilter = saved.filter
+  ui.linearDisplay = saved.display
+  ui.linearGroupFolds = new Set(saved.groupFolds)
   draw()
 }).catch(() => null)
 readLinear()
 setInterval(readLinear, 60_000)
 document.addEventListener('visibilitychange', () => readLinear())
-const saveLinearUi = () => void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter }).catch(() => null)
+const saveLinearUi = () =>
+  void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter, display: ui.linearDisplay, groupFolds: [...ui.linearGroupFolds] }).catch(() => null)
 // No Orca event reports a switch between tabs of one workspace. While the panel shows, the worker
 // looks every 2 s (one quick `orca terminal list`) and posts sidebar.changed only when the front tab moved.
 const lookAtFocus = () => { if (document.visibilityState === 'visible') void orca.plugin.request('sidebar.focus').catch(() => null) }
@@ -125,13 +128,16 @@ document.addEventListener('click', (event) => {
     void updateClick()
     return
   }
-  // The Linear section: fold, filter, the folds at its end, and a row's send menu.
-  const lin = (event.target as Element).closest<HTMLElement>('[data-lfold],[data-lfilter],[data-lmore],[data-lsend]')
+  // The Linear section: fold, filter, display options, groups, the folds at its end, and a row's send menu.
+  const lin = (event.target as Element).closest<HTMLElement>('[data-lfold],[data-lfilter],[data-lmore],[data-lsend],[data-lgroup],[data-ldisplay],[data-lprojects-clear]')
   if (lin) {
     const d = lin.dataset
     if ('lfold' in d) { ui.linearFolded = !ui.linearFolded; saveLinearUi() }
     if (d.lfilter && FILTERS.includes(d.lfilter as LinearFilter)) { ui.linearFilter = d.lfilter as LinearFilter; saveLinearUi() }
     if (d.lmore) toggle(ui.unfolded, d.lmore)
+    if (d.lgroup) { toggle(ui.linearGroupFolds, d.lgroup); saveLinearUi() }
+    if ('lprojectsClear' in d) { ui.linearDisplay = { ...ui.linearDisplay, projects: [] }; saveLinearUi() }
+    if ('ldisplay' in d) { openMenu(displayMenu, 0, 0, 'display', lin.getBoundingClientRect(), 'display'); return }
     if (d.lsend) { openMenu(sendMenu(d.lsend), 0, 0, `linear:${d.lsend}`, lin.getBoundingClientRect()); return }
     draw()
     return
@@ -413,10 +419,14 @@ form.addEventListener('submit', async (e) => {
 // Right-click an agent or a coordinator. Destructive items ask first, with "Don't ask again"
 // remembered per action in the plugin's storage.
 const ctx = $('ctx')
-/** `iconHtml` (a character, Linear's mark) replaces the named icon; `right` is a quiet note at the end, in the accent when `accent`. */
-type Action = { label: string; icon?: string; iconHtml?: string; right?: string; accent?: boolean; run?: () => void | Promise<void>; danger?: boolean }
-/** A row of toggles inside the menu (Priority): no submenu, so nothing overlaps in a narrow sidebar. */
-type Chips = { chips: string; icon?: string; iconHtml?: string; options: { label: string; active: boolean; run: () => void | Promise<void> }[] }
+/**
+ * `iconHtml` (a character, Linear's mark) replaces the named icon; `right` is a quiet note at the
+ * end, in the accent when `accent`; `checked` makes it a checkbox; `stay` keeps the menu open and
+ * draws it again after it runs (the Display popover).
+ */
+type Action = { label: string; icon?: string; iconHtml?: string; right?: string; accent?: boolean; checked?: boolean; stay?: boolean; run?: () => void | Promise<void>; danger?: boolean }
+/** A row of toggles inside the menu (Priority): no submenu, so nothing overlaps in a narrow sidebar. `wrap` lets many chips wrap. */
+type Chips = { chips: string; icon?: string; iconHtml?: string; stay?: boolean; wrap?: boolean; options: { label: string; active: boolean; run: () => void | Promise<void> }[] }
 /** A line of text heading the menu; `header` is HTML, escaped by whoever builds it. */
 type Header = { header: string }
 type MenuItem = Action | Chips | Header | 'separator'
@@ -432,6 +442,9 @@ const MI: Record<string, string> = {
   restart: '<path d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4h4"/>',
   download: '<path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/>',
+  group: '<path d="M4 6h16M4 12h11M4 18h7"/>',
+  sort: '<path d="M7 4v16m0 0-3-3m3 3 3-3M17 20V4m0 0-3 3m3-3 3 3"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.75"/>',
   warning: '<path d="M12 4 21.5 20h-19Z"/><path d="M12 10v4.5M12 17.2v.1"/>'
 }
 const svgIcon = (name?: string) => (name ? `<svg class="micon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${MI[name]}</svg>` : '<span class="micon"></span>')
@@ -618,8 +631,8 @@ function menuHtml(items: MenuItem[]): string {
     it === 'separator' ? '<div class="sep" role="separator"></div>'
       : 'header' in it ? `<div class="mh">${it.header}</div>`
       : 'chips' in it
-        ? `<div class="mchips" role="group" aria-label="${esc(it.chips)}">${iconOf(it)}<span class="ml">${esc(it.chips)}</span></div><div class="chips">${it.options.map((o, j) => `<button class="mi chip${o.active ? ' on' : ''}" role="menuitemradio" aria-checked="${o.active}" data-i="${i}" data-j="${j}">${esc(o.label)}</button>`).join('')}</div>`
-        : `<button class="mi${it.danger ? ' danger' : ''}" role="menuitem" data-i="${i}">${iconOf(it)}<span class="ml">${esc(it.label)}</span>${it.right ? `<span class="mr${it.accent ? ' sug' : ''}">${esc(it.right)}</span>` : ''}</button>`
+        ? `<div class="mchips" role="group" aria-label="${esc(it.chips)}">${iconOf(it)}<span class="ml">${esc(it.chips)}</span></div><div class="chips${it.wrap ? ' wrap' : ''}">${it.options.map((o, j) => `<button class="mi chip${o.active ? ' on' : ''}" role="menuitemradio" aria-checked="${o.active}" data-i="${i}" data-j="${j}">${esc(o.label)}</button>`).join('')}</div>`
+        : `<button class="mi${it.danger ? ' danger' : ''}" role="${it.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}"${it.checked === undefined ? '' : ` aria-checked="${it.checked}"`} data-i="${i}">${iconOf(it)}<span class="ml">${esc(it.label)}</span>${it.right ? `<span class="mr${it.accent ? ' sug' : ''}">${esc(it.right)}</span>` : ''}${it.checked === undefined ? '' : `<span class="check">${it.checked ? '✓' : ''}</span>`}</button>`
   ).join('')
 }
 
@@ -629,30 +642,44 @@ function place(el: HTMLElement, x: number, y: number): void {
   el.style.top = `${Math.max(6, Math.min(y, window.innerHeight - r.height - 6))}px`
 }
 
-function runFrom(items: MenuItem[], e: MouseEvent): void {
+function runFrom(items: MenuItem[], e: MouseEvent, build?: () => MenuItem[]): void {
   const b = (e.target as Element).closest<HTMLElement>('[data-i]')
   if (!b) return
   const item = items[Number(b.dataset.i)]
   if (!item || item === 'separator' || 'header' in item) return
-  closeMenu()
+  const stay = Boolean(item.stay && build)
+  if (!stay) closeMenu()
   if ('chips' in item) void item.options[Number(b.dataset.j)]?.run()
   else void item.run?.()
+  if (stay) showItems(tidy(build!()), build)
 }
 
-/** Opens a menu at the pointer, or under `anchor` (above it when there is no room below). */
-function openMenu(raw: MenuItem[], x: number, y: number, target: string, anchor?: DOMRect): void {
-  const items = tidy(raw)
+/** Draws a menu's items into the open menu and wires their clicks. */
+function showItems(items: MenuItem[], build?: () => MenuItem[]): void {
+  const scroll = ctx.scrollTop
+  ctx.innerHTML = menuHtml(items)
+  ctx.scrollTop = scroll
+  ctx.onclick = (e) => runFrom(items, e, build)
+}
+
+/**
+ * Opens a menu at the pointer, or under `anchor` (above it when there is no room below). Given a
+ * builder, items marked `stay` keep it open and it is built again after each one runs.
+ */
+function openMenu(raw: MenuItem[] | (() => MenuItem[]), x: number, y: number, target: string, anchor?: DOMRect, cls = ''): void {
+  const build = typeof raw === 'function' ? raw : undefined
+  const items = tidy(build ? build() : (raw as MenuItem[]))
   if (!items.length) return
   menuTarget = target
   markTarget()
-  ctx.innerHTML = menuHtml(items)
+  ctx.className = cls ? `ctx ${cls}` : 'ctx'
+  showItems(items, build)
   ctx.hidden = false
   if (anchor) {
     const h = ctx.getBoundingClientRect().height
     const below = anchor.bottom + 2 + h <= window.innerHeight - 6
     place(ctx, anchor.right - ctx.getBoundingClientRect().width, below ? anchor.bottom + 2 : anchor.top - 2 - h)
   } else place(ctx, x, y)
-  ctx.onclick = (e) => runFrom(items, e)
   // Focus the menu, not its first item: nothing looks hovered until the pointer or arrow keys move.
   ctx.focus()
 }
@@ -670,7 +697,8 @@ document.addEventListener('contextmenu', (e) => {
   if (row && a) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
 })
 document.addEventListener('pointerdown', (e) => { if (!ctx.hidden && !ctx.contains(e.target as Node)) closeMenu() }, true)
-document.addEventListener('scroll', closeMenu, true)
+// Scrolling the page closes a menu; scrolling inside a long one (Display's projects) does not.
+document.addEventListener('scroll', (e) => { if (!ctx.contains(e.target as Node)) closeMenu() }, true)
 const menuKeys = (menu: HTMLElement) => (e: KeyboardEvent) => {
   const items = [...menu.querySelectorAll<HTMLElement>('.mi')]
   const i = items.indexOf(document.activeElement as HTMLElement)
@@ -733,3 +761,34 @@ function hideToast(): void {
   toastEl.hidden = true
 }
 
+
+// ---------- the Linear section's Display popover ----------
+
+/**
+ * Group by, Sort by and Show as chips; the projects of the current filter's issues (color, name,
+ * count) to narrow to, "All projects" first and "No project" last; then Reset. It stays open while
+ * options change, and every change is saved with the section's fold and filter.
+ */
+function displayMenu(): MenuItem[] {
+  if (!linear) return []
+  const d = ui.linearDisplay
+  const set = (next: Display) => {
+    ui.linearDisplay = next
+    saveLinearUi()
+    draw()
+  }
+  const { projects } = viewOf(linear, ui.linearFilter, new Set(), d)
+  // A picked project the current filter has no issues in still shows, so it can be unpicked.
+  const missing = d.projects.filter((k) => !projects.some((p) => p.key === k)).map((key) => ({ key, name: key || 'No project', color: '', count: 0 }))
+  return [
+    { chips: 'Group by', icon: 'group', stay: true, wrap: true, options: GROUPS.map((g) => ({ label: GROUP_NAME[g], active: d.group === g, run: () => set({ ...d, group: g }) })) },
+    { chips: 'Sort by', icon: 'sort', stay: true, wrap: true, options: SORTS.map((o) => ({ label: SORT_NAME[o], active: d.sort === o, run: () => set({ ...d, sort: o }) })) },
+    { chips: 'Show', icon: 'eye', stay: true, wrap: true, options: HIDEABLE.map((h) => ({ label: STATE_NAME[h], active: d.show[h], run: () => set({ ...d, show: { ...d.show, [h]: !d.show[h] } }) })) },
+    'separator',
+    { header: 'Projects' },
+    { label: 'All projects', checked: d.projects.length === 0, stay: true, run: () => set({ ...d, projects: [] }) },
+    ...[...projects, ...missing].map((p): MenuItem => ({ label: p.name, iconHtml: projectDot(p.key ? p.color : ''), right: String(p.count), checked: d.projects.includes(p.key), stay: true, run: () => set(toggleProject(d, p.key)) })),
+    'separator',
+    { label: 'Reset to default', icon: 'restart', stay: true, run: () => set(DEFAULT_DISPLAY) }
+  ]
+}

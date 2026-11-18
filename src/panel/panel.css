@@ -465,6 +465,8 @@ button.item.coord { padding: 5px 6px; }
 .lfold > svg:first-child { width: 9px; height: 9px; flex: none; transition: transform .15s; }
 .lfold[aria-expanded="true"] > svg:first-child { transform: rotate(90deg); }
 .lmark { width: 11px; height: 11px; flex: none; }
+/* In a narrow sidebar the title gives way (one line, cut short), never the switch. */
+.lfold > span:not(.fc) { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lfold .fc { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--card); color: var(--muted); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .foldsum { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .foldsum .sepd::before { content: "·"; margin-right: 6px; }
@@ -480,7 +482,7 @@ button.item.coord { padding: 5px 6px; }
 .lic svg { width: 14px; height: 14px; }
 .lid { flex: none; font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--faint); font-variant-numeric: tabular-nums; }
 .lrow .r { max-width: 45%; }
-.lrow .r > span:not(.who):not(.act) { overflow: hidden; text-overflow: ellipsis; }
+.lrow .r > span:not(.who):not(.act) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lrow .send { display: none; height: 20px; padding: 0 8px; margin-left: 0; font-size: 11px; }
 .lrow .send svg { width: 10px; height: 10px; }
 .lrow:hover .send, .lrow:focus-visible .send, .lrow.menu-open .send { display: inline-flex; }
@@ -501,3 +503,25 @@ button.item.coord { padding: 5px 6px; }
   background: var(--orca-popover, #1c1c20); color: var(--orca-popover-foreground, var(--ink)); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); box-shadow: 0 10px 24px -14px rgba(0, 0, 0, .75); }
 .toast .twarn { color: var(--warn); font-size: 11px; white-space: nowrap; }
 .toast .act { margin-left: 0; white-space: nowrap; }
+/* Display options: the button left of the switch (a dot when anything differs from the default),
+   groups as foldable sub-headers, a chip that clears a project filter, and the popover. */
+.icon.ldisplay { position: relative; width: 24px; height: 24px; }
+.icon.ldisplay svg { width: 14px; height: 14px; }
+.icon.ldisplay .dot { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--ask); box-shadow: 0 0 0 1.5px var(--bg); }
+.lgroup { display: flex; align-items: center; gap: 7px; width: calc(100% + 12px); margin: 4px -6px 0; padding: 4px 6px; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.lgroup:hover { background: var(--hover); color: var(--ink); }
+.lgroup > svg:first-child { width: 9px; height: 9px; flex: none; transition: transform .15s; }
+.lgroup[aria-expanded="true"] > svg:first-child { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .lgroup > svg:first-child { transition: none; } }
+.lgroup .gl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lgroup .gc { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
+.pdot { display: inline-block; flex: none; width: 8px; height: 8px; margin: 0 3px; border-radius: 50%; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.pchips { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0 2px; }
+.pchip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 22px; padding: 0 6px 0 4px; border-radius: 999px; font-size: 11.5px; color: var(--ink); background: color-mix(in srgb, var(--ask) 16%, transparent); }
+.pchip svg { width: 11px; height: 11px; flex: none; color: var(--muted); }
+.pchip:hover svg { color: var(--ink); }
+.pchip .pdot { margin: 0 1px 0 2px; }
+.ctx.display { min-width: 252px; max-width: calc(100vw - 12px); max-height: calc(100vh - 12px); overflow-y: auto; }
+.ctx .chips.wrap { flex-wrap: wrap; }
+.ctx .mi .check { width: 12px; flex: none; text-align: center; }
+.ctx .micon .pdot { margin: 0; }

@@ -1,12 +1,12 @@
 // The Linear section's rules: reading issues, filters and order, routing, the message, a send.
 import { assert, test } from 'orca/testing'
 import type { LinearData, LinearIssue } from './protocol.ts'
-import { activeCycle, issueOfBranch, linearMessage, linkRows, rowsByIssue, teamsOf, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
+import { activeCycle, DEFAULT_DISPLAY, isDefaultDisplay, issueOfBranch, toggleProject, type Display, type LinearView, linearMessage, linkRows, rowsByIssue, teamsOf, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
 
 const ME = 'u-me'
 const issue = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
   id, title: `Title ${id}`, url: `https://linear.app/acme/issue/${id}`, state: { name: 'Todo', type: 'unstarted', color: '#9a9aa3' },
-  team: id.split('-')[0], project: null, assignee: { id: ME, name: 'me' }, priority: 3, cycle: null, ...over
+  team: id.split('-')[0], project: null, projectColor: '', assignee: { id: ME, name: 'me' }, priority: 3, cycle: null, updatedAt: 0, ...over
 })
 const state = (name: string, type: string) => ({ name, type, color: '' })
 const data = (issues: LinearIssue[], over: Partial<LinearData> = {}): LinearData => ({
@@ -73,7 +73,8 @@ test('filters: Mine is assigned to me, Team my teams, Cycle the active cycle; cl
     issue('BOU-7', { state: state('Duplicate', 'duplicate') }),
     issue('CUS-1', { cycle: 'c-now' })
   ])
-  const ids = (v: { shown: LinearIssue[]; staging: LinearIssue[] }) => [v.shown.map((i) => i.id).sort(), v.staging.map((i) => i.id)]
+  // Shown (Staging hidden by default), and on Staging.
+  const ids = (v: LinearView) => [v.groups.flatMap((g) => g.issues.map((i) => i.id)).sort(), v.hidden.flatMap((h) => h.issues.map((i) => i.id))]
   assert.deepEqual(ids(viewOf(d, 'mine')), [['BOU-1', 'CUS-1'], ['BOU-4']])
   assert.deepEqual(ids(viewOf(d, 'team')), [['BOU-1', 'BOU-2', 'BOU-3'], ['BOU-4']])
   assert.deepEqual(ids(viewOf(d, 'cycle')), [['BOU-2'], []])
@@ -170,9 +171,9 @@ test('loading fails when Linear is not connected, so the section stays hidden', 
 })
 
 test('the fold and filter come back from storage, defaults for anything else', () => {
-  assert.deepEqual(linearUiOf({ folded: true, filter: 'cycle' }), { folded: true, filter: 'cycle' })
-  assert.deepEqual(linearUiOf({ folded: 'yes', filter: 'all' }), { folded: false, filter: 'mine' })
-  assert.deepEqual(linearUiOf(null), { folded: false, filter: 'mine' })
+  assert.deepEqual(linearUiOf({ folded: true, filter: 'cycle' }), { folded: true, filter: 'cycle', display: DEFAULT_DISPLAY, groupFolds: [] })
+  assert.deepEqual(linearUiOf({ folded: 'yes', filter: 'all' }), { folded: false, filter: 'mine', display: DEFAULT_DISPLAY, groupFolds: [] })
+  assert.deepEqual(linearUiOf(null), { folded: false, filter: 'mine', display: DEFAULT_DISPLAY, groupFolds: [] })
 })
 
 test("Linear's glyphs: rings by state, bars by priority; a state name cannot break the markup", () => {
@@ -217,4 +218,87 @@ test("Orca's link wins over the branch; an issue on several worktrees shows the 
   assert.equal(by.size, 2)
   assert.deepEqual([...teamsOf({ issues: [issue('BOU-1'), issue('DES-2'), issue('BOU-3')] })], ['BOU', 'DES'])
   assert.equal(teamsOf(null).size, 0)
+})
+
+// ---------- display options ----------
+
+const show = (over: Partial<Display['show']> = {}) => ({ ...DEFAULT_DISPLAY.show, ...over })
+const display = (over: Partial<Display> = {}): Display => ({ ...DEFAULT_DISPLAY, ...over })
+const groupsOf = (v: LinearView) => v.groups.map((g) => [g.label, g.issues.map((i) => i.id)])
+const st = {
+  progress: state('In Progress', 'started'), review: state('In Review', 'started'), todo: state('Todo', 'unstarted'),
+  triage: state('Triage', 'triage'), backlog: state('Backlog', 'backlog'), staging: state('Staging', 'started')
+}
+const mixed = data([
+  issue('BOU-1', { state: st.todo, priority: 2, project: 'Shift Scheduling', projectColor: '#26b5ce', updatedAt: 300 }),
+  issue('BOU-2', { state: st.progress, priority: 3, project: 'Shift Scheduling', projectColor: '#26b5ce', updatedAt: 100 }),
+  issue('BOU-3', { state: st.backlog, priority: 1, updatedAt: 500 }),
+  issue('BOU-4', { state: st.triage, priority: 0, project: 'ISO 27001', updatedAt: 200 }),
+  issue('BOU-5', { state: st.staging, priority: 2 }),
+  issue('BOU-6', { state: st.review, priority: 1, assignee: { id: 'u-ernst', name: 'ernst' }, project: 'ISO 27001' }),
+  issue('BOU-7', { state: st.backlog, priority: 4, assignee: null, project: 'Shift Scheduling' }),
+  issue('BOU-8', { state: st.todo, priority: 2, assignee: null })
+])
+
+test('the default display: grouped by status in state order, Backlog and Staging folded away at the end', () => {
+  const v = viewOf(mixed, 'team')
+  assert.deepEqual(groupsOf(v), [['In Progress', ['BOU-2']], ['In Review', ['BOU-6']], ['Todo', ['BOU-8', 'BOU-1']], ['Triage', ['BOU-4']]])
+  assert.deepEqual(v.hidden.map((h) => [h.state, h.issues.map((i) => i.id)]), [['backlog', ['BOU-3', 'BOU-7']], ['staging', ['BOU-5']]])
+  assert.equal(v.count, 5)
+  assert.ok(isDefaultDisplay(DEFAULT_DISPLAY))
+})
+
+test('Show puts a state back in the list or folds it away; the count follows', () => {
+  const v = viewOf(mixed, 'team', new Set(), display({ show: show({ triage: false, backlog: true, staging: true }) }))
+  assert.deepEqual(v.groups.map((g) => g.label), ['In Progress', 'In Review', 'Todo', 'Backlog', 'Staging'])
+  assert.deepEqual(v.hidden.map((h) => h.state), ['triage'])
+  assert.equal(v.count, 7)
+  assert.ok(!isDefaultDisplay(display({ show: show({ backlog: true }) })))
+})
+
+test('group by project: by count, then name, "No project" last; by priority: urgent to none; by assignee: me, by count, unassigned last', () => {
+  const all = display({ show: show({ backlog: true, staging: true }) })
+  assert.deepEqual(groupsOf(viewOf(mixed, 'team', new Set(), { ...all, group: 'project' })).map((g) => g[0]), ['Shift Scheduling', 'ISO 27001', 'No project'])
+  assert.deepEqual(groupsOf(viewOf(mixed, 'team', new Set(), { ...all, group: 'priority' })).map((g) => g[0]), ['Urgent', 'High', 'Medium', 'Low', 'No priority'])
+  assert.deepEqual(groupsOf(viewOf(mixed, 'team', new Set(), { ...all, group: 'assignee' })), [['me', ['BOU-3', 'BOU-1', 'BOU-5', 'BOU-2', 'BOU-4']], ['ernst', ['BOU-6']], ['Unassigned', ['BOU-8', 'BOU-7']]])
+  const none = viewOf(mixed, 'team', new Set(), { ...all, group: 'none' })
+  assert.equal(none.groups.length, 1)
+  assert.equal(none.groups[0].label, '')
+})
+
+test('sort within groups: priority, status, recently updated or newest; linked issues always last', () => {
+  const flat = (sort: Display['sort'], linked = new Set<string>()) => viewOf(mixed, 'team', linked, display({ group: 'none', sort, show: show({ backlog: true }) })).groups[0].issues.map((i) => i.id)
+  assert.deepEqual(flat('priority'), ['BOU-6', 'BOU-3', 'BOU-8', 'BOU-1', 'BOU-2', 'BOU-7', 'BOU-4'])
+  assert.deepEqual(flat('status'), ['BOU-2', 'BOU-6', 'BOU-8', 'BOU-1', 'BOU-4', 'BOU-3', 'BOU-7'])
+  assert.deepEqual(flat('updated').slice(0, 4), ['BOU-3', 'BOU-1', 'BOU-4', 'BOU-2'])
+  assert.deepEqual(flat('newest'), ['BOU-8', 'BOU-7', 'BOU-6', 'BOU-4', 'BOU-3', 'BOU-2', 'BOU-1'])
+  assert.deepEqual(flat('newest', new Set(['BOU-8'])).slice(-1), ['BOU-8'])
+})
+
+test('projects: every project of the filter with its color and count, "No project" last; picking narrows the list and the folds', () => {
+  const v = viewOf(mixed, 'team')
+  assert.deepEqual(v.projects.map((p) => [p.key, p.name, p.color, p.count]), [['Shift Scheduling', 'Shift Scheduling', '#26b5ce', 3], ['ISO 27001', 'ISO 27001', '', 2], ['', 'No project', '', 3]])
+  const picked = viewOf(mixed, 'team', new Set(), toggleProject(DEFAULT_DISPLAY, 'Shift Scheduling'))
+  assert.deepEqual(groupsOf(picked), [['In Progress', ['BOU-2']], ['Todo', ['BOU-1']]])
+  assert.deepEqual(picked.hidden.map((h) => [h.state, h.issues.map((i) => i.id)]), [['backlog', ['BOU-7']]])
+  assert.equal(picked.projects.length, 3, 'the project list stays whole while narrowed')
+  const noProject = viewOf(mixed, 'team', new Set(), toggleProject(DEFAULT_DISPLAY, ''))
+  assert.deepEqual(groupsOf(noProject), [['Todo', ['BOU-8']]])
+  assert.deepEqual(toggleProject(toggleProject(DEFAULT_DISPLAY, 'A'), 'A').projects, [], 'unpicking the last one shows every project again')
+  assert.deepEqual(toggleProject(toggleProject(DEFAULT_DISPLAY, 'A'), 'B').projects, ['A', 'B'])
+})
+
+test('display options and folded groups come back from storage, defaults for anything malformed', () => {
+  const saved = { folded: false, filter: 'team', display: { group: 'project', sort: 'updated', show: { triage: false, backlog: true }, projects: ['Shift Scheduling', '', 3] }, groupFolds: ['status:Todo', 7] }
+  assert.deepEqual(linearUiOf(saved), { folded: false, filter: 'team', display: { group: 'project', sort: 'updated', show: { triage: false, backlog: true, staging: false }, projects: ['Shift Scheduling', ''] }, groupFolds: ['status:Todo'] })
+  assert.deepEqual(linearUiOf({ display: { group: 'labels', sort: 1, show: 'all' } }).display, DEFAULT_DISPLAY)
+})
+
+test('an issue reads its project color and when it was updated', () => {
+  const i = toIssue({ identifier: 'BOU-1', project: { name: 'P', color: '#26b5ce' }, updatedAt: '2026-11-18T09:21:40.492Z' })!
+  assert.equal(i.projectColor, '#26b5ce')
+  assert.equal(i.updatedAt, Date.parse('2026-11-18T09:21:40.492Z'))
+  const bad = toIssue({ identifier: 'BOU-2', project: { name: 'P', color: 'url(x)' }, updatedAt: 'soon' })!
+  assert.equal(bad.projectColor, '')
+  assert.equal(bad.updatedAt, 0)
 })

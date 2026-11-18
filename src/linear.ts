@@ -9,15 +9,57 @@ export type LinearFilter = 'mine' | 'team' | 'cycle'
 export const FILTERS: LinearFilter[] = ['mine', 'team', 'cycle']
 export const FILTER_NAME: Record<LinearFilter, string> = { mine: 'Mine', team: 'Team', cycle: 'Cycle' }
 
-/** Where the panel keeps the section's fold and filter (plugin storage), so they survive a restart. */
-export const LINEAR_UI_KEY = 'linear'
-export type LinearUi = { folded: boolean; filter: LinearFilter }
-export const DEFAULT_LINEAR_UI: LinearUi = { folded: false, filter: 'mine' }
+// ---------- display options (Linear's own Display menu, in small) ----------
 
-/** Pure: the stored fold and filter, defaults for anything missing or malformed. */
+export type GroupBy = 'none' | 'status' | 'project' | 'priority' | 'assignee'
+export type SortBy = 'priority' | 'status' | 'updated' | 'newest'
+/** States the list can leave out; each left out becomes a fold row at the end. */
+export type HideableState = 'triage' | 'backlog' | 'staging'
+export const GROUPS: GroupBy[] = ['none', 'status', 'project', 'priority', 'assignee']
+export const SORTS: SortBy[] = ['priority', 'status', 'updated', 'newest']
+export const HIDEABLE: HideableState[] = ['triage', 'backlog', 'staging']
+export const GROUP_NAME: Record<GroupBy, string> = { none: 'None', status: 'Status', project: 'Project', priority: 'Priority', assignee: 'Assignee' }
+export const SORT_NAME: Record<SortBy, string> = { priority: 'Priority', status: 'Status', updated: 'Updated', newest: 'Newest' }
+export const STATE_NAME: Record<HideableState, string> = { triage: 'Triage', backlog: 'Backlog', staging: 'Staging' }
+
+/**
+ * How the list is drawn: grouped, sorted within groups (linked issues always last), which states it
+ * shows, and the projects it is narrowed to (none: every project; '' stands for "No project").
+ */
+export type Display = { group: GroupBy; sort: SortBy; show: Record<HideableState, boolean>; projects: string[] }
+export const DEFAULT_DISPLAY: Display = { group: 'status', sort: 'priority', show: { triage: true, backlog: false, staging: false }, projects: [] }
+
+/** Pure: whether any display option differs from the default (the Display button wears a dot then). */
+export const isDefaultDisplay = (d: Display) =>
+  d.group === DEFAULT_DISPLAY.group && d.sort === DEFAULT_DISPLAY.sort && d.projects.length === 0 && HIDEABLE.every((k) => d.show[k] === DEFAULT_DISPLAY.show[k])
+
+/** Pure: the project filter with one project switched; none left means every project again. */
+export function toggleProject(d: Display, key: string): Display {
+  return { ...d, projects: d.projects.includes(key) ? d.projects.filter((p) => p !== key) : [...d.projects, key] }
+}
+
+/** Where the panel keeps the section's fold, filter, display options and folded groups (plugin storage), so they survive a restart. */
+export const LINEAR_UI_KEY = 'linear'
+export type LinearUi = { folded: boolean; filter: LinearFilter; display: Display; groupFolds: string[] }
+export const DEFAULT_LINEAR_UI: LinearUi = { folded: false, filter: 'mine', display: DEFAULT_DISPLAY, groupFolds: [] }
+
+/** Pure: what was stored, with defaults for anything missing or malformed. */
 export function linearUiOf(stored: unknown): LinearUi {
-  const s = (stored && typeof stored === 'object' ? stored : {}) as Partial<LinearUi>
-  return { folded: s.folded === true, filter: FILTERS.includes(s.filter as LinearFilter) ? (s.filter as LinearFilter) : 'mine' }
+  const s = (stored && typeof stored === 'object' ? stored : {}) as Record<string, any>
+  const d = (s.display && typeof s.display === 'object' ? s.display : {}) as Record<string, any>
+  const show = (d.show && typeof d.show === 'object' ? d.show : {}) as Record<string, unknown>
+  const strings = (x: unknown) => (Array.isArray(x) ? [...new Set(x.filter((v): v is string => typeof v === 'string'))] : [])
+  return {
+    folded: s.folded === true,
+    filter: FILTERS.includes(s.filter) ? s.filter : 'mine',
+    display: {
+      group: GROUPS.includes(d.group) ? d.group : DEFAULT_DISPLAY.group,
+      sort: SORTS.includes(d.sort) ? d.sort : DEFAULT_DISPLAY.sort,
+      show: Object.fromEntries(HIDEABLE.map((k) => [k, typeof show[k] === 'boolean' ? show[k] : DEFAULT_DISPLAY.show[k]])) as Record<HideableState, boolean>,
+      projects: strings(d.projects)
+    },
+    groupFolds: strings(s.groupFolds)
+  }
 }
 
 // ---------- reading issues ----------
@@ -45,9 +87,11 @@ export function toIssue(raw: any): LinearIssue | null {
     state: { name: oneLine(raw.state?.name), type: oneLine(raw.state?.type).toLowerCase(), color: color(raw.state?.color) },
     team: oneLine(raw.team?.key) || id.split('-')[0],
     project: raw.project?.name ? oneLine(raw.project.name) : null,
+    projectColor: raw.project?.name ? color(raw.project.color) : '',
     assignee: typeof raw.assignee?.id === 'string' ? { id: raw.assignee.id, name: oneLine(raw.assignee.displayName ?? raw.assignee.name) } : null,
     priority: [0, 1, 2, 3, 4].includes(priority) ? priority : 0,
-    cycle: typeof raw.cycle?.id === 'string' ? raw.cycle.id : null
+    cycle: typeof raw.cycle?.id === 'string' ? raw.cycle.id : null,
+    updatedAt: Number.isFinite(Date.parse(raw.updatedAt)) ? Date.parse(raw.updatedAt) : 0
   }
 }
 
@@ -120,15 +164,20 @@ const stateRank = (i: LinearIssue) => {
   return named >= 0 ? named : STATE_RANK.length + Math.max(0, TYPE_RANK.indexOf(i.state.type))
 }
 const number = (i: LinearIssue) => Number(i.id.split('-').pop())
+const byPriority = (a: LinearIssue, b: LinearIssue) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
+const byState = (a: LinearIssue, b: LinearIssue) => stateRank(a) - stateRank(b) || a.state.name.localeCompare(b.state.name)
+const byNewest = (a: LinearIssue, b: LinearIssue) => number(b) - number(a) || a.id.localeCompare(b.id)
+const SORT: Record<SortBy, (a: LinearIssue, b: LinearIssue) => number> = {
+  priority: (a, b) => byPriority(a, b) || byState(a, b) || byNewest(a, b),
+  status: (a, b) => byState(a, b) || byPriority(a, b) || byNewest(a, b),
+  updated: (a, b) => b.updatedAt - a.updatedAt || byNewest(a, b),
+  // The identifier's number counts up as issues are created.
+  newest: byNewest
+}
 
-/** Pure: issues linked to a worktree last; the rest by priority, then state, then newest first. */
-export function sortIssues(issues: LinearIssue[], linked: ReadonlySet<string> = new Set()): LinearIssue[] {
-  return [...issues].sort((a, b) =>
-    Number(linked.has(a.id)) - Number(linked.has(b.id)) ||
-    PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
-    stateRank(a) - stateRank(b) ||
-    number(b) - number(a) ||
-    a.id.localeCompare(b.id))
+/** Pure: issues linked to a worktree last, the rest by the chosen order (priority: then state, then newest). */
+export function sortIssues(issues: LinearIssue[], linked: ReadonlySet<string> = new Set(), sort: SortBy = 'priority'): LinearIssue[] {
+  return [...issues].sort((a, b) => Number(linked.has(a.id)) - Number(linked.has(b.id)) || SORT[sort](a, b))
 }
 
 /** Pure: whether an issue belongs to a filter (open or not). */
@@ -138,12 +187,79 @@ export function inFilter(i: LinearIssue, data: Pick<LinearData, 'me' | 'teams' |
   return i.cycle !== null && data.cycles.includes(i.cycle) && data.teams.includes(i.team)
 }
 
-/** What one filter shows: its open issues in order, and those on Staging (folded away at the end). */
-export type LinearView = { shown: LinearIssue[]; staging: LinearIssue[] }
+/** The state an issue is in, when the list can leave that state out. */
+export function hideableOf(i: LinearIssue): HideableState | null {
+  if (isStaging(i)) return 'staging'
+  return i.state.type === 'triage' ? 'triage' : i.state.type === 'backlog' ? 'backlog' : null
+}
 
-export function viewOf(data: Pick<LinearData, 'me' | 'teams' | 'cycles' | 'issues'>, filter: LinearFilter, linked: ReadonlySet<string> = new Set()): LinearView {
-  const these = data.issues.filter((i) => isOpen(i) && inFilter(i, data, filter))
-  return { shown: sortIssues(these.filter((i) => !isStaging(i)), linked), staging: sortIssues(these.filter(isStaging), linked) }
+export type ProjectCount = { key: string; name: string; color: string; count: number }
+/** A group of the list: its key (remembered when folded), its name, and its issues in order. */
+export type LinearGroup = { key: string; label: string; issues: LinearIssue[] }
+/** A state left out of the list, as a fold row at its end ("12 in Backlog"). */
+export type HiddenFold = { state: HideableState; issues: LinearIssue[] }
+/**
+ * What one filter shows: its groups (one unnamed group when not grouped), the states left out, how
+ * many issues show, and every project among the filter's open issues (to narrow by, with counts).
+ */
+export type LinearView = { groups: LinearGroup[]; hidden: HiddenFold[]; count: number; projects: ProjectCount[] }
+
+/** Pure: an issue's group under a grouping: its key, name, and where the group sorts. */
+function groupOf(i: LinearIssue, by: GroupBy, me: string | null, counts: Map<string, number>): { key: string; label: string; rank: (number | string)[] } {
+  if (by === 'status') return { key: i.state.name, label: i.state.name, rank: [stateRank(i), i.state.name] }
+  if (by === 'priority') return { key: String(i.priority), label: priorityName(i.priority), rank: [PRIORITY_RANK[i.priority]] }
+  if (by === 'project') {
+    const key = i.project ?? ''
+    return { key, label: i.project ?? 'No project', rank: [key ? 0 : 1, -(counts.get(key) ?? 0), key] }
+  }
+  if (by === 'assignee') {
+    const key = i.assignee?.id ?? ''
+    return { key, label: i.assignee?.name || 'Unassigned', rank: [key === '' ? 2 : key === me ? 0 : 1, -(counts.get(key) ?? 0), i.assignee?.name ?? ''] }
+  }
+  return { key: '', label: '', rank: [] }
+}
+
+const compareRank = (a: (number | string)[], b: (number | string)[]) => {
+  for (let k = 0; k < Math.max(a.length, b.length); k++) {
+    const x = a[k] ?? '', y = b[k] ?? ''
+    const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))
+    if (c) return c
+  }
+  return 0
+}
+
+/** Pure: the issues one filter shows under the display options. */
+export function viewOf(data: Pick<LinearData, 'me' | 'teams' | 'cycles' | 'issues'>, filter: LinearFilter, linked: ReadonlySet<string> = new Set(), display: Display = DEFAULT_DISPLAY): LinearView {
+  const open = data.issues.filter((i) => isOpen(i) && inFilter(i, data, filter))
+  // Every project of the filter's open issues, whatever is narrowed or left out, so any can be picked.
+  const perProject = new Map<string, ProjectCount>()
+  for (const i of open) {
+    const key = i.project ?? ''
+    const p = perProject.get(key) ?? { key, name: i.project ?? 'No project', color: i.projectColor, count: 0 }
+    p.count++
+    if (!p.color && i.projectColor) p.color = i.projectColor
+    perProject.set(key, p)
+  }
+  const projects = [...perProject.values()].sort((a, b) => Number(a.key === '') - Number(b.key === '') || b.count - a.count || a.name.localeCompare(b.name))
+  const narrowed = display.projects.length ? open.filter((i) => display.projects.includes(i.project ?? '')) : open
+  const left = (i: LinearIssue) => { const h = hideableOf(i); return h !== null && !display.show[h] }
+  const shown = narrowed.filter((i) => !left(i))
+  const hidden = HIDEABLE.filter((h) => !display.show[h])
+    .map((state) => ({ state, issues: sortIssues(narrowed.filter((i) => hideableOf(i) === state), linked, display.sort) }))
+    .filter((f) => f.issues.length > 0)
+  const counts = new Map<string, number>()
+  const countKey = (i: LinearIssue) => (display.group === 'project' ? (i.project ?? '') : display.group === 'assignee' ? (i.assignee?.id ?? '') : '')
+  for (const i of shown) counts.set(countKey(i), (counts.get(countKey(i)) ?? 0) + 1)
+  const groups = new Map<string, LinearGroup & { rank: (number | string)[] }>()
+  for (const i of shown) {
+    const g = groupOf(i, display.group, data.me, counts)
+    const group = groups.get(g.key) ?? { ...g, issues: [] }
+    group.issues.push(i)
+    groups.set(g.key, group)
+  }
+  const ordered = [...groups.values()].sort((a, b) => compareRank(a.rank, b.rank))
+    .map(({ key, label, issues }) => ({ key, label, issues: sortIssues(issues, linked, display.sort) }))
+  return { groups: ordered, hidden, count: shown.length, projects }
 }
 
 // ---------- priority words and the message ----------

@@ -7,7 +7,7 @@
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
 import { asksYou, canRemove, claimsAsk, holdsWorkstream, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
-import { FILTER_NAME, FILTERS, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, statusIcon, teamsOf, viewOf, type LinearFilter } from './linear.ts'
+import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
 export type UiState = {
   /** Up-next items the person opened, and ones they closed (the first is open by default). */
@@ -34,12 +34,15 @@ export type UiState = {
   /** The Linear section: folded to its header, and which issues it shows. */
   linearFolded: boolean
   linearFilter: LinearFilter
+  /** Its display options (grouping, order, states shown, projects), and the groups folded ("<group by>:<key>"). */
+  linearDisplay: Display
+  linearGroupFolds: Set<string>
 }
 
 export const emptyUi = (): UiState => ({
   opened: new Set(), closed: new Set(), folded: new Set(), unfolded: new Set(), query: '', now: Date.now(),
   cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map(), colors: new Map(),
-  linearFolded: false, linearFilter: 'mine'
+  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set()
 })
 
 // ---------- small helpers ----------
@@ -1053,43 +1056,77 @@ function linearRow(i: LinearIssue, snap: Snapshot, ui: UiState, data: LinearData
     return `<button class="item lrow" data-coordinator="${esc(sent.coordinator)}" data-menu="linear:${esc(i.id)}">${glyphs}<span class="r">${status ?? `${who}<span class="rstatus pending">${esc(name)} · starting</span>`}</span></button>`
   }
   const who = ui.linearFilter === 'mine' || (i.assignee && i.assignee.id === data.me) ? '' : i.assignee ? i.assignee.name : 'unassigned'
-  const right = status ?? `${who ? `<span class="r rest">${esc(who)}</span>` : ''}<span class="act pill send">Send ${ARROW}</span>`
+  const right = status ?? `${who ? `<span class="rest">${esc(who)}</span>` : ''}<span class="act pill send">Send ${ARROW}</span>`
   return `<button class="item lrow" data-lsend="${esc(i.id)}" data-menu="linear:${esc(i.id)}" aria-haspopup="menu">${glyphs}<span class="r">${right}</span></button>`
+}
+
+const SLIDERS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h6.5M13 4.5h.5M2.5 11.5h.5M7 11.5h6.5"/><circle cx="11" cy="4.5" r="1.75"/><circle cx="5" cy="11.5" r="1.75"/></svg>'
+const CROSS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6"/></svg>'
+
+/** A project's color dot; the color is checked to be a hex color when read. */
+export const projectDot = (color: string) => `<i class="pdot"${/^#[0-9a-f]{3,8}$/i.test(color) ? ` style="background:${color}"` : ''} aria-hidden="true"></i>`
+
+/** A group's glyph: its status icon, project dot or priority icon (assignee groups go by name alone). */
+function groupGlyph(g: LinearGroup, by: Display['group']): string {
+  const first = g.issues[0]
+  if (!first) return ''
+  if (by === 'status') return statusIcon(first.state)
+  if (by === 'priority') return priorityIcon(first.priority)
+  if (by === 'project') return projectDot(g.key ? first.projectColor : '')
+  return ''
 }
 
 /**
  * The Linear section, pinned under Up next: a header that folds it (Linear · team, with the count
- * and filter while folded), the Mine / Team / Cycle switch, and the filter's open issues; those on
- * Staging fold away at the end. Empty when Linear is not connected.
+ * and filter while folded), the Display button and the Mine / Team / Cycle switch, a chip that
+ * clears a project filter, then the filter's issues in groups that fold; states the display leaves
+ * out fold away at the end. Empty when Linear is not connected.
  */
 export function linearSection(snap: Snapshot, ui: UiState, data: LinearData | null): string {
   if (!data) return ''
   const linked = rowsByIssue(snap.rows)
   const ids = new Set(linked.keys())
-  const views = Object.fromEntries(FILTERS.map((f) => [f, viewOf(data, f, ids)])) as Record<LinearFilter, ReturnType<typeof viewOf>>
+  const display = ui.linearDisplay
+  const views = Object.fromEntries(FILTERS.map((f) => [f, viewOf(data, f, ids, display)])) as Record<LinearFilter, ReturnType<typeof viewOf>>
   const f = ui.linearFilter
   const view = views[f]
   const team = data.teams.length > 1 ? `${data.teams[0]} +${data.teams.length - 1}` : (data.teams[0] ?? '')
   const folded = ui.linearFolded
   const starting = Object.keys(data.sent).filter((id) => !linked.has(id))
   const startingCoord = starting.length ? snap.coordinators.find((c) => c.key === data.sent[starting[0]].coordinator) : undefined
-  const fold = `<button class="label lfold" data-lfold aria-expanded="${!folded}"${data.teams.length > 1 ? ` data-tip="${esc(data.teams.join(', '))}"` : ''}>${ICON.chev}${LINEAR_MARK}<span>Linear${team ? ` · ${esc(team)}` : ''}</span>${folded ? `<span class="fc">${view.shown.length}</span>` : ''}</button>`
+  const fold = `<button class="label lfold" data-lfold aria-expanded="${!folded}"${data.teams.length > 1 ? ` data-tip="${esc(data.teams.join(', '))}"` : ''}>${ICON.chev}${LINEAR_MARK}<span>Linear${team ? ` · ${esc(team)}` : ''}</span>${folded ? `<span class="fc">${view.count}</span>` : ''}</button>`
+  const changed = !isDefaultDisplay(display)
+  const displayButton = `<button class="icon ldisplay" data-ldisplay aria-haspopup="menu" aria-label="Display options${changed ? ' (changed)' : ''}" data-tip="Display">${SLIDERS}${changed ? '<span class="dot"></span>' : ''}</button>`
   const right = folded
     ? `<span class="foldsum">${starting.length ? `${startingCoord ? coordinatorCharacter(startingCoord, 13, 'working') : ''}<span>${starting.length} starting</span><span class="sepd">${FILTER_NAME[f]}</span>` : FILTER_NAME[f]}</span>`
-    : `<span class="seg" role="group" aria-label="Filter">${FILTERS.map((k) => `<button data-lfilter="${k}" aria-pressed="${k === f}">${FILTER_NAME[k]} ${views[k].shown.length}</button>`).join('')}</span>`
+    : `${displayButton}<span class="seg" role="group" aria-label="Filter">${FILTERS.map((k) => `<button data-lfilter="${k}" aria-pressed="${k === f}">${FILTER_NAME[k]} ${views[k].count}</button>`).join('')}</span>`
   const head = `<div class="sechead">${fold}${right}</div>`
   if (folded) return head
-  const all = ui.unfolded.has('linear-all')
-  const rows = (all ? view.shown : view.shown.slice(0, LINEAR_ROWS)).map((i) => linearRow(i, snap, ui, data, linked))
-  const more = view.shown.length > LINEAR_ROWS && !all
-    ? `<button class="fold" data-lmore="linear-all" aria-expanded="false">${ICON.chev}${view.shown.length - LINEAR_ROWS} more</button>`
+  // A project filter shows as one chip that clears it.
+  const picked = display.projects
+  const projectName = (key: string) => view.projects.find((p) => p.key === key)?.name ?? (key || 'No project')
+  const chip = picked.length
+    ? `<div class="pchips"><button class="pchip" data-lprojects-clear aria-label="Show all projects">${picked.length === 1 ? `${projectDot(view.projects.find((p) => p.key === picked[0])?.color ?? '')}${esc(projectName(picked[0]))}` : `${picked.length} projects`}${CROSS}</button></div>`
     : ''
-  const stagingOpen = ui.unfolded.has('linear-staging')
-  const staging = view.staging.length
-    ? `<button class="fold" data-lmore="linear-staging" aria-expanded="${stagingOpen}">${ICON.chev}${view.staging.length} on Staging</button>${stagingOpen ? view.staging.map((i) => linearRow(i, snap, ui, data, linked)).join('') : ''}`
-    : ''
-  const empty = view.shown.length ? '' : `<div class="empty">Nothing open${f === 'cycle' && !data.cycles.length ? ': no active cycle found' : ''}</div>`
-  return `${head}<div class="group">${rows.join('')}${empty}${more}${staging}</div>`
+  const rowsOf = (issues: LinearIssue[], moreKey: string) => {
+    const all = ui.unfolded.has(moreKey)
+    const rows = (all ? issues : issues.slice(0, LINEAR_ROWS)).map((i) => linearRow(i, snap, ui, data, linked)).join('')
+    return issues.length > LINEAR_ROWS && !all ? `${rows}<button class="fold" data-lmore="${esc(moreKey)}" aria-expanded="false">${ICON.chev}${issues.length - LINEAR_ROWS} more</button>` : rows
+  }
+  const body = view.groups.map((g) => {
+    if (display.group === 'none') return rowsOf(g.issues, 'linear-all')
+    const key = `${display.group}:${g.key}`
+    const open = !ui.linearGroupFolds.has(key)
+    return `<button class="lgroup" data-lgroup="${esc(key)}" aria-expanded="${open}">${ICON.chev}${groupGlyph(g, display.group)}<span class="gl">${esc(g.label)}</span><span class="gc">${g.issues.length}</span></button>${open ? rowsOf(g.issues, `linear-all:${key}`) : ''}`
+  }).join('')
+  // A state the display leaves out folds away at the end and opens in place, so nothing is out of reach.
+  const hidden = view.hidden.map(({ state, issues }) => {
+    const key = `linear-hidden:${state}`
+    const open = ui.unfolded.has(key)
+    return `<button class="fold" data-lmore="${key}" aria-expanded="${open}">${ICON.chev}${issues.length} ${state === 'staging' ? 'on' : 'in'} ${STATE_NAME[state]}</button>${open ? rowsOf(issues, `linear-all:${key}`) : ''}`
+  }).join('')
+  const empty = view.count || view.hidden.length ? '' : `<div class="empty">Nothing open${picked.length ? ' in these projects' : f === 'cycle' && !data.cycles.length ? ': no active cycle found' : ''}</div>`
+  return `${head}${chip}<div class="group">${body}${empty}${hidden}</div>`
 }
 
 // ---------- looks for new coordinators ----------

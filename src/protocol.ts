@@ -203,11 +203,15 @@ export type LinearIssue = {
   /** Its team's key. */
   team: string
   project: string | null
+  /** Its project's Linear color, '' when none or unknown. */
+  projectColor: string
   assignee: { id: string; name: string } | null
   /** Linear's priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. */
   priority: number
   /** Its cycle's id, when it is in one. */
   cycle: string | null
+  /** When it last changed (ms), 0 when unknown. */
+  updatedAt: number
 }
 
 /** An issue sent to a coordinator that no worktree links yet. */
