@@ -703,22 +703,16 @@ export function prBadge(pr: WorkspaceRow['pr']): string {
   return `<span class="pr pr-${tone}" role="link" data-pr="${esc(pr.url)}" data-tip="${esc(tip)}" aria-label="${esc(`PR #${pr.number} ${word}`)}">#${pr.number}</span>`
 }
 
-/** GitHub's mark (Octicons mark-github, MIT), in the row's muted text color. */
-const GH_MARK = '<svg class="gh" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>'
-
-/** A branch as a row shows it: without its leading user/ prefix (berkantay/bou-4186 → bou-4186). */
-export const branchName = (branch: string) => branch.replace(/^[^/]+\/(?=[^/])/, '')
-
 /**
  * How many branch colors there are (panel.css --c0..--c2). Any two branches can sit in neighboring
  * lanes, so the palette was validated all-pairs (the dataviz validator, both modes): three is the
- * most that pass, and the branch's name beside the mark is the second channel.
+ * most that pass.
  */
 export const BRANCH_COLORS = 3
 /** A branch's color slot: stable for the same repo and branch, so rows on one branch share it. */
 export const branchColor = (repo: string, branch: string) => hashOf(`${repo}\n${branch}`) % BRANCH_COLORS
 
-/** A long-lived branch (a main checkout's main or dev) shows quieter than feature work. */
+/** A long-lived branch (a main checkout's main or dev) draws neutral lines, not a color. */
 const BASE_BRANCH = /^(main|master|dev|develop|development|trunk|staging)$/
 
 /** The color a row's tree lines wear: its branch's, or none (neutral) without one or on a long-lived one. */
@@ -727,17 +721,6 @@ export const laneColor = (row: Pick<WorkspaceRow, 'repo' | 'branch'>): number | 
 const branchAttr = (row: Pick<WorkspaceRow, 'repo' | 'branch'>) => {
   const c = laneColor(row)
   return c === null ? '' : ` data-branch="${c}"`
-}
-
-/**
- * The worktree a chat runs in, minimal: GitHub's mark, the branch without its user/ prefix (the
- * whole branch and the project on hover), then the PR's number when there is one. Nothing without a
- * branch.
- */
-export function branchChip(row: Pick<WorkspaceRow, 'repo' | 'branch' | 'pr'>): string {
-  if (!row.branch) return prBadge(row.pr)
-  const quiet = BASE_BRANCH.test(row.branch)
-  return `<span class="br${quiet ? ' quiet' : ''}"><span class="br-b" data-tip="${esc(`${row.branch}${row.repo ? ` · ${row.repo}` : ''}`)}">${GH_MARK}<span class="br-n">${esc(branchName(row.branch))}</span></span>${prBadge(row.pr)}</span>`
 }
 
 /** A merged PR's icon, on the cockpit's clean-up cards. */
@@ -783,25 +766,27 @@ const FOCUS = '<i class="fb" aria-hidden="true"></i>'
 function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, deco = ''): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
   const indent = Boolean(lead)
-  // A worker nested under its lead in the same worktree: the lead's row already shows project,
-  // branch, PR and age; the branch's color alone groups it with its lead. One working in a worktree
-  // of its own shows that worktree's branch.
+  // The worktree's Linear issue, on the right of the row that stands for the worktree.
+  const own = !lead || lead.row.id !== p.row.id
+  const chip = p.row.linearIssue && own ? idChip(p.row.linearIssue) : ''
+  // The title gets the room: on the right only the Linear issue, the PR's number, the project and
+  // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
+  // does; the branch's color on the lines groups them); one in a worktree of its own shows that
+  // worktree's issue and PR.
   const right = status ?? (lead
-    ? (lead.row.id === p.row.id ? '' : branchChip(p.row))
-    : `${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}${branchChip(p.row)}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
+    ? (own ? `${chip}${prBadge(p.row.pr)}` : '')
+    : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}"`
   // Its lines and focus bar; its character leaves out the spinning badge, the ring's shimmer shows it working.
   const lines = `${deco}${current ? FOCUS : ''}`
-  // The worktree's Linear issue, before the title of the row that stands for the worktree.
-  const chip = p.row.linearIssue && (!lead || lead.row.id !== p.row.id) ? idChip(p.row.linearIssue) : ''
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${chip}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
+    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${chip}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
 }
 
 /**

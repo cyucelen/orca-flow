@@ -143,24 +143,12 @@ html.light { --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --card: color-mix(in s
 .gauge.warn { color: var(--warn); }
 .gauge.danger { color: var(--danger); }
 .gauge svg { width: 13px; height: 13px; }
-/* A chat's branch: GitHub's mark and the branch in the row's muted text, then its PR's number. The
-   branch's color lives on the tree's lines (below), never on the text or the mark. */
-.br { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.br-b { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--muted); }
-.br .gh { width: 12px; height: 12px; flex: none; }
-/* The branch takes at most about a quarter of the row, so the title keeps priority. */
-.br-n { max-width: clamp(40px, 36vw - 48px, 160px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.br.quiet .br-b { color: var(--faint); }
-.br.quiet .gh { opacity: .6; }
-.item.finished .br { opacity: .7; }
+.item.finished :is(.pr, .idchip) { opacity: .7; }
 /* A row's PR number, colored as Orca's workspace card colors it. */
 .pr { display: inline-flex; flex: none; padding: 0 3px; margin: 0 -3px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 16px; font-variant-numeric: tabular-nums; }
 .pr:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
-/* Room goes to the title first: below 420 px a row with a branch drops its project and age; below
-   300 px one with a PR (or a remove button) keeps the mark and number and leaves the branch to its
-   tooltip. */
-@media (max-width: 420px) { .r:has(> .br) > :is(.soft, .age) { display: none; } }
-@media (max-width: 300px) { .br:has(> .pr) .br-n, .item:has(> [data-remove]) .br-n { display: none; } }
+/* Room goes to the title first: below 300 px a tree row leaves out its Linear issue chip. */
+@media (max-width: 300px) { .r > .idchip { display: none; } }
 .pr-ok { color: rgb(16 185 129 / .8); }
 .pr-pending { color: rgb(245 158 11 / .85); }
 .pr-fail { color: rgb(244 63 94 / .85); }

@@ -18,9 +18,9 @@ macOS only for now.
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds.
-- **Branch and PR:** each agent row shows its worktree's branch after the GitHub mark (without its
-  `user/` prefix; hover for the whole branch), then its PR's number when there is one, colored the
-  way Orca colors it; hover for the title, click to open the PR.
+- **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
+  has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
+  the PR), the project and the age. The branch shows only as the color of the row's tree lines.
 - **Tree lines:** drawn like a git graph: a neutral trunk from each coordinator, one connector into
   each chat, and each lead's lane running on into its workers in the lead's branch color
   (long-lived branches like `main` or `dev` stay neutral), quiet at rest and clear on hover and on
