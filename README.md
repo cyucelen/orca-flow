@@ -134,7 +134,8 @@ The Stop hook checks that frame when a coordinator or a lead ends its turn. On a
 failed rule and has the agent rewrite the message, once per turn. It checks the status line, that
 there is no header line, a short context paragraph and no detail inside the frame, the labels, that
 an ask has a waiting status and a **Reply:** line, that a decision has options with one
-recommended, and that a cost warning gives a number. A coordinator can also answer with route lines
+recommended, that option letters name only the current Ask's options, and that a cost warning gives
+a number. A coordinator can also answer with route lines
 only. Workers and your own chats are never checked.
 
 The check is off until you turn it on in `~/.orca-flow/config.json`, for every agent or only for

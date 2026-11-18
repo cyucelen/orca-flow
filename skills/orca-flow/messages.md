@@ -77,6 +77,12 @@ One Ask per message. When you have more questions, ask the most important one an
   is at risk ("1,240 staging rows").
 - **No silent drops.** An earlier ask that is still open is named in one phrase in the context:
   held, superseded or answered.
+- **Letters belong to the current Ask.** Option letters name only the options of this message's
+  Ask. Earlier options, tested variants and table columns are named by what they are ("all
+  documents", "courses under 1,200 tokens"), never by a letter. This holds in the detail above the
+  frame too.
+- **Name a returning option.** When an earlier option comes back in a new Ask, the context says so
+  with the bare letter: "C is the earlier courses-under-1,200 rule".
 - **No ask, short message.** With no ask: the status line and the context, and Next only when it is
   not obvious.
 
@@ -116,7 +122,7 @@ Each example is a whole message: the detail first, then the frame that points to
 
 **Waiting on you: decision**
 
-The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so option A changes long documents too. We must test A and B before we choose. The A/B decision is held until this test ends.
+The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so the 1 topic = 1 lesson rule changes long documents too. We must test it on all documents and on courses under 1,200 tokens before we choose. The decision on 1 topic = 1 lesson is held until this test ends.
 
 **Ask:** run the plan eval on Azure OpenAI?
 - **A. All 10 documents + Kaimug (recommended).** About $6. peri is $5 of it.
@@ -248,6 +254,10 @@ BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today
 - **options:** a decision has 2 or more option bullets. **recommended:** exactly one of them is
   marked (recommended).
 - **cost-number:** a Warning or Caution about cost, credits or money gives a number.
+- **letters:** when the Ask has lettered options, no line outside code fences (the detail above
+  the frame included) says "option A", "options A and B" or "A/B". Only the option bullets and the
+  Reply use the letters; elsewhere a current option is named by its bare letter ("C is the
+  earlier rule").
 - **next-last:** when there is a Next line, it is the last line.
 - Where it runs: a Claude Code Stop hook that the plugin installs. It runs only in Orca agent
   terminals, only for coordinators and leads, and only where the user opted in: `"messageFormat"`

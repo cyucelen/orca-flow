@@ -118,6 +118,48 @@ test('options and recommended: a decision gives 2 or more options, one recommend
   assert.match(checkFrame(DECISION.replace(' (recommended)', ''), { role: 'lead' }).misses[0].detail, /0 are marked/)
 })
 
+// The BOU-4206 lead's plan-compare message: tested variants called A and B, then a new A/B/C.
+const COMPARE = (columns, context) => `${columns}
+| --- | --- | --- |
+| Kaimug | 4 | 4 |
+| peri | 31 | 11 |
+
+**Waiting on you: decision**
+
+${context}
+
+**Ask:** which rule goes in?
+- **A. All documents (recommended).** Kaimug gets 4 lessons. peri gets 31.
+- **B. No rule.** Nothing changes.
+- **C. Courses under 1,200 tokens.** Kaimug gets 4 lessons. peri keeps 11.
+
+**Reply:** A, B or C`
+
+test('letters: option letters belong to the current Ask', () => {
+  const failing = COMPARE('| Course | Option A | Option B |', 'The eval ran both variants (table above). With option A, B the short courses split well. peri grows from 11 to 31 lessons under the all-documents rule.')
+  const misses = checkFrame(failing, { role: 'lead' }).misses
+  assert.deepEqual(misses.map((m) => m.rule), ['letters'])
+  assert.match(misses[0].detail, /^option letters belong to the current Ask: name earlier options by what they are; refer to a current option by its bare letter/)
+  assert.match(misses[0].detail, /"Option A"/, 'the table header above the frame counts')
+
+  const fixed = COMPARE('| Course | All documents | Courses under 1,200 tokens |', 'The eval ran both rules (table above). Short courses split well under each rule. peri grows from 11 to 31 lessons under the all-documents rule. C is the earlier courses-under-1,200 rule.')
+  assert.deepEqual(rules(fixed), [])
+
+  const context = (text) => rules(COMPARE('| Course | All | Short |', text))
+  assert.deepEqual(context('The earlier A/B decision is held.'), ['letters'], 'a slash pair')
+  assert.deepEqual(context('We tested A/B/C last week.'), ['letters'])
+  assert.deepEqual(context('We tested options A and B last week.'), ['letters'])
+  assert.deepEqual(context('Options A, B or C all split Kaimug.'), ['letters'])
+  assert.deepEqual(context('The A/B test ran last week.'), ['letters'], 'an A/B test is flagged too: rare, accepted')
+  assert.deepEqual(context('A short course splits well. I tested it on Kaimug. C is the earlier rule.'), [], 'bare capital letters pass')
+  assert.deepEqual(context('The rule is N/A for peri. I/O time is 2 seconds.'), [], 'N/A and I/O are not option letters')
+  assert.deepEqual(rules(`${COMPARE('| Course | All | Short |', 'The eval ran (table above).')}\n**Next:** I apply option C.`), ['letters'], 'Next counts too')
+  assert.deepEqual(rules(COMPARE('```\nOption A | Option B\n```', 'The eval ran (code above).')), [], 'code fences are not read')
+
+  assert.deepEqual(rules(`We dropped option A last week.\n\n${APPROVAL}`), [], 'no lettered Ask: the rule does not apply')
+  assert.deepEqual(rules(`**Idle**\n\nThe A/B decision is answered: option A is in.`), [], 'nor with no Ask at all')
+})
+
 test('cost-number: a cost warning gives the amount', () => {
   const warn = (text) => rules(`${APPROVAL}\n**Warning:** ${text}`)
   assert.deepEqual(warn('the eval costs Azure credits.'), ['cost-number'])
@@ -134,7 +176,7 @@ test('next-last: Next is optional, and last when it is there', () => {
 test('parseFrame reads the new shape: status, context, ask, options, reply, steps, next, warning', () => {
   assert.deepEqual(parseFrame(DECISION), {
     status: 'Waiting on you: decision',
-    context: 'The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so option A changes long documents too. We must test A and B before we choose. The A/B decision is held until this test ends.',
+    context: 'The repo has 10 eval documents (table above). Most of their passages are under 400 tokens, so the 1 topic = 1 lesson rule changes long documents too. We must test it on all documents and on courses under 1,200 tokens before we choose. The decision on 1 topic = 1 lesson is held until this test ends.',
     ask: 'run the plan eval on Azure OpenAI?',
     options: ['A. All 10 documents + Kaimug', 'B. Without peri'],
     reply: 'A, B or no',

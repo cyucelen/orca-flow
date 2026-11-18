@@ -15,6 +15,11 @@ export const LABELS = ['Ask', 'Reply', 'Steps', 'Warning', 'Caution', 'Next']
 export const LEVELS = ['now', 'today', 'soon', 'someday']
 /** At most this many sentences in the context paragraph. */
 export const CONTEXT_SENTENCES = 4
+/**
+ * With a lettered Ask, letters name only its options: "option A", "options A, B" and "A/B" elsewhere
+ * point at earlier options. A slash pair is A-F only, so N/A and I/O pass.
+ */
+export const LETTERED = [/\b(?:[Oo]ption|OPTION)s?\s+[A-Z]\b/, /\b[A-F](?:\/[A-F])+\b/]
 /** A Warning or Caution about money must give a number. */
 export const COST = /cost|credit|money|\$|€/i
 
@@ -103,7 +108,7 @@ const miss = (rule, detail) => ({ rule, detail })
  * Checks the last message of a turn against the frame. `role` is 'coordinator', 'lead' or another
  * role: only a coordinator may write route lines or a numbered list of waiting items.
  * Returns { ok, misses: [{ rule, detail }] }. Rules: status, header, context, context-long, detail,
- * label, ask, reply, ask-status, options, recommended, cost-number, next-last.
+ * label, ask, reply, ask-status, options, recommended, letters, cost-number, next-last.
  */
 export function checkFrame(text, { role } = {}) {
   const lines = linesOf(text)
@@ -152,6 +157,15 @@ export function checkFrame(text, { role } = {}) {
       const marked = options.filter((l) => /\(recommended\)/i.test(l)).length
       if (marked !== 1) misses.push(miss('recommended', `mark exactly one option (recommended); ${marked} are marked`))
     }
+  }
+
+  const lettered = parts.blocks.filter((b) => b.label === 'Ask').flatMap((b) => b.items).some((l) => OPTION.test(l))
+  if (lettered) {
+    const found = lines
+      .filter((l) => !l.fenced && !OPTION.test(l.line) && labelOf(l.line) !== 'Reply')
+      .map((l) => LETTERED.map((re) => re.exec(l.line)?.[0]).find(Boolean))
+      .find(Boolean)
+    if (found) misses.push(miss('letters', `option letters belong to the current Ask: name earlier options by what they are; refer to a current option by its bare letter (found "${found}")`))
   }
 
   for (const b of parts.blocks) {

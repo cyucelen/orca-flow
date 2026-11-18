@@ -16,6 +16,7 @@ export const LABELS: string[]
 export const LEVELS: string[]
 export const CONTEXT_SENTENCES: number
 export const COST: RegExp
+export const LETTERED: RegExp[]
 export function sentencesOf(text: string): string[]
 export function checkFrame(text: string, options?: { role?: string }): { ok: boolean; misses: Miss[] }
 export function parseFrame(text: string): Frame | null
