@@ -15,15 +15,15 @@ const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.met
 // The examples in messages.md are the fixtures: the spec and the checker cannot drift apart.
 const SPEC = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
 const EXAMPLES = [...SPEC.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
-const [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
+const [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
 
 const rules = (text, role = 'lead') => checkFrame(text, { role }).misses.map((m) => m.rule)
 const ok = (text, role = 'lead') => assert.deepEqual(checkFrame(text, { role }), { ok: true, misses: [] }, text.split('\n').find((l) => l.startsWith('**')))
 
 test('every example in messages.md passes: the briefing and the route line as a coordinator', () => {
-  assert.equal(EXAMPLES.length, 11)
+  assert.equal(EXAMPLES.length, 12)
   for (const example of EXAMPLES) ok(example, 'coordinator')
-  for (const example of [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
+  for (const example of [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
   ok(`${ROUTE}\n\nISO-12 → lead in mono/isola · soon\n`, 'coordinator')
   assert.deepEqual(rules(ROUTE), ['status'], 'only a coordinator routes')
   assert.deepEqual(rules(BRIEFING), ['detail'], "only a coordinator lists waiting items")
@@ -106,7 +106,7 @@ test('detail: tables, headings, code, lists and a second paragraph go above the 
 })
 
 test('label: only Ask, Reply, Steps, Warning, Caution and Next', () => {
-  const bad = checkFrame(ANSWER.replace('The row is gray', '**Answer:** the row is gray'), { role: 'lead' }).misses
+  const bad = checkFrame(ANSWER.replace("A worker's row", "**Answer:** a worker's row"), { role: 'lead' }).misses
   assert.deepEqual(bad.map((m) => m.rule), ['context', 'label'])
   assert.match(bad[1].detail, /\*\*Answer:\*\*/)
   for (const label of ['Done', 'Plan', 'Problem', 'Cause', 'Evidence', 'Result', 'Link', 'Waiting', 'Running', 'Room', 'Status']) {
@@ -183,6 +183,52 @@ test('letters: option letters belong to the current Ask', () => {
   assert.deepEqual(rules(`**Idle**\n\nThe A/B decision is answered: option A is in.`), [], 'nor with no Ask at all')
 })
 
+// The BOU-4207 image-style lead's frame that the user could not read cold.
+const STYLE_HOT = `**Needs your pick**
+
+The root cause is above: the style exists only as vague text, and the reference photos change from image to image and are stronger than that text. My earlier question about the style anchor plus new reference text, or new reference text only, is held.
+
+**Ask:** do I reproduce the drift locally with the Kaimug PDF before you choose the fix?
+- **A. Reproduce first (recommended).** I test the style anchor and the reference text.
+- **B. Choose now.** No reproduction.
+
+**Reply:** A or B`
+
+test('above: a pointer to the detail never replaces the point', () => {
+  const misses = checkFrame(STYLE_HOT, { role: 'lead' }).misses
+  assert.deepEqual(misses.map((m) => m.rule), ['above'], 'the BOU-4207 frame; its jargon has no backticks, so only "above" is caught')
+  assert.equal(misses[0].detail, `state the point in one sentence, then point with '(detail above)' (found "is above")`)
+  const idle = (context) => rules(`**Idle**\n\n${context}`)
+  assert.deepEqual(idle('The images differ because each one follows its reference photo (detail above).'), [], '(detail above) passes')
+  assert.deepEqual(idle('The release is out (changes above). Nothing runs now.'), [])
+  for (const text of ['Above, the cause.', 'As above, nothing changed.', 'See above for the cause.', 'The cause is shown above.', 'The steps are listed above.', 'The cause is described above.', 'The numbers are above.']) {
+    assert.deepEqual(idle(text), ['above'], text)
+  }
+  assert.deepEqual(rules(APPROVAL.replace('run the account merge on the staging database?', 'run the merge as above?')), ['above'], 'in the Ask too')
+  assert.deepEqual(rules(DECISION.replace('About $1, but', 'See above. About $1, but')), ['above'], 'and in an option')
+  assert.deepEqual(rules(`The root cause is above.\n\n${RELEASED}`), [], 'the detail above the frame is free')
+  assert.deepEqual(idle('The eval cost is above $5, and 3 lessons are above 400 tokens.'), [], 'above a number is a comparison')
+  assert.deepEqual(idle('Above 400 tokens, a passage gets its own lesson.'), [])
+})
+
+test('code-term: a backticked code name in the frame gets plain words', () => {
+  const idle = (context) => checkFrame(`**Idle**\n\n${context}`, { role: 'lead' }).misses
+  const bad = idle('The planner merges lessons under `LESSON_FLOOR` into a neighbor.')
+  assert.deepEqual(bad.map((m) => m.rule), ['code-term'])
+  assert.equal(bad[0].detail, 'explain `LESSON_FLOOR` in plain words, or use plain words')
+  assert.deepEqual(idle('The planner merges lessons under `LESSON_FLOOR` (the smallest lesson size) into a neighbor.'), [])
+  for (const term of ['plan.ts', 'apps/ai-create', 'lessonFloor', 'plan()', 'MAX', 'host:port', 'lesson_floor']) {
+    assert.deepEqual(idle(`The cause is in \`${term}\`.`).map((m) => m.rule), ['code-term'], term)
+  }
+  for (const word of ['peri', 'Kaimug', 'AI', 'yes or no']) assert.deepEqual(idle(`The cause is \`${word}\`.`), [], `${word} is not a code name`)
+  assert.deepEqual(rules(APPROVAL.replace('the merge changes 1,240', 'the `0042_merge_accounts` migration changes 1,240')), ['code-term'], 'a Caution counts')
+  assert.deepEqual(rules(DECISION.replace('About $1, but', 'Sets `LESSON_FLOOR` to 80. About $1, but')), ['code-term'], 'an option counts')
+  const steps = BLOCKED.replace('2. Turn on Developer Mode.', '2. Run `xcrun devicectl list devices` and check `~/Library/Developer/Xcode`. Turn on Developer Mode.')
+  assert.deepEqual(rules(steps), [], 'Steps may hold exact commands and paths')
+  assert.deepEqual(rules(REVIEW.replace('**Reply:** approve, or your comments', '**Reply:** approve, or comments in `isola.yaml`').replace(/\*\*Next:\*\*.*/, '**Next:** I rerun `pnpm dev:native`.')), [], 'Reply and Next may too')
+  assert.deepEqual(rules(`Set \`LESSON_FLOOR\` in plan.ts.\n\n${RELEASED}`), [], 'the detail above the frame is free')
+})
+
 test('cost-number: a cost warning gives the amount', () => {
   const warn = (text) => rules(`${APPROVAL}\n**Warning:** ${text}`)
   assert.deepEqual(warn('the eval costs Azure credits.'), ['cost-number'])
@@ -201,7 +247,7 @@ test('parseFrame reads status, kind, blocking, context, ask, options, reply, ste
     status: 'Needs your pick',
     kind: 'decision',
     blocking: true,
-    context: 'The plan eval shows if the 1 topic = 1 lesson rule is safe for long documents, and it costs money. Most passages in the 10 eval documents are under 400 tokens (table above), so the rule changes long documents too. The decision on 1 topic = 1 lesson is held until this test ends.',
+    context: DECISION.split('\n\n').find((p) => p.startsWith('AI Create turns')),
     ask: 'run the plan eval on Azure OpenAI?',
     options: ['A. All 10 documents + Kaimug', 'B. Without peri'],
     reply: 'A, B or no',
@@ -209,12 +255,12 @@ test('parseFrame reads status, kind, blocking, context, ask, options, reply, ste
     next: null,
     warning: null
   })
-  const kinds = [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING].map((e) => { const f = parseFrame(e); return `${f.kind}${f.blocking ? '' : ' later'}` })
-  assert.deepEqual(kinds, ['decision', 'info', 'none later', 'info later', 'action', 'review', 'none later', 'none later', 'approval', 'none later'])
+  const kinds = [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING].map((e) => { const f = parseFrame(e); return `${f.kind}${f.blocking ? '' : ' later'}` })
+  assert.deepEqual(kinds, ['decision', 'decision', 'info', 'none later', 'info later', 'action', 'review', 'none later', 'none later', 'approval', 'none later'])
   assert.deepEqual(parseFrame(BLOCKED).steps.length, 4)
   assert.equal(parseFrame(BLOCKED).steps[1], 'Turn on Developer Mode. Let the phone restart.')
   assert.equal(parseFrame(BLOCKED).next, 'I run the device build again.')
-  assert.match(parseFrame(APPROVAL).warning, /^the migration changes 1,240/)
+  assert.match(parseFrame(APPROVAL).warning, /^the merge changes 1,240/)
   assert.equal(parseFrame(BRIEFING).status, 'Idle')
   assert.equal(parseFrame('just text'), null)
   assert.equal(parseFrame(ROUTE), null)

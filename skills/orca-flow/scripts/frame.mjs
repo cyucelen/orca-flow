@@ -38,6 +38,18 @@ export const CONTEXT_SENTENCES = 4
 export const LETTERED = [/\b(?:[Oo]ption|OPTION)s?\s+[A-Z]\b/, /\b[A-F](?:\/[A-F])+\b/]
 /** A Warning or Caution about money must give a number. */
 export const COST = /cost|credit|money|\$|€/i
+/**
+ * "Above" that replaces the point ("The root cause is above"), in the context, the Ask and its
+ * options. A parenthetical pointer after the point, "(detail above)", is how to point.
+ */
+// Above a number is a comparison ("the cost is above $5"), not a pointer.
+export const ABOVE = [/^(?:as |see )?above\b(?!\s*[\d$€~])/i, /\b(?:is|are|see|as|shown|listed|described)\s+above\b(?!\s*[\d$€~])/i]
+/**
+ * A backticked code identifier: it holds _ . / : or (), is camelCase, or is ALL_CAPS of 3+ letters.
+ * Plain words in a parenthesis right after it explain it: `LESSON_FLOOR` (the smallest lesson size).
+ */
+export const CODE_TERM = /`([^`\n]+)`(?!\s*\([^)]*[a-z][^)]*\))/g
+export const isCodeIdentifier = (term) => /[_./:]|\(\)|[a-z][A-Z]/.test(term) || /^[A-Z]{3,}$/.test(term)
 
 const PLAIN = /^(?:Working|Idle|Done|Working · needs \S.* later|Needs \S.*)$/
 const LATER = /^Working · needs \S.* later$/
@@ -161,7 +173,8 @@ const miss = (rule, detail) => ({ rule, detail })
  * Checks the last message of a turn against the frame. `role` is 'coordinator', 'lead' or another
  * role: only a coordinator may write route lines or a numbered list of waiting items.
  * Returns { ok, misses: [{ rule, detail }] }. Rules: status, header, context, context-long, detail,
- * label, ask, ask-status, options, recommended, letters, cost-number, next-last, status-old.
+ * label, ask, ask-status, options, recommended, letters, above, code-term, cost-number, next-last,
+ * status-old.
  */
 export function checkFrame(text, { role } = {}) {
   const lines = linesOf(text)
@@ -227,6 +240,17 @@ export function checkFrame(text, { role } = {}) {
       .find(Boolean)
     if (found) misses.push(miss('letters', `option letters belong to the current Ask: name earlier options by what they are; refer to a current option by its bare letter (found "${found}")`))
   }
+
+  // Cold readable: someone who reads only the frame, after a week away, understands it.
+  const asks = parts.blocks.filter((b) => b.label === 'Ask')
+  const pointed = [parts.context.join(' '), ...asks.flatMap((b) => [b.value, ...b.items])]
+  const bare = (text) => text.replace(/\([^()]*\babove\)/gi, '')
+  const above = pointed.map(bare).map((t) => ABOVE.map((re) => re.exec(t.trim())?.[0]).find(Boolean)).find(Boolean)
+  if (above) misses.push(miss('above', `state the point in one sentence, then point with '(detail above)' (found "${above}")`))
+
+  const termed = [...pointed, ...parts.blocks.filter((b) => b.label === 'Warning' || b.label === 'Caution').map((b) => b.value)]
+  const term = termed.flatMap((t) => [...t.matchAll(CODE_TERM)].map((m) => m[1])).find(isCodeIdentifier)
+  if (term) misses.push(miss('code-term', `explain \`${term}\` in plain words, or use plain words`))
 
   for (const b of parts.blocks) {
     if ((b.label === 'Warning' || b.label === 'Caution') && COST.test(b.value) && !/\d/.test(b.value)) {

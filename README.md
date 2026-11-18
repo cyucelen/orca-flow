@@ -137,9 +137,11 @@ The Stop hook checks that frame when a coordinator or a lead ends its turn. On a
 failed rule and has the agent rewrite only the frame, once per turn, so you never read the detail
 twice. It checks the status line (and names the plain line for an old status word), that there is
 no header line, a short context paragraph and no detail inside the frame, the labels, that an ask
-has a "Needs" status and a **Reply:** line, that a pick has options with one recommended, that option letters name only the current Ask's options, and that a cost warning gives
-a number. A coordinator can also answer with route lines
-only. Workers and your own chats are never checked.
+has a "Needs" status and a **Reply:** line, that a pick has options with one recommended, that
+option letters name only the current Ask's options, that "above" points to detail but never
+replaces the point, that a backticked code name is explained in plain words, and that a cost
+warning gives a number. A coordinator can also answer with route lines only. Workers and your own
+chats are never checked.
 
 The check is off until you turn it on in `~/.orca-flow/config.json`, for every agent or only for
 agents working in some folders (a folder and everything under it):

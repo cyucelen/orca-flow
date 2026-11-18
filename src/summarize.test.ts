@@ -20,7 +20,7 @@ const guessed = haiku({ needs: { type: 'decision', ask: 'Open item 1?', options:
 
 // The examples in skills/orca-flow/messages.md, in its order.
 const spec = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url).pathname, 'utf8')
-const [DECISION, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = [...spec.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
+const [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = [...spec.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
 
 test('a framed pick: decision, the Ask, option labels, the Reply and the status line', () => {
   const d = lead(DECISION)
@@ -66,7 +66,7 @@ test('a review and a yes keep their Ask and Reply', () => {
   assert.equal(review.reply, 'approve, or your comments')
   assert.equal(review.glance, 'Review PR #6227.')
   const approval = withFrame(lead(APPROVAL), haiku())
-  assert.deepEqual([approval.needs.type, approval.needs.ask, approval.reply, approval.status], ['approval', 'run the merge migration on staging?', 'yes or no', 'Needs your yes'])
+  assert.deepEqual([approval.needs.type, approval.needs.ask, approval.reply, approval.status], ['approval', 'run the account merge on the staging database?', 'yes or no', 'Needs your yes'])
 })
 
 test('Working, Idle, a Briefing and a route line ask nothing, whatever Haiku guessed', () => {

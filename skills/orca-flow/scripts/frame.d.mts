@@ -22,6 +22,9 @@ export const LEVELS: string[]
 export const CONTEXT_SENTENCES: number
 export const COST: RegExp
 export const LETTERED: RegExp[]
+export const ABOVE: RegExp[]
+export const CODE_TERM: RegExp
+export function isCodeIdentifier(term: string): boolean
 export function sentencesOf(text: string): string[]
 export function checkFrame(text: string, options?: { role?: string }): { ok: boolean; misses: Miss[] }
 export function parseFrame(text: string): Frame | null

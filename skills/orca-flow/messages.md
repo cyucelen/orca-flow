@@ -1,8 +1,8 @@
 # Messages to the user
 
 Every message you write to the user ends with one fixed frame: a status line that names what you
-need from the user in plain words, a short context paragraph that says why first, and the ask when
-you need the user. A coordinator that only routes work writes one
+need from the user in plain words, a short context paragraph that names the problem first, and the
+ask when you need the user. Someone who reads only the frame, after a week away, understands it. A coordinator that only routes work writes one
 route line instead.
 
 **Who uses it:** coordinators and leads, in every message to the user. A worker's `worker_done`
@@ -15,9 +15,9 @@ Write the frame as one column, in this order:
 
 1. **Status line:** bold as a whole, alone on its line: `**Working**`, `**Needs your pick**`,
    `**Needs 2 files from you**`. No label, no header: the sidebar already knows the worktree.
-2. **Context:** one short paragraph of 2-4 sentences. With an ask, its first sentence says why you
-   need it. Then what the user must know to answer, or what happened. It points to detail above
-   the frame ("table above"); it never repeats it.
+2. **Context:** one short paragraph of 2-4 sentences, in this order: the problem or goal in plain
+   words, then why you need this (with an ask), then what the user must know. It points to detail
+   above the frame ("(table above)"); it never repeats it. See Cold readable.
 3. **Ask:** only when you need the user. One question, at most 25 words. For a pick, the
    options follow as bullets.
 4. **Reply:** with an Ask, and with a hand action. The exact words the user types.
@@ -36,7 +36,7 @@ paragraph, not labelled blocks:
 
 - Progress: what finished, and what runs now.
 - Plan: who does what next, in one or two sentences (the full plan goes above).
-- Diagnosis: the problem, its cause, and the evidence in a few words ("log above").
+- Diagnosis: the problem, its cause in one sentence, and a pointer to the evidence ("(log above)").
 - Result: what is done, how you know, and where to look (the PR).
 - Answer: the answer, and where it comes from.
 
@@ -72,10 +72,25 @@ internal: never write them in a message.
 
 One Ask per message. When you have more questions, ask the most important one and add `(+2 more)`.
 
+## Cold readable
+
+The frame must make sense to someone who reads only the frame, from the status line down, after a
+week away. They do not remember the earlier messages, and they do not read the detail above.
+
+- **The problem or goal first.** The context opens with the problem or goal in plain words: what is
+  wrong, or what is wanted, and for whom. Then why you need this ask. Then what the user must know
+  to answer. Other news (a worker runs) comes after it, or goes above the frame.
+- **Explain your terms.** A term you coined or took from code ("style anchor", `LESSON_FLOOR`)
+  gets a few plain words the first time it is in the frame, or plain words take its place.
+- **"Above" points; it never replaces the point.** State the cause or the result in one sentence,
+  then add "(detail above)". Never "the root cause is above".
+- **Options stand alone.** Each option makes sense without the context, and says its cost (time,
+  credits, money) when it has one: "about 10 minutes and $0.40 of image credits".
+- **Name things once, fully.** A document, ticket or person gets one phrase that identifies it:
+  "the Kaimug onboarding PDF Anja tested", "BOU-4116, the 26-slides ticket".
+
 ## Rules
 
-- **Why first.** With an ask, the first sentence of the context says why you need it. Other news
-  (a worker runs) comes after it, or goes above the frame.
 - **Say where you looked.** An ask for a fact or a file says what the thing is and where you
   already looked ("not in the repo, not in the BOU-4116 attachments"), so the user can find it.
 - **Ask early, block late.** When work runs on and the answer is needed only later, use
@@ -123,7 +138,8 @@ Normal phrasing is permitted; these rules are not optional:
 
 ## Examples
 
-Each example is a whole message: the detail first, then the frame that points to it.
+Each example is a whole message: the detail first, then the frame that points to it. Each frame
+makes sense alone.
 
 1. A lead needs a pick before it spends money. An earlier decision waits for it:
 
@@ -136,16 +152,34 @@ Each example is a whole message: the detail first, then the frame that points to
 
 **Needs your pick**
 
-The plan eval shows if the 1 topic = 1 lesson rule is safe for long documents, and it costs money. Most passages in the 10 eval documents are under 400 tokens (table above), so the rule changes long documents too. The decision on 1 topic = 1 lesson is held until this test ends.
+AI Create turns a short document, like the Kaimug onboarding PDF, into 1 lesson; the fix makes each topic its own lesson. Before it ships, the plan eval (a test run that plans the lessons of our 10 eval documents) must show it is safe for long documents, and that run costs money. Most passages in those documents are under 400 tokens (table above), so the fix changes long documents too. Your decision on the fix itself is held until this test ends.
 
 **Ask:** run the plan eval on Azure OpenAI?
-- **A. All 10 documents + Kaimug (recommended).** About $6. peri is $5 of it.
-- **B. Without peri.** About $1.
+- **A. All 10 documents + Kaimug (recommended).** About $6. peri, the 212-passage manual, is $5 of it.
+- **B. Without peri.** About $1, but the longest document is not tested.
 
 **Reply:** A, B or no
 ```
 
-2. A lead needs 2 files and cannot go on without them:
+2. A pick that someone can read cold, after a week away:
+
+```markdown
+Kaimug course, 8 images: 5 flat drawings, 3 photo-like (images 2, 5 and 7).
+Each image prompt has one style line ("flat illustrated style, soft colors") and one reference photo from the PDF, a different photo per image.
+The photo-like images all got a reference photo of a real kitchen.
+
+**Needs your pick**
+
+The images in one AI Create course come out in different styles: some are flat drawings, some look like photos. The cause is that each image follows its reference photo (a picture from the PDF, different for each image) more than the one loose line of style words (detail above). Before you pick the fix, I can make the problem happen again on my machine, to test the fix against it. Your earlier pick between "one fixed sample image plus clearer style words" and "clearer style words only" is held until then.
+
+**Ask:** do I make the problem happen again first, with the Kaimug onboarding PDF Anja tested?
+- **A. Yes, test first (recommended).** I make the Kaimug course again and count the photo-like images. About 10 minutes and $0.40 of image credits.
+- **B. No, pick the fix now.** No time or cost now, but no proof that the fix works.
+
+**Reply:** A or B
+```
+
+3. A lead needs 2 files and cannot go on without them:
 
 ```markdown
 Where I looked for the JBC and Foodelity source PDFs:
@@ -154,13 +188,13 @@ Where I looked for the JBC and Foodelity source PDFs:
 
 **Needs 2 files from you**
 
-The plan eval needs the JBC and Foodelity source PDFs: the documents their courses were made from. They are not in the repo and not in the BOU-4116 attachments (search above). The eval stops until I have them.
+The test run for the lesson fix needs the JBC and Foodelity source PDFs: the documents their courses were made from. They are not in the mono repo and not in the attachments of BOU-4116, the 26-slides ticket (search above). The test run stops until I have them.
 
 **Ask:** where are the JBC and Foodelity source PDFs?
 **Reply:** the 2 file paths, or a link
 ```
 
-3. A lead handed a plan to a worker:
+4. A lead handed a plan to a worker:
 
 ```markdown
 Plan for the worker:
@@ -170,30 +204,30 @@ Plan for the worker:
 
 **Working**
 
-A worker changes the planner as in the plan above. It runs the planner tests when the change is in. I write again when it reports.
+A worker now changes the lesson planner so that each topic of a short document becomes its own lesson (plan above). It runs the planner tests when the change is in. I write again when it reports.
 ```
 
-4. Work runs on, and the lead will need 2 files later:
+5. Work runs on, and the lead will need 2 files later:
 
 ```markdown
 Worker 1 runs the plan eval on the 8 documents in apps/ai-create/eval/docs.
 
 **Working · needs 2 files later**
 
-The eval needs the JBC and Foodelity source PDFs before it ends, in about 40 minutes. A worker runs it on the other 8 documents now (above). The 2 PDFs are not in the repo and not in the BOU-4116 attachments.
+The test run for the lesson fix needs the JBC and Foodelity source PDFs before it ends, in about 40 minutes. A worker runs it on the other 8 documents now (list above). The 2 PDFs are not in the mono repo and not in the attachments of BOU-4116, the 26-slides ticket.
 
 **Ask:** where are the JBC and Foodelity source PDFs?
 **Reply:** the 2 file paths, or a link
 ```
 
-5. The user must do something by hand:
+6. The user must do something by hand:
 
 ```markdown
 xcodebuild: error: Developer Mode disabled on "iPhone 15".
 
 **Needs you to turn on Developer Mode**
 
-The device build needs Developer Mode on the iPhone, and only you can turn it on. Without it the build stops at Xcode (error above).
+The Isola app does not build for your iPhone: Xcode stops because Developer Mode is off on the phone (error above). Only you can turn it on.
 
 **Steps:**
 1. On the iPhone, open Settings > Privacy & Security > Developer Mode.
@@ -205,7 +239,7 @@ The device build needs Developer Mode on the iPhone, and only you can turn it on
 **Next:** I run the device build again.
 ```
 
-6. A worker finished and the PR is ready:
+7. A worker finished and the PR is ready:
 
 ```markdown
 pnpm dev:native, iOS simulator: 14 services up, Metro on :8081.
@@ -213,14 +247,14 @@ pnpm dev:native, Android emulator: 14 services up, Metro on :8081.
 
 **Needs your review**
 
-The PR is ready, and your review is the last step before the merge. Every isola service in mono now starts on demand, and a Metro service runs the Expo app. Both simulators run it (output above), and a real iPhone run is not tested.
+Each service of the Isola app now starts only when the app needs it, so a local start uses less memory. Your review is the last step before the merge. Both phone simulators run the app (output above); a real iPhone run is not tested.
 
 **Ask:** review PR #6227. Look first at the on-demand config in isola.yaml.
 **Reply:** approve, or your comments
 **Next:** I fix your comments. I send worker_done when the PR merges.
 ```
 
-7. A release is out, and you wait for the user's feedback:
+8. A release is out, and you wait for the user's feedback:
 
 ```markdown
 Orca Flow 0.2.39:
@@ -229,47 +263,47 @@ Orca Flow 0.2.39:
 
 **Idle**
 
-PR #23 merged, and Orca Flow 0.2.39 is released (changes above). Nothing runs now. Send feedback here when you have tried it.
+Orca Flow 0.2.39 is released: the sidebar now shows each agent's ask and the words to reply with, as the agent wrote them (changes above). Nothing runs now. Send feedback here when you have tried it.
 ```
 
-8. The user asked a question:
+9. The user asked a question:
 
 ```markdown
 view.ts marks the row finished, and panel.css:105 sets its opacity to 0.55.
 
 **Idle**
 
-The row is gray because the worker finished (code above). A finished session stays in its place, dimmed, until Orca closes it.
+A worker's row in the Orca Flow sidebar turns gray when the worker finishes (code above). The row stays in its place, dimmed, until Orca closes the worker.
 ```
 
-9. One thing is ready, and it needs a yes or no:
+10. One thing is ready, and it needs a yes or no:
 
 ```markdown
 Migration 0042_merge_accounts: 1,240 staging users share an email with another user.
 
 **Needs your yes**
 
-The merge migration changes staging data, so it needs your yes first. The fix for duplicate accounts is on the branch, and its tests pass. It merges the accounts that share an email (count above).
+Some users have 2 accounts with the same email, and the fix merges them into one. The fix changes the staging database, so it needs your yes first. Its tests pass, and it touches 1,240 staging users (count above).
 
-**Ask:** run the merge migration on staging?
+**Ask:** run the account merge on the staging database?
 **Reply:** yes or no
-**Caution:** the migration changes 1,240 staging user rows. A restore from the nightly backup undoes it.
+**Caution:** the merge changes 1,240 staging user rows. A restore from the nightly backup undoes it.
 ```
 
-10. A coordinator briefing:
+11. A coordinator briefing:
 
 ```markdown
 **Idle**
 
 2 agents wait on you. AI Create v2 production readiness and Draft shifts missing from calendar run now. There is room for 1 more worktree, or 4 more agents.
 
-1. today · BOU-4206 needs your pick: run the plan eval with or without peri?
-2. soon · Isola on-demand services needs your review: PR #6227.
+1. today · BOU-4206, short documents as 1 lesson, needs your pick: run the test with or without the longest manual?
+2. soon · Isola app on-demand services needs your review: PR #6227.
 
 **Next:** say "next" to open item 1.
 ```
 
-11. A coordinator hands a Linear task to a lead. It writes a route line only:
+12. A coordinator hands a Linear task to a lead. It writes a route line only:
 
 ```markdown
 BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today
@@ -288,6 +322,13 @@ BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today
 - **header:** no header line (bold, with ` · `) right above the status line.
 - **context:** a plain paragraph comes after the status line, before the first label.
   **context-long:** it has at most 4 sentences.
+- **above:** in the context, the Ask and its options, "above" never replaces the point: no "is
+  above", "see above", "as above", "shown above", and no context that starts with "Above". A
+  pointer in parentheses after the point, such as "(detail above)", is fine.
+- **code-term:** a backticked code name (with `_`, `.`, `/`, `:`, `()`, camelCase, or ALL_CAPS) in
+  the context, the Ask, its options, or a Warning or Caution has plain words in parentheses right
+  after it: `LESSON_FLOOR` (the smallest lesson size). The Reply, Steps and Next may hold exact
+  commands and paths.
 - **detail:** after the status line, no table, heading, code fence or second paragraph. The only
   lists are the options under Ask, the Steps, and a coordinator's numbered waiting items.
 - **label:** every bold label at the start of a frame line is one of: Ask, Reply, Steps, Warning,
