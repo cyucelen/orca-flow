@@ -1,9 +1,9 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
-import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
+import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
 import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton } from '../view.ts'
-import { DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
+import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { canRemove } from '../rank.ts'
 
@@ -92,9 +92,9 @@ setInterval(draw, 60_000)
 // fresh); a send or a new read is posted. The fold and the filter come back from storage.
 const readLinear = (force = false) => {
   if (document.visibilityState !== 'visible') return
-  orca.plugin.request('sidebar.linear', { force }).then((d) => { linear = d as LinearData | null; draw() }).catch(() => null)
+  orca.plugin.request('sidebar.linear', { force }).then((d) => { linear = decodeLinear(d); draw() }).catch(() => null)
 }
-orca.plugin.on('sidebar.linearChanged', (d) => { linear = d as LinearData | null; draw() })
+orca.plugin.on('sidebar.linearChanged', (d) => { linear = decodeLinear(d as LinearWire | null); draw() })
 orca.storage.get(LINEAR_UI_KEY).then((stored) => {
   const saved = linearUiOf(stored)
   ui.linearFolded = saved.folded

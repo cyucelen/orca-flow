@@ -1,7 +1,7 @@
 // The Linear section's rules: reading issues, filters and order, routing, the message, a send.
 import { assert, test } from 'orca/testing'
 import type { LinearData, LinearIssue } from './protocol.ts'
-import { activeCycle, DEFAULT_DISPLAY, isDefaultDisplay, issueOfBranch, toggleProject, type Display, type LinearView, linearMessage, linkRows, rowsByIssue, teamsOf, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
+import { activeCycle, decodeLinear, encodeLinear, DEFAULT_DISPLAY, isDefaultDisplay, issueOfBranch, toggleProject, type Display, type LinearView, linearMessage, linkRows, rowsByIssue, teamsOf, linearUiOf, linkedIssueOf, loadLinear, priorityIcon, priorityWord, pruneSent, sendIssue, sendTargets, sortIssues, statusIcon, toIssue, viewOf } from './linear.ts'
 
 const ME = 'u-me'
 const issue = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
@@ -301,4 +301,42 @@ test('an issue reads its project color and when it was updated', () => {
   const bad = toIssue({ identifier: 'BOU-2', project: { name: 'P', color: 'url(x)' }, updatedAt: 'soon' })!
   assert.equal(bad.projectColor, '')
   assert.equal(bad.updatedAt, 0)
+})
+
+// ---------- the panel's copy ----------
+
+/** A team's worth of open issues as Linear gives them: long titles and slugged URLs, real ids. */
+function realistic(n: number): LinearData {
+  const words = ['Planner', 'show', 'the', 'total', 'planned', 'staff', 'hours', 'per', 'day', 'and', 'week', 'Clock-in', 'store', 'terminal', 'employee', 'PIN', 'QR', 'code', 'Presence', 'checks', 'verify', 'GPS', 'native', 'Error:', 'request', 'entity', 'too', 'large']
+  const uuid = (k: number) => `${(k * 2654435761 >>> 0).toString(16).padStart(8, '0')}-ac1e-4cd7-87c2-${(k * 40503 >>> 0).toString(16).padStart(12, '0')}`
+  const states: LinearIssue['state'][] = [['Triage', 'triage'], ['Backlog', 'backlog'], ['Todo', 'unstarted'], ['Analyzed', 'unstarted'], ['In Progress', 'started'], ['In Review', 'started'], ['Staging', 'started'], ['Blocked', 'started']].map(([name, type], k) => ({ name, type, color: `#${(k * 1234567).toString(16).slice(0, 6).padStart(6, '0')}` }))
+  const issues = Array.from({ length: n }, (_, k): LinearIssue => {
+    const team = ['BOU', 'DES', 'CUS'][k % 3]
+    const id = `${team}-${1000 + k}`
+    const title = Array.from({ length: 8 + (k % 9) }, (_, w) => words[(k * 7 + w * 3) % words.length]).join(' ')
+    return {
+      id, title, url: `https://linear.app/bounti/issue/${id}/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60)}`,
+      state: states[k % states.length], team, project: k % 4 ? `Project ${k % 23}` : null, projectColor: k % 4 ? '#26b5ce' : '',
+      assignee: k % 5 ? { id: uuid(k % 17), name: `person${k % 17}` } : null, priority: k % 5, cycle: k % 3 ? uuid(1000 + (k % 6)) : null, updatedAt: 1794993700492 - k * 61_000
+    }
+  })
+  return { me: uuid(1), teams: ['BOU', 'DES'], connectedTeams: ['BOU', 'DES', 'CUS'], issues, cycles: [uuid(1001)], sent: { 'BOU-1001': { coordinator: 'bounti', at: 5 } }, lastSent: { BOU: 'bounti' }, at: 9 }
+}
+
+test('the panel copy of 700 issues stays well under the 256 KiB Orca allows a post', () => {
+  const data = realistic(700)
+  assert.ok(JSON.stringify(data).length > 256 * 1024, 'the raw shape is what Orca dropped')
+  const size = JSON.stringify(encodeLinear(data)).length
+  assert.ok(size < 200 * 1024, `encoded: ${Math.round(size / 1024)} KiB`)
+})
+
+test('the panel copy decodes to the same data, links shortened to the issue (Linear redirects to the slug)', () => {
+  const data = realistic(50)
+  data.issues.push(issue('ENG-7', { url: 'https://example.com/elsewhere', team: 'BOU', cycle: null, updatedAt: 0 }), issue('BOU-9', { url: '' }))
+  const back = decodeLinear(encodeLinear(data))!
+  const expected = data.issues.map((i) => ({ ...i, url: i.url.startsWith('https://linear.app/bounti/issue/') ? `https://linear.app/bounti/issue/${i.id}` : i.url, updatedAt: Math.round(i.updatedAt / 1000) * 1000 }))
+  assert.deepEqual(back.issues, expected)
+  assert.deepEqual({ ...back, issues: [] }, { ...data, issues: [] })
+  assert.equal(decodeLinear(null), null)
+  assert.equal(decodeLinear({ issues: [] } as any), null, 'not the panel copy')
 })

@@ -3,7 +3,7 @@
 // send types into its chat, and the steps of a send. Pure, except loadLinear, which takes the
 // `orca` runner (the file it remembers sends in is read in coordinators.ts). Issue text is untrusted: it is cut to one line here and escaped when drawn.
 // No Node imports: the panel draws with this file too.
-import type { LinearData, LinearIssue, LinearSent } from './protocol.ts'
+import type { LinearData, LinearIssue, LinearSent, LinearWire } from './protocol.ts'
 
 export type LinearFilter = 'mine' | 'team' | 'cycle'
 export const FILTERS: LinearFilter[] = ['mine', 'team', 'cycle']
@@ -413,3 +413,69 @@ export function priorityIcon(p: number): string {
 
 /** Linear's mark, in the text color. */
 export const LINEAR_MARK = '<svg class="lmark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.2 9.6l5.2 5.2A7 7 0 0 1 1.2 9.6zm-.2-2.3l7.7 7.7a7 7 0 0 0 1.7-.4L1.4 5.6a7 7 0 0 0-.4 1.7zm1.2-3L11.7 13.8a7 7 0 0 0 1.2-1L3.2 3.1a7 7 0 0 0-1 1.2zM4.4 2.2A7 7 0 1 1 13.8 11.6z"/></svg>'
+
+// ---------- the panel's copy, small enough to post ----------
+
+/** Pure: the data as it crosses to the panel (see LinearWire): tables for what issues repeat. */
+export function encodeLinear(data: LinearData): LinearWire {
+  const { issues, ...rest } = data
+  const base = issues.map((i) => /^(https:\/\/linear\.app\/[^/]+\/issue\/)/.exec(i.url)?.[1]).find(Boolean) ?? ''
+  const table = <T>(rows: T[], keyOf: (r: T) => string) => {
+    const index = new Map<string, number>()
+    return {
+      rows,
+      at(row: T | null): number {
+        if (row === null) return -1
+        const key = keyOf(row)
+        if (!index.has(key)) { index.set(key, rows.length); rows.push(row) }
+        return index.get(key)!
+      }
+    }
+  }
+  const states = table<[string, string, string]>([], (r) => r.join('\n'))
+  const projects = table<[string, string]>([], (r) => r[0])
+  const people = table<[string, string]>([], (r) => r[0])
+  const cycles = table<string>([], (r) => r)
+  const tuples = issues.map((i) => {
+    const t: (string | number)[] = [
+      i.id, i.title, i.priority,
+      states.at([i.state.name, i.state.type, i.state.color]),
+      projects.at(i.project === null ? null : [i.project, i.projectColor]),
+      people.at(i.assignee ? [i.assignee.id, i.assignee.name] : null),
+      cycles.at(i.cycle),
+      Math.round(i.updatedAt / 1000)
+    ]
+    const ownTeam = i.team !== i.id.split('-')[0]
+    // Its own URL when it is not urlBase + id; 0 when it has none at all ('' stands for the default).
+    const ownUrl = !(base && i.url.startsWith(`${base}${i.id}`))
+    if (ownUrl || ownTeam) t.push(!ownUrl ? '' : i.url === '' ? 0 : i.url)
+    if (ownTeam) t.push(i.team)
+    return t
+  })
+  return { ...rest, wire: 1, urlBase: base, states: states.rows, projects: projects.rows, people: people.rows, cycleIds: cycles.rows, issues: tuples }
+}
+
+/** Pure: the panel's LinearData from what the worker posted; anything malformed is skipped. */
+export function decodeLinear(wire: LinearWire | null | undefined): LinearData | null {
+  if (!wire || wire.wire !== 1 || !Array.isArray(wire.issues)) return null
+  const { wire: _v, urlBase, states, projects, people, cycleIds, issues, ...rest } = wire
+  const out: LinearIssue[] = []
+  for (const t of issues) {
+    const [id, title, priority, state, project, assignee, cycle, updated, url, team] = t as [string, string, number, number, number, number, number, number, (string | 0)?, string?]
+    const st = states[state]
+    if (typeof id !== 'string' || !st) continue
+    const p = project >= 0 ? projects[project] : undefined
+    const a = assignee >= 0 ? people[assignee] : undefined
+    out.push({
+      id, title: String(title ?? ''), priority: Number(priority) || 0,
+      url: url === 0 ? '' : url || (urlBase ? `${urlBase}${id}` : ''),
+      state: { name: st[0], type: st[1], color: st[2] },
+      team: team || id.split('-')[0],
+      project: p ? p[0] : null, projectColor: p ? p[1] : '',
+      assignee: a ? { id: a[0], name: a[1] } : null,
+      cycle: cycle >= 0 ? (cycleIds[cycle] ?? null) : null,
+      updatedAt: (Number(updated) || 0) * 1000
+    })
+  }
+  return { ...rest, issues: out }
+}

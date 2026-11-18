@@ -17,7 +17,7 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, type CoordinatorInfo, type Lineage } from './coordinators.ts'
-import { linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
+import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -855,7 +855,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       .then((next) => {
         linear = withSends(next)
         linearAt = Date.now()
-        orca.panels.post('sidebar.linearChanged', linear)
+        orca.panels.post('sidebar.linearChanged', encodeLinear(linear))
         return linear
       })
       .catch((e: Error) => {
@@ -863,8 +863,11 @@ export default function activate(orca: OrcaWorkerApi): void {
         return linear
       })
       .finally(() => (linearReading = null)))
-  orca.panels.handle('sidebar.linear', (input) =>
-    !input?.force && linear && Date.now() - linearAt < LINEAR_FRESH_MS ? withSends(linear) : readLinear())
+  // The panel gets the compact copy (encodeLinear): Orca drops anything over 256 KiB.
+  orca.panels.handle('sidebar.linear', async (input) => {
+    const data = !input?.force && linear && Date.now() - linearAt < LINEAR_FRESH_MS ? withSends(linear) : await readLinear()
+    return data ? encodeLinear(data) : null
+  })
 
   /** The terminal of a coordinator's live session: from the lineage, else looked up by its pane. */
   async function coordinatorTerminal(dir: string): Promise<string | null> {
@@ -908,7 +911,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     try { writeLinearMemory(memory) } catch (e) { orca.log(`saving Linear sends failed: ${(e as Error).message}`) }
     if (linear) {
       linear = { ...linear, sent: memory.sent, lastSent: memory.lastSent }
-      orca.panels.post('sidebar.linearChanged', linear)
+      orca.panels.post('sidebar.linearChanged', encodeLinear(linear))
     }
     // Read again once Linear has the new state; a read in flight predates it.
     void (linearReading ?? Promise.resolve()).then(readLinear)

@@ -237,6 +237,23 @@ export type LinearData = {
   at: number
 }
 
+/**
+ * LinearData as it crosses to the panel. Orca drops a post over 256 KiB, and a team's open issues
+ * repeat the same states, projects, people and cycles hundreds of times, so each issue is a tuple
+ * pointing into small tables (see encodeLinear in linear.ts):
+ * [id, title, priority, state, project, assignee, cycle, updated (s), url?, team?], -1 for none,
+ * the URL only when it is not `urlBase + id` (0: none), the team only when it is not the ID's prefix.
+ */
+export type LinearWire = Omit<LinearData, 'issues'> & {
+  wire: 1
+  urlBase: string
+  states: [name: string, type: string, color: string][]
+  projects: [name: string, color: string][]
+  people: [id: string, name: string][]
+  cycleIds: string[]
+  issues: (string | number)[][]
+}
+
 declare module 'orca' {
   interface PluginRequests {
     /** Every workspace with its live agent status. */
@@ -268,7 +285,7 @@ declare module 'orca' {
      */
     'sidebar.focus': { output: { changed: boolean } }
     /** The Linear section's data, read again when older than a minute; null when Linear is not connected. */
-    'sidebar.linear': { input: { force?: boolean }; output: LinearData | null }
+    'sidebar.linear': { input: { force?: boolean }; output: LinearWire | null }
     /**
      * Sends a Linear issue to a coordinator: types the start message into its chat (starting its
      * session with it when none is live), moves the issue to In Progress, and assigns it to the user
@@ -282,6 +299,6 @@ declare module 'orca' {
     /** Posted to open panels when a workspace or agent status changes. */
     'sidebar.changed': Snapshot
     /** Posted when the Linear section's data changed (a new read, a send). */
-    'sidebar.linearChanged': LinearData | null
+    'sidebar.linearChanged': LinearWire | null
   }
 }
