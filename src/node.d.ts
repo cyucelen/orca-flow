@@ -70,3 +70,17 @@ declare module 'node:child_process' {
 declare module 'node:fs' {
   export function chmodSync(path: string, mode: number): void
 }
+declare module 'node:fs' {
+  export function appendFileSync(path: string, data: string): void
+  export function statSync(path: string): { size: number }
+  export function openSync(path: string, flags: 'r'): number
+  export function readSync(fd: number, buffer: Uint8Array, offset: number, length: number, position: number): number
+  export function closeSync(fd: number): void
+}
+declare module 'node:string_decoder' {
+  export class StringDecoder {
+    constructor(encoding: 'utf8')
+    write(bytes: Uint8Array): string
+  }
+}
+declare const Buffer: { byteLength(text: string): number }

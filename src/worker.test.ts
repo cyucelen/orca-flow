@@ -1,7 +1,7 @@
 // Runs src/worker.ts's activate(orca) with the orca object Orca passes, over a mock host.
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker.ts'
-import { nextTarget, waitingQueue } from './rank.ts'
+import { canRemove, monitoring, nextTarget, waitingQueue } from './rank.ts'
 import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
 import { emptyUi, render } from './view.ts'
@@ -288,6 +288,28 @@ test('a row carries the PR Orca linked to its worktree: number, state, title, ch
 test('Orca\'s monitoring mode is carried through', () => {
   const [row] = main.fromPs([{ identity: { key: 'v' }, displayName: 'main', repo: 'shop', agents: [{ paneKey: 'p', state: 'working', workingMode: 'monitoring' }] }])
   assert.equal(row.agents[0].workingMode, 'monitoring')
+})
+
+test('a finished turn kept monitoring only by an artifact watch is done, everywhere the panel looks', async () => {
+  const { faceOf } = await import('./view.ts')
+  const agent = (paneKey: string, main: string, program = 'done') => ({ paneKey, state: 'working', workingMode: 'monitoring', mainAgent: { state: main }, programStatus: { state: program } })
+  const asked: string[] = []
+  const quiet = (pane: string) => (asked.push(pane), pane !== 'shell')
+  const [row] = main.fromPs([{ identity: { key: 'v' }, displayName: 'main', repo: 'shop', agents: [agent('watch', 'done'), agent('turn', 'working'), agent('shell', 'done'), agent('running', 'done', 'working'), { paneKey: 'plain', state: 'done' }] }], undefined, undefined, quiet)
+  const [watch, turn, shell, running] = row.agents
+  assert.equal(watch.state, 'done')
+  assert.equal(watch.workingMode, null)
+  assert.equal(faceOf(watch), 'done', 'no ring')
+  assert.equal(monitoring(watch), false)
+  assert.equal(faceOf(turn), 'monitoring', 'a turn still running is not second-guessed')
+  assert.equal(faceOf(shell), 'monitoring', 'other background work in the transcript keeps the ring')
+  assert.equal(faceOf(running), 'monitoring', 'so does Claude reporting "1 shell still running", whatever the transcript says')
+  assert.deepEqual(asked, ['watch', 'shell'], 'transcripts are read only for a finished turn that Orca calls monitoring and Claude calls done')
+  const [alone] = main.fromPs([{ identity: { key: 'w' }, displayName: 'side', repo: 'shop', agents: [agent('watch', 'done')] }], undefined, undefined, quiet)
+  assert.equal(alone.state, 'done', 'the row agrees')
+  assert.equal(canRemove(alone), true, 'nothing works in the worktree')
+  const [kept] = main.fromPs([{ identity: { key: 'w' }, displayName: 'side', repo: 'shop', agents: [agent('watch', 'done')] }])
+  assert.equal(faceOf(kept.agents[0]), 'monitoring', "without a transcript check, Orca's monitoring stands")
 })
 
 test('folder workspaces without an identity key are kept, with the id the plugin API lists', () => {

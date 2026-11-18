@@ -25,6 +25,11 @@ import { findTranscript, refreshStale, staleCards, summarizePane, turnSummarizer
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
+import { backgroundReader } from './background.ts'
+
+const background = backgroundReader()
+/** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
+const quietPane = (pane: string) => background.quiet(findTranscript(pane).path)
 
 const ORCA_BIN = ['/Applications/Orca.app/Contents/Resources/bin/orca'].find(existsSync) ?? 'orca'
 const DATA_DIR = join(homedir(), '.orca-flow')
@@ -42,6 +47,10 @@ type PsAgent = {
   toolInput?: string | null
   state?: string
   workingMode?: string | null
+  /** The agent's own turn, apart from background work Orca folds into `state`. */
+  mainAgent?: { state?: string } | null
+  /** What Claude reports on its terminal: `working` while a shell or Monitor of its own still runs. */
+  programStatus?: { state?: string } | null
   agentType?: string | null
   conversationName?: string | null
   taskTitle?: string | null
@@ -116,13 +125,26 @@ export function questionOf(a: PsAgent): string | null {
   return m ? m[1] : null
 }
 
-function toAgent(a: PsAgent, store: Store): AgentInfo | null {
-  const state = a.state as AgentState
-  if (!URGENCY.includes(state)) return null
+/**
+ * Orca's state, except that an agent whose turn is done and whose only running background work is
+ * an artifact watch is done, not monitoring (src/background.ts, until Orca ships stablyai/orca#36164).
+ * Both must agree: Claude's terminal status says nothing of its own runs (it reports a shell or a
+ * Monitor, of any kind, but not a session cron), and its transcript shows a watch, every shell and
+ * Monitor ended, and no cron or scheduled wake-up.
+ */
+function stateOf(a: PsAgent, quiet: (pane: string) => boolean): { state: AgentState; workingMode: string | null } {
+  const idleWatcher = a.state === 'working' && a.workingMode === 'monitoring' && a.mainAgent?.state === 'done'
+    && a.programStatus?.state === 'done' && !!a.paneKey && quiet(a.paneKey)
+  return idleWatcher ? { state: 'done', workingMode: null } : { state: a.state as AgentState, workingMode: a.workingMode ?? null }
+}
+
+function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): AgentInfo | null {
+  if (!URGENCY.includes(a.state as AgentState)) return null
+  const { state, workingMode } = stateOf(a, quiet)
   const summary = (a.paneKey && store.summaries[fileKey(a.paneKey)]) || null
   return {
     paneKey: a.paneKey ?? '',
-    workingMode: a.workingMode ?? null,
+    workingMode,
     coordinator: 'you',
     leadPane: null,
     parentPane: a.parentPaneKey ?? null,
@@ -145,12 +167,13 @@ const highest = (levels: (Priority | undefined)[]) =>
 const workspaceId = (w: PsWorktree, idByPath: Map<string, string>) =>
   w.identity?.key ? `identity:${w.identity.key}` : (w.path && idByPath.get(w.path)) || null
 
-export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summaries: {} }, idByPath = new Map<string, string>()): WorkspaceRow[] {
+/** `quiet(pane)`: the pane's only running background work is an artifact watch (see `stateOf`). */
+export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summaries: {} }, idByPath = new Map<string, string>(), quiet: (pane: string) => boolean = () => false): WorkspaceRow[] {
   const idOf = new Map(worktrees.map((w) => [w.worktreeId, workspaceId(w, idByPath)]))
   return worktrees
     .filter((w) => !w.isArchived && workspaceId(w, idByPath))
     .map((w) => {
-      const agents = (w.agents ?? []).map((a) => toAgent(a, store)).filter((a): a is AgentInfo => a !== null)
+      const agents = (w.agents ?? []).map((a) => toAgent(a, store, quiet)).filter((a): a is AgentInfo => a !== null)
       const state = URGENCY.find((s) => agents.some((a) => a.state === s)) ?? null
       const card = w.identity?.key ? (store.cards[fileKey(w.identity.key)] ?? null) : null
       return {
@@ -431,7 +454,7 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath), onDisk, lineage, owners)
+    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane), onDisk, lineage, owners)
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
     const remembered = rememberOwners(all, owners)
     if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }
