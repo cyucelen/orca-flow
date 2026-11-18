@@ -2,7 +2,7 @@
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker.ts'
 import { nextTarget, waitingQueue } from './rank.ts'
-import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLook, writeOwners } from './coordinators.ts'
+import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
 import { emptyUi, render } from './view.ts'
 
@@ -1160,4 +1160,41 @@ test('the worker may register every chat command', async () => {
   const worker = await mountWorker(main, { host: mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } }) })
   assert.deepEqual(worker.refusals, [], 'chat.1..9 are declared, so registering them is allowed')
   await worker.deactivate()
+})
+
+test("a row carries the Linear issue Orca linked to its worktree, as its identifier", () => {
+  const [linked, url, none] = main.fromPs([
+    { identity: { key: 'a' }, displayName: 'a', repo: 'mono', linkedLinearIssue: 'BOU-4179', agents: [] },
+    { identity: { key: 'b' }, displayName: 'b', repo: 'mono', linkedLinearIssue: 'https://linear.app/x/issue/bou-12/slug', agents: [] },
+    { identity: { key: 'c' }, displayName: 'c', repo: 'mono', linkedLinearIssue: null, agents: [] }
+  ])
+  assert.equal(linked.linearIssue, 'BOU-4179')
+  assert.equal(url.linearIssue, 'BOU-12')
+  assert.equal(none.linearIssue, null)
+})
+
+test("a coordinator's Linear teams live in its coordinator.json; setting them keeps the rest", async () => {
+  const { mkdtempSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'coordinators-'))
+  const dir = scaffoldCoordinator(root, { name: 'bounti', look: { color: '#e07b4f', shape: 'pentagon' } })
+  assert.deepEqual(readCoordinators(root)[0].linearTeams, [])
+  writeLinearTeams(dir, ['BOU', 'cus', 'BOU', 'not a key'])
+  assert.deepEqual(readCoordinators(root)[0].linearTeams, ['BOU', 'CUS'])
+  assert.equal(JSON.parse(readFileSync(join(dir, COORDINATOR_FILE), 'utf8')).look.color, '#e07b4f')
+  writeLinearTeams(dir, [])
+  assert.equal('linearTeams' in JSON.parse(readFileSync(join(dir, COORDINATOR_FILE), 'utf8')), false)
+})
+
+test('Linear sends are remembered next to the owners: the last coordinator per team and what is starting', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const path = join(mkdtempSync(join(tmpdir(), 'linear-')), 'linear.json')
+  assert.deepEqual(readLinearMemory(path), { lastSent: {}, sent: {} })
+  writeLinearMemory({ lastSent: { BOU: 'bounti' }, sent: { 'BOU-1': { coordinator: 'bounti', at: 5 } } }, path)
+  assert.deepEqual(readLinearMemory(path), { lastSent: { BOU: 'bounti' }, sent: { 'BOU-1': { coordinator: 'bounti', at: 5 } } })
+  writeFileSync(path, '{"lastSent": [1], "sent": "x"}')
+  assert.deepEqual(readLinearMemory(path), { lastSent: {}, sent: {} })
 })

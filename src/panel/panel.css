@@ -453,3 +453,51 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.ok { color: #5fbf8a; }
 .rstatus.bad { color: var(--danger); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
+
+/* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it
+   is capped and scrolls on its own under a sticky header; folded, it is its header row. */
+.lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -6px -12px 0; padding: 6px 12px 8px; border-top: 1px solid var(--line); }
+.lsec.folded { padding-bottom: 6px; }
+.sechead { display: flex; align-items: center; gap: 8px; position: sticky; top: -6px; z-index: 2; background: var(--bg); padding-block: 2px; }
+.sechead .label { padding-bottom: 0; }
+.lfold { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; margin-left: -6px; padding: 4px 6px; border-radius: 5px; }
+.lfold:hover { color: var(--ink); background: var(--hover); }
+.lfold > svg:first-child { width: 9px; height: 9px; flex: none; transition: transform .15s; }
+.lfold[aria-expanded="true"] > svg:first-child { transform: rotate(90deg); }
+.lmark { width: 11px; height: 11px; flex: none; }
+.lfold .fc { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--card); color: var(--muted); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.foldsum { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.foldsum .sepd::before { content: "·"; margin-right: 6px; }
+@media (prefers-reduced-motion: reduce) { .lfold > svg:first-child { transition: none; } }
+.seg { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 7px; background: var(--card); }
+.seg button { padding: 2px 8px; border-radius: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--bg); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+.lsec > .group { margin-top: 2px; }
+.lsec .fold { margin-top: 2px; }
+.lrow { gap: 7px; }
+.lic { display: inline-flex; flex: none; width: 14px; height: 14px; color: var(--muted); }
+.lic svg { width: 14px; height: 14px; }
+.lid { flex: none; font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--faint); font-variant-numeric: tabular-nums; }
+.lrow .r { max-width: 45%; }
+.lrow .r > span:not(.who):not(.act) { overflow: hidden; text-overflow: ellipsis; }
+.lrow .send { display: none; height: 20px; padding: 0 8px; margin-left: 0; font-size: 11px; }
+.lrow .send svg { width: 10px; height: 10px; }
+.lrow:hover .send, .lrow:focus-visible .send, .lrow.menu-open .send { display: inline-flex; }
+.lrow:hover .rest, .lrow:focus-visible .rest, .lrow.menu-open .rest { display: none; }
+.lrow.menu-open { background: var(--hover); }
+/* A worktree's Linear issue, before its row's title in the tree. */
+.idchip { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 0 5px; height: 17px; border-radius: 4px; font: 10.5px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
+.idchip .lmark { width: 10px; height: 10px; }
+/* The send menu: a header line, characters for icons, a note at the end (the suggestion in the accent). */
+.ctx .mh { padding: 5px 9px 4px; font-size: 11.5px; color: var(--muted); }
+.ctx .mh b { color: var(--ink); font: 600 11px ui-monospace, "SF Mono", Menlo, monospace; }
+.ctx .mr { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.ctx .mr.sug { color: var(--ask); }
+.ctx .micon .lmark { width: 13px; height: 13px; }
+.ctx .micon .ch { flex: none; }
+/* After a send: what went where, and the way to its chat. */
+.toast { position: fixed; z-index: 25; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  background: var(--orca-popover, #1c1c20); color: var(--orca-popover-foreground, var(--ink)); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); box-shadow: 0 10px 24px -14px rgba(0, 0, 0, .75); }
+.toast .twarn { color: var(--warn); font-size: 11px; white-space: nowrap; }
+.toast .act { margin-left: 0; white-space: nowrap; }

@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Coordinator, Look, WorkspaceRow } from './protocol.ts'
+import type { Coordinator, LinearSent, Look, WorkspaceRow } from './protocol.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
@@ -40,8 +40,9 @@ export function readCoordinators(root = COORDINATOR_HOME): CoordinatorInfo[] {
   const out: CoordinatorInfo[] = []
   for (const name of readdirSync(root).sort()) {
     const dir = join(root, name)
-    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look }>(join(dir, COORDINATOR_FILE))
-    if (c?.name) out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null })
+    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown }>(join(dir, COORDINATOR_FILE))
+    const linearTeams = Array.isArray(c?.linearTeams) ? c.linearTeams.filter((t): t is string => typeof t === 'string') : []
+    if (c?.name) out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams })
   }
   return out
 }
@@ -186,12 +187,32 @@ export function readOwners(path = OWNERS_FILE): Owners {
   return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
 }
 
-/** Write via a temp file and rename, so a reader never sees half a file. */
 export function writeOwners(owners: Owners, path = OWNERS_FILE): void {
+  writeJsonFile(path, owners)
+}
+
+/** Write via a temp file and rename, so a reader never sees half a file. */
+function writeJsonFile(path: string, data: unknown): void {
   mkdirSync(join(path, '..'), { recursive: true })
   const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(owners, null, 2) + '\n')
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n')
   renameSync(tmp, path)
+}
+
+// ---------- remembered Linear sends ----------
+
+/** Which coordinator each Linear team was last sent to, and sends no worktree links yet. */
+export const LINEAR_FILE = join(homedir(), '.orca-flow', 'linear.json')
+export type LinearMemory = { lastSent: Record<string, string>; sent: Record<string, LinearSent> }
+
+export function readLinearMemory(path = LINEAR_FILE): LinearMemory {
+  const d = readJson<Partial<LinearMemory>>(path)
+  const obj = <T>(x: unknown) => (x && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, T>) : {})
+  return { lastSent: obj<string>(d?.lastSent), sent: obj<LinearSent>(d?.sent) }
+}
+
+export function writeLinearMemory(memory: LinearMemory, path = LINEAR_FILE): void {
+  writeJsonFile(path, memory)
 }
 
 // ---------- loading the lineage from the orca CLI (slow on a busy machine, so cached) ----------
@@ -280,6 +301,16 @@ export function writeLook(dir: string, look: Look): void {
   const path = join(dir, COORDINATOR_FILE)
   const data = readJson<Record<string, unknown>>(path) ?? {}
   writeFileSync(path, JSON.stringify({ ...data, look }, null, 2) + '\n')
+}
+
+/** Sets the Linear teams a coordinator owns in its file, keeping everything else; none removes the field. */
+export function writeLinearTeams(dir: string, teams: string[]): void {
+  const path = join(dir, COORDINATOR_FILE)
+  const data = readJson<Record<string, unknown>>(path) ?? {}
+  const keys = [...new Set(teams.map((t) => t.trim().toUpperCase()).filter((t) => /^[A-Z][A-Z0-9]*$/.test(t)))]
+  if (keys.length) data.linearTeams = keys
+  else delete data.linearTeams
+  writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
 }
 
 /** Deletes a coordinator's folder; refuses anything that is not a direct child of the home. */

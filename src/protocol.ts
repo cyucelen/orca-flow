@@ -92,6 +92,8 @@ export type WorkspaceRow = {
   pr: { number: number; url: string; state: string; title?: string; checks: 'success' | 'pending' | 'failure' | 'cancelled' | null } | null
   /** Set on the queue row that stands for a coordinator's own session (see askingRows in view.ts). */
   coordinator?: string
+  /** The Linear issue Orca linked to the worktree (`--linear-issue`), as its identifier (BOU-4179). */
+  linearIssue?: string | null
 }
 
 export type Capacity = {
@@ -126,6 +128,8 @@ export type Coordinator = {
   look?: Look | null
   /** Its workspace is the one focused in Orca (its row is marked only when its session's tab is, see Snapshot.focusedPanes). */
   active?: boolean
+  /** Linear team keys it owns (coordinator.json `linearTeams`): their issues suggest it when sent. */
+  linearTeams?: string[]
 }
 
 export type LookShape = 'pentagon' | 'hex' | 'shield'
@@ -188,6 +192,47 @@ export type CockpitStats = {
   merged: { workspaceId: string; name: string; repo: string; pr: number }[]
 }
 
+/** A Linear issue as the panel shows it; every text field is untrusted and escaped when drawn. */
+export type LinearIssue = {
+  /** Its identifier, like BOU-4179. */
+  id: string
+  title: string
+  url: string
+  /** Linear's workflow state: its name, its type (triage, backlog, unstarted, started, completed, canceled) and color. */
+  state: { name: string; type: string; color: string }
+  /** Its team's key. */
+  team: string
+  project: string | null
+  assignee: { id: string; name: string } | null
+  /** Linear's priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. */
+  priority: number
+  /** Its cycle's id, when it is in one. */
+  cycle: string | null
+}
+
+/** An issue sent to a coordinator that no worktree links yet. */
+export type LinearSent = { coordinator: string; at: number }
+
+/** What the Linear section shows; null when Linear is not connected. */
+export type LinearData = {
+  /** The user's Linear id: "Mine" is what is assigned to it. */
+  me: string | null
+  /** The user's teams (keys), the ones Team and Cycle show. */
+  teams: string[]
+  /** Every connected team's key, for a coordinator's "Linear teams" chips. */
+  connectedTeams: string[]
+  /** Open issues (and Staging) of "Mine" and of the user's teams, each once. */
+  issues: LinearIssue[]
+  /** The active cycle of each of the user's teams (cycle ids). */
+  cycles: string[]
+  /** Issues sent to a coordinator and not linked yet. */
+  sent: Record<string, LinearSent>
+  /** Team key -> the coordinator it was last sent to; suggests it when no coordinator owns the team. */
+  lastSent: Record<string, string>
+  /** When it was read. */
+  at: number
+}
+
 declare module 'orca' {
   interface PluginRequests {
     /** Every workspace with its live agent status. */
@@ -218,9 +263,21 @@ declare module 'orca' {
      * the panel asks every few seconds while it is visible. A change is posted as sidebar.changed.
      */
     'sidebar.focus': { output: { changed: boolean } }
+    /** The Linear section's data, read again when older than a minute; null when Linear is not connected. */
+    'sidebar.linear': { input: { force?: boolean }; output: LinearData | null }
+    /**
+     * Sends a Linear issue to a coordinator: types the start message into its chat (starting its
+     * session with it when none is live), moves the issue to In Progress, and assigns it to the user
+     * when it has no assignee.
+     */
+    'sidebar.linearSend': { input: { issue: string; coordinator: string }; output: { ok: boolean; error?: string; warnings?: string[] } }
+    /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
+    'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
   }
   interface PluginPanelEvents {
     /** Posted to open panels when a workspace or agent status changes. */
     'sidebar.changed': Snapshot
+    /** Posted when the Linear section's data changed (a new read, a send). */
+    'sidebar.linearChanged': LinearData | null
   }
 }

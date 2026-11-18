@@ -1,8 +1,8 @@
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
-import type { AgentInfo, AgentSummary, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchChip, branchColor, branchName, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
+import { type UiState, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchChip, branchColor, branchName, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { capGlyph } from './lines.ts'
@@ -1083,4 +1083,102 @@ test('Remove worktree is offered only while no agent in the worktree is mid-turn
     assert.equal(canRemove(row('w', 'web-app', [done, agent('p-b', 'Other', state)])), true, `${state}: offered`)
   assert.equal(canRemove(row('w', 'web-app', [done, agent('p-b', 'Alert watch', 'working', { workingMode: 'monitoring' })])), false, 'a monitoring chat in the same worktree hides it')
   assert.equal(canRemove(row('w', 'web-app', [done], { main: true })), false, 'never the main checkout')
+})
+
+// ---------- the Linear section ----------
+
+const lin = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
+  id, title: `Issue ${id}`, url: `https://linear.app/acme/issue/${id}`, state: { name: 'Todo', type: 'unstarted', color: '' },
+  team: 'BOU', project: null, assignee: { id: 'me', name: 'me' }, priority: 3, cycle: 'c1', ...over
+})
+const linearData = (issues: LinearIssue[], over: Partial<LinearData> = {}): LinearData => ({
+  me: 'me', teams: ['BOU'], connectedTeams: ['BOU'], issues, cycles: ['c1'], sent: {}, lastSent: {}, at: 0, ...over
+})
+const linearUi = (over: Partial<UiState> = {}): UiState => ({ ...emptyUi(), ...over })
+/** The issue IDs a section shows, top to bottom. */
+const shownIds = (html: string) => [...html.matchAll(/class="lid">([^<]+)</g)].map((m) => m[1])
+
+test('the Linear section is hidden until Linear data comes, and while searching', () => {
+  assert.equal(render(snap, emptyUi()).linear, '')
+  assert.equal(render(snap, { ...emptyUi(), query: 'x' }, linearData([lin('BOU-1')])).linear, '')
+  assert.match(render(snap, emptyUi(), linearData([lin('BOU-1')])).linear, /Linear · BOU/)
+})
+
+test('Linear rows: status and priority icons, ID and title, escaped; a linked issue shows its lead and coordinator and sorts last', () => {
+  const lead = agent('p-lead', 'Raise the body limit', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }), terminal: 'term-1' })
+  const s: Snapshot = { ...snap, rows: [...snap.rows, row('wt-87', 'mono', [lead], { linearIssue: 'BOU-87' })] }
+  const html = render(s, emptyUi(), linearData([
+    lin('BOU-87', { priority: 1 }),
+    lin('BOU-2', { title: '<img src=x onerror=alert(1)>', priority: 2 }),
+    lin('BOU-3', { priority: 0 })
+  ])).linear
+  assert.deepEqual(shownIds(html), ['BOU-2', 'BOU-3', 'BOU-87'])
+  noMatch(html, /<img/)
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/)
+  const linked = html.slice(html.indexOf('BOU-87'))
+  assert.match(html, /class="item lrow linked" data-open="wt-87" data-terminal="term-1">/)
+  assert.match(linked, /<span>alpha<\/span>/)
+  noMatch(linked.slice(0, linked.indexOf('</button>')), /Send/)
+  assert.match(html, /data-lsend="BOU-2"[^>]*>.*Send/)
+})
+
+test('the switch: Mine, Team and Cycle with their counts; Team and Cycle name the assignee when it is not me', () => {
+  const d = linearData([lin('BOU-1'), lin('BOU-2', { assignee: { id: 'u2', name: 'ernst' } }), lin('BOU-3', { assignee: null, cycle: 'old' })])
+  const mine = render(snap, emptyUi(), d).linear
+  assert.match(mine, /data-lfilter="mine" aria-pressed="true">Mine 1</)
+  assert.match(mine, /data-lfilter="team" aria-pressed="false">Team 3</)
+  assert.match(mine, /data-lfilter="cycle" aria-pressed="false">Cycle 2</)
+  noMatch(mine, /class="r rest"/)
+  const team = render(snap, linearUi({ linearFilter: 'team' }), d).linear
+  assert.deepEqual(shownIds(team), ['BOU-3', 'BOU-2', 'BOU-1'])
+  assert.match(team, /<span class="r rest">ernst<\/span>/)
+  assert.match(team, /<span class="r rest">unassigned<\/span>/)
+  assert.equal((team.match(/class="r rest"/g) ?? []).length, 2, 'not on my own issue')
+})
+
+test('folded, the section is its header: the count and name of the filter, and what is starting', () => {
+  const d = linearData([lin('BOU-1'), lin('BOU-2')], { sent: { 'BOU-2': { coordinator: 'alpha', at: 1 } } })
+  const html = render(snap, linearUi({ linearFolded: true }), d).linear
+  assert.match(html, /data-lfold aria-expanded="false"/)
+  assert.match(html, /<span class="fc">2<\/span>/)
+  assert.match(html, /1 starting<\/span><span class="sepd">Mine</)
+  noMatch(html, /class="lid"|data-lfilter/)
+})
+
+test('Staging folds away at the end; a long list shows its first rows and how many more', () => {
+  const many = Array.from({ length: LINEAR_ROWS + 5 }, (_, i) => lin(`BOU-${i + 1}`))
+  const staging = [lin('BOU-900', { state: { name: 'Staging', type: 'started', color: '' } }), lin('BOU-901', { state: { name: 'Staging', type: 'started', color: '' } })]
+  const html = render(snap, emptyUi(), linearData([...many, ...staging])).linear
+  assert.equal(shownIds(html).length, LINEAR_ROWS)
+  assert.match(html, /data-lmore="linear-all" aria-expanded="false">.*5 more<\/button>/)
+  assert.match(html, /data-lmore="linear-staging" aria-expanded="false">.*2 on Staging<\/button>/)
+  assert.ok(html.indexOf('5 more') < html.indexOf('on Staging'))
+  const open = render(snap, linearUi({ unfolded: new Set(['linear-all', 'linear-staging']) }), linearData([...many, ...staging])).linear
+  assert.equal(shownIds(open).length, LINEAR_ROWS + 7)
+  assert.match(render(snap, linearUi({ linearFilter: 'cycle' }), linearData([lin('BOU-1')], { cycles: [] })).linear, /Nothing open: no active cycle found/)
+})
+
+test('a sent issue shows its coordinator starting until a worktree links it; then its lead', () => {
+  const d = linearData([lin('BOU-5')], { sent: { 'BOU-5': { coordinator: 'alpha', at: 1 } } })
+  const sent = render(snap, emptyUi(), d).linear
+  assert.match(sent, /data-coordinator="alpha"/)
+  assert.match(sent, /alpha · starting/)
+  assert.match(sent, /data-tip="In Progress"/, 'shown In Progress, as the send moved it')
+  const lead = agent('p-l', 'Hours', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
+  const linked = render({ ...snap, rows: [...snap.rows, row('wt-5', 'mono', [lead], { linearIssue: 'BOU-5' })] }, emptyUi(), d).linear
+  noMatch(linked, /starting/)
+  assert.match(linked, /data-open="wt-5"/)
+})
+
+test("the tree shows a worktree's Linear issue before its lead's title, not on workers in the same worktree", () => {
+  const lead = agent('p-l', 'Planner hours', 'working', { coordinator: 'alpha' })
+  const worker = agent('p-w', 'Write tests', 'working', { coordinator: 'alpha', leadPane: 'p-l' })
+  const { main } = render({ ...snap, rows: [row('wt', 'shop', [lead, worker], { linearIssue: 'BOU-4179' })] }, emptyUi())
+  assert.equal((main.match(/class="idchip"/g) ?? []).length, 1)
+  assert.match(main, /class="idchip">.*BOU-4179<\/span><span class="t">Planner hours</)
+})
+
+test('coordinators in tree order: awake ones first, then sleeping', () => {
+  const s: Snapshot = { ...snap, coordinators: [{ key: 'zz', name: 'zz', repos: [], workspaceId: null }, ...snap.coordinators] }
+  assert.deepEqual(coordinatorOrder(s).map((c) => c.key), ['alpha', 'main', 'zz'])
 })

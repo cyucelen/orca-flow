@@ -1,13 +1,16 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
-import type { AgentInfo, CockpitStats, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
-import { busy, character, chatDigit, chatTargets, crew, emptyUi, faceOf, FOLDED_KEY, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
+import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
+import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, render, updateButton } from '../view.ts'
+import { FILTERS, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { canRemove } from '../rank.ts'
 
 const ui = emptyUi()
 let snap: Snapshot | null = null
+/** The Linear section's data; null hides the section (Linear not connected, or not read yet). */
+let linear: LinearData | null = null
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
@@ -18,6 +21,8 @@ const searchBox = $('searchbox')
 const searchOpen = $('search-open')
 const copenEl = $('copen')
 const updateEl = $('update-slot')
+const linearEl = $('linear')
+const toastEl = $('toast')
 
 const openedAt = Date.now()
 /** How long the panel waits for the coordinator lineage before showing agents without it. */
@@ -46,7 +51,7 @@ function paintRows(): void {
     return
   }
   ui.now = Date.now()
-  const { cockpit, copen, main, attention, footer } = render(snap, ui)
+  const { cockpit, copen, main, attention, linear: linearHtml, footer } = render(snap, ui, linear)
   cockpitEl.innerHTML = cockpit
   copenEl.innerHTML = copen
   copenEl.hidden = !copen // an empty slot would still take a gap in the column
@@ -54,6 +59,10 @@ function paintRows(): void {
   // What asks you, pinned under the tree, so the tree never moves when an ask comes or goes.
   attentionEl.innerHTML = attention
   attentionEl.hidden = !attention
+  // Linear, pinned under Up next: its own scroll area while open, one header row while folded.
+  linearEl.innerHTML = linearHtml
+  linearEl.hidden = !linearHtml
+  linearEl.classList.toggle('folded', ui.linearFolded)
   footerEl.innerHTML = footer
   footerEl.hidden = !footer
   if (typeof markTarget === 'function') markTarget()
@@ -78,6 +87,24 @@ orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), draw())
 orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), draw()))
 // Relative times ("4m") stay current.
 setInterval(draw, 60_000)
+
+// Linear: read once a minute while the panel shows (the worker answers from its cache when it is
+// fresh); a send or a new read is posted. The fold and the filter come back from storage.
+const readLinear = (force = false) => {
+  if (document.visibilityState !== 'visible') return
+  orca.plugin.request('sidebar.linear', { force }).then((d) => { linear = d as LinearData | null; draw() }).catch(() => null)
+}
+orca.plugin.on('sidebar.linearChanged', (d) => { linear = d as LinearData | null; draw() })
+orca.storage.get(LINEAR_UI_KEY).then((stored) => {
+  const saved = linearUiOf(stored)
+  ui.linearFolded = saved.folded
+  ui.linearFilter = saved.filter
+  draw()
+}).catch(() => null)
+readLinear()
+setInterval(readLinear, 60_000)
+document.addEventListener('visibilitychange', () => readLinear())
+const saveLinearUi = () => void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter }).catch(() => null)
 // No Orca event reports a switch between tabs of one workspace. While the panel shows, the worker
 // looks every 2 s (one quick `orca terminal list`) and posts sidebar.changed only when the front tab moved.
 const lookAtFocus = () => { if (document.visibilityState === 'visible') void orca.plugin.request('sidebar.focus').catch(() => null) }
@@ -96,6 +123,17 @@ document.addEventListener('click', (event) => {
   const upd = (event.target as Element).closest<HTMLElement>('[data-update]')
   if (upd) {
     void updateClick()
+    return
+  }
+  // The Linear section: fold, filter, the folds at its end, and a row's send menu.
+  const lin = (event.target as Element).closest<HTMLElement>('[data-lfold],[data-lfilter],[data-lmore],[data-lsend]')
+  if (lin) {
+    const d = lin.dataset
+    if ('lfold' in d) { ui.linearFolded = !ui.linearFolded; saveLinearUi() }
+    if (d.lfilter && FILTERS.includes(d.lfilter as LinearFilter)) { ui.linearFilter = d.lfilter as LinearFilter; saveLinearUi() }
+    if (d.lmore) toggle(ui.unfolded, d.lmore)
+    if (d.lsend) { openMenu(sendMenu(d.lsend), 0, 0, `linear:${d.lsend}`, lin.getBoundingClientRect()); return }
+    draw()
     return
   }
   // A row's PR icon opens the PR, not the row's session.
@@ -125,6 +163,7 @@ document.addEventListener('click', (event) => {
     return
   }
   if (d.coordinator) {
+    if (toastEl.contains(el)) hideToast()
     void wake(d.coordinator)
     return
   }
@@ -139,9 +178,9 @@ document.addEventListener('click', (event) => {
     sendFolds()
   }
   if (d.unfold) {
-    // One footer fold open at a time keeps the footer from taking over the panel.
+    // One footer fold open at a time keeps the footer from taking over the panel (the Linear section's folds are its own).
     const wasOpen = ui.unfolded.has(d.unfold)
-    ui.unfolded.clear()
+    for (const k of [...ui.unfolded]) if (!k.startsWith('linear-')) ui.unfolded.delete(k)
     if (!wasOpen) ui.unfolded.add(d.unfold)
   }
   draw()
@@ -374,10 +413,13 @@ form.addEventListener('submit', async (e) => {
 // Right-click an agent or a coordinator. Destructive items ask first, with "Don't ask again"
 // remembered per action in the plugin's storage.
 const ctx = $('ctx')
-type Action = { label: string; icon?: string; run?: () => void | Promise<void>; danger?: boolean }
+/** `iconHtml` (a character, Linear's mark) replaces the named icon; `right` is a quiet note at the end, in the accent when `accent`. */
+type Action = { label: string; icon?: string; iconHtml?: string; right?: string; accent?: boolean; run?: () => void | Promise<void>; danger?: boolean }
 /** A row of toggles inside the menu (Priority): no submenu, so nothing overlaps in a narrow sidebar. */
-type Chips = { chips: string; icon?: string; options: { label: string; active: boolean; run: () => void | Promise<void> }[] }
-type MenuItem = Action | Chips | 'separator'
+type Chips = { chips: string; icon?: string; iconHtml?: string; options: { label: string; active: boolean; run: () => void | Promise<void> }[] }
+/** A line of text heading the menu; `header` is HTML, escaped by whoever builds it. */
+type Header = { header: string }
+type MenuItem = Action | Chips | Header | 'separator'
 
 // Icons in Orca's menu style (16px outline).
 const MI: Record<string, string> = {
@@ -389,9 +431,11 @@ const MI: Record<string, string> = {
   shuffle: '<path d="M3 7h3c4 0 5 10 9 10h6m-3-3 3 3-3 3M3 17h3c1.5 0 2.5-1.3 3.4-3M14.6 10C15.5 8.3 16.5 7 18 7h3m-3-3 3 3-3 3"/>',
   restart: '<path d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4h4"/>',
   download: '<path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/>',
   warning: '<path d="M12 4 21.5 20h-19Z"/><path d="M12 10v4.5M12 17.2v.1"/>'
 }
 const svgIcon = (name?: string) => (name ? `<svg class="micon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${MI[name]}</svg>` : '<span class="micon"></span>')
+const iconOf = (it: { icon?: string; iconHtml?: string }) => (it.iconHtml ? `<span class="micon">${it.iconHtml}</span>` : svgIcon(it.icon))
 
 
 /** Confirms a destructive action unless the person said not to ask again for this kind. */
@@ -528,6 +572,19 @@ function coordinatorMenu(key: string): MenuItem[] {
     } }
   ]
   if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
+  // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
+  const teams = linear?.connectedTeams ?? []
+  if (teams.length) {
+    const own = c.linearTeams ?? []
+    items.splice(1, 0, {
+      chips: 'Linear teams', iconHtml: LINEAR_MARK,
+      options: teams.map((t) => ({
+        label: t,
+        active: own.includes(t),
+        run: () => inline(`coordinator:${key}`, 'Saving…', own.includes(t) ? `${t} removed` : `Owns ${t}`, () => orca.plugin.request('sidebar.setLinearTeams', { key, teams: own.includes(t) ? own.filter((x) => x !== t) : [...own, t] }))
+      }))
+    })
+  }
   items.push({ label: 'Delete coordinator', icon: 'trash', danger: true, run: async () => {
     if (await confirmAction('delete-coordinator', `Delete ${c.name}?`, 'Its sessions end and its folder is deleted. Workers it started keep running.', 'Delete')) await run('delete', 'Delete')
   } })
@@ -559,9 +616,10 @@ export function tidy(items: MenuItem[]): MenuItem[] {
 function menuHtml(items: MenuItem[]): string {
   return items.map((it, i) =>
     it === 'separator' ? '<div class="sep" role="separator"></div>'
+      : 'header' in it ? `<div class="mh">${it.header}</div>`
       : 'chips' in it
-        ? `<div class="mchips" role="group" aria-label="${it.chips}">${svgIcon(it.icon)}<span class="ml">${it.chips}</span></div><div class="chips">${it.options.map((o, j) => `<button class="mi chip${o.active ? ' on' : ''}" role="menuitemradio" aria-checked="${o.active}" data-i="${i}" data-j="${j}">${o.label}</button>`).join('')}</div>`
-        : `<button class="mi${it.danger ? ' danger' : ''}" role="menuitem" data-i="${i}">${svgIcon(it.icon)}<span class="ml">${it.label.replace(/</g, '&lt;')}</span></button>`
+        ? `<div class="mchips" role="group" aria-label="${esc(it.chips)}">${iconOf(it)}<span class="ml">${esc(it.chips)}</span></div><div class="chips">${it.options.map((o, j) => `<button class="mi chip${o.active ? ' on' : ''}" role="menuitemradio" aria-checked="${o.active}" data-i="${i}" data-j="${j}">${esc(o.label)}</button>`).join('')}</div>`
+        : `<button class="mi${it.danger ? ' danger' : ''}" role="menuitem" data-i="${i}">${iconOf(it)}<span class="ml">${esc(it.label)}</span>${it.right ? `<span class="mr${it.accent ? ' sug' : ''}">${esc(it.right)}</span>` : ''}</button>`
   ).join('')
 }
 
@@ -575,20 +633,25 @@ function runFrom(items: MenuItem[], e: MouseEvent): void {
   const b = (e.target as Element).closest<HTMLElement>('[data-i]')
   if (!b) return
   const item = items[Number(b.dataset.i)]
-  if (!item || item === 'separator') return
+  if (!item || item === 'separator' || 'header' in item) return
   closeMenu()
   if ('chips' in item) void item.options[Number(b.dataset.j)]?.run()
   else void item.run?.()
 }
 
-function openMenu(raw: MenuItem[], x: number, y: number, target: string): void {
+/** Opens a menu at the pointer, or under `anchor` (above it when there is no room below). */
+function openMenu(raw: MenuItem[], x: number, y: number, target: string, anchor?: DOMRect): void {
   const items = tidy(raw)
   if (!items.length) return
   menuTarget = target
   markTarget()
   ctx.innerHTML = menuHtml(items)
   ctx.hidden = false
-  place(ctx, x, y)
+  if (anchor) {
+    const h = ctx.getBoundingClientRect().height
+    const below = anchor.bottom + 2 + h <= window.innerHeight - 6
+    place(ctx, anchor.right - ctx.getBoundingClientRect().width, below ? anchor.bottom + 2 : anchor.top - 2 - h)
+  } else place(ctx, x, y)
   ctx.onclick = (e) => runFrom(items, e)
   // Focus the menu, not its first item: nothing looks hovered until the pointer or arrow keys move.
   ctx.focus()
@@ -601,6 +664,7 @@ document.addEventListener('contextmenu', (e) => {
   const target = el.dataset.menu!
   const [kind, id] = [target.split(':')[0], target.slice(target.indexOf(':') + 1)]
   if (kind === 'coordinator') return openMenu(coordinatorMenu(id), e.clientX, e.clientY, target)
+  if (kind === 'linear') return openMenu(sendMenu(id), e.clientX, e.clientY, target)
   const row = snap.rows.find((r) => r.agents.some((a) => a.paneKey === id))
   const a = row?.agents.find((x) => x.paneKey === id)
   if (row && a) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
@@ -616,3 +680,56 @@ const menuKeys = (menu: HTMLElement) => (e: KeyboardEvent) => {
   else if (e.key === 'Enter' && i >= 0) { e.preventDefault(); items[i].click() }
 }
 ctx.addEventListener('keydown', menuKeys(ctx))
+
+// ---------- sending a Linear issue ----------
+
+/**
+ * The send menu: "Send <ID> to", one item per coordinator in tree order with the suggested one first
+ * (and why, in the accent), then Open in Linear and Copy ID.
+ */
+function sendMenu(id: string): MenuItem[] {
+  const issue = linear?.issues.find((i) => i.id === id)
+  if (!issue || !snap) return []
+  const order = coordinatorOrder(snap)
+  const items: MenuItem[] = [{ header: `Send <b>${esc(issue.id)}</b> to` }]
+  for (const t of sendTargets(issue.team, order, linear?.lastSent)) {
+    const c = order.find((x) => x.key === t.key)!
+    items.push({ label: c.name, iconHtml: coordinatorCharacter(c, 16), right: t.suggested ?? (c.repos.length ? c.repos.join(', ') : ''), accent: Boolean(t.suggested), run: () => sendIssue(issue, c) })
+  }
+  if (!order.length) items.push({ header: 'No coordinators yet' })
+  items.push('separator')
+  if (issue.url) items.push({ label: 'Open in Linear', iconHtml: LINEAR_MARK, run: () => void orca.shell?.openExternal(issue.url) })
+  items.push({ label: 'Copy ID', icon: 'copy', run: () => void navigator.clipboard?.writeText(issue.id).catch(() => {}) })
+  return items
+}
+
+/** Sends an issue, with "Sending…" on its row; then a toast to open the coordinator's chat, or the reason on the row. */
+async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
+  const target = `linear:${issue.id}`
+  ui.status.set(target, { text: 'Sending…', tone: 'pending' })
+  draw()
+  try {
+    const r = await orca.plugin.request('sidebar.linearSend', { issue: issue.id, coordinator: c.key }, { timeoutMs: 120_000 })
+    if (r.ok) {
+      ui.status.delete(target)
+      showToast(c, issue.id, r.warnings ?? [])
+    } else ui.status.set(target, { text: r.error ?? 'Could not send', tone: 'bad' })
+  } catch (e) {
+    ui.status.set(target, { text: (e as Error).message, tone: 'bad' })
+  }
+  draw()
+}
+
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+function showToast(c: Coordinator, id: string, warnings: string[]): void {
+  clearTimeout(toastTimer)
+  const warn = warnings.length ? `<span class="twarn" data-tip="${esc(warnings.join('\n'))}" data-tone="warn">Linear not updated</span>` : ''
+  toastEl.innerHTML = `${coordinatorCharacter(c, 16, 'working')}<span class="t">Sent ${esc(id)} to ${esc(c.name)}</span>${warn}<button class="act" data-coordinator="${esc(c.key)}">Open chat</button>`
+  toastEl.hidden = false
+  toastTimer = setTimeout(hideToast, warnings.length ? 12_000 : 8000)
+}
+function hideToast(): void {
+  clearTimeout(toastTimer)
+  toastEl.hidden = true
+}
+
