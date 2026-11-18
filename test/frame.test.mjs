@@ -75,8 +75,17 @@ const PROGRESS = `**AI Create v2 production readiness · today**
 
 **Next:** nothing needed from you. I write again when the memory numbers are in.`
 
+const IDLE = `**orca-flow · message format · today**
+**Status:** Idle
+
+**Done:**
+- PR #23 merged. Orca Flow 0.2.39 is released.
+- The sidebar reads Status, Ask and Reply from a valid frame.
+
+**Next:** nothing needed from you. Send feedback here.`
+
 const ANSWER = `**orca-flow · sidebar**
-**Status:** Done
+**Status:** Idle
 
 **Answer:** the row is gray because the worker finished. A finished session stays in its place, dimmed, until Orca closes it.
 **Evidence:** view.ts marks the row finished. panel.css:105 sets its opacity to 0.55.
@@ -98,11 +107,25 @@ const rules = (text, role = 'lead') => checkFrame(text, { role }).misses.map((m)
 test('every spec example passes: the route line and the briefing as a coordinator', () => {
   assert.deepEqual(checkFrame(ROUTE, { role: 'coordinator' }), { ok: true, misses: [] })
   assert.deepEqual(checkFrame(`${ROUTE}\n\nISO-12 → lead in mono/isola · soon\n`, { role: 'coordinator' }).ok, true, 'several route lines')
-  for (const [name, text] of Object.entries({ PLAN, DECISION, PROCEDURE, REVIEW, PROGRESS, ANSWER })) {
+  for (const [name, text] of Object.entries({ PLAN, DECISION, PROCEDURE, REVIEW, PROGRESS, IDLE, ANSWER })) {
     assert.deepEqual(checkFrame(text, { role: 'lead' }), { ok: true, misses: [] }, name)
     assert.deepEqual(checkFrame(text, { role: 'coordinator' }), { ok: true, misses: [] }, `${name} from a coordinator`)
   }
   assert.deepEqual(checkFrame(BRIEFING, { role: 'coordinator' }), { ok: true, misses: [] })
+})
+
+test("messages.md's examples are the fixtures above, and each one passes", () => {
+  const spec = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
+  const blocks = [...spec.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
+  assert.deepEqual(blocks, [ROUTE, PLAN, DECISION, PROCEDURE, REVIEW, PROGRESS, IDLE, ANSWER, BRIEFING])
+  for (const b of blocks) assert.deepEqual(checkFrame(b, { role: 'coordinator' }), { ok: true, misses: [] }, b.split('\n')[0])
+})
+
+test('Idle: nothing runs, nothing asked, no Reply needed; Done stays a status word', () => {
+  assert.deepEqual(rules(IDLE), [])
+  assert.doesNotMatch(IDLE, /\*\*Reply:\*\*/)
+  assert.deepEqual(rules(IDLE.replace('Idle', 'Done')), [])
+  assert.deepEqual(rules(IDLE.replace('Idle', 'idle')), ['status-word'])
 })
 
 test('detail above the frame and code blocks in it are fine; the last frame counts', () => {

@@ -131,7 +131,7 @@ an **Ask:** with its **Reply:** when they need you, and **Next:** as the last li
 
 The Stop hook checks that frame when a coordinator or a lead ends its turn. On a miss, it names each
 failed rule and has the agent rewrite the message, once per turn. It checks that the header and a
-Status line are there, that the status word is one of the five, that **Next:** is last, that an
+Status line are there, that the status word is one of the six, that **Next:** is last, that an
 agent waiting on you gives a **Reply:** line, and that every label is a frame label. A coordinator
 can also answer with route lines only. Workers and your own chats are never checked.
 

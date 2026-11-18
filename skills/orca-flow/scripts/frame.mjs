@@ -2,8 +2,8 @@
 // to a status word, label or rule there changes the constants and rules here, in the same commit.
 // Pure functions, no dependencies: the Stop hook (stop-check.mjs) and the plugin import this file.
 
-/** The five status words; `Waiting on you` takes one of the ask types after it. */
-export const STATUS_WORDS = ['Working', 'Waiting on you', 'Blocked', 'Ready for review', 'Done']
+/** The six status words; `Waiting on you` takes one of the ask types after it. Idle needs no Reply. */
+export const STATUS_WORDS = ['Working', 'Idle', 'Waiting on you', 'Blocked', 'Ready for review', 'Done']
 export const ASK_TYPES = ['decision', 'approval', 'review', 'info']
 /** Every bold label a frame line may start with. */
 export const LABELS = ['Status', 'Done', 'Plan', 'Problem', 'Cause', 'Evidence', 'Steps', 'Result', 'Link', 'Answer', 'Waiting', 'Running', 'Room', 'Ask', 'Reply', 'Warning', 'Caution', 'Next']

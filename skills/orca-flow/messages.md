@@ -15,7 +15,7 @@ same line. Use the blocks in this order:
 
 1. **Header:** the whole line is bold: ticket · workstream · level, for example
    `**BOU-4206 · Split short docs into lessons · today**`. No ticket: workstream · level.
-2. **Status:** one of the five status words (below).
+2. **Status:** one of the six status words (below).
 3. **Body:** the blocks of one body (below). One message can hold more than one body, in this
    order: Diagnosis, Plan, Progress, Result.
 4. **Ask:** only when you need the user. One question, at most 25 words.
@@ -34,11 +34,14 @@ Use exactly one of these on the Status line. The sidebar reads it as it is.
 
 | Status | Means | Has an Ask |
 | --- | --- | --- |
-| Working | You or your workers are busy. Nothing needed from the user. | No |
+| Working | You, your workers or a job you started run now. Nothing needed from the user. | No |
+| Idle | Nothing runs and nothing is asked. The workstream stays open, for example while you wait for the user's feedback or next request. | No |
 | Waiting on you: <type> | You stopped until the user replies. Type: decision, approval, review or info. | Yes |
 | Blocked | Something outside the code stops the work: a device, an account, a person. Usually a Procedure. | Yes |
 | Ready for review | The work is finished. A PR or result waits for the user to look at it. | Yes (review) |
 | Done | The workstream is finished: the PR merged, or the user called it done. | No |
+
+Use Working only while something runs. When it stops and nothing is asked, use Idle; use Done only when the workstream is finished.
 
 ## Bodies
 
@@ -172,11 +175,24 @@ The lead's first message is a Plan:
 **Next:** nothing needed from you. I write again when the memory numbers are in.
 ```
 
-6. The user asked a question:
+6. A release is out, and you wait for the user's feedback:
+
+```markdown
+**orca-flow · message format · today**
+**Status:** Idle
+
+**Done:**
+- PR #23 merged. Orca Flow 0.2.39 is released.
+- The sidebar reads Status, Ask and Reply from a valid frame.
+
+**Next:** nothing needed from you. Send feedback here.
+```
+
+7. The user asked a question:
 
 ```markdown
 **orca-flow · sidebar**
-**Status:** Done
+**Status:** Idle
 
 **Answer:** the row is gray because the worker finished. A finished session stays in its place, dimmed, until Orca closes it.
 **Evidence:** view.ts marks the row finished. panel.css:105 sets its opacity to 0.55.
@@ -184,7 +200,7 @@ The lead's first message is a Plan:
 **Next:** nothing needed from you.
 ```
 
-7. A coordinator briefing:
+8. A coordinator briefing:
 
 ```markdown
 **bounti · briefing**
@@ -203,8 +219,8 @@ The lead's first message is a Plan:
 - The check reads only the last message of a turn.
 - The frame starts at the Header: a line that is bold as a whole (`**...**`) with at least one
   ` · `. Text above it is free.
-- A `**Status:**` line comes right after the Header, with exactly one of: Working · Waiting on
-  you: decision|approval|review|info · Blocked · Ready for review · Done. A coordinator Briefing
+- A `**Status:**` line comes right after the Header, with exactly one of: Working · Idle · Waiting
+  on you: decision|approval|review|info · Blocked · Ready for review · Done. A coordinator Briefing
   (Waiting, Running, Room) has no Status line.
 - The last non-empty line starts with `**Next:**`.
 - Status Waiting on you, Blocked or Ready for review: a `**Reply:**` line is present.

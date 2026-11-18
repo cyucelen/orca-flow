@@ -104,6 +104,12 @@ test('Ready for review is a review with its Ask and Reply', () => {
   assert.equal(card.glance, 'Review the PR.')
 })
 
+test('Idle asks nothing, whatever Haiku guessed', () => {
+  const idle = `**orca-flow · message format · today**\n**Status:** Idle\n\n**Done:**\n- PR #23 merged. Orca Flow 0.2.39 is released.\n\n**Next:** nothing needed from you. Send feedback here.`
+  const card = withFrame(lead(idle), haiku({ needs: { type: 'review', ask: 'Any feedback on 0.2.39?', options: [] }, glance: 'Any feedback on 0.2.39?' }))
+  assert.deepEqual([card.needs, card.glance, card.reply, card.source], [{ type: 'none', ask: '', options: [] }, '', undefined, 'frame'])
+})
+
 test('Working and a Briefing ask nothing, whatever Haiku guessed', () => {
   const guessed = haiku({ needs: { type: 'decision', ask: 'Open item 1?', options: [] }, glance: 'Open item 1?' })
   const working = withFrame(lead(WORKING), guessed)

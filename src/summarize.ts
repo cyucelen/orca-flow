@@ -360,8 +360,8 @@ const NO_ASK: Needs = { type: 'none', ask: '', options: [] }
 
 /**
  * The ask exactly as a coordinator or lead wrote it, when its final message has a valid frame
- * (skills/orca-flow/messages.md); null for another role or a message without one. A route line
- * or a Briefing asks nothing. Blocked is an action: its Ask, else its Problem, with "Done" as the
+ * (skills/orca-flow/messages.md); null for another role or a message without one. Working, Idle,
+ * Done, a route line and a Briefing ask nothing. Blocked is an action: its Ask, else its Problem, with "Done" as the
  * button when the Reply line is "done".
  */
 export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string } | null {

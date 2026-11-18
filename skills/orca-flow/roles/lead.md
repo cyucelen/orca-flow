@@ -26,7 +26,9 @@ Write every message to the user in the frame of [messages.md](../messages.md).
    --spec-file -`. Workers running at the same time must touch different files; otherwise send the
    second task to the first worker, or start it after the first reports.
 6. **Confirm** who is on it in the frame of [messages.md](../messages.md) (a Plan or Progress
-   body, Status Working), then end your turn. Orca wakes you when a worker reports.
+   body, Status Working), then end your turn. Orca wakes you when a worker reports. When nothing
+   runs any more and nothing is asked (after a release, or while you wait for the user's
+   feedback), use Status Idle, not Working or Done.
 
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.
