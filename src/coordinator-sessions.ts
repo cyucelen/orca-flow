@@ -243,22 +243,24 @@ export type WakeIo = ResumeIo & {
   fresh: (agent: string) => Promise<{ ok: boolean; error?: string }>
 }
 
+/** Orca's panel bridge refuses a result holding an undefined property: an absent agent is an absent key. */
+const agentOf = (agent: string | null | undefined): { agent?: string } => agent ? { agent } : {}
+
 /** Carries out a wake plan. Only a failed start, a failed open or an unverifiable resume is a failure. */
 export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo): Promise<WakeOutcome> {
   const plan = wakePlan(c, rows, liveChoices)
   if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', error: 'The exact session could not be opened.' }
-  if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, agent: c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType ?? undefined }
+  if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, ...agentOf(c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType) }
   if (plan.kind === 'fresh') {
     const started = await io.fresh(plan.agent || 'claude')
     return started.ok ? { ok: true, kind: 'started' } : { ok: false, kind: 'failed', error: started.error ?? 'The new conversation could not be started.' }
   }
-  const agent = plan.member.agentType ?? undefined
   let next: CoordinatorSessions
   try { next = await resumeExactMember(c.sessions!, plan.member.id, io) }
   catch (e) {
     if (e instanceof ResumeUnverifiedError) return { ok: false, kind: 'failed', error: e.message }
     // Nothing was bound and nothing was written: the member and its history stay as they were.
-    return { ok: false, kind: 'restore-failed', retryable: true, agent, error: `The previous conversation could not be restored: ${(e as Error).message}` }
+    return { ok: false, kind: 'restore-failed', retryable: true, ...agentOf(plan.member.agentType), error: `The previous conversation could not be restored: ${(e as Error).message}` }
   }
   try { io.save(next) }
   catch (e) { return { ok: false, kind: 'failed', error: `The conversation resumed, but its new binding could not be saved (${(e as Error).message}). Check Sessions; do not resume it again.` } }

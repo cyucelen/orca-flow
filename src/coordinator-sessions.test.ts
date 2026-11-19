@@ -789,3 +789,40 @@ test('overlapping refreshes reconcile what is on disk instead of failing the mem
     assert.equal(readCoordinators(root).find((x) => x.key === 'legacy')!.sessions?.current, sessions.members[1].id)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+/** Every own property, at any depth, that is undefined; Orca's panel bridge refuses such a result. */
+function undefinedPaths(value: unknown, path = '$'): string[] {
+  if (value === undefined) return [path]
+  if (!value || typeof value !== 'object') return []
+  return Object.entries(value).flatMap(([k, v]) => undefinedPaths(v, `${path}.${k}`))
+}
+
+test('every wake outcome is plain JSON with no undefined property, so the panel bridge accepts it', async () => {
+  const outcomes = new Map<string, unknown>()
+  const record = (r: { kind: string }) => { outcomes.set(r.kind, r); return r }
+  const { rows, c } = fixture()
+  record(await wakeCoordinator(c, rows, 2, wakeIo().io))
+  const empty = rows.map((r) => ({ ...r, agents: [] }))
+  record(await wakeCoordinator({ sessions: undefined }, empty, 0, wakeIo().io))
+  record(await wakeCoordinator({ sessions: undefined }, empty, 0, wakeIo({ fresh: async () => ({ ok: false }) }).io))
+  // The reported orca-flow: no sessions field and two open conversations in its folder.
+  record(await wakeCoordinator({ sessions: undefined }, rows, 2, wakeIo().io))
+  // Several members, none current: no current agent to carry.
+  const none = fixture()
+  const noneChoose = await wakeCoordinator({ sessions: { ...none.sessions, current: null } }, none.rows, 2, wakeIo().io)
+  assert.equal(noneChoose.kind, 'choose')
+  assert.deepEqual(undefinedPaths(noneChoose), [])
+  // A resumable member without an agent type is never resumed; a codex one restores or fails.
+  const closed = fixture()
+  closed.sessions.members[1].resumeSessionId = 'native-codex-id'
+  closed.rows[0].agents = closed.rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ binding: async () => ({ workspaceId: closed.rows[0].id, agent: { ...closed.rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', terminal: 'term-resumed' } }) }).io))
+  record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ resume: async () => { throw new Error('gone') } }).io))
+  const busy = new Set(['home'])
+  record(await exclusive(busy, 'home', () => wakeCoordinator(c, rows, 2, wakeIo().io), () => ({ ok: false, kind: 'busy' as const, error: 'A session change is already in progress.' })))
+  assert.deepEqual([...outcomes.keys()].sort(), ['busy', 'choose', 'failed', 'opened', 'restore-failed', 'resumed', 'started'])
+  for (const [kind, r] of outcomes) {
+    assert.deepEqual(undefinedPaths(r), [], `${kind} has no undefined property`)
+    assert.deepEqual(JSON.parse(JSON.stringify(r)), r, `${kind} round-trips through JSON unchanged`)
+  }
+})

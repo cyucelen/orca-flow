@@ -885,7 +885,7 @@ function showSessionPicker(key: string, source?: HTMLElement): void {
     iconHtml: providerBadge(choice.agent, true),
     checked: choice.current,
     run: () => inline(`coordinator:${key}`, 'Switching…', '', async () => {
-      const result = await orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'select', workspaceId: choice.workspaceId, paneKey: choice.paneKey, orcaSession: choice.orcaSession, agent: choice.agentType ?? undefined })
+      const result = await orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'select', workspaceId: choice.workspaceId, paneKey: choice.paneKey, orcaSession: choice.orcaSession, ...(choice.agentType ? { agent: choice.agentType } : {}) })
       if (result.ok) ui.status.delete(`coordinator:${key}`)
       return result
     })
