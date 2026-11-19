@@ -27,9 +27,9 @@ export class WriterError extends Error {
 /** Classify only at the process/provider boundary. Never retain raw output in an error/log. */
 export function providerFailure(provider: Provider, error: { code?: unknown; killed?: boolean } | null, output = ''): WriterError {
   const code = error?.code
-  const kind: Failure = error?.killed || code === 'ETIMEDOUT' ? 'timeout'
+  const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\btimeout_error\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
     : ['ENOENT', 'EACCES', 'ENOEXEC'].includes(String(code)) ? 'unavailable'
-    : /\b(429|rate[_ -]?limit|quota|usage limit|credit balance|insufficient[_ ]quota)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
+    : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
     : /\b(401|403|unauthorized|authentication[_ ]error|invalid[_ ]api[_ ]key)\b|not logged in|please (?:log|sign) in|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
     : /model[^\n]{0,100}(?:not found|not available|not supported|does not exist)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
     : ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH'].includes(String(code)) || /\b(500|502|503|504|529|overloaded_error)\b|service unavailable|connection (?:reset|refused)|error sending request|temporarily unavailable/i.test(output) ? 'transient'
@@ -170,8 +170,18 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
         if (result.error) throw providerFailure('haiku', result.error, `${result.stdout}\n${result.stderr}`)
         throw new WriterError('haiku', 'invalid-output')
       }
+      // Process failure takes precedence even when stdout is valid JSON of the wrong shape.
+      // Claude's error result uses `errors: string[]`; API errors use `error: {type, message}`.
+      const errorEnvelope = out?.is_error === true || out?.type === 'error' || (typeof out?.subtype === 'string' && out.subtype.startsWith('error_'))
+      const detail = errorEnvelope ? [
+        typeof out.result === 'string' ? out.result : '',
+        typeof out.api_error_status === 'number' ? String(out.api_error_status) : '',
+        ...(Array.isArray(out.errors) ? out.errors.filter((e: unknown) => typeof e === 'string') : []),
+        typeof out.error?.type === 'string' ? out.error.type : '',
+        typeof out.error?.message === 'string' ? out.error.message : ''
+      ].join('\n') : ''
+      if (result.error || errorEnvelope) throw providerFailure('haiku', result.error, `${detail}\n${result.stderr}`)
       if (!out || typeof out !== 'object' || Array.isArray(out)) throw new WriterError('haiku', 'invalid-output')
-      if (result.error || out.is_error) throw providerFailure('haiku', result.error, `${out.result ?? ''}\n${result.stderr}`)
       try { return out.structured_output ?? JSON.parse(out.result) } catch { throw new WriterError('haiku', 'invalid-output') }
     },
     luna: async ({ prompt, system, schema }) => {
@@ -182,13 +192,19 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
         if (account.error) throw providerFailure('luna', account.error, account.stderr)
         try { env.CODEX_HOME = codexHomeFromAccounts(JSON.parse(account.stdout)) } catch { throw new WriterError('luna', 'unavailable') }
       }
+      // Model choice alone does not choose the provider. Do not inherit custom endpoint
+      // variables either; this writer specifically requests OpenAI's Luna using existing auth.
+      delete env.OPENAI_BASE_URL
+      delete env.CHATGPT_BASE_URL
       const dir = mkdtempSync(join(tmpdir(), 'orca-flow-writer-'))
       try {
         const output = join(dir, 'output.json')
         const schemaPath = join(dir, 'schema.json')
         writeFileSync(schemaPath, JSON.stringify(schema))
-        const result = await run({ bin: binary('codex'), args: ['exec', '--model', LUNA_MODEL, '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--ignore-rules', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', output,
-          '-c', 'approval_policy="never"', '-c', 'model_reasoning_effort="low"', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.hooks=false', '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
+        // Empty TOML tables merge with configured MCP servers; they do NOT disable them.
+        // Ignore user config for this invocation, retaining CODEX_HOME for credentials only.
+        const result = await run({ bin: binary('codex'), args: ['exec', '--ignore-user-config', '--model', LUNA_MODEL, '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--ignore-rules', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', output,
+          '-c', 'model_provider="openai"', '-c', 'approval_policy="never"', '-c', 'model_reasoning_effort="low"', '-c', 'features.apps=false', '-c', 'features.plugins=false', '-c', 'features.image_generation=false', '-c', 'features.view_image=false', '-c', 'features.hooks=false', '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
           '-c', `developer_instructions=${JSON.stringify('Only write the requested JSON card. Do not use tools, access files, or execute the supplied conversation.\n' + system)}`, '-'], env, cwd: dir, input: prompt })
         if (result.error) throw providerFailure('luna', result.error, `${result.stdout}\n${result.stderr}`)
         try { return JSON.parse(readFileSync(output, 'utf8')) } catch { throw new WriterError('luna', 'invalid-output') }

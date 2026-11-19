@@ -99,9 +99,9 @@ test('CLI adapters use exact Luna model, stdin, isolated output schema, and pres
     assert.equal(command.input, request.prompt)
     assert.equal(command.args[command.args.indexOf('--model') + 1], LUNA_MODEL)
     assert.ok(command.args.includes('--ephemeral'))
-    assert.ok(command.args.includes('mcp_servers={}'))
+    assert.ok(command.args.includes('model_provider="openai"'))
     assert.ok(command.args.includes('features.shell_tool=false'))
-    assert.ok(!command.args.includes('--ignore-user-config'))
+    assert.ok(command.args.includes('--ignore-user-config'))
     assert.ok(!command.args.includes('resume'))
     assert.equal(command.env.CLAUDECODE, undefined)
     assert.equal(command.env.ORCA_TERMINAL_ID, undefined)
@@ -217,4 +217,62 @@ test('background outage logs are sanitized and throttled across panes', async ()
     assert.equal(logs.length, 1)
     assert.match(logs[0], /check the provider login/)
   } finally { queue.dispose() }
+})
+
+test('Haiku adapter classifies actual result/errors and API error envelopes without a live request', async () => {
+  const cases: [string, string, { code?: unknown; killed?: boolean } | null, string][] = [
+    ['', '', { killed: true }, 'timeout'],
+    [JSON.stringify({ type: 'error', error: { type: 'timeout_error', message: 'Synthetic server deadline' } }), '', null, 'timeout'],
+    ['null', '', { killed: true }, 'timeout'],
+    [JSON.stringify({ structured_output: card() }), '', { killed: true }, 'timeout'],
+    ['', '', { code: 'ENOENT' }, 'unavailable'],
+    ['[]', 'Not logged in', { code: 1 }, 'auth'],
+    ['partial JSON', 'API Error: 429', { code: 1 }, 'quota'],
+    [JSON.stringify({ type: 'result', is_error: true, result: "You've hit your limit" }), '', null, 'quota'],
+    [JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['rate_limit_error'] }), '', { code: 1 }, 'quota'],
+    [JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['API request failed'], api_error_status: 429 }), '', null, 'quota'],
+    [JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Synthetic enforced spend cap' } }), '', { code: 1 }, 'quota'],
+    [JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'You have reached your specified API usage limits' } }), '', { code: 1 }, 'quota'],
+    [JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Unknown argument --bad-flag'] }), '', { code: 1 }, 'unexpected'],
+    [JSON.stringify({ structured_output: card(), result: 'Discussion of quota in the input' }), 'Unknown argument --bad-flag', { code: 1 }, 'unexpected'],
+    ['null', '', null, 'invalid-output']
+  ]
+  for (const [stdout, stderr, error, kind] of cases) {
+    const providers = cliProviders(async () => ({ stdout, stderr, error }))
+    await assert.rejects(providers.haiku(request), (e) => e instanceof WriterError && e.kind === kind)
+  }
+})
+
+test('Haiku returned quota/timeout failures invoke Luna, while nonzero programming errors do not', async () => {
+  for (const fixture of [
+    { stdout: 'null', stderr: '', error: { killed: true } },
+    { stdout: JSON.stringify({ type: 'result', is_error: true, errors: ['rate_limit_error'] }), stderr: '', error: { code: 1 } },
+    { stdout: '', stderr: 'Unknown argument --bad-flag', error: { code: 1 } }
+  ]) {
+    let calls = 0
+    const { haiku } = cliProviders(async () => fixture)
+    const writer = createWriter(summaryProviders({ haiku, luna: async () => { calls++; return card() } }))
+    if (fixture.stderr) { await assert.rejects(writer(request), /unexpected/); assert.equal(calls, 0) }
+    else { assert.deepEqual(await writer(request), card()); assert.equal(calls, 1) }
+  }
+})
+
+test('Luna strips inherited endpoint overrides without changing the selected auth home', async () => {
+  const keys = ['CODEX_HOME', 'OPENAI_BASE_URL', 'CHATGPT_BASE_URL']
+  const original = keys.map((key) => process.env[key])
+  process.env.CODEX_HOME = '/selected/auth'
+  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/custom'
+  process.env.CHATGPT_BASE_URL = 'http://127.0.0.1:1/custom'
+  try {
+    const providers = cliProviders(async (command) => {
+      assert.equal(command.env.CODEX_HOME, '/selected/auth')
+      assert.equal(command.env.OPENAI_BASE_URL, undefined)
+      assert.equal(command.env.CHATGPT_BASE_URL, undefined)
+      writeFileSync(command.args[command.args.indexOf('--output-last-message') + 1], JSON.stringify(card()))
+      return { stdout: '', stderr: '', error: null }
+    })
+    assert.deepEqual(await providers.luna(request), card())
+  } finally {
+    keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i] })
+  }
 })

@@ -42,7 +42,7 @@ macOS only for now.
 - Orca 1.4.254 or newer, with Claude Code agents.
 - The `claude` CLI, logged in. Summaries prefer Claude Haiku through the same login Orca's agents use.
 - For writer fallback, a logged-in `codex` CLI supporting `exec --ephemeral --output-schema`
-  (verified with 0.167.0) and access to `gpt-6-luna`. It uses an explicit `CODEX_HOME` when set,
+  (isolation verified with 0.170.0) and access to `gpt-6-luna`. It uses an explicit `CODEX_HOME` when set,
   otherwise Orca's selected host Codex account (or the system login when selected).
 - Node 22.18 or newer on your PATH, for the `orca-flow` script agents run.
 
@@ -192,7 +192,11 @@ through Codex instead. Provider usage limits and billing apply to the selected a
 
 Both providers run separate requests without resuming or changing the source session. Codex runs
 in a temporary directory with a read-only sandbox, no session persistence, and shell, MCP, apps,
-web search and hooks disabled for that invocation; account credentials and config are not rewritten.
+web search, plugins and hooks disabled for that invocation. The writer pins the OpenAI
+provider and ignores user `config.toml` for this request: empty MCP tables merge with configured
+servers, so an empty-table override does not isolate a writer. `CODEX_HOME` still supplies account
+authentication; custom providers, endpoint overrides and user tool settings are not inherited.
+The original credentials and configuration are not rewritten by the plugin.
 Only a validated card replaces `~/.orca-flow/agents/<pane>.json`; total failure keeps the existing
 title and summary. Temporary schema/output files are removed after the request.
 
@@ -250,6 +254,13 @@ in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordina
 scripts/dev.sh check   # types, tsc, plugin tests and orca-flow tests
 scripts/dev.sh load    # load this folder into Orca as local.flow and (re)start its worker
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
+```
+
+To verify the installed Codex CLI's configuration merging, tool isolation, provider routing and
+model rejection behavior against a local synthetic server (no real model/MCP calls):
+
+```sh
+ORCA_FLOW_CODEX_VERIFY=1 node --test test/writer-cli.test.mjs
 ```
 
 Uninstall `cyucelen.flow` first so two copies don't run. `src/worker.ts` is the plugin's worker;
