@@ -345,7 +345,6 @@ export function deleteFolder(dir: string, root = COORDINATOR_HOME): void {
 }
 
 
-/** Persist explicit membership atomically without changing scope, appearance or other config. */
 /**
  * Reads, changes and compare-and-swaps a coordinator's sessions in one synchronous step, so
  * overlapping refreshes in this worker cannot interleave between the read and the write. Returns
@@ -362,6 +361,7 @@ export function updateCoordinatorSessions(dir: string, change: (onDisk: Coordina
   return next
 }
 
+/** Persist explicit membership atomically without changing scope, appearance or other config. */
 export function writeCoordinatorSessions(dir: string, sessions: CoordinatorSessions, expected?: { sessions: CoordinatorSessions | undefined }): void {
   const path = join(dir, COORDINATOR_FILE)
   const data = readJson<Record<string, unknown>>(path)
