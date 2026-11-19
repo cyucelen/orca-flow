@@ -400,6 +400,13 @@ function claudeProjectRoots(): string[] {
 }
 
 /**
+ * Pure: the coordinator's own session among the agents of its folder's row (see coordinatorSession):
+ * what its row's face shows, what a click on it brings to the front, and where a message to it is typed.
+ */
+export const sessionIn = (row: WorkspaceRow): AgentInfo | null =>
+  coordinatorSession(row.agents, (pane) => row.agents.some((a) => a.paneKey === pane && a.dispatch !== null))
+
+/**
  * A coordinator's own workspace is its row in the panel, not a worktree in the tree: its session
  * (see coordinatorSession) drives the coordinator's face and ask, and each other agent there becomes
  * a row of its own (folderRows). Fills each coordinator's workspace, focus and session in place;
@@ -411,7 +418,7 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
     const i = row.path ? index.get(row.path) : undefined
     if (i === undefined) return [row]
     const c = coordinators[i]
-    const session = coordinatorSession(row.agents, (pane) => row.agents.some((a) => a.paneKey === pane && a.dispatch !== null))
+    const session = sessionIn(row)
     c.workspaceId = row.id
     c.active = row.active
     // Its session counts only while a terminal is open with an agent in it.
@@ -771,8 +778,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     return id
   }
 
-  /** `then`: a request the new session gets after its start prompt (a Linear issue sent to it). */
-  async function openSession(dir: string, start: boolean, fresh = false, then?: string): Promise<{ ok: boolean; error?: string }> {
+  /**
+   * `then`: a request the new session gets after its start prompt (a Linear issue sent to it).
+   * `terminal`: the live session's tab, shown in front: a lead or worker in a tab of the same folder
+   * may have been the last one there, and opening the workspace alone would land on it.
+   */
+  async function openSession(dir: string, start: boolean, fresh = false, then?: string, terminal?: string | null): Promise<{ ok: boolean; error?: string }> {
     const workspaceId = await workspaceFor(dir)
     if (!workspaceId) return { ok: false, error: 'Orca did not add the folder' }
     const prompt = (first: string) => (then ? `${first}\n\nThen:\n${then}` : first)
@@ -787,7 +798,8 @@ export default function activate(orca: OrcaWorkerApi): void {
         await orca.host.call('agent.launch', { workspaceId, agent: 'claude', prompt: prompt('Start your session.') })
       }
     }
-    await orca.host.call('workspace.open', { workspaceId })
+    if (!start && terminal) await openChat({ workspaceId, terminal })
+    else await orca.host.call('workspace.open', { workspaceId })
     refreshSoon()
     return { ok: true }
   }
@@ -814,10 +826,10 @@ export default function activate(orca: OrcaWorkerApi): void {
     const job = (async (): Promise<Opened> => {
       // Live in the last snapshot: just show it, no launch to guard. Otherwise confirm with fresh
       // data before starting a session, so a wake that the snapshot missed is not doubled.
-      if (isLive(c.dir)) return openSession(c.dir, false)
+      if (isLive(c.dir)) return openSession(c.dir, false, false, undefined, await coordinatorTerminal(c.dir))
       await refresh()
       const start = !isLive(c.dir)
-      return { ...(await openSession(c.dir, start, false, start ? then : undefined)), prompted: start && Boolean(then) }
+      return { ...(await openSession(c.dir, start, false, start ? then : undefined, start ? null : await coordinatorTerminal(c.dir))), prompted: start && Boolean(then) }
     })().catch((e: Error) => ({ ok: false, error: e.message })).finally(() => opening.delete(key))
     opening.set(key, job)
     return job
@@ -930,8 +942,10 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   /** The terminal of a coordinator's live session: from the lineage, else looked up by its pane. */
+  /** The coordinator's own session's tab: not a lead or worker it started in a tab of its folder. */
   async function coordinatorTerminal(dir: string): Promise<string | null> {
-    const session = allRows.find((r) => r.path === dir && r.liveTerminals > 0)?.agents[0]
+    const row = allRows.find((r) => r.path === dir && r.liveTerminals > 0)
+    const session = row ? sessionIn(row) : null
     if (!session) return null
     if (session.terminal) return session.terminal
     const listed = await run(['terminal', 'list']).catch(() => null)

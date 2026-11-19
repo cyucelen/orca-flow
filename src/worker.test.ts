@@ -1343,11 +1343,11 @@ function coordinatorFolder(withTabs = true) {
     { identity: { key: 'wt-1' }, path: '/w/mono-1', displayName: 'bou-4100', repo: 'mono', branch: 'refs/heads/bou-4100', liveTerminalCount: 1, agents: [{ paneKey: 'tab-x:1', state: 'working', agentType: 'claude' }] }
   ]
   const info = { key: 'bounti', name: 'bounti', repos: ['mono'], workspaceId: null, dir: '/c/bounti', about: '' }
-  const lineage = { dispatcherOf: new Map<string, string>(), paneOf: new Map<string, string>(), dispatchOf: new Map<string, 'open' | 'settled'>(withTabs ? [['tab-l:1', 'open'], ['tab-w:1', 'open']] : []) }
+  const lineage = { dispatcherOf: new Map<string, string>(), paneOf: new Map<string, string>([['term_c', 'tab-c:1'], ['term_l', 'tab-l:1'], ['term_w', 'tab-w:1']]), dispatchOf: new Map<string, 'open' | 'settled'>(withTabs ? [['tab-l:1', 'open'], ['tab-w:1', 'open']] : []) }
   const all = assignCoordinators(main.fromPs(ps, store, new Map([['/c/bounti', 'folder:bounti']])), [info], lineage)
   const coordinators = [{ key: 'bounti', name: 'bounti', repos: ['mono'], workspaceId: null as string | null, session: null as any, active: false }]
   const rows = main.foldCoordinatorFolders(all, coordinators, ['/c/bounti'])
-  return { rows, coordinators, snap: { source: 'cli' as const, capacity: null, coordinators, rows } }
+  return { all, rows, coordinators, snap: { source: 'cli' as const, capacity: null, coordinators, rows } }
 }
 
 test("a coordinator's own session is the one nobody in its folder started, not the first agent listed", async () => {
@@ -1404,4 +1404,27 @@ test('a lead or worker in a coordinator folder is not the coordinator', async ()
   assert.equal(roleOf(worker, [], '/c/bounti', home), 'worker')
   assert.equal(roleOf('Your role: lead. Find why…', [], '/c/bounti', home), 'lead')
   assert.equal(roleOf('where is that lead? mention of worker_done', [], '/c/bounti', home), 'coordinator', "the coordinator's own session, whatever its user says")
+})
+
+test("a click on a coordinator brings its own session's tab to the front, and one on a folder agent that agent's tab", async () => {
+  const { all, coordinators, snap } = coordinatorFolder()
+  // The lead is listed before the coordinator in its folder and may be the tab in front there.
+  const folder = all.find((r) => r.path === '/c/bounti')!
+  assert.equal(folder.agents[0].paneKey, 'tab-w:1')
+  assert.equal(main.sessionIn(folder)?.terminal, 'term_c', "the coordinator's tab is its own session's, not the first agent's")
+  assert.equal(coordinators[0].session?.terminal, 'term_c')
+
+  const { main: tree, attention } = render(snap, emptyUi())
+  assert.match(tree, /<button class="coord-open" data-coordinator="bounti"/, 'the coordinator row opens through openCoordinator, which switches to term_c')
+  assert.match(tree, /data-open="folder:bounti" data-terminal="term_l" data-menu="agent:tab-l:1"/, "the lead's row opens the folder at the lead's tab")
+  assert.match(tree, /data-open="folder:bounti" data-terminal="term_w" data-menu="agent:tab-w:1"/, "and the worker's at the worker's")
+  assert.match(attention, /<button class="jump" data-open="folder:bounti" data-terminal="term_l">Jump to session<\/button>/, "Up next's jump too")
+  const found = render(snap, { ...emptyUi(), query: 'leave request' }).main
+  assert.match(found, /data-open="folder:bounti" data-terminal="term_l"/, 'and a search result for it')
+
+  // Both end in openAgent: the workspace, then a switch to that terminal.
+  const calls: string[] = []
+  const host = { call: async (method: string, params: unknown) => void calls.push(`${method} ${JSON.stringify(params)}`) }
+  await main.openAgent({ host, log: () => {} } as never, async (args) => void calls.push(args.join(' ')), { workspaceId: 'folder:bounti', terminal: 'term_c' })
+  assert.deepEqual(calls, ['workspace.open {"workspaceId":"folder:bounti"}', 'terminal switch --terminal term_c'])
 })
