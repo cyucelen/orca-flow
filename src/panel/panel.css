@@ -526,3 +526,7 @@ button.item.coord { padding: 5px 6px; }
 .ctx .chips.wrap { flex-wrap: wrap; }
 .ctx .mi .check { width: 12px; flex: none; text-align: center; }
 .ctx .micon .pdot { margin: 0; }
+
+/* Provider marks leave the character/ring geometry and the row’s click target intact. */
+.provider { display: inline-flex; flex: 0 0 14px; width: 14px; height: 14px; align-items: center; justify-content: center; color: var(--ink); }
+.provider svg { display: block; width: 14px; height: 14px; }

@@ -67,7 +67,10 @@ export type AgentInfo = {
   title: string
   /** The title of the Orca task it was dispatched with (`taskTitle`), when it has one. */
   task?: string | null
+  /** Orca’s agent id, never inferred from the model, title or summary. */
   agentType: string | null
+  /** Positive per-pane host evidence: a live PTY or an owned structured chat; absent on old snapshots. */
+  live?: boolean
   summary: AgentSummary | null
 }
 

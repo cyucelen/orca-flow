@@ -52,6 +52,8 @@ type PsAgent = {
   /** What Claude reports on its terminal: `working` while a shell or Monitor of its own still runs. */
   programStatus?: { state?: string } | null
   agentType?: string | null
+  hasLivePty?: boolean
+  structuredHostOwned?: boolean
   conversationName?: string | null
   taskTitle?: string | null
   displayName?: string | null
@@ -157,6 +159,7 @@ function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): Ag
     title: [summary?.title, a.conversationName, a.taskTitle, a.displayName].find((t) => showable(t ?? undefined)) || a.agentType || 'Agent',
     task: a.taskTitle ?? a.displayName ?? null,
     agentType: a.agentType ?? null,
+    live: a.hasLivePty === true || a.structuredHostOwned === true,
     summary
   }
 }

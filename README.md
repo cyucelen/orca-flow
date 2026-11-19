@@ -103,6 +103,10 @@ nothing fits. Disk turns amber under 25 GB and red under 10 GB.
 **PR number.** An open PR's number is colored by its CI checks: red when they failed, yellow while
 they run, green when they passed. A merged PR is purple; closed and draft PRs are grey.
 
+**Provider logos.** When live sessions use at least two known providers, each coordinator, lead
+and worker shows its own logo and provider tooltip. Idle and waiting sessions count; settled
+workers and closed history do not. See [provider semantics and verification](docs/provider-logos.md).
+
 ## How work flows
 
 | Role | Owns | Does the work itself? |
