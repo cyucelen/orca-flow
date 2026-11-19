@@ -81,7 +81,8 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    Check with `orca-flow capacity --repo <name>`. When it is not `ok`, first offer what makes room:
    reusing an existing worktree for this, or the largest item under `reclaimable` (an idle
    environment, a finished worktree to remove; see Worktree cleanup). Otherwise queue it (see the
-   capacity gate in SKILL.md) and say so in one line.
+   capacity gate in SKILL.md) and say so in one line. Decide on the verdict alone: swap use is
+   information only, and a full swap is never a reason to queue work or warn the user.
 4. **Confirm with a route line** (see [messages.md](../messages.md)): which lead is on it, where,
    at what level. End your turn.
 

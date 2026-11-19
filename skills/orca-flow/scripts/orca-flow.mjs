@@ -101,6 +101,10 @@ function pressureLevel() {
   }
 }
 
+/**
+ * Swap in use, shown for information only: the verdict never reads it. macOS keeps old pages in swap
+ * until a process touches them, so swap stays near full long after a pressure peak while RAM is free.
+ */
 function swap() {
   try {
     const s = execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8' })
@@ -169,7 +173,8 @@ async function capacity(args = {}) {
     freeGB,
     marginGB: config.marginGB,
     pressure,
-    swap: swap(),
+    // Not part of the decision: an agent must not hold back work or warn the user because of it.
+    info: { swap: swap(), note: 'Information only: the verdict ignores swap. macOS keeps old pages in swap long after RAM is free again.' },
     costs: { agentGB: costs.agentGB, envGB: costs.envGB, priced: args.repo ? { repo: args.repo, envGB } : { typicalEnvGB: envGB } },
     reclaimable: { idleEnvironments, finishedSessions }
   }
@@ -179,7 +184,7 @@ function printCapacity(c) {
   const env = c.costs.priced.repo ? `a new ${c.costs.priced.repo} worktree ~${Math.round((c.costs.agentGB + c.costs.priced.envGB) * 10) / 10} GB` : `a new workstream ~${Math.round((c.costs.agentGB + c.costs.priced.typicalEnvGB) * 10) / 10} GB`
   const lines = [
     `verdict: ${c.verdict}`,
-    `free: ${c.freeGB ?? '?'} GB (after a ${c.marginGB} GB margin)  memory pressure: ${c.pressure}${c.swap?.usedGB ? `  swap: ${c.swap.usedGB} GB` : ''}`,
+    `free: ${c.freeGB ?? '?'} GB (after a ${c.marginGB} GB margin)  memory pressure: ${c.pressure}${c.info?.swap?.usedGB ? `  swap: ${c.info.swap.usedGB} GB (information only)` : ''}`,
     `costs here: an agent ~${c.costs.agentGB} GB, ${env}`
   ]
   const { idleEnvironments, finishedSessions } = c.reclaimable

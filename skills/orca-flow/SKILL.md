@@ -106,6 +106,10 @@ costs on this machine: an agent, and per project the environment its worktrees r
 - `full`: not even an agent fits; queue the task.
 - `pressure`: macOS reports memory pressure; queue everything except P0.
 
+Swap use is information only: decide on the verdict alone. Never queue work or warn the user
+because swap looks full. macOS keeps old pages in swap long after RAM is free again, so a full swap
+does not mean memory is short.
+
 When the answer is no, `reclaimable` names what would free memory: `idleEnvironments` (a
 worktree's dev servers running while no agent there works, usually the biggest win) and
 `finishedSessions`. Offer the largest as an `approval` ask; never stop anything without a yes.
