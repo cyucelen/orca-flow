@@ -133,11 +133,6 @@
         "tooltip": "Update Orca Flow",
         "command": "flow.update"
       }
-    ],
-    "hooks": [
-      {
-        "event": "agent.launch.before"
-      }
     ]
   },
   "capabilities": [

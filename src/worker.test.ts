@@ -78,8 +78,8 @@ test("opening an agent shows its own tab, not the worktree's last one", async ()
   // A session that slept has no terminal: the workspace alone.
   await main.openAgent(orca as never, run, { workspaceId: 'identity:w' })
   assert.equal(ran.length, 1)
-  // A failed switch still leaves the workspace open, and says why.
-  assert.deepEqual(await main.openAgent(orca as never, () => Promise.reject(new Error('no such terminal')), { workspaceId: 'identity:w', terminal: 'gone' }), { opened: true })
+  // A failed exact switch does not fall back to a different workspace conversation.
+  assert.deepEqual(await main.openAgent(orca as never, () => Promise.reject(new Error('no such terminal')), { workspaceId: 'identity:w', terminal: 'gone' }), { opened: false })
   assert.match(logs[0], /terminal switch failed: no such terminal/)
 })
 
@@ -343,24 +343,6 @@ test('a new look keeps the rest of the coordinator file; delete only removes a c
   assert.throws(() => deleteFolder(join(root, 'stray'), root), /refusing/) // no coordinator file: not ours
   deleteFolder(dir, root)
   assert.equal(existsSync(dir), false)
-})
-
-test('waking a coordinator adds --continue only to the launch the plugin marked', () => {
-  const pending = new Set(['ws-1'])
-  assert.equal(main.resumeCommand({ agent: 'claude', workspaceId: 'ws-2', command: 'claude' }, pending), null, 'other launches untouched')
-  assert.equal(main.resumeCommand({ agent: 'claude', workspaceId: 'ws-1', command: 'claude --plugin-dir x' }, pending), 'claude --plugin-dir x --continue')
-  assert.equal(main.resumeCommand({ agent: 'claude', workspaceId: 'ws-1', command: 'claude' }, pending), null, 'a mark is used once')
-})
-
-test('a folder has history when Claude kept a transcript for it', async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const root = mkdtempSync(join(tmpdir(), 'projects-'))
-  mkdirSync(join(root, '-c-alpha'))
-  writeFileSync(join(root, '-c-alpha', 'abc.jsonl'), '{}')
-  assert.equal(main.hasHistory('/c/alpha', [root]), true)
-  assert.equal(main.hasHistory('/c/main', [root]), false)
 })
 
 test('a coordinator is live while its workspace has an open terminal with an agent', () => {
@@ -1403,8 +1385,8 @@ test("a coordinator's own session is the one nobody in its folder started, not t
   const a = (paneKey: string, parentPane: string | null = null) => ({ paneKey, parentPane })
   assert.equal(coordinatorSession([a('w', 'l'), a('l', 'c'), a('c')])?.paneKey, 'c')
   assert.equal(coordinatorSession([a('w', 'gone'), a('c')], (p) => p === 'w')?.paneKey, 'c', 'a dispatched worker whose starter closed is not it')
-  assert.equal(coordinatorSession([a('x'), a('c'), a('l', 'c')])?.paneKey, 'c', 'of two started by hand, the one that started others')
-  assert.equal(coordinatorSession([a('x'), a('y')])?.paneKey, 'x', 'else the first')
+  assert.equal(coordinatorSession([a('x'), a('c'), a('l', 'c')]), null, 'several independent roots require explicit association')
+  assert.equal(coordinatorSession([a('x'), a('y')]), null, 'never guess the first root')
   assert.equal(coordinatorSession([]), null)
 })
 
@@ -1470,9 +1452,9 @@ test("a click on a coordinator brings its own session's tab to the front, and on
   const found = render(snap, { ...emptyUi(), query: 'leave request' }).main
   assert.match(found, /data-open="folder:bounti" data-terminal="term_l"/, 'and a search result for it')
 
-  // Both end in openAgent: the workspace, then a switch to that terminal.
+  // Both end in openAgent: validate the exact switch before opening the workspace.
   const calls: string[] = []
   const host = { call: async (method: string, params: unknown) => void calls.push(`${method} ${JSON.stringify(params)}`) }
   await main.openAgent({ host, log: () => {} } as never, async (args) => void calls.push(args.join(' ')), { workspaceId: 'folder:bounti', terminal: 'term_c' })
-  assert.deepEqual(calls, ['workspace.open {"workspaceId":"folder:bounti"}', 'terminal switch --terminal term_c'])
+  assert.deepEqual(calls, ['terminal switch --terminal term_c', 'workspace.open {"workspaceId":"folder:bounti"}'])
 })

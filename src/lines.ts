@@ -31,7 +31,7 @@ export const GEO = {
   ax: 9.355
 }
 const X1 = GEO.av1 + GEO.ax
-const X2 = GEO.av2 + GEO.ax
+export const nodeX = (depth: number) => Math.round((X1 + Math.max(0, depth) * (GEO.av2 - GEO.av1)) * 1000) / 1000
 /** The trunk's x in a row (and in the coordinator's own row, which starts at the same edge). */
 export const trunkX = (asleep: boolean) => GEO.edge + (asleep ? GEO.txIdle : GEO.tx)
 
@@ -41,6 +41,7 @@ const svg = (cls: string, body: string) => `<svg class="${cls}" aria-hidden="tru
 /** One row's place in the tree. */
 export type RowRole = {
   nested: boolean
+  depth?: number
   /** The trunk's x (trunkX). */
   trunk: number
   node: NodeState
@@ -57,8 +58,8 @@ function ring(cx: number, r: number, node: NodeState, ask?: AskTone): string {
 }
 
 /** A chat row's connector, ring and (for a lead) PR bead. */
-export function rowLines({ nested, trunk, node, ask, cap }: RowRole): string {
-  const x = nested ? X2 : X1, from = nested ? X1 : trunk, edge = x - RING
+export function rowLines({ nested, depth = nested ? 1 : 0, trunk, node, ask, cap }: RowRole): string {
+  const x = nodeX(depth), from = depth > 0 ? nodeX(depth - 1) : trunk, edge = x - RING
   // One connector per chat, from the line it hangs from into its ring; a finished chat's dims.
   const fork = `<path class="fork" d="M${n(from)} ${-FORK}C${n(from)} ${n(-FORK * 0.35)} ${n(from + (edge - from) * 0.35)} 0 ${n(edge)} 0"/>`
   // The lead's PR sits on its ring at the lower left, opposite the character's own badge.

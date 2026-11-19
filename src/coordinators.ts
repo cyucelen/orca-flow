@@ -8,7 +8,9 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Coordinator, LinearSent, Look, WorkspaceRow } from './protocol.ts'
+import type { Coordinator, CoordinatorSessions, LinearSent, Look, WorkspaceRow } from './protocol.ts'
+
+import { memberAgent, unambiguousSession, validSessions } from './coordinator-sessions.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
@@ -40,9 +42,12 @@ export function readCoordinators(root = COORDINATOR_HOME): CoordinatorInfo[] {
   const out: CoordinatorInfo[] = []
   for (const name of readdirSync(root).sort()) {
     const dir = join(root, name)
-    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown }>(join(dir, COORDINATOR_FILE))
+    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown; sessions?: unknown }>(join(dir, COORDINATOR_FILE))
     const linearTeams = Array.isArray(c?.linearTeams) ? c.linearTeams.filter((t): t is string => typeof t === 'string') : []
-    if (c?.name) out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams })
+    if (!c?.name) continue
+    const sessions = validSessions(c.sessions)
+    out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams,
+      ...(c.sessions !== undefined ? { sessions: sessions ?? { version: 1, current: null, members: [] }, ...(!sessions ? { sessionNotice: 'Invalid session configuration. Repair coordinator.json before associating a session.' } : {}) } : {}) })
   }
   return out
 }
@@ -74,6 +79,8 @@ export type Lineage = {
   paneOf: Map<string, string>
   /** closed terminal handle -> the folder it ran in */
   dirOfTerminal?: Map<string, string>
+  /** Run routes remain independent of current-session selection. */
+  runs?: { id: string; terminal: string }[]
   /** worker pane -> whether its dispatch is still open or has settled (worker_done, abandoned) */
   dispatchOf?: Map<string, 'open' | 'settled'>
 }
@@ -94,19 +101,11 @@ const SETTLED = new Set(['succeeded', 'failed', 'abandoned', 'cancelled', 'cance
  * `rememberOwners`) applies: live lineage wins, memory only replaces 'you'.
  */
 /**
- * Pure: the coordinator's own session among the agents in its folder. Orca records which pane
- * started each agent (`parentPaneKey`): a lead or worker the coordinator started in a tab of its
- * folder names the coordinator's pane, and the coordinator names none there. So: an agent no other
- * agent here started and that is no dispatched worker; of several, the one that started the most of
- * the others; else the first. Null for an empty folder.
+ * Legacy migration candidate only: a single independent, undispatched root. Multiple roots
+ * require explicit association; their provider, focus, age, title and child count do not decide.
  */
 export function coordinatorSession<A extends { paneKey: string; parentPane: string | null }>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
-  const here = new Set(agents.map((a) => a.paneKey))
-  const roots = agents.filter((a) => !(a.parentPane && here.has(a.parentPane) && a.parentPane !== a.paneKey))
-  const own = roots.filter((a) => !dispatched(a.paneKey))
-  const pool = own.length ? own : roots.length ? roots : agents
-  const started = (a: A) => agents.filter((b) => b.parentPane === a.paneKey).length
-  return pool.reduce<A | null>((best, a) => (!best || started(a) > started(best) ? a : best), null)
+  return unambiguousSession(agents, dispatched)
 }
 
 export function assignCoordinators(rows: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: Owners = {}): WorkspaceRow[] {
@@ -115,14 +114,15 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
   const coordinatorByPane = new Map<string, string>()
   const folderOf = new Map<string, string>()
   for (const c of coordinators) for (const row of rows) if (row.path === c.dir) {
-    const session = coordinatorSession(row.agents, (pane) => lineage.dispatchOf?.has(pane) ?? false)
-    for (const a of row.agents) a === session ? coordinatorByPane.set(a.paneKey, c.key) : folderOf.set(a.paneKey, c.key)
+    const members = c.sessions ? c.sessions.members.map((m) => memberAgent(m, [row])).filter(Boolean) : [coordinatorSession(row.agents, (pane) => lineage.dispatchOf?.has(pane) ?? false)]
+    for (const a of row.agents) members.includes(a) ? coordinatorByPane.set(a.paneKey, c.key) : folderOf.set(a.paneKey, c.key)
   }
   const coordinatorByTerminal = new Map([...lineage.paneOf].filter(([, pane]) => coordinatorByPane.has(pane)).map(([handle, pane]) => [handle, coordinatorByPane.get(pane)!]))
-  // A coordinator that slept: its old terminal is closed, but it ran in the coordinator's folder.
+  for (const c of coordinators) for (const m of c.sessions?.members ?? []) for (const terminal of m.terminals) coordinatorByTerminal.set(terminal, c.key)
+  // Legacy provenance is kept only until explicit membership exists.
   for (const [handle, dir] of lineage.dirOfTerminal ?? []) {
     const c = coordinators.find((c) => c.dir === dir)
-    if (c) coordinatorByTerminal.set(handle, c.key)
+    if (c && !c.sessions) coordinatorByTerminal.set(handle, c.key)
   }
   const agentPanes = new Set(rows.flatMap((r) => r.agents.map((a) => a.paneKey)))
   const parentOf = new Map(rows.flatMap((r) => r.agents.filter((a) => a.parentPane).map((a) => [a.paneKey, a.parentPane!])))
@@ -135,7 +135,7 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
     const owner = owners[sessionOf.get(pane) ?? pane]
     if (!owner || !known.has(owner.coordinator)) return null
     const lead = owner.leadSession ? (paneOfSession.get(owner.leadSession) ?? (agentPanes.has(owner.leadSession) ? owner.leadSession : null)) : null
-    return { coordinator: owner.coordinator, leadPane: lead && lead !== pane ? lead : null }
+    return { coordinator: owner.coordinator, leadPane: lead && lead !== pane && coordinatorByPane.get(lead) !== owner.coordinator ? lead : null }
   }
   const coordinatorOfPane = (pane: string, depth = 0): { coordinator: string; leadPane: string | null } => {
     const live = liveCoordinatorOfPane(pane, depth)
@@ -253,7 +253,7 @@ export function orcaRunner(bin: string): Run {
           parsed = JSON.parse(stdout)
         } catch {}
         if (parsed?.ok) return resolve(parsed.result)
-        if (parsed?.error?.message) return reject(new Error(parsed.error.message))
+        if (parsed?.error?.message) return reject(Object.assign(new Error(parsed.error.message), { code: parsed.error.code, data: parsed.error.data }))
         if (err && (err as Error & { killed?: boolean }).killed) return reject(new Error(`orca ${args[0]} ${args[1] ?? ''} timed out`))
         reject(err ?? new Error(`orca ${args.join(' ')} failed`))
       })
@@ -277,7 +277,7 @@ export function dirOfTerminalRecord(t: { worktreePath?: string; worktreeId?: str
  * (each call is a process). A coordinator that slept left its runs on its closed terminal; Orca
  * still knows which folder that terminal ran in.
  */
-export async function loadLineage(run: Run, now = Date.now()): Promise<Lineage> {
+export async function loadLineage(run: Run, now = Date.now(), force = false): Promise<Lineage> {
   const [terminals, runs] = await Promise.all([run(['terminal', 'list']), run(['orchestration', 'run-list', '--limit', '30', '--full'])])
   const paneOf = new Map<string, string>()
   for (const t of terminals.terminals ?? []) if (t.tabId && t.leafId) paneOf.set(t.handle, `${t.tabId}:${t.leafId}`)
@@ -287,7 +287,7 @@ export async function loadLineage(run: Run, now = Date.now()): Promise<Lineage> 
   const coordinating = new Set<string>()
   for (const r of runs.runs ?? []) {
     const handle: string | null = r.coordinator_handle
-    if (!handle || now - (quietRuns.get(r.id) ?? -Infinity) < QUIET_RECHECK_MS) continue
+    if (!handle || (!force && now - (quietRuns.get(r.id) ?? -Infinity) < QUIET_RECHECK_MS)) continue
     const listed = await run(['orchestration', 'worker-list', '--run', r.id]).catch(() => null)
     if (!listed) continue
     const active = (listed.workers ?? []).filter((w: any) => w.terminal && w.terminalState !== 'released')
@@ -317,7 +317,7 @@ export async function loadLineage(run: Run, now = Date.now()): Promise<Lineage> 
     const dir = dirOfClosed.get(handle)
     if (dir) dirOfTerminal.set(handle, dir)
   }
-  return { dispatcherOf, paneOf, dirOfTerminal, dispatchOf }
+  return { dispatcherOf, paneOf, dirOfTerminal, dispatchOf, runs: (runs.runs ?? []).filter((r: any) => r.coordinator_handle).map((r: any) => ({ id: r.id, terminal: r.coordinator_handle })) }
 }
 
 /** Changes a coordinator's look in its file, keeping everything else. */
@@ -344,3 +344,12 @@ export function deleteFolder(dir: string, root = COORDINATOR_HOME): void {
   rmSync(dir, { recursive: true, force: true })
 }
 
+
+/** Persist explicit membership atomically without changing scope, appearance or other config. */
+export function writeCoordinatorSessions(dir: string, sessions: CoordinatorSessions, expected?: { sessions: CoordinatorSessions | undefined }): void {
+  const path = join(dir, COORDINATOR_FILE)
+  const data = readJson<Record<string, unknown>>(path)
+  if (!data) throw new Error('Coordinator configuration could not be read; it was not overwritten.')
+  if (expected && JSON.stringify(data.sessions) !== JSON.stringify(expected.sessions)) throw new Error('Session configuration changed. Refresh Sessions and try again; the newer selection was preserved.')
+  writeJsonFile(path, { ...data, sessions })
+}

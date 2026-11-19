@@ -91,6 +91,6 @@ export function nextTarget(
   now: number
 ): WorkspaceRow | undefined {
   if (queue.length === 0) return undefined
-  const i = last && now - last.at < 10 * 60_000 ? queue.findIndex((r) => r.id === last.id) : -1
+  const i = last && now - last.at < 10 * 60_000 ? queue.findIndex((r) => (r.queueKey ?? r.id) === last.id) : -1
   return queue[(i + 1) % queue.length]
 }

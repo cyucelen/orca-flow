@@ -151,9 +151,11 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
+  if (d.sessions) { showSessions(d.sessions); return }
+  if (d.history && d.member) { void showHistory(d.history, d.member, d.historyTerminal, d.historySession); return }
   // One action at a time; opening, folding and briefs still work while one runs.
   const action = d.act ?? d.yes
   if (ui.pending && action) {
@@ -491,7 +493,7 @@ async function confirmAction(kind: string, title: string, text: string, okLabel:
 /** Opens a coordinator, showing "Waking…" on its row while Orca starts or resumes its session. */
 function wake(key: string): Promise<void> {
   const c = snap?.coordinators.find((x) => x.key === key)
-  return inline(`coordinator:${key}`, c?.session ? 'Opening…' : 'Waking…', 'Open', () => orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }))
+  return inline(`coordinator:${key}`, 'Opening…', 'Open', () => orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }))
 }
 
 /**
@@ -584,7 +586,7 @@ function coordinatorMenu(key: string): MenuItem[] {
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
     'separator',
     { label: 'Start fresh session', icon: 'restart', danger: true, run: async () => {
-      if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'Its current conversation ends and a new one starts. Its notes and scope stay.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
+      if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]
   if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
@@ -693,6 +695,7 @@ document.addEventListener('contextmenu', (e) => {
   e.preventDefault()
   const target = el.dataset.menu!
   const [kind, id] = [target.split(':')[0], target.slice(target.indexOf(':') + 1)]
+  if (kind === 'history') return showSessions(id)
   if (kind === 'coordinator') return openMenu(coordinatorMenu(id), e.clientX, e.clientY, target)
   if (kind === 'linear') return openMenu(sendMenu(id), e.clientX, e.clientY, target)
   const row = snap.rows.find((r) => r.agents.some((a) => a.paneKey === id))
@@ -757,7 +760,7 @@ async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
     const r = await orca.plugin.request('sidebar.linearSend', { issue: issue.id, coordinator: c.key }, { timeoutMs: 120_000 })
     if (r.ok) {
       ui.status.delete(target)
-      showToast(c, issue.id, r.warnings ?? [])
+      showToast(c, issue.id, r.warnings ?? [], r.recipient)
     } else ui.status.set(target, { text: r.error ?? 'Could not send', tone: 'bad' })
   } catch (e) {
     ui.status.set(target, { text: (e as Error).message, tone: 'bad' })
@@ -766,10 +769,10 @@ async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined
-function showToast(c: Coordinator, id: string, warnings: string[]): void {
+function showToast(c: Coordinator, id: string, warnings: string[], recipient?: import('../protocol.ts').DeliveryRecipient): void {
   clearTimeout(toastTimer)
   const warn = warnings.length ? `<span class="twarn" data-tip="${esc(warnings.join('\n'))}" data-tone="warn">Linear not updated</span>` : ''
-  toastEl.innerHTML = `${coordinatorCharacter(c, 16, 'working')}<span class="t">Sent ${esc(id)} to ${esc(c.name)}</span>${warn}<button class="act" data-coordinator="${esc(c.key)}">Open chat</button>`
+  toastEl.innerHTML = `${coordinatorCharacter(c, 16, 'working')}<span class="t">Sent ${esc(id)} to ${esc(c.name)}</span>${warn}<button class="act" ${recipient ? `data-history="${esc(c.key)}" data-member="${esc(recipient.member)}" data-history-terminal="${esc(recipient.terminal)}" data-history-session="${esc(recipient.orcaSession ?? '')}"` : `data-sessions="${esc(c.key)}"`}>View recipient</button>`
   toastEl.hidden = false
   toastTimer = setTimeout(hideToast, warnings.length ? 12_000 : 8000)
 }
@@ -808,4 +811,68 @@ function displayMenu(): MenuItem[] {
     'separator',
     { label: 'Reset to default', icon: 'restart', stay: true, run: () => set(DEFAULT_DISPLAY) }
   ]
+}
+
+// Session inspection is local to the panel. It never switches native chats or changes current.
+const sessionsDialog = document.createElement('dialog')
+sessionsDialog.className = 'sessions-dialog'
+document.body.append(sessionsDialog)
+sessionsDialog.addEventListener('click', (event) => { if (event.target === sessionsDialog) sessionsDialog.close() })
+
+let sessionDialogVersion = 0
+function sessionDialog(title: string, body: string): void {
+  sessionDialogVersion++
+  sessionsDialog.innerHTML = `<header><strong>${esc(title)}</strong><button data-session-close aria-label="Close sessions">×</button></header>${body}`
+  sessionsDialog.querySelector('[data-session-close]')?.addEventListener('click', () => sessionsDialog.close())
+  if (!sessionsDialog.open) sessionsDialog.showModal()
+}
+
+async function showHistory(key: string, member: string, terminal?: string, sourceSession?: string): Promise<void> {
+  sessionDialog('Read-only history', '<p>Reading the exact recorded session…</p>')
+  const version = sessionDialogVersion
+  try {
+    const history = await orca.plugin.request('sidebar.coordinatorHistory', { key, member, ...(terminal ? { terminal } : {}), ...(sourceSession !== undefined ? { orcaSession: sourceSession || null } : {}) })
+    if (!sessionsDialog.open || version !== sessionDialogVersion) return
+    sessionDialog(history.title, `<p class="session-note">Read-only terminal scrollback excerpt (not a complete transcript). Current recipient and existing run routes are unchanged.</p>${history.unavailable ? `<p role="status">${esc(history.unavailable)}</p>` : `<pre class="session-history">${esc(history.text || 'No readable output is available for this terminal.')}</pre>${history.truncated ? '<p class="session-note">Showing a bounded excerpt, not the full conversation.</p>' : ''}`}<button data-session-back>Back to sessions</button>`)
+    sessionsDialog.querySelector('[data-session-back]')?.addEventListener('click', () => showSessions(key))
+  } catch (e) { if (!sessionsDialog.open || version !== sessionDialogVersion) return; sessionDialog('History unavailable', `<p>${esc((e as Error).message)}</p>`) }
+}
+
+function showSessions(key: string): void {
+  const c = snap?.coordinators.find((c) => c.key === key)
+  if (!c) return
+  const members = c.members ?? []
+  const candidates = snap?.rows.filter((r) => r.folderOf === key).flatMap((r) => r.agents.filter((a) => !a.parentPane && a.dispatch === null).map((a) => ({ row: r, a }))) ?? []
+  const current = members.find((m) => m.id === c.sessions?.current)
+  const memberHtml = members.map((m, i) => `<div class="session-entry"><div><strong>${esc(m.agentType ?? 'Unknown provider')}</strong><span class="session-state">${m.id === current?.id ? 'Current recipient' : 'Previous · read-only'}</span><small>${esc(m.title)}</small><code>${esc(m.orcaSession ?? m.paneKey)}</code></div><div class="session-actions"><button data-history-index="${i}">View history</button>${m.id === current?.id ? m.agent?.terminal ? '<button data-session-open>Open current</button>' : `<button data-resume-index="${i}" ${m.resumeSessionId ? '' : 'disabled title="No verified provider resume ID was recorded"'}>Resume exact session</button>` : `<button data-current-index="${i}">Make current</button>`}</div></div>`).join('')
+  sessionDialog(`${c.name} / Sessions`, `<p class="session-note">New Linear tasks → ${esc(current ? `${current.agentType ?? 'Unknown'} · ${current.title}` : 'No current recipient selected')}</p><p class="session-note">${esc(c.routing ?? 'Run routing unverified. Selecting current never claims an orchestration run.')}</p>${c.sessionNotice ? `<p>${esc(c.sessionNotice)}</p>` : ''}${memberHtml || '<p>No associated sessions yet. Select an exact independent session below.</p>'}${candidates.length ? `<h4>Associate an existing session</h4>${candidates.map(({ a }, i) => `<button class="session-candidate" data-associate-index="${i}">${esc(a.agentType ?? 'Unknown')} · ${esc(a.title)}<small>${esc(a.orcaSession ?? a.paneKey)}</small></button>`).join('')}` : ''}<div class="session-new"><label>New session provider <select id="session-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><button data-session-fresh>Start new current member</button></div><p class="session-note">A new member preserves all previous conversations. Existing runs and pending asks retain their source routes.</p><p class="session-result" role="status"></p>`)
+  const change = async (input: { action: 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; agent?: string }) => {
+    const buttons = Array.from(sessionsDialog.querySelectorAll('button'))
+    const disabled = buttons.map((b) => b.disabled)
+    buttons.forEach((b) => b.disabled = true)
+    const result = sessionsDialog.querySelector('.session-result')!
+    result.textContent = 'Updating…'
+    try {
+      const r = await orca.plugin.request('sidebar.coordinatorSessions', { key, ...input }, { timeoutMs: 90_000 })
+      if (!r.ok) { result.textContent = r.error ?? 'Session change failed'; buttons.forEach((b, i) => b.disabled = disabled[i]); return }
+      snap = await orca.plugin.request('sidebar.list')
+      draw()
+      if (sessionsDialog.open) showSessions(key)
+    } catch (e) { result.textContent = (e as Error).message; buttons.forEach((b, i) => b.disabled = disabled[i]) }
+  }
+  sessionsDialog.querySelectorAll<HTMLElement>('[data-history-index]').forEach((b) => b.addEventListener('click', () => void showHistory(key, members[Number(b.dataset.historyIndex)].id)))
+  sessionsDialog.querySelectorAll<HTMLElement>('[data-current-index]').forEach((b) => b.addEventListener('click', () => {
+    const m = members[Number(b.dataset.currentIndex)]
+    const actions = b.parentElement!
+    actions.innerHTML = `<span>Send new tasks to ${esc(m.agentType ?? 'this session')} / ${esc(m.title)}?</span><button data-confirm-current>Confirm current recipient</button><button data-cancel-current>Cancel</button>`
+    actions.querySelector('[data-confirm-current]')?.addEventListener('click', () => void change({ action: 'current', member: m.id }))
+    actions.querySelector('[data-cancel-current]')?.addEventListener('click', () => showSessions(key))
+  }))
+  sessionsDialog.querySelectorAll<HTMLElement>('[data-resume-index]').forEach((b) => b.addEventListener('click', () => void change({ action: 'resume', member: members[Number(b.dataset.resumeIndex)].id })))
+  sessionsDialog.querySelectorAll<HTMLElement>('[data-associate-index]').forEach((b) => b.addEventListener('click', () => {
+    const { row, a } = candidates[Number(b.dataset.associateIndex)]
+    void change({ action: 'associate', workspaceId: row.id, paneKey: a.paneKey })
+  }))
+  sessionsDialog.querySelector('[data-session-fresh]')?.addEventListener('click', () => void change({ action: 'fresh', agent: (sessionsDialog.querySelector('#session-agent') as HTMLSelectElement).value }))
+  sessionsDialog.querySelector('[data-session-open]')?.addEventListener('click', () => { sessionsDialog.close(); void wake(key) })
 }

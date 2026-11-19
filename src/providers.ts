@@ -17,7 +17,7 @@ export const providerSessionLive = (a: AgentInfo): boolean => a.live === true &&
 
 /** Computed before search/folding, across individual panes (including mixed worktrees and folders). */
 export function mixedProviders(snap: Pick<Snapshot, 'rows' | 'coordinators'>): boolean {
-  const agents = [...snap.rows.flatMap((r) => r.agents), ...snap.coordinators.flatMap((c) => c.session ? [c.session] : [])]
+  const agents = [...snap.rows.flatMap((r) => r.agents), ...snap.coordinators.flatMap((c) => c.members ? c.members.flatMap((m) => m.agent ? [m.agent] : []) : c.session ? [c.session] : [])]
   const providers = new Set(agents.filter(providerSessionLive).map((a) => providerOf(a.agentType)).filter((p) => p !== null))
   return providers.size > 1
 }

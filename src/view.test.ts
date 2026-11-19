@@ -1,8 +1,9 @@
+import { askKey } from './coordinator-sessions.ts'
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { type UiState, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { openerToggle } from './panel/opener.ts'
@@ -73,8 +74,8 @@ test('Up next is pinned under the tree, so the tree never moves when an ask come
 
 test('closing the first and opening another follows the person', () => {
   const ui = emptyUi()
-  ui.closed.add('p-dup')
-  ui.opened.add('p-hook')
+  ui.closed.add(askKey(snap.rows.find((r) => r.agents.some((a) => a.paneKey === 'p-dup'))!, snap.rows.flatMap((r) => r.agents).find((a) => a.paneKey === 'p-dup')!))
+  ui.opened.add(askKey(snap.rows.find((r) => r.agents.some((a) => a.paneKey === 'p-hook'))!, snap.rows.flatMap((r) => r.agents).find((a) => a.paneKey === 'p-hook')!))
   const main = page(snap, ui)
   assert.match(main, /About Pick a headline/)
   noMatch(main, /About Merge accounts by email/)
@@ -500,7 +501,9 @@ test('Up next lists every asking agent, even several in one workspace', () => {
   ])
   const main = page({ ...snap, rows: [two] }, emptyUi())
   assert.match(main, /Up next · 2/)
-  assert.match(main, /data-brief="p-a"[\s\S]*data-brief="p-b"|data-brief="p-b"[\s\S]*data-brief="p-a"/)
+  assert.equal((main.match(/data-brief=/g) ?? []).length, 2)
+  assert.ok(main.includes(esc(askKey(two, two.agents[0]))))
+  assert.ok(main.includes(esc(askKey(two, two.agents[1]))))
 })
 
 test('a title that leaks an id falls back to the workspace name', () => {
@@ -627,7 +630,7 @@ test('a lead and its workers form one lane of tree lines, in the lead\'s branch 
     { color: null, panes: ['p-dev'] },
     { color: null, panes: ['p-bare'] }
   ], 'one lane per lead with its workers, colored by the lead\'s branch; dev and no branch stay neutral')
-  assert.equal([...group.matchAll(/<i class="tl" aria-hidden="true"><\/i>/g)].length, 5, 'every row carries its line')
+  assert.equal([...group.matchAll(/data-depth="\d+"/g)].length, 5, 'every row carries its line')
   const folded = render(s, { ...emptyUi(), folded: new Set(['alpha']) }).main
   noMatch(/<section class="coordinator"><div class="item coord"[^>]*data-menu="coordinator:alpha"[\s\S]*?<\/section>/.exec(folded)![0], /class="lane"/, 'a folded team draws no lines')
 })
@@ -667,7 +670,7 @@ test('Graph: each chat is a ring with one connector; the lead\'s PR is a bead on
   assert.match(rowOf(graph, 'p-lead'), /<circle class="node n-done"[^>]*\/><g class="tl-cap" transform="translate\([\d.]+ [\d.]+\)"><circle class="cap c-merged"/, 'the lead\'s PR is a bead on its ring')
   assert.equal([...graph.matchAll(/class="tl-cap"/g)].length, 1, 'once, nothing trails past the last child')
   assert.match(graph, /<svg class="tl-h"[^>]*><circle class="node n-sleeping"/, 'a sleeping coordinator\'s ring is dashed')
-  assert.equal([...graph.matchAll(/<i class="tl" aria-hidden="true"><\/i>/g)].length, 4, 'every row carries its runs')
+  assert.equal([...graph.matchAll(/data-depth="\d+"/g)].length, 4, 'every row carries its runs')
 })
 
 test('a working ring carries a travelling shimmer instead of the character\'s spinning badge', () => {
@@ -702,7 +705,7 @@ test('the focused row wears a slim bar on its left edge, not a box', () => {
   const s: Snapshot = { ...snap, rows: [row('clock', 'shop', [lead], { branch: 'me/clock', active: true }), row('dev', 'shop', [agent('p-dev', 'Dev', 'working', { coordinator: 'alpha' })], { branch: 'dev' })],
     coordinators: [{ ...snap.coordinators[0], active: true, session: agent('p-c', 'alpha', 'done') }, snap.coordinators[1]] }
   const main = render({ ...s, focusedPanes: ['p-lead', 'p-c'] }, emptyUi()).main
-  assert.match(main, /class="item current"[^>]*data-menu="agent:p-lead"[^>]*>(?:<i class="tl"[^>]*><\/i>)?<svg class="tl-c"[\s\S]*?<\/svg>(?:<i class="beam[^"]*"[^>]*><\/i>)?<i class="fb" aria-hidden="true"><\/i>/)
+  assert.match(main, /class="item current"[^>]*data-menu="agent:p-lead"[^>]*>(?:<i class="tree-rail[^"]*"[^>]*><\/i>)*<svg class="tl-c"[\s\S]*?<\/svg>(?:<i class="beam[^"]*"[^>]*><\/i>)?<i class="fb" aria-hidden="true"><\/i>/)
   assert.match(main, /<div class="item coord current" data-menu="coordinator:alpha" aria-current="true"><svg class="tl-h"[\s\S]*?<\/svg><i class="fb" aria-hidden="true"><\/i>/, 'a coordinator too')
   assert.equal([...main.matchAll(/class="fb"/g)].length, 2, 'only the focused rows')
 })
@@ -1197,8 +1200,8 @@ test('Staging folds away at the end; a long list shows its first rows and how ma
 test('a sent issue shows its coordinator starting until a worktree links it; then its lead', () => {
   const d = linearData([lin('BOU-5')], { sent: { 'BOU-5': { coordinator: 'alpha', at: 1 } } })
   const sent = render(snap, emptyUi(), d).linear
-  assert.match(sent, /data-coordinator="alpha"/)
-  assert.match(sent, /alpha · starting/)
+  assert.match(sent, /data-sessions="alpha"/)
+  assert.match(sent, /alpha · recipient unrecorded · starting/)
   assert.match(sent, /data-tip="In Progress"/, 'shown In Progress, as the send moved it')
   const lead = agent('p-l', 'Hours', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }) })
   const linked = render({ ...snap, rows: [...snap.rows, row('wt-5', 'mono', [lead], { linearIssue: 'BOU-5' })] }, emptyUi(), d).linear

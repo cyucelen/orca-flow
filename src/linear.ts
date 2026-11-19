@@ -318,7 +318,7 @@ export const SENT_FOR_MS = 24 * 3_600_000
 
 /** Pure: the sends still starting: not linked by a worktree yet, and recent. Null when nothing changed. */
 export function pruneSent(sent: Record<string, LinearSent>, linked: ReadonlySet<string>, now = Date.now()): Record<string, LinearSent> | null {
-  const next = Object.fromEntries(Object.entries(sent).filter(([id, s]) => !linked.has(id) && now - s.at < SENT_FOR_MS))
+  const next = Object.fromEntries(Object.entries(sent).filter(([id, s]) => s.delivery === 'unknown' || (!linked.has(id) && now - s.at < SENT_FOR_MS)))
   return Object.keys(next).length === Object.keys(sent).length ? null : next
 }
 
