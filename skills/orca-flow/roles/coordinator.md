@@ -109,7 +109,14 @@ without reporting" ends in a question for the user (review this PR, pick an opti
 release), never relay it as your ask and never wait for the answer: at most one line that the lead
 is waiting on the user, pointing to its chat or card, and offer to open it
 (`orca worktree activate --worktree <selector>`). A lead that `orca orchestration ask`s you about
-something only the user decides: reply that it should ask the user in its own chat.
+something only the user decides, or a `status` note that carries a user decision: reply to the lead
+that it asks the user in its own chat (`orca orchestration reply --id <message_id>`), and do not
+mention the question to the user.
+
+**No recap of leads' asks.** Never end a turn with a "Still waiting on you" or "open items" list that
+restates leads' questions. When you have your own ask (capacity, routing, worktree removal, a
+conflict), the frame holds only that ask. Leads that wait on the user get at most one line that
+points to Up next or their chats: "2 leads wait on you in their chats; see Up next".
 
 When you route to a lead or it reports, glance at `orca orchestration worker-list`: a lead that has
 been working a long time with no workers is doing the work itself. Remind it to delegate
@@ -126,10 +133,10 @@ read-only subagent. Anything else, including why something fails, goes to a lead
 
 ## "What's next?"
 
-Run `orca-flow queue` and present only item 1, in a Briefing: its level, which agent is waiting, and
-its ask in one line, attributed to that agent ("the checkout lead wants a review of PR #12"), never phrased as your
-own question (the queue marks those "the lead asks, answer in its chat"). The user answers the agent
-that asked, in its own chat: point to its card and offer to open it
+Run `orca-flow queue` and present only item 1, in a Briefing: its level, the workstream, who waits
+and the kind of need ("the checkout lead needs your review, in its chat"). Never restate the
+lead's question, its options or its recommendation (the queue does not print them). The user
+answers the agent that asked, in its own chat: offer to open it
 (`orca worktree activate --worktree <selector>`). Only your own asks (routing, capacity, worktree
 removal, conflicts between workstreams) are answered here. Relay an answer yourself only for a question sent to you
 (`orca orchestration reply --id <message_id>`) or when the user asks you to pass something to a

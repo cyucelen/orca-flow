@@ -242,14 +242,20 @@ async function queue({ all = false } = {}) {
 }
 
 /** The queue as text; a lead's or worker's ask is attributed to it and answered in its own chat. */
+const NEED_WORD = { decision: 'pick', approval: 'approval', review: 'review', info: 'answer', action: 'action' }
+
 export function formatQueue(q) {
   const word = (p) => (p ? `${p} ${LEVELS[p]}` : 'unrated')
   const lines = [q.waiting.length ? `Waiting on you (${q.waiting.length}), in order:` : 'Nothing is waiting on you.']
   q.waiting.forEach((w, i) => {
     lines.push(`${i + 1}. [${word(w.priority)}] ${w.name}: ${w.title}`)
-    const own = w.asker === 'lead' || w.asker === 'worker' ? `the ${w.asker} asks, answer in its chat · ` : ''
-    if (w.needs) lines.push(`   ${own}${w.needs.type}${w.effort ? ` (${w.effort})` : ''}: ${w.needs.ask}`)
-    if (w.needs?.options.length) lines.push(`   options: ${w.needs.options.join(' | ')}`)
+    const effort = w.effort ? ` (${w.effort})` : ''
+    // A lead's or worker's ask is answered in its own chat: name only who waits and on what kind
+    // of need, never the question or its options, so a coordinator has nothing to restate.
+    const relayed = w.asker === 'lead' || w.asker === 'worker'
+    if (w.needs && relayed) lines.push(`   the ${w.asker} waits on your ${NEED_WORD[w.needs.type] ?? w.needs.type}${effort} · answer in its chat (or Up next)`)
+    else if (w.needs) lines.push(`   ${w.needs.type}${effort}: ${w.needs.ask}`)
+    if (!relayed && w.needs?.options.length) lines.push(`   options: ${w.needs.options.join(' | ')}`)
     else if (w.since) lines.push(`   since: ${w.since}`)
     lines.push(`   open: ${w.worktree}`)
   })

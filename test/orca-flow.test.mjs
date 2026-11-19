@@ -107,9 +107,11 @@ test('a lead is known from the role line its coordinator gives it', () => {
   assert.equal(roleOf('help me with this bug', []), 'solo')
 })
 
-test("the queue attributes a lead's ask to the lead and points to its chat", () => {
-  const ask = (asker, name) => ({ worktree: `wt-${name}`, name: `repo/${name}`, priority: 'P2', state: 'done', title: name, needs: { type: 'review', ask: 'Is PR #3 good to merge?', options: [] }, asker, effort: 'quick', since: null, goal: null })
-  const text = formatQueue({ scope: 'all', waiting: [ask('lead', 'checkout'), ask('coordinator', 'home')], working: [] })
-  assert.match(text, /repo\/checkout[\s\S]*the lead asks, answer in its chat · review \(quick\): Is PR #3 good to merge\?/)
-  assert.match(text, /repo\/home[\s\S]*\n   review \(quick\): Is PR #3/, "a coordinator's own ask is answered here")
+test("the queue points to a lead's chat without its question, and shows a coordinator's own ask", () => {
+  const ask = (asker, name, ask) => ({ worktree: `wt-${name}`, name: `repo/${name}`, priority: 'P2', state: 'done', title: name, needs: { type: 'decision', ask, options: ['Allow it', 'Block it'] }, asker, effort: 'quick', since: 'ran the tests', goal: null })
+  const lead = formatQueue({ scope: 'all', waiting: [ask('lead', 'checkout', 'May a manager save No budget?')], working: [] })
+  assert.match(lead, /repo\/checkout: checkout\n   the lead waits on your pick \(quick\) · answer in its chat \(or Up next\)\n   since: ran the tests\n   open: wt-checkout/)
+  assert.doesNotMatch(lead, /No budget|Allow it|Block it|options:/, "a lead's question and options are not printed for a coordinator to restate")
+  const own = formatQueue({ scope: 'all', waiting: [ask('coordinator', 'home', 'Can I stop the idle dev server?')], working: [] })
+  assert.match(own, /repo\/home: home\n   decision \(quick\): Can I stop the idle dev server\?\n   options: Allow it \| Block it/, "a coordinator's own ask is answered here")
 })

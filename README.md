@@ -78,7 +78,8 @@ valid JSON is not changed. The Claude profile is the one Orca's agents use
 6. **Sleep what you are not using.** Right-click a coordinator or session and choose **Sleep** to
    free its memory. Clicking a sleeping coordinator wakes it in the same conversation.
 
-You can also ask a coordinator "what's next?" at any time; it answers with one decision at a time.
+You can also ask a coordinator "what's next?" at any time; it names one agent that waits on you
+and offers to open its chat.
 
 ## Reading the panel
 

@@ -103,8 +103,9 @@ week away. They do not remember the earlier messages, and they do not read the d
   real option: put it under the Ask.
 - **Risks have numbers.** A cost warning gives the amount ("about $6"). A risk warning names what
   is at risk ("1,240 staging rows").
-- **No silent drops.** An earlier ask that is still open is named in one phrase in the context:
-  held, superseded or answered.
+- **No silent drops.** An earlier ask of your own that is still open is named in one phrase in
+  the context: held, superseded or answered. A coordinator never names or carries forward a lead's
+  open ask: the lead asks it again in its own chat.
 - **Letters belong to the current Ask.** Option letters name only the options of this message's
   Ask. Earlier options, tested variants and table columns are named by what they are ("all
   documents", "courses under 1,200 tokens"), never by a letter. This holds in the detail above the
@@ -121,7 +122,9 @@ week away. They do not remember the earlier messages, and they do not read the d
 **Coordinator Briefing:** when a coordinator greets the user or the user asks what is next: the
 status line (Idle, or `Needs ...` when the coordinator itself asks), one context paragraph with
 what runs and the room left, then the top waiting items as a numbered list, one line each, in
-plain words: `1. today · BOU-4206 needs your pick: ...`. Only a coordinator may put a list there.
+plain words. An item names the workstream, who waits and the kind of need, never the question or
+its options: `1. today · BOU-4206, short documents as 1 lesson: the lead needs your pick, in its
+chat`. Only the coordinator's own ask goes in its Ask. Only a coordinator may put a list there.
 
 ## Writing rules
 
@@ -297,8 +300,8 @@ Some users have 2 accounts with the same email, and the fix merges them into one
 
 2 agents wait on you. AI Create v2 production readiness and Draft shifts missing from calendar run now. There is room for 1 more worktree, or 4 more agents.
 
-1. today · BOU-4206, short documents as 1 lesson, needs your pick: run the test with or without the longest manual?
-2. soon · Isola app on-demand services needs your review: PR #6227.
+1. today · BOU-4206, short documents as 1 lesson: the lead needs your pick, in its chat.
+2. soon · Isola app on-demand services: the lead needs your review, in its chat.
 
 **Next:** say "next" to open item 1.
 ```

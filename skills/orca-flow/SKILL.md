@@ -166,6 +166,8 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
   Workers ask their lead; a lead asks the user directly about its workstream; a coordinator asks
   only about routing, capacity, worktrees and conflicts between workstreams, and never relays a
   lead's question as its own.
+- A coordinator never restates a lead's question, its options or its recommendation: it points
+  to the lead's chat or to Up next.
 
 ## Never
 
