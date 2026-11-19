@@ -21,7 +21,7 @@ import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
-import { findTranscript, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
+import { findTranscript, missedTurns, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
@@ -401,9 +401,10 @@ function claudeProjectRoots(): string[] {
 /** Every row of the last snapshot, coordinator workspaces included (the panel's rows leave them out). */
 let allRows: WorkspaceRow[] = []
 
-/** Pure: the agent panes Orca lists now, in the panel's rows and the coordinators' sessions. */
-export function livePanes(snap: Pick<Snapshot, 'rows' | 'coordinators'>): string[] {
-  const panes = [...snap.rows.flatMap((r) => r.agents.map((a) => a.paneKey)), ...(snap.coordinators ?? []).map((c) => c.session?.paneKey ?? '')]
+/** Pure: the agent panes Orca lists now, in the panel's rows and the coordinators' sessions; with `idle`, only those whose turn is not running. */
+export function livePanes(snap: Pick<Snapshot, 'rows' | 'coordinators'>, idle = false): string[] {
+  const agents = [...snap.rows.flatMap((r) => r.agents), ...(snap.coordinators ?? []).flatMap((c) => (c.session ? [c.session] : []))]
+  const panes = agents.filter((a) => !idle || a.state === 'done' || a.state === 'waiting').map((a) => a.paneKey)
   return [...new Set(panes.filter(Boolean))]
 }
 
@@ -974,16 +975,21 @@ export default function activate(orca: OrcaWorkerApi): void {
    * queue (two Haiku calls at most) with a pause between them, so a restart costs no burst.
    */
   function refreshOldSummaries(snap: Snapshot): void {
-    const stale = staleCards(readStore().summaries, livePanes(snap))
-    if (stale.length === 0) return
+    const cards = readStore().summaries
+    const stale = staleCards(cards, livePanes(snap))
     const jobs = stale.flatMap(({ pane, transcript, worktreeId }) => {
       const path = transcript && existsSync(transcript) ? transcript : findTranscript(pane).path
       if (path) return [{ pane, transcript: path, worktreeId }]
       orca.log(`summary for ${pane} not refreshed: no transcript found`)
       return []
     })
-    orca.log(`refreshing ${jobs.length} summaries an older summarizer wrote`)
-    void refreshStale({ jobs, enqueue: summarizer.enqueue, stopped: () => disposed })
+    // Turns that ended after their card was written but were never summarized (the worker was
+    // stopped, or the turn ended while Orca held the pane in working): summarized once, unforced.
+    const missed = missedTurns(cards, livePanes(snap, true)).filter((m) => !jobs.some((j) => j.pane === m.pane))
+    if (jobs.length === 0 && missed.length === 0) return
+    if (jobs.length) orca.log(`refreshing ${jobs.length} summaries an older summarizer wrote`)
+    if (missed.length) orca.log(`summarizing ${missed.length} turns that ended after their card was written`)
+    void refreshStale({ jobs: [...jobs, ...missed.map((m) => ({ ...m, force: false }))], enqueue: summarizer.enqueue, stopped: () => disposed })
   }
 
   // The summarizer and `orca-flow set` write here; a new summary should show without an event.

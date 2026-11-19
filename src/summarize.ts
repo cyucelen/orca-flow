@@ -2,9 +2,10 @@
 // (title, about, the ask at a glance, what it is watching, a priority guess). Shared by the plugin
 // worker, which runs it when Orca reports a finished turn, and `orca-flow summarize-run`.
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
 import type { AgentSummary } from './protocol.ts'
 import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
@@ -431,7 +432,23 @@ export async function summarizePane(input: { pane: string; transcript: string; w
 
 // ---------- when to summarize ----------
 
-type StatusEvent = { paneKey: string; workspaceId: string | null; state: string }
+type StatusEvent = {
+  paneKey: string
+  workspaceId: string | null
+  state: string
+  /** The agent's own turn. Orca keeps `state` working while background work runs (an artifact watch, a job, a cron), so this is what says the turn ended. */
+  mainAgent?: { state: string; stateStartedAt?: number }
+}
+
+/**
+ * Whether an event ends a turn: Orca says done or waiting, or it says working only because of
+ * background work while the agent's own turn is done or waiting. A turn still running never is.
+ */
+export function endsTurn(event: Pick<StatusEvent, 'state' | 'mainAgent'>): boolean {
+  if (event.state === 'done' || event.state === 'waiting') return true
+  const main = event.mainAgent?.state
+  return event.state === 'working' && (main === 'done' || main === 'waiting')
+}
 type Job = { pane: string; transcript: string; worktreeId?: string; force?: boolean }
 type Queued = Job & { waiters: (() => void)[] }
 
@@ -457,6 +474,8 @@ export function turnSummarizer(opts: {
   const again = new Map<string, Queued>()
   const queue: Queued[] = []
   const settle = (job: Queued) => { for (const w of job.waiters) w() }
+  /** The turn end last scheduled per pane, so Orca repeating one (each status update is an event) runs it once. */
+  const lastEnd = new Map<string, string>()
 
   const pump = () => {
     while (running.size < (opts.parallel ?? 2)) {
@@ -496,8 +515,13 @@ export function turnSummarizer(opts: {
 
   return {
     onStatus(event: StatusEvent): void {
-      if (event.state !== 'done' && event.state !== 'waiting') return
+      if (!endsTurn(event)) return
       const pane = event.paneKey
+      if (event.mainAgent?.stateStartedAt !== undefined) {
+        const end = `${event.mainAgent.state}@${event.mainAgent.stateStartedAt}`
+        if (lastEnd.get(pane) === end) return
+        lastEnd.set(pane, end)
+      }
       // A new session can report its first status a moment before Claude creates its transcript
       // file, so a miss is looked up again before it counts.
       const retries = opts.retryMs ?? [5000, 15_000]
@@ -529,7 +553,58 @@ export function turnSummarizer(opts: {
 
 // ---------- refreshing cards an older summarizer wrote ----------
 
-type Card = { pane?: string; transcript?: string; worktreeId?: string; summarizer?: number }
+type Card = { pane?: string; transcript?: string; worktreeId?: string; summarizer?: number; updatedAt?: number }
+
+/**
+ * When the transcript's last turn ended (its last `turn_duration` line), in ms, or null. Reads only
+ * the last `tail` bytes: a turn end further back than that is not looked for.
+ */
+export function lastTurnEnd(transcript: string, tail = 256 * 1024): number | null {
+  let text: string
+  try {
+    const size = statSync(transcript).size
+    const start = Math.max(0, size - tail)
+    const bytes = new Uint8Array(size - start)
+    const fd = openSync(transcript, 'r')
+    try {
+      readSync(fd, bytes, 0, bytes.length, start)
+    } finally {
+      closeSync(fd)
+    }
+    text = new StringDecoder('utf8').write(bytes)
+  } catch {
+    return null
+  }
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"turn_duration"')) continue
+    try {
+      const r = JSON.parse(lines[i])
+      const at = r.type === 'system' && r.subtype === 'turn_duration' ? Date.parse(r.timestamp) : NaN
+      if (Number.isFinite(at)) return at
+    } catch {}
+  }
+  return null
+}
+
+/**
+ * Pure: the cards whose agent finished a turn after the card was written, for idle panes only (a
+ * pane mid-turn would be summarized half done). A turn end Orca's event never reported (the worker
+ * was stopped, or Orca held the pane in working before mainAgent was read) is caught up this way.
+ */
+export function missedTurns(cards: Record<string, Card>, idlePanes: Iterable<string>, turnEnd: (transcript: string) => number | null = lastTurnEnd): { pane: string; transcript: string; worktreeId?: string }[] {
+  const out: { pane: string; transcript: string; worktreeId?: string }[] = []
+  const seen = new Set<string>()
+  for (const pane of idlePanes) {
+    if (!pane || seen.has(pane)) continue
+    seen.add(pane)
+    const card = cards[fileKey(pane)]
+    if (!card?.transcript || !card.updatedAt) continue
+    const end = turnEnd(card.transcript)
+    if (end !== null && end > card.updatedAt) out.push({ pane, transcript: card.transcript, worktreeId: card.worktreeId || undefined })
+  }
+  return out
+}
 
 /**
  * Pure: the cards to re-summarize, one per live agent pane whose card an older summarizer wrote
@@ -550,7 +625,7 @@ export function staleCards(cards: Record<string, Card>, livePanes: Iterable<stri
 }
 
 /**
- * Re-summarizes stale cards without a burst: jobs go through `enqueue` (the turn summarizer's
+ * Re-summarizes stale cards without a burst (forced, unless a job says `force: false`): jobs go through `enqueue` (the turn summarizer's
  * queue, so turn summaries and refreshes share its parallel limit), at most `parallel` in flight
  * from here, each lane pausing `gapMs` before its next. A failure is logged once per pane by the
  * queue and the rest go on. `stopped` ends it early (the worker was deactivated).
@@ -567,7 +642,7 @@ export async function refreshStale(opts: {
   const jobs = [...opts.jobs]
   const lane = async () => {
     for (let job = jobs.shift(); job && !opts.stopped?.(); job = jobs.shift()) {
-      await opts.enqueue({ ...job, force: true })
+      await opts.enqueue({ ...job, force: job.force ?? true })
       if (jobs.length) await wait(opts.gapMs ?? 3000)
     }
   }

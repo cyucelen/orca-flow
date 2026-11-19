@@ -739,6 +739,82 @@ test('a refresh stops when the worker is deactivated', async () => {
   assert.deepEqual(ran, ['p1'])
 })
 
+test('a turn that ends while Orca stays working/monitoring is summarized; a running turn is not', async () => {
+  const { endsTurn, turnSummarizer } = await import('./summarize.ts')
+  assert.equal(endsTurn({ state: 'working', mainAgent: { state: 'done' } }), true, 'an artifact watch, a job or a cron keeps Orca working')
+  assert.equal(endsTurn({ state: 'working', mainAgent: { state: 'waiting' } }), true)
+  assert.equal(endsTurn({ state: 'working', mainAgent: { state: 'working' } }), false, 'mid-turn')
+  assert.equal(endsTurn({ state: 'working' }), false, 'mid-turn, no mainAgent')
+  assert.equal(endsTurn({ state: 'blocked', mainAgent: { state: 'done' } }), false)
+  assert.equal(endsTurn({ state: 'done' }), true)
+
+  const runs: string[] = []
+  const lookups: string[] = []
+  const s = turnSummarizer({
+    delayMs: 5,
+    findTranscript: (pane) => (lookups.push(pane), { path: `/t/${pane}` }),
+    run: async (job) => void runs.push(job.pane)
+  })
+  const monitoring = (paneKey: string, main: string, at: number) => ({ paneKey, workspaceId: 'w', state: 'working', mainAgent: { state: main, stateStartedAt: at } })
+  s.onStatus(monitoring('running', 'working', 1))
+  s.onStatus({ paneKey: 'old-orca', workspaceId: 'w', state: 'working' })
+  s.onStatus(monitoring('watch', 'done', 1))
+  // Timers fire in the order they were set, so once the watch pane has run, the others had their turn.
+  await until(() => runs.length === 1, 'the finished turn')
+  assert.deepEqual(runs, ['watch'])
+  assert.deepEqual(lookups, ['watch'], 'a running turn is not even looked up')
+
+  s.onStatus(monitoring('watch', 'done', 1))
+  s.onStatus(monitoring('watch', 'working', 2))
+  s.onStatus(monitoring('watch', 'done', 3))
+  await until(() => runs.length === 2, 'the next turn end')
+  s.onStatus(monitoring('watch', 'done', 3))
+  s.onStatus(monitoring('marker', 'done', 1))
+  await until(() => runs.includes('marker'), 'a later pane')
+  assert.deepEqual(runs, ['watch', 'watch', 'marker'], 'each turn end once, however often Orca repeats it')
+  s.dispose()
+})
+
+test('a turn that ended after its card was written is caught up, for idle panes, from the transcript tail', async () => {
+  const { lastTurnEnd, missedTurns, refreshStale } = await import('./summarize.ts')
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'missed-'))
+  const ended = (iso: string) => JSON.stringify({ type: 'system', subtype: 'turn_duration', durationMs: 2000, timestamp: iso })
+  const said = (iso: string) => JSON.stringify({ type: 'assistant', timestamp: iso, message: { content: [{ type: 'text', text: 'Keep 8 h?' }] } })
+  const t = join(dir, 's.jsonl')
+  writeFileSync(t, [said('2026-11-18T09:58:22Z'), ended('2026-11-18T09:58:23Z'), 'x'.repeat(5000), said('2026-11-19T09:22:10Z'), ended('2026-11-19T09:22:15Z'), said('2026-11-19T09:25:00Z')].join('\n') + '\n')
+  assert.equal(lastTurnEnd(t), Date.parse('2026-11-19T09:22:15Z'), 'the last turn end, not the line after it')
+  assert.equal(lastTurnEnd(t, 200), null, 'only the tail is read')
+  assert.equal(lastTurnEnd(join(dir, 'none.jsonl')), null)
+
+  const card = (updatedAt: number, transcript = t) => ({ pane: 'p', transcript, worktreeId: 'w', updatedAt })
+  const cards = {
+    'tab_stale': card(Date.parse('2026-11-18T09:58:29Z')),
+    'tab_fresh': card(Date.parse('2026-11-19T09:22:25Z')),
+    'tab_busy': card(Date.parse('2026-11-18T09:58:29Z')),
+    'tab_none': card(Date.parse('2026-11-18T09:58:29Z'), join(dir, 'none.jsonl'))
+  }
+  assert.deepEqual(missedTurns(cards, ['tab:stale', 'tab:fresh', 'tab:none', 'tab:nocard', 'tab:stale']), [{ pane: 'tab:stale', transcript: t, worktreeId: 'w' }])
+  assert.deepEqual(missedTurns(cards, []), [], 'a busy pane is not passed in, so it is never summarized mid-turn')
+  rmSync(dir, { recursive: true, force: true })
+
+  const forced: boolean[] = []
+  await refreshStale({ jobs: [{ pane: 'a', transcript: '/a' }, { pane: 'b', transcript: '/b', force: false }], parallel: 1, enqueue: async (job) => void forced.push(!!job.force), wait: async () => {} })
+  assert.deepEqual(forced, [true, false], 'a caught-up turn is not forced: an unchanged turn is skipped')
+})
+
+test('idle live panes leave out agents whose turn is running', () => {
+  const agent = (paneKey: string, state: string) => ({ paneKey, state }) as any
+  const snap = {
+    rows: [{ agents: [agent('a', 'done'), agent('b', 'working'), agent('c', 'waiting')] }] as any,
+    coordinators: [{ session: agent('d', 'done') }, { session: agent('e', 'working') }, { session: null }] as any
+  }
+  assert.deepEqual(main.livePanes(snap, true), ['a', 'c', 'd'])
+  assert.deepEqual(main.livePanes(snap), ['a', 'b', 'c', 'd', 'e'])
+})
+
 test('setup links the CLI, skill and coordinator CLAUDE.md, repoints old links, keeps real files', async () => {
   const { ensureLinks } = await import('./install.ts')
   const { mkdtempSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync, readFileSync } = await import('node:fs')
