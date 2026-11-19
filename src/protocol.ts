@@ -163,9 +163,11 @@ export type CoordinatorMemberView = CoordinatorMember & { agent: AgentInfo | nul
  * What a coordinator click did. `ok` means a session is now shown. `choose` and `restore-failed` are
  * not errors: the first needs an explicit Sessions choice, the second can be retried (`retryable`) or
  * replaced by a new conversation while the old one stays in history. `busy`: another start, resume or
- * session change for it is still running. `failed` is an actual failed start, resume or open.
+ * session change for it is still running. `starting`: a new conversation runs and is shown, but its
+ * binding is not verified yet; the next click adopts that same terminal, launching nothing.
+ * `failed` is an actual failed start, resume or open.
  */
-export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string }
+export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'starting' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string }
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 

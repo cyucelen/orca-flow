@@ -5,6 +5,7 @@ import { execFile, execFileSync } from 'node:child_process'
 import type { CockpitStats, SessionRef, StartedGroup, WorkspaceRow } from './protocol.ts'
 import { finished, workingIn } from './rank.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
+import { terminalPane } from './coordinator-sessions.ts'
 
 type Run = (args: string[], options?: { timeoutMs?: number }) => Promise<any>
 
@@ -116,7 +117,7 @@ export async function loadCockpit(run: Run, rows: WorkspaceRow[]): Promise<Cockp
   // Without Orca's session pids every process in a session would look detached; count none then.
   const started = mem ? startedGroups(procs, footprint, sessionPids, rows) : []
   const terminalOf = new Map<string, string>()
-  for (const t of terminals.terminals ?? []) if (t.tabId && t.leafId) terminalOf.set(`${t.tabId}:${t.leafId}`, t.handle)
+  for (const t of terminals.terminals ?? []) { const pane = terminalPane(t); if (pane) terminalOf.set(pane, t.handle) }
   return buildCockpit(rows, memory, terminalOf, merged, swapUsage(), started)
 }
 
@@ -129,7 +130,7 @@ export async function loadCockpit(run: Run, rows: WorkspaceRow[]): Promise<Cockp
 export async function closeSessions(run: Run, panes: string[]): Promise<{ closed: number }> {
   const listed = await run(['terminal', 'list']).catch(() => ({ terminals: [] }))
   const terminalOf = new Map<string, string>()
-  for (const t of listed.terminals ?? []) if (t.tabId && t.leafId) terminalOf.set(`${t.tabId}:${t.leafId}`, t.handle)
+  for (const t of listed.terminals ?? []) { const pane = terminalPane(t); if (pane) terminalOf.set(pane, t.handle) }
   const terminals = panes.map((p) => terminalOf.get(p)).filter((t): t is string => Boolean(t))
   let closed = 0
   for (const terminal of terminals) {

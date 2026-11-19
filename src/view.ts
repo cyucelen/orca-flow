@@ -325,7 +325,7 @@ export type WakeMenu = { header: string; tip?: string; sessions: boolean; retry:
 /** What a coordinator click's outcome shows: a row status, or the Sessions menu. Never buttons on the row. */
 export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMenu | null } {
   const extra = { ...(r.error ? { tip: r.error } : {}), ...(r.agent ? { agent: r.agent } : {}) }
-  if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : 'Open', tone: 'ok' }, menu: null }
+  if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' || r.kind === 'starting' ? 'Started' : 'Open', tone: 'ok' }, menu: null }
   if (r.kind === 'busy') return { row: { text: 'Opening…', tone: 'pending' }, menu: null }
   if (r.kind === 'choose') return { row: null, menu: { header: 'Pick the main conversation', sessions: true, retry: false, ...extra } }
   if (r.kind === 'restore-failed') return { row: null, menu: { header: "Couldn't restore the last conversation", sessions: false, retry: r.retryable === true, ...extra } }

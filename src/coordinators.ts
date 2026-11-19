@@ -10,7 +10,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Coordinator, CoordinatorSessions, LinearSent, Look, WorkspaceRow } from './protocol.ts'
 
-import { memberAgent, unambiguousSession, validSessions } from './coordinator-sessions.ts'
+import { memberAgent, terminalPane, unambiguousSession, validSessions } from './coordinator-sessions.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
@@ -280,7 +280,8 @@ export function dirOfTerminalRecord(t: { worktreePath?: string; worktreeId?: str
 export async function loadLineage(run: Run, now = Date.now(), force = false): Promise<Lineage> {
   const [terminals, runs] = await Promise.all([run(['terminal', 'list']), run(['orchestration', 'run-list', '--limit', '30', '--full'])])
   const paneOf = new Map<string, string>()
-  for (const t of terminals.terminals ?? []) if (t.tabId && t.leafId) paneOf.set(t.handle, `${t.tabId}:${t.leafId}`)
+  // A background-launched terminal has no tab yet; its recorded pane still names its agent.
+  for (const t of terminals.terminals ?? []) { const pane = terminalPane(t); if (pane) paneOf.set(t.handle, pane) }
 
   const dispatcherOf = new Map<string, string>()
   const dispatchOf = new Map<string, 'open' | 'settled'>()

@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { associateSession, askKey, chooseSession, currentRecipient, exclusive, wakeCoordinator, wakePlan, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
+import { associateSession, askKey, bindLaunched, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
 import { askingRows, emptyUi, render, wakeView } from './view.ts'
@@ -857,4 +857,77 @@ test('a coordinator row never shows wake buttons or a reason: muted Sleeping, re
     assert.equal(html.includes('rstatus bad'), r.kind === 'failed', `${r.kind}: red only for a real failure`)
     if (r.kind === 'choose' || r.kind === 'restore-failed') assert.match(html, />Sleeping</)
   }
+})
+
+// ---------- a background-launched coordinator conversation ----------
+
+/** The 3d-print report: agent.launch returned a terminal with no tab (pty: placeholders, a recorded pane). */
+function launched() {
+  const { rows } = fixture()
+  const row = { ...rows[0], agents: [] as typeof rows[0]['agents'] }
+  const ptyId = 'folder:home@@79869e3a'
+  const terminal = { handle: 'term_launched', ptyId, tabId: `pty:${ptyId}`, leafId: `pty:${ptyId}`, recordedPaneKey: 'tab-l:leaf-l', worktreePath: '/fixture/home' }
+  const launch: Launch = { workspaceId: row.id, terminalId: ptyId, agent: 'claude' }
+  const agent = { ...rows[0].agents[0], paneKey: 'tab-l:leaf-l', orcaSession: 'launched-session', agentType: 'claude', terminal: null, title: 'Coordinator', parentPane: null, dispatch: null }
+  return { row, terminal, launch, agent }
+}
+
+test('a background-launched terminal is bound by its recorded pane once its agent appears', () => {
+  const { row, terminal, launch, agent } = launched()
+  assert.equal(terminalPane(terminal), 'tab-l:leaf-l', 'pty: placeholders are not a pane; the recorded pane is')
+  assert.equal(terminalPane({ handle: 't', tabId: 'tab', leafId: 'leaf', recordedPaneKey: 'old:pane' }), 'tab:leaf', 'a terminal in a tab is its tab and leaf')
+  // Starting: Orca does not list the agent yet, or lists it before its conversation id.
+  assert.equal(launchedAgent(launch, [terminal], row), null)
+  assert.equal(launchedAgent(launch, [terminal], { ...row, agents: [{ ...agent, orcaSession: null }] }), null)
+  const appeared = { ...row, agents: [agent] }
+  const a = launchedAgent(launch, [terminal], appeared)
+  assert.equal(a?.paneKey, 'tab-l:leaf-l')
+  assert.equal(a?.terminal, 'term_launched')
+  const sessions = bindLaunched({ version: 1, current: null, members: [] }, appeared, a!, 'native-claude-id')
+  assert.equal(sessions.members.length, 1)
+  assert.equal(sessions.current, sessions.members[0].id)
+  assert.equal(sessions.members[0].orcaSession, 'launched-session')
+  assert.deepEqual(sessions.members[0].terminals, ['term_launched'])
+  assert.equal(sessions.members[0].resumeSessionId, 'native-claude-id')
+  // Binding it again (a refresh recorded it meanwhile) keeps one member.
+  assert.equal(bindLaunched(sessions, appeared, a!).members.length, 1)
+})
+
+test('a launched terminal never binds a different, newer agent in the same folder', () => {
+  const { row, terminal, launch, agent } = launched()
+  const newer = { ...agent, paneKey: 'tab-n:leaf-n', orcaSession: 'newer-session', title: 'Someone else' }
+  assert.equal(launchedAgent(launch, [terminal], { ...row, agents: [newer] }), null, 'the only agent there is not the launched one')
+  const other = { ...terminal, handle: 'term_newer', ptyId: 'other-pty', recordedPaneKey: 'tab-n:leaf-n' }
+  assert.equal(launchedAgent(launch, [other], { ...row, agents: [newer] }), null, 'the launched terminal is gone: nothing else is taken')
+  assert.equal(launchedAgent(launch, [terminal, other], { ...row, agents: [newer, agent] })?.orcaSession, 'launched-session')
+  assert.equal(launchedAgent({ ...launch, agent: 'codex' }, [terminal], { ...row, agents: [agent] }), null, 'a different provider in that pane is not it')
+  assert.equal(launchedAgent(launch, [terminal], { ...row, agents: [{ ...agent, dispatch: 'open' }] }), null, 'a dispatched agent is never the coordinator')
+})
+
+test('while a launch is unbound, the next click adopts that same terminal and launches nothing', async () => {
+  const { row, terminal, launch } = launched()
+  const pending = new Map<string, Launch>()
+  let launches = 0
+  const start = () => launchOnce(pending, 'home', row.id, 'claude', async () => { launches++; return { terminalId: launch.terminalId } })
+  const first = await start()
+  assert.deepEqual([first.adopted, launches], [false, 1])
+  // Binding unverified: the plan adopts instead of launching or asking, even with the agent now pickable.
+  assert.deepEqual(wakePlan({ sessions: undefined }, [row], 1, pending.has('home')), { kind: 'adopt', agent: null })
+  const fresh: string[] = []
+  const r = await wakeCoordinator({ sessions: undefined }, [row], 1, wakeIo({ fresh: async (agent) => { fresh.push(agent); const again = await start(); return { ok: true, bound: !again.adopted } } }).io, true)
+  assert.deepEqual(r, { ok: true, kind: 'starting' }, 'neutral, not red')
+  assert.deepEqual(wakeView(r).row?.tone, 'ok')
+  assert.equal(launches, 1, 'the second click launched nothing')
+  assert.equal(pending.get('home')?.terminalId, launch.terminalId)
+  // Settled once it is a member, or once its terminal is gone; only then may a later start launch.
+  settlePending(pending, 'home', [terminal], { version: 1, current: null, members: [] })
+  assert.ok(pending.has('home'), 'still running and unbound: kept')
+  settlePending(pending, 'home', [terminal], { version: 1, current: 'm', members: [{ ...fixture().sessions.members[0], id: 'm', terminals: ['term_launched'] }] })
+  assert.ok(!pending.has('home'), 'bound by membership: settled')
+  await start()
+  settlePending(pending, 'home', [], undefined)
+  assert.ok(!pending.has('home'), 'terminal gone: settled')
+  // A live current member still opens first; a pending launch never displaces it.
+  const { rows, c } = fixture()
+  assert.equal(wakePlan(c, rows, 2, true).kind, 'open')
 })
