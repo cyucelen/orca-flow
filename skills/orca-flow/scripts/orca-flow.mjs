@@ -241,9 +241,9 @@ async function queue({ all = false } = {}) {
   }
 }
 
-/** The queue as text; a lead's or worker's ask is attributed to it and answered in its own chat. */
 const NEED_WORD = { decision: 'pick', approval: 'approval', review: 'review', info: 'answer', action: 'action' }
 
+/** The queue as text; a lead's or worker's ask is attributed to it and answered in its own chat. */
 export function formatQueue(q) {
   const word = (p) => (p ? `${p} ${LEVELS[p]}` : 'unrated')
   const lines = [q.waiting.length ? `Waiting on you (${q.waiting.length}), in order:` : 'Nothing is waiting on you.']
