@@ -341,3 +341,30 @@ export async function launchOnce(pending: Map<string, Launch>, key: string, work
   pending.set(key, next)
   return { launch: next, adopted: false }
 }
+
+/** One agent as the host's agents.list reports it: `sessionId` is the provider's resume id. */
+export type ListedAgent = { terminalId: string | null; agent: string | null; sessionId?: string | null }
+
+/**
+ * The provider resume id of the exact live terminal a member is bound to: that terminal must still
+ * run the member's pane, and exactly one listed agent of the member's provider must name it. Never
+ * another terminal's id, never a guess, and never Orca's own conversation id (they stay distinct).
+ */
+export function resumeIdFor(member: CoordinatorMember, terminal: string | null | undefined, terminals: TerminalRecord[], listed: ListedAgent[]): string | undefined {
+  const t = terminal ? terminals.find((t) => t.handle === terminal) : undefined
+  if (!t || terminalPane(t) !== member.paneKey || !member.agentType) return undefined
+  const ids = new Set([t.handle, t.ptyId].filter(Boolean))
+  const matches = listed.filter((a) => a.terminalId && ids.has(a.terminalId) && a.agent === member.agentType && a.sessionId)
+  const id = matches.length === 1 ? matches[0].sessionId! : undefined
+  return id && id !== member.orcaSession ? id : undefined
+}
+
+/**
+ * Records a member's resume id while it is still bound to the terminal it was read from. A missing
+ * one is filled; an existing one changes only when `replace` (the member was just bound or resumed).
+ */
+export function withResumeId(s: CoordinatorSessions | undefined, member: string, terminal: string, id: string, replace = false): CoordinatorSessions | undefined {
+  const m = s?.members.find((x) => x.id === member)
+  if (!s || !m || !m.terminals.includes(terminal) || m.resumeSessionId === id || (m.resumeSessionId && !replace)) return s
+  return { ...s, members: s.members.map((x) => x.id === member ? { ...x, resumeSessionId: id } : x) }
+}

@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { associateSession, askKey, bindLaunched, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
+import { associateSession, askKey, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
 import { askingRows, emptyUi, render, wakeView } from './view.ts'
@@ -930,4 +930,42 @@ test('while a launch is unbound, the next click adopts that same terminal and la
   // A live current member still opens first; a pending launch never displaces it.
   const { rows, c } = fixture()
   assert.equal(wakePlan(c, rows, 2, true).kind, 'open')
+})
+
+test('a migrated live member gets its resume id from its exact terminal, then resumes that member once offline', () => {
+  const { rows } = fixture()
+  // Recorded by the single-unambiguous-root migration: memberFrom, no provider resume id.
+  const a = rows[0].agents[0]
+  const member = memberFrom(rows[0], a)
+  let sessions: CoordinatorSessions | undefined = { version: 1, current: member.id, members: [member] }
+  assert.equal(member.resumeSessionId, undefined)
+  const terminals = [
+    { handle: 'term-old:1', ptyId: 'pty-old', tabId: 'old', leafId: '1' },
+    { handle: 'term-new:1', ptyId: 'pty-new', tabId: 'new', leafId: '1' }
+  ]
+  const listed = [
+    { terminalId: 'pty-new', agent: 'claude', sessionId: 'someone-elses-id' },
+    { terminalId: 'pty-old', agent: 'claude', sessionId: 'provider-claude-id' }
+  ]
+  const id = resumeIdFor(member, a.terminal, terminals, listed)
+  assert.equal(id, 'provider-claude-id', 'read from the exact terminal, not another one in the folder')
+  assert.notEqual(id, member.orcaSession, "Orca's conversation id is never the resume id")
+  // Never guessed: another provider, a terminal now in another pane, an ambiguous listing, or Orca's own id.
+  assert.equal(resumeIdFor(member, a.terminal, terminals, [{ terminalId: 'pty-old', agent: 'codex', sessionId: 'x' }]), undefined)
+  assert.equal(resumeIdFor(member, a.terminal, [{ ...terminals[0], tabId: 'moved' }], listed), undefined)
+  assert.equal(resumeIdFor(member, a.terminal, terminals, [...listed, { terminalId: 'pty-old', agent: 'claude', sessionId: 'other' }]), undefined)
+  assert.equal(resumeIdFor(member, a.terminal, terminals, [{ terminalId: 'pty-old', agent: 'claude', sessionId: member.orcaSession }]), undefined)
+  sessions = withResumeId(sessions, member.id, a.terminal!, id!)
+  assert.equal(sessions?.members[0].resumeSessionId, 'provider-claude-id')
+  assert.equal(sessions?.members[0].orcaSession, 'old-session', 'orcaSession is kept distinct')
+  // Filled once: a later read does not replace it unless the member was just bound or resumed.
+  assert.equal(withResumeId(sessions, member.id, a.terminal!, 'later')?.members[0].resumeSessionId, 'provider-claude-id')
+  assert.equal(withResumeId(sessions, member.id, a.terminal!, 'later', true)?.members[0].resumeSessionId, 'later')
+  assert.equal(withResumeId(sessions, member.id, 'term-other', 'x', true)?.members[0].resumeSessionId, 'provider-claude-id', 'only while bound to the terminal it was read from')
+  // The coordinator sleeps: its terminal is gone. The click resumes exactly that member.
+  const offline = rows.map((r) => ({ ...r, agents: r.agents.filter((x) => x.paneKey !== a.paneKey) }))
+  const plan = wakePlan({ sessions }, offline, 1)
+  assert.equal(plan.kind, 'resume')
+  assert.equal(plan.kind === 'resume' && plan.member.id, member.id)
+  assert.equal(plan.kind === 'resume' && plan.member.resumeSessionId, 'provider-claude-id')
 })
