@@ -83,6 +83,15 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    environment, a finished worktree to remove; see Worktree cleanup). Otherwise queue it (see the
    capacity gate in SKILL.md) and say so in one line. Decide on the verdict alone: swap use is
    information only, and a full swap is never a reason to queue work or warn the user.
+
+   **Work that changes no code** (reproduce a bug on staging, triage, answer a question, read
+   production data the user allows) may start as a lead in your own folder. Use this when the work
+   needs no repo checkout and no dev environment, especially when the gate says `agents-only`.
+   Start it with `--worktree path:<your folder>` and no creation flags, with the same lead
+   preamble. It shows as a child row under you in the sidebar. When it must change code, it asks
+   you for a worktree with `orca orchestration ask`. Then create one as above, start a new lead
+   there with the first lead's findings in its spec, and reply to the first lead that the work
+   moved; it then sends `worker_done`.
 4. **Confirm with a route line** (see [messages.md](../messages.md)): which lead is on it, where,
    at what level. End your turn.
 
