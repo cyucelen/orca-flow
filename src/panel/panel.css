@@ -489,6 +489,9 @@ button.item.coord { padding: 5px 6px; }
    so the row's right side can line it up with the PR, project and age. */
 .idchip { display: inline-block; flex: none; padding: 0 5px; height: 17px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
 .idchip .lmark { width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; }
+/* A label that opens its issue, like the PR chip: a pointer, and the ink on hover. */
+.idchip[data-url] { cursor: pointer; }
+.idchip[data-url]:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, var(--card)); }
 /* The send menu: a header line, characters for icons, a note at the end (the suggestion in the accent). */
 .ctx .mh { padding: 5px 9px 4px; font-size: 11.5px; color: var(--muted); }
 .ctx .mh b { color: var(--ink); font: 600 11px ui-monospace, "SF Mono", Menlo, monospace; }

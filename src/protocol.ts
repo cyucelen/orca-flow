@@ -109,6 +109,8 @@ export type WorkspaceRow = {
   folderOf?: string
   /** The Linear issue Orca linked to the worktree (`--linear-issue`), as its identifier (BOU-4179). */
   linearIssue?: string | null
+  /** Where its Linear label opens, when the Linear data knows (see issueLink); null or absent: plain text. */
+  linearLink?: { url: string; title: string | null } | null
 }
 
 export type Capacity = {

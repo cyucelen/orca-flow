@@ -6,6 +6,7 @@ import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordina
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
+import { externalLink } from './links.ts'
 import { canRemove } from '../rank.ts'
 
 const ui = emptyUi()
@@ -144,10 +145,10 @@ document.addEventListener('click', (event) => {
     draw()
     return
   }
-  // A row's PR icon opens the PR, not the row's session.
-  const pr = (event.target as Element).closest<HTMLElement>('[data-pr]')
-  if (pr?.dataset.pr) {
-    void orca.shell?.openExternal(pr.dataset.pr)
+  // A row's PR icon opens the PR, and its Linear label the issue, not the row's session (links.ts).
+  const url = externalLink(event.target as Element)
+  if (url) {
+    void orca.shell?.openExternal(url)
     return
   }
   const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')

@@ -106,6 +106,19 @@ export function linkedIssueOf(linked: unknown): string | null {
 export const teamsOf = (data: Pick<LinearData, 'issues'> | null): Set<string> => new Set((data?.issues ?? []).map((i) => i.team))
 
 /**
+ * Pure: where a row's Linear label opens: the issue's own page when the Linear data lists it, else
+ * its page on the workspace the listed issues' URLs name. Null when neither is known: the label stays
+ * plain text, not a dead link.
+ */
+export function issueLink(id: string, data: Pick<LinearData, 'issues'> | null): { url: string; title: string | null } | null {
+  const issues = data?.issues ?? []
+  const known = issues.find((i) => i.id === id)
+  if (known?.url) return { url: known.url, title: known.title || null }
+  const base = issues.map((i) => /^(https:\/\/linear\.app\/[^/]+\/issue\/)/.exec(i.url)?.[1]).find(Boolean)
+  return base ? { url: `${base}${id}`, title: known?.title || null } : null
+}
+
+/**
  * Pure: the first issue identifier in a branch name (bou-4179-planned-hours, cyucelen/BOU-4179) of
  * one of these teams, as a whole token: not inside a longer word or number.
  */

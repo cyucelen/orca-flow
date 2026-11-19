@@ -1234,7 +1234,7 @@ test('a worktree created without --linear-issue is linked by its branch: the sec
   assert.match(r.linear, /class="item lrow linked" data-open="wt-hours"/)
   noMatch(r.linear.slice(r.linear.indexOf('BOU-4179')), /data-lsend="BOU-4179"/)
   assert.deepEqual(shownIds(r.linear), ['BOU-1', 'BOU-4179'])
-  assert.match(r.main, /<span class="t">Planner staff-hour totals<\/span><span class="r"><span class="idchip">.*?BOU-4179<\/span>/)
+  assert.match(r.main, /<span class="t">Planner staff-hour totals<\/span><span class="r"><span class="idchip"[^>]*>.*?BOU-4179<\/span>/)
   // Without Linear data no team is known, so a branch links nothing.
   noMatch(render(s, emptyUi()).main, /idchip/)
 })
@@ -1344,4 +1344,46 @@ test('a later ask comes after every ask that stops work, even from a working age
   const upnext = html.slice(html.indexOf('class="upnext"'))
   assert.ok(upnext.indexOf('Merge') < upnext.indexOf('Plan eval'), 'the P0 later ask still comes after the P1 blocking one')
   assert.match(upnext, /Up next · 4/)
+})
+
+test("a row's Linear label opens the issue, like its PR chip: in a row, a coordinator-folder row, never as a dead link", async () => {
+  const { externalLink } = await import('./panel/links.ts')
+  const { idChip } = await import('./view.ts')
+  const linear = (issues: Partial<LinearIssue>[]): LinearData => ({ at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: issues.map((i) => ({ state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0, ...i }) as LinearIssue) })
+  const day = { id: 'BOU-4242', title: 'Day view part ranges', url: 'https://linear.app/acme/issue/BOU-4242/day-view-part-ranges', team: 'BOU' }
+  const rows = [
+    row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'working', { coordinator: 'alpha' })], { linearIssue: 'BOU-4242', pr: { number: 6290, url: 'https://github.com/o/r/pull/6290', state: 'open', checks: null } }),
+    row('folder:alpha', 'alpha', [agent('p-f', 'Leave request limit', 'done', { coordinator: 'alpha' })], { branch: null, folderOf: 'alpha', linearIssue: 'BOU-4243' })
+  ]
+  const s: Snapshot = { ...snap, rows }
+  const { main } = render(s, emptyUi(), linear([day, { id: 'BOU-1', title: 'Other', url: 'https://linear.app/acme/issue/BOU-1/other', team: 'BOU' }]))
+  assert.match(main, /<span class="idchip" role="link" data-url="https:\/\/linear\.app\/acme\/issue\/BOU-4242\/day-view-part-ranges" data-tip="BOU-4242 · Day view part ranges" aria-label="Open BOU-4242 in Linear">/, "the issue's own page, its title in the tooltip")
+  assert.match(main, /<span class="idchip" role="link" data-url="https:\/\/linear\.app\/acme\/issue\/BOU-4243" data-tip="Open BOU-4243 in Linear"/, 'an issue the data does not list: its page on the same workspace')
+  assert.match(main, /data-pr="https:\/\/github\.com\/o\/r\/pull\/6290"/, 'the PR chip beside it is unchanged')
+  const plain = render(s, emptyUi(), linear([])).main
+  assert.match(plain, /<span class="idchip"><svg/, 'no workspace known: plain text')
+  noMatch(plain, /data-url=/, 'not a dead link')
+  assert.equal(idChip('BOU-9', { url: 'https://linear.app/a/issue/BOU-9', title: 'a "b" <c>' }).includes('data-tip="BOU-9 · a &quot;b&quot; &lt;c&gt;"'), true, 'the title is escaped')
+
+  // A click inside the label (its icon or text) names the issue's page; the panel opens it and stops,
+  // so the row's own click, focusing its session, does not run.
+  const chip = { dataset: { url: 'https://linear.app/acme/issue/BOU-4242' } }
+  const rowEl = { dataset: { open: 'wt-day', terminal: 'term_1' } }
+  const inside = (found: Record<string, { dataset: Record<string, string> }>) => ({ closest: (sel: string) => found[sel] ?? null })
+  assert.equal(externalLink(inside({ '[data-pr],[data-url]': chip })), 'https://linear.app/acme/issue/BOU-4242')
+  assert.equal(externalLink(inside({ '[data-pr],[data-url]': { dataset: { pr: 'https://github.com/o/r/pull/6290' } } })), 'https://github.com/o/r/pull/6290')
+  assert.equal(externalLink(inside({ '[data-open]': rowEl })), null, 'the rest of the row still opens the session')
+  const app = readFileSync(new URL('./panel/app.ts', import.meta.url).pathname, 'utf8')
+  const handler = app.slice(app.indexOf('const url = externalLink(event.target as Element)'))
+  assert.ok(app.includes('const url = externalLink(event.target as Element)'), 'the click handler asks first')
+  assert.match(handler, /^const url = externalLink\(event\.target as Element\)\n  if \(url\) \{\n    void orca\.shell\?\.openExternal\(url\)\n    return\n  \}\n  const el = \(event\.target as Element\)\.closest<HTMLElement>\('\[data-open\]/, 'opens the page, then returns before the row lookup')
+})
+
+test('Up next and search show no Linear label, so they have nothing to open', () => {
+  const linear: LinearData = { at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: [{ id: 'BOU-4242', title: 'Day', url: 'https://linear.app/acme/issue/BOU-4242', team: 'BOU', state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0 }] }
+  const s: Snapshot = { ...snap, rows: [row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'done', { coordinator: 'alpha', summary: asks('Which ranges?') })], { linearIssue: 'BOU-4242' })] }
+  const { attention } = render(s, emptyUi(), linear)
+  assert.match(attention, /Up next · 1/)
+  noMatch(attention, /idchip/)
+  noMatch(render(s, { ...emptyUi(), query: 'day view' }, linear).main, /idchip/)
 })

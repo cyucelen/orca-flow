@@ -7,7 +7,7 @@
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
-import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
+import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, issueLink, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
 export type UiState = {
   /** Up-next items the person opened, and ones they closed (the first is open by default). */
@@ -803,7 +803,7 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   const indent = Boolean(lead)
   // The worktree's Linear issue, on the right of the row that stands for the worktree.
   const own = !lead || lead.row.id !== p.row.id
-  const chip = p.row.linearIssue && own ? idChip(p.row.linearIssue) : ''
+  const chip = p.row.linearIssue && own ? idChip(p.row.linearIssue, p.row.linearLink) : ''
   // The title gets the room: on the right only the Linear issue, the PR's number, the project and
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
@@ -1004,7 +1004,8 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
  */
 export function render(given: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; linear: string; footer: string } {
   // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
-  const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)) } : given
+  // Its label opens the issue in Linear when the data gives its page.
+  const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)).map((r) => (r.linearIssue ? { ...r, linearLink: issueLink(r.linearIssue, linear) } : r)) } : given
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   const all = snap.rows.flatMap((r) => r.agents)
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
@@ -1040,7 +1041,14 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
 // ---------- Linear ----------
 
 /** A worktree's Linear issue, as a small chip before its row's title. */
-export const idChip = (id: string) => `<span class="idchip">${LINEAR_MARK}${esc(id)}</span>`
+/**
+ * A row's Linear label. With the issue's page known it is a link like the PR chip (role link, the
+ * URL in data-url, the issue in its tooltip): a click opens Linear, not the row. Else plain text.
+ */
+export const idChip = (id: string, link?: { url: string; title: string | null } | null) =>
+  link
+    ? `<span class="idchip" role="link" data-url="${esc(link.url)}" data-tip="${esc(link.title ? `${id} · ${link.title}` : `Open ${id} in Linear`)}" aria-label="${esc(`Open ${id} in Linear`)}">${LINEAR_MARK}${esc(id)}</span>`
+    : `<span class="idchip">${LINEAR_MARK}${esc(id)}</span>`
 
 const ARROW = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6h8M7 3l3 3-3 3"/></svg>'
 
