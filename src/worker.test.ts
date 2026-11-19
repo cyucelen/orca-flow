@@ -1316,3 +1316,92 @@ test('Linear sends are remembered next to the owners: the last coordinator per t
   writeFileSync(path, '{"lastSent": [1], "sent": "x"}')
   assert.deepEqual(readLinearMemory(path), { lastSent: {}, sent: {} })
 })
+
+// ---------- agents in a coordinator's folder ----------
+
+/** The bounti coordinator's folder: its own session, a lead it started in a tab there, and a worker that lead started. */
+function coordinatorFolder(withTabs = true) {
+  const card = (over: Record<string, unknown>) => ({
+    title: 'Work', about: 'What this is for.', glance: '', goal: '', since: 'Did a thing', needs: { type: 'none', ask: '', options: [] },
+    effort: 'quick', priority: 'P2', role: 'worker', updatedAt: 1, ...over
+  })
+  const store: main.Store = {
+    cards: {},
+    summaries: {
+      'tab-c_1': card({ title: 'Orca PR coordination', role: 'coordinator' }) as any,
+      'tab-l_1': card({ title: 'Leave request two-day limit', glance: 'Which company did Anja use?', needs: { type: 'info', ask: 'Which company and employee did Anja use?', options: [] }, priority: 'P1' }) as any
+    }
+  }
+  const tabs = withTabs
+    ? [
+        { paneKey: 'tab-w:1', parentPaneKey: 'tab-l:1', state: 'working', agentType: 'claude', conversationName: 'worker-task_b9f03295fa5d', taskTitle: 'Prepare the demo on staging' },
+        { paneKey: 'tab-l:1', parentPaneKey: 'tab-c:1', state: 'done', agentType: 'claude', conversationName: 'worker-task_9eab6a1014fe', taskTitle: 'Find why a leave request seems limited to 2 days (BOU-4243)' }
+      ]
+    : []
+  const ps: main.PsWorktree[] = [
+    { worktreeId: 'r::/c/bounti', path: '/c/bounti', isMainWorktree: true, displayName: 'bounti', repo: 'bounti', liveTerminalCount: tabs.length + 1, agents: [...tabs, { paneKey: 'tab-c:1', parentPaneKey: null, state: 'done', agentType: 'claude', conversationName: 'Isola on_demand expo support' }] },
+    { identity: { key: 'wt-1' }, path: '/w/mono-1', displayName: 'bou-4100', repo: 'mono', branch: 'refs/heads/bou-4100', liveTerminalCount: 1, agents: [{ paneKey: 'tab-x:1', state: 'working', agentType: 'claude' }] }
+  ]
+  const info = { key: 'bounti', name: 'bounti', repos: ['mono'], workspaceId: null, dir: '/c/bounti', about: '' }
+  const lineage = { dispatcherOf: new Map<string, string>(), paneOf: new Map<string, string>(), dispatchOf: new Map<string, 'open' | 'settled'>(withTabs ? [['tab-l:1', 'open'], ['tab-w:1', 'open']] : []) }
+  const all = assignCoordinators(main.fromPs(ps, store, new Map([['/c/bounti', 'folder:bounti']])), [info], lineage)
+  const coordinators = [{ key: 'bounti', name: 'bounti', repos: ['mono'], workspaceId: null as string | null, session: null as any, active: false }]
+  const rows = main.foldCoordinatorFolders(all, coordinators, ['/c/bounti'])
+  return { rows, coordinators, snap: { source: 'cli' as const, capacity: null, coordinators, rows } }
+}
+
+test("a coordinator's own session is the one nobody in its folder started, not the first agent listed", async () => {
+  const { coordinatorSession } = await import('./coordinators.ts')
+  const a = (paneKey: string, parentPane: string | null = null) => ({ paneKey, parentPane })
+  assert.equal(coordinatorSession([a('w', 'l'), a('l', 'c'), a('c')])?.paneKey, 'c')
+  assert.equal(coordinatorSession([a('w', 'gone'), a('c')], (p) => p === 'w')?.paneKey, 'c', 'a dispatched worker whose starter closed is not it')
+  assert.equal(coordinatorSession([a('x'), a('c'), a('l', 'c')])?.paneKey, 'c', 'of two started by hand, the one that started others')
+  assert.equal(coordinatorSession([a('x'), a('y')])?.paneKey, 'x', 'else the first')
+  assert.equal(coordinatorSession([]), null)
+})
+
+test("agents in a coordinator's folder are its child rows; its face and ask stay its own session's", async () => {
+  const { faceOf } = await import('./view.ts')
+  const { linkRows } = await import('./linear.ts')
+  const { rows, coordinators, snap } = coordinatorFolder()
+  const session = coordinators[0].session
+  assert.equal(session?.paneKey, 'tab-c:1', 'not the worker listed first in the folder')
+  assert.equal(coordinators[0].workspaceId, 'folder:bounti')
+  assert.equal(faceOf(session), 'done', "the lead's ask is not the coordinator's")
+
+  const folder = rows.filter((r) => r.folderOf === 'bounti')
+  assert.deepEqual(folder.map((r) => r.agents.map((a) => a.paneKey)), [['tab-w:1'], ['tab-l:1']], 'one row per agent, the session in none')
+  const [worker, lead] = folder.map((r) => r.agents[0])
+  assert.equal(lead.coordinator, 'bounti')
+  assert.equal(lead.leadPane, null)
+  assert.equal(worker.coordinator, 'bounti')
+  assert.equal(worker.leadPane, 'tab-l:1', 'the worker nests under the lead that started it')
+  assert.ok(folder.every((r) => r.id === 'folder:bounti' && r.branch === null && r.pr === null), 'no worktree, no PR; a click opens the folder at its tab')
+  assert.ok(folder.every((r) => !canRemove(r)), 'the folder is never offered for removal')
+  assert.equal((await removeWorktree(async () => { throw new Error('must not run') }, folder[0])).reason, "a coordinator's folder is never removed")
+  assert.equal(linkRows(folder, new Set(['BOU']))[1].linearIssue, 'BOU-4243', 'its Linear issue from its Orca task title')
+  assert.deepEqual(main.livePanes(snap).sort(), ['tab-c:1', 'tab-l:1', 'tab-w:1', 'tab-x:1'], 'their cards are summarized as usual')
+
+  assert.deepEqual(waitingQueue(rows).map((r) => r.agents[0].paneKey), ['tab-l:1'], "the lead's ask is in Up next")
+  const { main: tree, attention } = render(snap, emptyUi())
+  const section = tree.slice(tree.indexOf('<section class="coordinator">'), tree.indexOf('</section>', tree.indexOf('<section class="coordinator">')))
+  assert.match(section, /Leave request two-day limit/, 'the lead shows under bounti')
+  assert.match(section, /Prepare the demo on staging/, 'and its worker')
+  assert.match(attention, /Up next · 1/)
+  assert.match(attention, /Which company did Anja use\?/)
+})
+
+test('a coordinator folder with only its own session is unchanged: no child rows', () => {
+  const { rows, coordinators } = coordinatorFolder(false)
+  assert.equal(coordinators[0].session?.paneKey, 'tab-c:1')
+  assert.deepEqual(rows.map((r) => r.id), ['identity:wt-1'], 'the folder itself is no row')
+})
+
+test('a lead or worker in a coordinator folder is not the coordinator', async () => {
+  const { roleOf } = await import('./summarize.ts')
+  const home = '/c'
+  const worker = 'You are working inside Orca, a multi-agent IDE. You are a dispatched worker.\nYour task ID is: task_9eab6a1014fe'
+  assert.equal(roleOf(worker, [], '/c/bounti', home), 'worker')
+  assert.equal(roleOf('Your role: lead. Find why…', [], '/c/bounti', home), 'lead')
+  assert.equal(roleOf('where is that lead? mention of worker_done', [], '/c/bounti', home), 'coordinator', "the coordinator's own session, whatever its user says")
+})

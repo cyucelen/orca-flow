@@ -20,7 +20,7 @@ const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 6
+export const SUMMARIZER_VERSION = 7
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -90,12 +90,15 @@ export function briefOf(text: string): string {
 type Role = 'lead' | 'worker' | 'coordinator' | 'solo'
 type Event = { kind: 'user' | 'assistant' | 'tool'; text: string; raw?: string; at?: string; reports?: boolean }
 
-/** Decided from facts, not by the model: a session in one of the user's coordinator folders is that
- * coordinator; a lead's first prompt names its role; a dispatched worker's carries its Dispatch id;
- * any other agent that started workers coordinates them. */
+/** Decided from facts, not by the model: a lead's first prompt names its role; an agent Orca
+ * dispatched carries Orca's worker preamble (or, outside a coordinator folder, its Dispatch id);
+ * any other session in one of the user's coordinator folders is that coordinator (a lead or worker
+ * the coordinator started in a tab of its folder is not); any other agent that started workers
+ * coordinates them. */
 export function roleOf(firstPrompt: string, events: Event[], cwd: string | null = null, home = COORDINATOR_HOME): Role {
-  if (cwd && isCoordinatorHome(cwd, home)) return 'coordinator'
   if (/your role: lead\b/i.test(firstPrompt)) return 'lead'
+  if (/You are a dispatched worker\.|Your task ID is: task_/.test(firstPrompt)) return 'worker'
+  if (cwd && isCoordinatorHome(cwd, home)) return 'coordinator'
   if (/dispatch[ _-]?id|worker_done/i.test(firstPrompt)) return 'worker'
   // Only a command that runs it, not one that merely mentions it (in a heredoc, a grep, a test).
   const runs = /^Bash: (?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration worker-start\b/

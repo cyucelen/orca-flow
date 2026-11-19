@@ -93,10 +93,31 @@ const SETTLED = new Set(['succeeded', 'failed', 'abandoned', 'cancelled', 'cance
  * dispatch failed when the old terminal closed). For it, the remembered owner (`owners`, see
  * `rememberOwners`) applies: live lineage wins, memory only replaces 'you'.
  */
+/**
+ * Pure: the coordinator's own session among the agents in its folder. Orca records which pane
+ * started each agent (`parentPaneKey`): a lead or worker the coordinator started in a tab of its
+ * folder names the coordinator's pane, and the coordinator names none there. So: an agent no other
+ * agent here started and that is no dispatched worker; of several, the one that started the most of
+ * the others; else the first. Null for an empty folder.
+ */
+export function coordinatorSession<A extends { paneKey: string; parentPane: string | null }>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
+  const here = new Set(agents.map((a) => a.paneKey))
+  const roots = agents.filter((a) => !(a.parentPane && here.has(a.parentPane) && a.parentPane !== a.paneKey))
+  const own = roots.filter((a) => !dispatched(a.paneKey))
+  const pool = own.length ? own : roots.length ? roots : agents
+  const started = (a: A) => agents.filter((b) => b.parentPane === a.paneKey).length
+  return pool.reduce<A | null>((best, a) => (!best || started(a) > started(best) ? a : best), null)
+}
+
 export function assignCoordinators(rows: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: Owners = {}): WorkspaceRow[] {
-  // A coordinator's session is whatever agent runs in its own folder workspace.
+  // A coordinator's session is its own agent in its folder workspace; other agents there (a lead or
+  // worker it started in a tab of its folder) work for it.
   const coordinatorByPane = new Map<string, string>()
-  for (const c of coordinators) for (const row of rows) if (row.path === c.dir) for (const a of row.agents) coordinatorByPane.set(a.paneKey, c.key)
+  const folderOf = new Map<string, string>()
+  for (const c of coordinators) for (const row of rows) if (row.path === c.dir) {
+    const session = coordinatorSession(row.agents, (pane) => lineage.dispatchOf?.has(pane) ?? false)
+    for (const a of row.agents) a === session ? coordinatorByPane.set(a.paneKey, c.key) : folderOf.set(a.paneKey, c.key)
+  }
   const coordinatorByTerminal = new Map([...lineage.paneOf].filter(([, pane]) => coordinatorByPane.has(pane)).map(([handle, pane]) => [handle, coordinatorByPane.get(pane)!]))
   // A coordinator that slept: its old terminal is closed, but it ran in the coordinator's folder.
   for (const [handle, dir] of lineage.dirOfTerminal ?? []) {
@@ -118,7 +139,10 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
   }
   const coordinatorOfPane = (pane: string, depth = 0): { coordinator: string; leadPane: string | null } => {
     const live = liveCoordinatorOfPane(pane, depth)
-    return live.coordinator === 'you' ? (remembered(pane) ?? live) : live
+    const found = live.coordinator === 'you' ? (remembered(pane) ?? live) : live
+    // An agent in a coordinator's folder works for that coordinator, nested under a lead of its own if it has one.
+    const folder = folderOf.get(pane)
+    return folder && found.coordinator !== folder ? { coordinator: folder, leadPane: null } : found
   }
   const liveCoordinatorOfPane = (pane: string, depth: number): { coordinator: string; leadPane: string | null } => {
     const parent = parentOf.get(pane)

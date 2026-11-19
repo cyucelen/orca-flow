@@ -53,7 +53,7 @@ export const finished = (a: AgentInfo, pr?: WorkspaceRow['pr']) =>
 export const workingIn = (row: WorkspaceRow): AgentInfo | undefined => row.agents.find((a) => a.state === 'working')
 
 /** The sidebar offers to remove a worktree only when it is not the main checkout and no agent there is mid-turn. */
-export const canRemove = (row: WorkspaceRow): boolean => !row.main && !workingIn(row)
+export const canRemove = (row: WorkspaceRow): boolean => !row.main && !row.folderOf && !workingIn(row)
 
 /** The agent that speaks for the workspace: the one asking, else the most urgent state. */
 export function leadAgent(row: WorkspaceRow): AgentInfo | undefined {

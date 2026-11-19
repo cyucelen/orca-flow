@@ -120,15 +120,20 @@ export function issueOfBranch(branch: string | null | undefined, teams: Readonly
 
 /**
  * Pure: rows with the Linear issue each works on. Orca's link (`--linear-issue`) wins; a worktree
- * created without one is linked by an issue identifier in its branch name.
+ * created without one is linked by an issue identifier in its branch name, and an agent in a
+ * coordinator's folder by one in its title or summary.
  */
-export function linkRows<R extends { branch: string | null; linearIssue?: string | null }>(rows: R[], teams: ReadonlySet<string>): R[] {
+export function linkRows<R extends { branch: string | null; linearIssue?: string | null; folderOf?: string; agents?: { title: string; task?: string | null; summary: { title: string; about?: string } | null }[] }>(rows: R[], teams: ReadonlySet<string>): R[] {
   return rows.map((r) => {
     if (r.linearIssue) return r
-    const fromBranch = issueOfBranch(r.branch, teams)
-    return fromBranch ? { ...r, linearIssue: fromBranch } : r
+    const found = issueOfBranch(r.branch, teams) ?? (r.folderOf ? issueOfTitle(r.agents?.[0], teams) : null)
+    return found ? { ...r, linearIssue: found } : r
   })
 }
+
+/** An agent in a coordinator's folder has no branch to name its issue: its title, Orca task or summary may ("… (BOU-4243)"). */
+const issueOfTitle = (a: { title: string; task?: string | null; summary: { title: string; about?: string } | null } | undefined, teams: ReadonlySet<string>): string | null =>
+  a ? [a.title, a.task, a.summary?.title, a.summary?.about].reduce<string | null>((found, text) => found ?? issueOfBranch(text, teams), null) : null
 
 /** Pure: the worktree each linked issue shows: of several, the most recently active. */
 export function rowsByIssue<R extends { linearIssue?: string | null; lastActivityAt: number | null }>(rows: R[]): Map<string, R> {

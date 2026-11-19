@@ -16,10 +16,10 @@ import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
-import { assignCoordinators, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, type CoordinatorInfo, type Lineage } from './coordinators.ts'
+import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Capacity, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { findTranscript, missedTurns, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
@@ -155,6 +155,7 @@ function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): Ag
     state,
     // Orca names a worker's conversation after its task id (worker-task_…); skip names that are ids.
     title: [summary?.title, a.conversationName, a.taskTitle, a.displayName].find((t) => showable(t ?? undefined)) || a.agentType || 'Agent',
+    task: a.taskTitle ?? a.displayName ?? null,
     agentType: a.agentType ?? null,
     summary
   }
@@ -398,6 +399,44 @@ function claudeProjectRoots(): string[] {
   return roots
 }
 
+/**
+ * A coordinator's own workspace is its row in the panel, not a worktree in the tree: its session
+ * (see coordinatorSession) drives the coordinator's face and ask, and each other agent there becomes
+ * a row of its own (folderRows). Fills each coordinator's workspace, focus and session in place;
+ * `dirs[i]` is `coordinators[i]`'s folder. Returns the rows the panel shows.
+ */
+export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordinator[], dirs: string[]): WorkspaceRow[] {
+  const index = new Map(dirs.map((d, i) => [d, i]))
+  return all.flatMap((row) => {
+    const i = row.path ? index.get(row.path) : undefined
+    if (i === undefined) return [row]
+    const c = coordinators[i]
+    const session = coordinatorSession(row.agents, (pane) => row.agents.some((a) => a.paneKey === pane && a.dispatch !== null))
+    c.workspaceId = row.id
+    c.active = row.active
+    // Its session counts only while a terminal is open with an agent in it.
+    c.session = row.liveTerminals > 0 ? session : null
+    return folderRows(row, session, c.key)
+  })
+}
+
+/**
+ * Pure: a row for each agent in a coordinator's folder other than its session (a lead or worker the
+ * coordinator started in a tab there), so it shows under the coordinator like a worktree's lead and
+ * its ask reaches Up next. No branch or PR: the folder is no worktree, and it is never removed.
+ */
+export function folderRows(row: WorkspaceRow, session: AgentInfo | null, coordinator: string): WorkspaceRow[] {
+  return row.agents.filter((a) => a !== session).map((a) => ({
+    ...row,
+    agents: [a],
+    state: a.state,
+    priority: row.card?.priority ?? a.summary?.priority ?? null,
+    branch: null,
+    pr: null,
+    folderOf: coordinator
+  }))
+}
+
 /** Every row of the last snapshot, coordinator workspaces included (the panel's rows leave them out). */
 let allRows: WorkspaceRow[] = []
 
@@ -460,14 +499,7 @@ export async function snapshot(
     const remembered = rememberOwners(all, owners)
     if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }
     allRows = all
-    // A coordinator's own workspace is its row in the panel, not an agent in the tree.
-    const dirs = new Map(onDisk.map((c, i) => [c.dir, i]))
-    for (const row of all) {
-      const i = row.path ? dirs.get(row.path) : undefined
-      // Its session counts only while a terminal is open with an agent in it.
-      if (i !== undefined) { coordinators[i].workspaceId = row.id; coordinators[i].active = row.active; coordinators[i].session = row.liveTerminals > 0 ? (row.agents[0] ?? null) : null }
-    }
-    const rows = all.filter((r) => !r.path || !dirs.has(r.path))
+    const rows = foldCoordinatorFolders(all, coordinators, onDisk.map((c) => c.dir))
     return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0 }
   } catch (e) {
     orca.log(`orca worktree ps failed, using workspace.list: ${(e as Error).message}`)

@@ -144,6 +144,7 @@ export async function closeSessions(run: Run, panes: string[]): Promise<{ closed
  */
 export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, force = false): Promise<{ removed: boolean; reason?: string; dirty?: string[] }> {
   if (!row) return { removed: false, reason: 'workspace not found' }
+  if (row.folderOf) return { removed: false, reason: "a coordinator's folder is never removed" }
   // The sidebar hides removal while an agent works; this catches one that started since.
   const busy = workingIn(row)
   if (busy) return { removed: false, reason: `${busy.title} is working in this worktree` }

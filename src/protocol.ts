@@ -65,6 +65,8 @@ export type AgentInfo = {
   state: AgentState
   /** Summary title, else conversation name, task title, or agent kind. */
   title: string
+  /** The title of the Orca task it was dispatched with (`taskTitle`), when it has one. */
+  task?: string | null
   agentType: string | null
   summary: AgentSummary | null
 }
@@ -99,6 +101,12 @@ export type WorkspaceRow = {
   pr: { number: number; url: string; state: string; title?: string; checks: 'success' | 'pending' | 'failure' | 'cancelled' | null } | null
   /** Set on the queue row that stands for a coordinator's own session (see askingRows in view.ts). */
   coordinator?: string
+  /**
+   * Set on a row that stands for one agent in a coordinator's folder (a lead or worker the
+   * coordinator started in a tab there): that coordinator's key. Its id is the folder's workspace,
+   * which is never removed.
+   */
+  folderOf?: string
   /** The Linear issue Orca linked to the worktree (`--linear-issue`), as its identifier (BOU-4179). */
   linearIssue?: string | null
 }
