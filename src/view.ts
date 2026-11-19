@@ -1,3 +1,4 @@
+import { askKey, sessionChoices } from './coordinator-sessions.ts'
 // The panel as pure functions: a snapshot and the UI state in, HTML out. No DOM, so it is tested
 // in Node; src/panel/app.ts only wires clicks and redraws.
 //
@@ -5,8 +6,10 @@
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
+import { mixedProviders, providerBadge, providerOf } from './providers.ts'
+import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
-import { BEAMS, capGlyph, headLines, rowLines, trunkX, type NodeState } from './lines.ts'
+import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
 import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, issueLink, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
 export type UiState = {
@@ -682,12 +685,15 @@ export function updateButton(state: UpdateState | undefined): string {
  * badges, Up next, the status bar and jump-to-next all read this one list.
  */
 export function askingRows(snap: Pick<Snapshot, 'rows' | 'coordinators'>): WorkspaceRow[] {
-  const own = snap.coordinators.filter((c) => c.session && asksYou(c.session)).map((c): WorkspaceRow => ({
-    id: c.workspaceId ?? `coordinator:${c.key}`, name: c.name, branch: null, repo: c.repos.length === 1 ? c.repos[0] : c.name, path: null,
-    main: true, agents: [c.session!], state: c.session!.state, priority: c.session!.summary?.priority ?? null, card: null, parentId: null,
-    liveTerminals: 1, pinned: false, unread: false, active: Boolean(c.active), workspaceStatus: null,
-    lastActivityAt: c.session!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key
-  }))
+  const own = snap.coordinators.flatMap((c) => {
+    const sources = c.members ? c.members.map((m) => ({ a: m.agent ?? m.lastAgent, id: m.id, workspaceId: m.workspaceId, historical: m.id !== c.sessions?.current || !m.agent })) : c.session ? [{ a: c.session, id: undefined, workspaceId: c.workspaceId, historical: false }] : []
+    return sources.filter((m) => m.a && asksYou(m.a)).map((m): WorkspaceRow => ({
+      id: m.workspaceId ?? `coordinator:${c.key}`, name: c.name, branch: null, repo: c.repos.length === 1 ? c.repos[0] : c.name, path: null,
+      main: true, agents: [m.a!], state: m.a!.state, priority: m.a!.summary?.priority ?? null, card: null, parentId: null,
+      liveTerminals: m.historical ? 0 : 1, pinned: false, unread: false, active: !m.historical && Boolean(c.active), workspaceStatus: null,
+      lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id, historical: m.historical
+    }))
+  })
   return waitingQueue([...snap.rows, ...own])
 }
 
@@ -702,22 +708,22 @@ export function upNextOrder(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Plac
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
 
-function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState): string {
+function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, mixed: boolean): string {
   if (placed.length === 0) return ''
   const items = placed.map((p, i) => {
-    const key = p.a.paneKey || p.row.id
+    const key = askKey(p.row, p.a)
     const open = (i === 0 && !ui.closed.has(key)) || ui.opened.has(key)
     // A coordinator's own ask wears its character and opens like its row in the tree.
     const c = p.row.coordinator ? coordinators.find((x) => x.key === p.row.coordinator) : undefined
     const who = c
       ? tipped(character(c.look?.color ?? (c.repos.length === 1 ? colorOf(c.repos[0]) : NEUTRAL), c.look?.shape ?? 'pentagon', 'asks', 20, true, askKindOf(p.a)), ASK_TIP[askKindOf(p.a)], ASK_TONE[askKindOf(p.a)])
       : agentCharacter(p.a, p.row, all)
-    const menu = c ? `coordinator:${c.key}` : `agent:${p.a.paneKey}`
-    const where = c ? 'coordinator' : coordinatorName(p.a.coordinator, coordinators)
-    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
+    const menu = c ? `${p.row.historical ? 'history' : 'coordinator'}:${c.key}` : `agent:${p.a.paneKey}`
+    const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.historical ? 'previous session · read-only' : 'current session'}` : coordinatorName(p.a.coordinator, coordinators)
+    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}${providerBadge(p.a, mixed)}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
-    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
+    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>${p.row.historical ? 'View source history' : 'Jump to session'}</button>${reviewPr(p)}</div></div>`
   })
   return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }
@@ -798,7 +804,7 @@ const beam = (node: NodeState) => (BEAMS.includes(node) ? `<i class="beam b-${no
 /** The focused row's mark: a slim bar on its left edge, in its branch's color (panel.css .fb). */
 const FOCUS = '<i class="fb" aria-hidden="true"></i>'
 
-function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, deco = ''): string {
+function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], soft: boolean, lead: Placed | undefined, ui: UiState, done = false, current = false, deco = '', mixed = false, depth = lead ? 1 : 0): string {
   const status = rowStatus(ui, `agent:${p.a.paneKey}`)
   const indent = Boolean(lead)
   // The worktree's Linear issue, on the right of the row that stands for the worktree.
@@ -813,15 +819,15 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
     : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
-  const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}"`
+  const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}" data-depth="${depth}" style="--node-x:${nodeX(depth)}px"`
   // Its lines and focus bar; its character leaves out the spinning badge, the ring's shimmer shows it working.
   const lines = `${deco}${current ? FOCUS : ''}`
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
+    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${providerBadge(p.a, mixed)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${providerBadge(p.a, mixed)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
 }
 
 /**
@@ -839,7 +845,7 @@ const reviewPr = ({ a, row }: Placed) =>
 
 /** What a click on an agent opens: its workspace and, when its terminal is known, its own tab. */
 const openAttrs = (p: Placed) =>
-  p.row.coordinator ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
+  !p.a.terminal && !p.row.historical && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && p.row.coordinatorMember && p.row.historical ? `data-history="${esc(p.row.coordinator)}" data-member="${esc(p.row.coordinatorMember)}"` : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
 
 /** Finished sessions that still hold a terminal: what the footer lists and the cockpit counts. */
 const leadsOpenWork = (a: AgentInfo, all: AgentInfo[]) => all.some((b) => b.leadPane === a.paneKey && faceOf(b) !== 'done')
@@ -878,7 +884,7 @@ export function coordinatorCharacter(c: Coordinator, size = 16, face: Face = c.s
   return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face, size, true, c.session ? askKindOf(c.session) : 'question')
 }
 
-function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined): string {
+function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined, mixed: boolean, rows: WorkspaceRow[]): string {
   const single = c.repos.length === 1 ? c.repos[0] : null
   const color = coordinatorColor(c)
   const shape: Shape = c.you ? 'solo' : (c.look?.shape ?? 'pentagon')
@@ -896,7 +902,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
   // lead's branch color, lit together on hover and while one of them is current.
   const trunk = trunkX(face === 'idle')
-  const lanes: { root: Placed; rows: { p: Placed; lead?: Placed }[] }[] = []
+  const lanes: { root: Placed; rows: TreeBlock['lines'] }[] = []
   for (const line of lines) {
     if (line.lead && lanes.length) lanes[lanes.length - 1].rows.push(line)
     else lanes.push({ root: line.p, rows: [line] })
@@ -904,11 +910,11 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   const body = lanes.map(({ root, rows }) => {
     // The lead wears its PR as a bead on its ring.
     const cap = capGlyph(root.row.pr)
-    const html = rows.map(({ p, lead }) => {
+    const html = rows.map(({ p, lead, depth }) => {
       const node = nodeOf(p.a, p.row, all)
-      const role = { nested: Boolean(lead), trunk, node, ask: faceOf(p.a) === 'asks' ? askKindOf(p.a) : undefined, cap: lead ? null : cap }
-      const deco = `<i class="tl" aria-hidden="true"></i>${rowLines(role)}${beam(node)}`
-      return agentLine(p, all, coordinators, !single, lead, ui, done(p), isCurrent(p.a, p.row, focused), deco)
+      const role = { nested: Boolean(lead), depth, trunk, node, ask: faceOf(p.a) === 'asks' ? askKindOf(p.a) : undefined, cap: lead ? null : cap }
+      const deco = `${treeRails(lines, lines.findIndex((line) => line.p === p), trunk)}${rowLines(role)}${beam(node)}`
+      return agentLine(p, all, coordinators, !single, lead, ui, done(p), isCurrent(p.a, p.row, focused), deco, mixed, depth)
     }).join('')
     return `<div class="lane"${branchAttr(root.row)}>${html}</div>`
   }).join('')
@@ -917,18 +923,48 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   const node: NodeState = face === 'idle' ? 'sleeping' : face === 'asks' ? 'asking' : face === 'done' ? 'done' : face === 'monitoring' ? 'monitoring' : 'working'
   const ringed = !folded && mine.length > 0
   const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
-  const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
+  const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}${providerBadge(c.session, mixed)}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${head}</button>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
 
+/** Compact selector; the coordinator's avatar and current status stay separate. */
+function sessionPicker(c: Coordinator, rows: WorkspaceRow[], mixed: boolean): string {
+  if (sessionChoices(c, rows).length <= 1) return providerBadge(c.session, mixed)
+  const member = c.members?.find((m) => m.id === c.sessions?.current)
+  const provider = providerOf(member?.agentType ?? c.session?.agentType ?? null)
+  const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="13" height="13" rx="3"/><path d="M9 20h9a3 3 0 0 0 3-3V9"/></svg>'
+  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" aria-expanded="false" data-tip="${esc(`Switch coordinator session${member?.title ? ` · ${member.title}` : ''}`)}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
+}
+
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */
-type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; lead?: Placed }[] }
+type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; lead?: Placed; depth: number }[] }
+
+/** Vertical rails follow actual ancestors and end at their last direct child connector. */
+function treeRails(lines: TreeBlock['lines'], index: number, trunk: number): string {
+  const line = lines[index]
+  const rail = (x: number, kind: string, top = '0', bottom = '-1px') => `<i class="tree-rail ${kind}" aria-hidden="true" style="left:${x}px;top:${top};bottom:${bottom}"></i>`
+  const end = 'calc(50% - var(--dy) + var(--fork))'
+  const laterRoot = lines.slice(index + 1).some((l) => !l.lead)
+  let html = laterRoot ? rail(trunk, 'trunk') : !line.lead ? rail(trunk, 'trunk', '0', end) : ''
+  if (lines.some((l) => l.lead === line.p)) html += rail(nodeX(line.depth), 'branch', 'calc(50% + var(--dy) + 12px)')
+  let parent = line.lead
+  const seen = new Set<Placed>()
+  while (parent && !seen.has(parent)) {
+    seen.add(parent)
+    const parentLine = lines.find((l) => l.p === parent)
+    if (!parentLine) break
+    const laterChild = lines.slice(index + 1).some((l) => l.lead === parent)
+    if (laterChild || line.lead === parent) html += rail(nodeX(parentLine.depth), 'branch', '0', laterChild ? '-1px' : end)
+    parent = parentLine.lead
+  }
+  return html
+}
 
 /**
  * The coordinators tree top to bottom: active coordinators (a session or a team), then You when you
@@ -939,7 +975,7 @@ type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { 
 function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] {
   const all = snap.rows.flatMap((r) => r.agents)
   const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
-  const live = placed.filter((p) => faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
+  const live = placed.filter((p) => p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
   const awake = (c: Coordinator) => Boolean(c.session) || teamOf(c.key).length > 0
   const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
@@ -949,7 +985,29 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
     if ('you' in c && mine.length === 0) return []
     const panes = new Set(mine.map((p) => p.a.paneKey))
     const roots = mine.filter((p) => !p.a.leadPane || !panes.has(p.a.leadPane))
-    const lines = roots.flatMap((p) => [{ p }, ...mine.filter((w) => w.a.leadPane === p.a.paneKey).map((w) => ({ p: w, lead: p }))])
+    const children = new Map<string, Placed[]>()
+    for (const p of mine) if (p.a.leadPane) {
+      const siblings = children.get(p.a.leadPane) ?? []
+      siblings.push(p)
+      children.set(p.a.leadPane, siblings)
+    }
+    const lines: TreeBlock['lines'] = []
+    const seen = new Set<Placed>()
+    // Walk every descendant, not just a root's immediate children. Keep sibling start order and
+    // the actual parent; a continuation row above a lead must not swallow that lead's workers.
+    const visit = (root: Placed) => {
+      const stack: TreeBlock['lines'] = [{ p: root, depth: 0 }]
+      while (stack.length) {
+        const line = stack.pop()!
+        if (seen.has(line.p)) continue
+        seen.add(line.p)
+        lines.push(line)
+        for (const p of [...(children.get(line.p.a.paneKey) ?? [])].reverse()) stack.push({ p, lead: line.p, depth: line.depth + 1 })
+      }
+    }
+    roots.forEach(visit)
+    // Missing parents become roots above; cycles have none. Still show each pane once, safely.
+    mine.forEach(visit)
     return [{ c, mine, lines }]
   })
 }
@@ -1011,20 +1069,21 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.
   const asking = upNextOrder(snap)
+  const mixed = mixedProviders(snap)
 
   if (ui.query) {
     const q = ui.query.toLowerCase()
     const found = snap.rows.filter((r) => [r.name, r.repo, r.branch, ...r.agents.map((a) => a.title)].some((f) => f?.toLowerCase().includes(q)))
     return { cockpit: cockpit(snap, ui), copen, main: `<div class="group found">${
       found.length
-        ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
+        ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}${providerBadge(r.agents[0], mixed)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
         : '<div class="empty">No matching workspaces</div>'
     }</div>`, attention: '', linear: '', footer: '' }
   }
 
   // Sleep and remove are in the rows' menus.
   const idleRows = snap.rows.filter((r) => r.agents.length === 0 && !needsYou(r)).sort((x, y) => x.createdAt - y.createdAt)
-  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes)).join('')
+  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes, mixed, snap.rows)).join('')
 
   const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 
@@ -1032,7 +1091,7 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
     cockpit: cockpit(snap, ui),
     copen,
     main: `<div class="tree"><div class="label">Coordinators</div>${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
-    attention: upNext(asking, all, snap.coordinators, ui),
+    attention: upNext(asking, all, snap.coordinators, ui, mixed),
     linear: linearSection(snap, ui, linear),
     footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : ''
   }
@@ -1066,10 +1125,10 @@ const STARTED = { name: 'In Progress', type: 'started', color: '' }
 function linearRow(i: LinearIssue, snap: Snapshot, ui: UiState, data: LinearData, linked: Map<string, WorkspaceRow>): string {
   const status = rowStatus(ui, `linear:${i.id}`)
   const row = linked.get(i.id)
-  const sent = row ? undefined : data.sent[i.id]
+  const sent = data.sent[i.id]?.delivery === 'unknown' ? data.sent[i.id] : row ? undefined : data.sent[i.id]
   const coordinator = sent && snap.coordinators.find((c) => c.key === sent.coordinator)
-  const glyphs = `${statusIcon(sent ? STARTED : i.state)}${priorityIcon(i.priority)}<span class="lid">${esc(i.id)}</span><span class="t">${esc(i.title)}</span>`
-  if (row) {
+  const glyphs = `${statusIcon(sent && sent.delivery !== 'unknown' ? STARTED : i.state)}${priorityIcon(i.priority)}<span class="lid">${esc(i.id)}</span><span class="t">${esc(i.title)}</span>`
+  if (row && sent?.delivery !== 'unknown') {
     const all = snap.rows.flatMap((r) => r.agents)
     const lead = worktreeLead(row)
     const right = lead
@@ -1080,8 +1139,8 @@ function linearRow(i: LinearIssue, snap: Snapshot, ui: UiState, data: LinearData
   }
   if (sent) {
     const name = coordinator?.name ?? sent.coordinator
-    const who = coordinator ? coordinatorCharacter(coordinator, 14, 'working') : ''
-    return `<button class="item lrow" data-coordinator="${esc(sent.coordinator)}" data-menu="linear:${esc(i.id)}">${glyphs}<span class="r">${status ?? `${who}<span class="rstatus pending">${esc(name)} · starting</span>`}</span></button>`
+    const who = coordinator ? coordinatorCharacter(coordinator, 14, sent.delivery === 'unknown' ? 'idle' : 'working') : ''
+    return `<button class="item lrow" ${sent.recipient ? `data-history="${esc(sent.coordinator)}" data-member="${esc(sent.recipient.member)}" data-history-terminal="${esc(sent.recipient.terminal)}" data-history-session="${esc(sent.recipient.orcaSession ?? '')}"` : `data-sessions="${esc(sent.coordinator)}"`} data-menu="linear:${esc(i.id)}">${glyphs}<span class="r">${status ?? `${who}<span class="rstatus pending">${esc(name)}${sent.recipient?.agentType ? ` · ${esc(sent.recipient.agentType)}` : ' · recipient unrecorded'} · ${sent.delivery === 'unknown' ? 'delivery unconfirmed · inspect source' : 'starting'}</span>`}</span></button>`
   }
   const who = ui.linearFilter === 'mine' || (i.assignee && i.assignee.id === data.me) ? '' : i.assignee ? i.assignee.name : 'unassigned'
   const right = status ?? `${who ? `<span class="rest">${esc(who)}</span>` : ''}<span class="act pill send">Send ${ARROW}</span>`
@@ -1120,7 +1179,7 @@ export function linearSection(snap: Snapshot, ui: UiState, data: LinearData | nu
   const view = views[f]
   const team = data.teams.length > 1 ? `${data.teams[0]} +${data.teams.length - 1}` : (data.teams[0] ?? '')
   const folded = ui.linearFolded
-  const starting = Object.keys(data.sent).filter((id) => !linked.has(id))
+  const starting = Object.keys(data.sent).filter((id) => !linked.has(id) && data.sent[id].delivery !== 'unknown')
   const startingCoord = starting.length ? snap.coordinators.find((c) => c.key === data.sent[starting[0]].coordinator) : undefined
   const fold = `<button class="label lfold" data-lfold aria-expanded="${!folded}"${data.teams.length > 1 ? ` data-tip="${esc(data.teams.join(', '))}"` : ''}>${ICON.chev}${LINEAR_MARK}<span>Linear${team ? ` · ${esc(team)}` : ''}</span>${folded ? `<span class="fc">${view.count}</span>` : ''}</button>`
   const changed = !isDefaultDisplay(display)

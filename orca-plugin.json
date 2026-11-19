@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "flow",
   "name": "Orca Flow",
-  "version": "0.2.55",
+  "version": "0.2.57",
   "description": "What needs you next, room to run more, and coordinators that delegate to workers.",
   "engines": {
     "orca": ">=1.4.254"
@@ -132,11 +132,6 @@
         "icon": "download",
         "tooltip": "Update Orca Flow",
         "command": "flow.update"
-      }
-    ],
-    "hooks": [
-      {
-        "event": "agent.launch.before"
       }
     ]
   },

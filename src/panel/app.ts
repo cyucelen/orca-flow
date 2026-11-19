@@ -8,6 +8,8 @@ import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
 import { externalLink } from './links.ts'
 import { canRemove } from '../rank.ts'
+import { sessionChoices } from '../coordinator-sessions.ts'
+import { providerBadge } from '../providers.ts'
 
 const ui = emptyUi()
 let snap: Snapshot | null = null
@@ -151,9 +153,11 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
+  if (d.sessions) { if (opener.shouldOpen(`sessions:${d.sessions}`)) showSessionPicker(d.sessions, el); return }
+  if (d.history && d.member) { void showHistory(d.history, d.member, d.historyTerminal, d.historySession); return }
   // One action at a time; opening, folding and briefs still work while one runs.
   const action = d.act ?? d.yes
   if (ui.pending && action) {
@@ -491,7 +495,7 @@ async function confirmAction(kind: string, title: string, text: string, okLabel:
 /** Opens a coordinator, showing "Waking…" on its row while Orca starts or resumes its session. */
 function wake(key: string): Promise<void> {
   const c = snap?.coordinators.find((x) => x.key === key)
-  return inline(`coordinator:${key}`, c?.session ? 'Opening…' : 'Waking…', 'Open', () => orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }))
+  return inline(`coordinator:${key}`, 'Opening…', 'Open', () => orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }))
 }
 
 /**
@@ -584,9 +588,10 @@ function coordinatorMenu(key: string): MenuItem[] {
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
     'separator',
     { label: 'Start fresh session', icon: 'restart', danger: true, run: async () => {
-      if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'Its current conversation ends and a new one starts. Its notes and scope stay.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
+      if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]
+  if (c.members?.length) items.splice(1, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
   // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
   const teams = linear?.connectedTeams ?? []
@@ -612,6 +617,9 @@ let menuTarget: string | null = null
 function markTarget(): void {
   document.querySelectorAll('.menu-open').forEach((el) => el.classList.remove('menu-open'))
   if (menuTarget) document.querySelector(`[data-menu="${CSS.escape(menuTarget)}"]`)?.classList.add('menu-open')
+  document.querySelectorAll<HTMLElement>('.session-trigger').forEach((el) => {
+    el.setAttribute('aria-expanded', String(menuTarget === `sessions:${el.dataset.sessions}`))
+  })
 }
 
 function closeMenu(): void {
@@ -681,7 +689,7 @@ function openMenu(raw: MenuItem[] | (() => MenuItem[]), x: number, y: number, ta
   if (anchor) {
     const h = ctx.getBoundingClientRect().height
     const below = anchor.bottom + 2 + h <= window.innerHeight - 6
-    place(ctx, anchor.right - ctx.getBoundingClientRect().width, below ? anchor.bottom + 2 : anchor.top - 2 - h)
+    place(ctx, cls === 'session-menu' ? anchor.left : anchor.right - ctx.getBoundingClientRect().width, below ? anchor.bottom + 2 : anchor.top - 2 - h)
   } else place(ctx, x, y)
   // Focus the menu, not its first item: nothing looks hovered until the pointer or arrow keys move.
   ctx.focus()
@@ -693,6 +701,7 @@ document.addEventListener('contextmenu', (e) => {
   e.preventDefault()
   const target = el.dataset.menu!
   const [kind, id] = [target.split(':')[0], target.slice(target.indexOf(':') + 1)]
+  if (kind === 'history') return showHistoryList(id)
   if (kind === 'coordinator') return openMenu(coordinatorMenu(id), e.clientX, e.clientY, target)
   if (kind === 'linear') return openMenu(sendMenu(id), e.clientX, e.clientY, target)
   const row = snap.rows.find((r) => r.agents.some((a) => a.paneKey === id))
@@ -701,8 +710,9 @@ document.addEventListener('contextmenu', (e) => {
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend]') : null
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-sessions]') : null
   if (!el) return null
+  if (el.dataset.sessions) return `sessions:${el.dataset.sessions}`
   return 'ldisplay' in el.dataset ? 'display' : `linear:${el.dataset.lsend}`
 }
 const opener = openerToggle()
@@ -757,7 +767,7 @@ async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
     const r = await orca.plugin.request('sidebar.linearSend', { issue: issue.id, coordinator: c.key }, { timeoutMs: 120_000 })
     if (r.ok) {
       ui.status.delete(target)
-      showToast(c, issue.id, r.warnings ?? [])
+      showToast(c, issue.id, r.warnings ?? [], r.recipient)
     } else ui.status.set(target, { text: r.error ?? 'Could not send', tone: 'bad' })
   } catch (e) {
     ui.status.set(target, { text: (e as Error).message, tone: 'bad' })
@@ -766,10 +776,10 @@ async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined
-function showToast(c: Coordinator, id: string, warnings: string[]): void {
+function showToast(c: Coordinator, id: string, warnings: string[], recipient?: import('../protocol.ts').DeliveryRecipient): void {
   clearTimeout(toastTimer)
   const warn = warnings.length ? `<span class="twarn" data-tip="${esc(warnings.join('\n'))}" data-tone="warn">Linear not updated</span>` : ''
-  toastEl.innerHTML = `${coordinatorCharacter(c, 16, 'working')}<span class="t">Sent ${esc(id)} to ${esc(c.name)}</span>${warn}<button class="act" data-coordinator="${esc(c.key)}">Open chat</button>`
+  toastEl.innerHTML = `${coordinatorCharacter(c, 16, 'working')}<span class="t">Sent ${esc(id)} to ${esc(c.name)}</span>${warn}<button class="act" ${recipient ? `data-history="${esc(c.key)}" data-member="${esc(recipient.member)}" data-history-terminal="${esc(recipient.terminal)}" data-history-session="${esc(recipient.orcaSession ?? '')}"` : `data-sessions="${esc(c.key)}"`}>View recipient</button>`
   toastEl.hidden = false
   toastTimer = setTimeout(hideToast, warnings.length ? 12_000 : 8000)
 }
@@ -808,4 +818,58 @@ function displayMenu(): MenuItem[] {
     'separator',
     { label: 'Reset to default', icon: 'restart', stay: true, run: () => set(DEFAULT_DISPLAY) }
   ]
+}
+
+// Session inspection is local to the panel. It never switches native chats or changes current.
+const sessionsDialog = document.createElement('dialog')
+sessionsDialog.className = 'sessions-dialog'
+document.body.append(sessionsDialog)
+sessionsDialog.addEventListener('click', (event) => { if (event.target === sessionsDialog) sessionsDialog.close() })
+
+let sessionDialogVersion = 0
+function sessionDialog(title: string, body: string): void {
+  sessionDialogVersion++
+  sessionsDialog.innerHTML = `<header><strong>${esc(title)}</strong><button data-session-close aria-label="Close sessions">×</button></header>${body}`
+  sessionsDialog.querySelector('[data-session-close]')?.addEventListener('click', () => sessionsDialog.close())
+  if (!sessionsDialog.open) sessionsDialog.showModal()
+}
+
+async function showHistory(key: string, member: string, terminal?: string, sourceSession?: string): Promise<void> {
+  sessionDialog('Read-only history', '<p>Reading the exact recorded session…</p>')
+  const version = sessionDialogVersion
+  try {
+    const history = await orca.plugin.request('sidebar.coordinatorHistory', { key, member, ...(terminal ? { terminal } : {}), ...(sourceSession !== undefined ? { orcaSession: sourceSession || null } : {}) })
+    if (!sessionsDialog.open || version !== sessionDialogVersion) return
+    sessionDialog(history.title, `<p class="session-note">Read-only terminal scrollback excerpt (not a complete transcript). Current recipient and existing run routes are unchanged.</p>${history.unavailable ? `<p role="status">${esc(history.unavailable)}</p>` : `<pre class="session-history">${esc(history.text || 'No readable output is available for this terminal.')}</pre>${history.truncated ? '<p class="session-note">Showing a bounded excerpt, not the full conversation.</p>' : ''}`}<button data-session-back>Back to history</button>`)
+    sessionsDialog.querySelector('[data-session-back]')?.addEventListener('click', () => showHistoryList(key))
+  } catch (e) { if (!sessionsDialog.open || version !== sessionDialogVersion) return; sessionDialog('History unavailable', `<p>${esc((e as Error).message)}</p>`) }
+}
+
+/** One choice is one explicit switch; opening the dropdown has no side effects. */
+function showSessionPicker(key: string, source?: HTMLElement): void {
+  const c = snap?.coordinators.find((c) => c.key === key)
+  if (!c || !snap) return
+  const anchor = document.querySelector<HTMLElement>(`.session-trigger[data-sessions="${CSS.escape(key)}"]`) ?? source
+  const choices = sessionChoices(c, snap.rows)
+  const items: MenuItem[] = choices.length ? choices.map((choice) => ({
+    label: `${choice.agentType ? choice.agentType.charAt(0).toUpperCase() + choice.agentType.slice(1) : 'Session'} · ${choice.title}`,
+    iconHtml: providerBadge(choice.agent, true),
+    checked: choice.current,
+    run: () => inline(`coordinator:${key}`, 'Switching…', '', async () => {
+      const result = await orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'select', workspaceId: choice.workspaceId, paneKey: choice.paneKey, orcaSession: choice.orcaSession, agent: choice.agentType ?? undefined })
+      if (result.ok) ui.status.delete(`coordinator:${key}`)
+      return result
+    })
+  })) : [{ header: 'No open conversations' }]
+  if (menuTarget === `sessions:${key}`) { closeMenu(); return }
+  openMenu(items, 12, 12, `sessions:${key}`, anchor?.getBoundingClientRect(), 'session-menu')
+}
+
+/** Read-only history is separate from choosing the main conversation. */
+function showHistoryList(key: string): void {
+  const c = snap?.coordinators.find((c) => c.key === key)
+  if (!c) return
+  const members = c.members ?? []
+  sessionDialog(`${c.name} / History`, members.map((m, i) => `<button class="session-history-choice" data-history-index="${i}">${esc(m.agentType ?? 'Session')} · ${esc(m.title)}</button>`).join('') || '<p>No recorded conversation history is available.</p>')
+  sessionsDialog.querySelectorAll<HTMLElement>('[data-history-index]').forEach((b) => b.addEventListener('click', () => void showHistory(key, members[Number(b.dataset.historyIndex)].id)))
 }

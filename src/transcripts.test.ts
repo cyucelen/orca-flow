@@ -5,7 +5,9 @@ import { join } from 'node:path'
 import { discoverTranscript, readTranscript, sourceCurrent } from './transcripts.ts'
 import { currentSummaryJobs, digest, lastTurnEnd, summarizePane, summaryMatches, summaryProviders, turnSummarizer } from './summarize.ts'
 import { createWriter, WriterError } from './writer.ts'
-import { fromPs } from './worker.ts'
+import { foldCoordinatorFolders, fromPs, summaryAgents } from './worker.ts'
+import { currentRecipient, memberFrom, selectCurrent } from './coordinator-sessions.ts'
+import type { Coordinator } from './protocol.ts'
 
 const at = (n: number) => `2026-11-19T12:00:${String(n).padStart(2, '0')}.000Z`
 const line = (r: unknown) => JSON.stringify(r)
@@ -332,5 +334,43 @@ test('legacy Claude reading remains available without inventing an Orca identity
     assert.equal(native.path, f.path)
     if (native.path) assert.equal(native.source?.orcaSession, undefined)
     assert.equal(discoverTranscript('pane', f.files, { provider: 'claude', orcaSession: 'orca-new', sessionId: 'native-claude' }).path, null)
+  } finally { f.dispose() }
+})
+
+test('integrated non-current Codex member publishes fallback summary without changing the selected Claude recipient', async () => {
+  const f = fixture()
+  try {
+    const rows = fromPs([{ path: '/synthetic/coordinator', liveTerminalCount: 2, agents: [
+      { paneKey: 'selected-claude', agentType: 'claude', orcaSessionId: 'orca-claude', state: 'waiting', hasLivePty: true },
+      { paneKey: 'pane', agentType: 'codex', orcaSessionId: 'orca-one', state: 'done', hasLivePty: true }
+    ] }], { cards: {}, summaries: {} }, new Map([['/synthetic/coordinator', 'folder:synthetic']]))
+    rows[0].agents.forEach((a) => { a.terminal = `terminal-${a.paneKey}` })
+    const members = rows[0].agents.map((a) => memberFrom(rows[0], a))
+    members[1].resumeSessionId = 'native-one'
+    const c: Coordinator = { key: 'synthetic', name: 'Synthetic', repos: [], workspaceId: rows[0].id, sessions: { version: 1, current: members[0].id, members } }
+    const coordinators = [c]
+    const visible = foldCoordinatorFolders(rows, coordinators, ['/synthetic/coordinator'])
+    assert.equal(visible.length, 0, 'both coordinator members are removed from ordinary rows')
+    const snapshot = { rows: visible, coordinators }
+    const before = JSON.stringify(c.sessions)
+    const targets = summaryAgents(snapshot).map(({ agent, worktreeId }) => ({ pane: agent.paneKey, state: agent.state, worktreeId, identity: { orcaSession: agent.orcaSession, provider: agent.agentType } }))
+    const jobs = currentSummaryJobs({}, targets, (pane, identity) => discoverTranscript(pane, f.files, identity))
+    assert.equal(jobs.length, 1)
+    assert.equal(jobs[0].pane, 'pane')
+    assert.equal(jobs[0].transcriptSource?.orcaSession, 'orca-one')
+    assert.equal(jobs[0].transcriptSource?.providerSession?.id, 'native-one')
+    const writer = createWriter(summaryProviders({ haiku: async () => { throw new WriterError('haiku', 'quota') }, luna: async () => card }))
+    const queue = turnSummarizer({ run: (job) => summarizePane({ ...job, dir: f.dir, writer, isCurrent: () => summaryAgents(snapshot).some(({ agent }) => agent.paneKey === job.pane && agent.orcaSession === job.transcriptSource?.orcaSession) }) })
+    try { await queue.enqueue(jobs[0]) } finally { queue.dispose() }
+    const saved = JSON.parse(readFileSync(join(f.dir, 'pane.json'), 'utf8'))
+    assert.equal(saved.title, card.title)
+    assert.equal(saved.orcaSession, 'orca-one')
+    assert.equal(saved.providerSession.id, 'native-one')
+    assert.equal(JSON.stringify(c.sessions), before)
+    assert.equal(currentRecipient(c, rows).agent.paneKey, 'selected-claude')
+    c.sessions = selectCurrent(c.sessions!, members[1].id)
+    foldCoordinatorFolders(rows, coordinators, ['/synthetic/coordinator'])
+    assert.equal(currentRecipient(c, rows).agent.paneKey, 'pane')
+    assert.equal(summaryAgents(snapshot).length, 2, 'current selection does not govern summary eligibility')
   } finally { f.dispose() }
 })

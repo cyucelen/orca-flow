@@ -70,7 +70,10 @@ export type AgentInfo = {
   title: string
   /** The title of the Orca task it was dispatched with (`taskTitle`), when it has one. */
   task?: string | null
+  /** Orca’s agent id, never inferred from the model, title or summary. */
   agentType: string | null
+  /** Positive per-pane host evidence: a live PTY or an owned structured chat; absent on old snapshots. */
+  live?: boolean
   summary: AgentSummary | null
 }
 
@@ -109,6 +112,9 @@ export type WorkspaceRow = {
    * coordinator started in a tab there): that coordinator's key. Its id is the folder's workspace,
    * which is never removed.
    */
+  queueKey?: string
+  coordinatorMember?: string
+  historical?: boolean
   folderOf?: string
   /** The Linear issue Orca linked to the worktree (`--linear-issue`), as its identifier (BOU-4179). */
   linearIssue?: string | null
@@ -135,14 +141,39 @@ export type Capacity = {
   finishedOpen: number
 }
 
+/** A saved logical membership, independent of focus, provider and run ownership. */
+export type CoordinatorMember = {
+  id: string
+  workspaceId: string
+  workspacePath?: string | null
+  bindings?: { terminal: string; paneKey: string; orcaSession: string | null }[]
+  orcaSession: string | null
+  agentType: string | null
+  title: string
+  paneKey: string
+  /** Exact historical routes; never reassigned when another member becomes current. */
+  terminals: string[]
+  /** Provider resume id from agents.list/status, not Orca's conversation id. */
+  resumeSessionId?: string
+  lastAgent?: AgentInfo
+}
+export type CoordinatorSessions = { version: 1; current: string | null; members: CoordinatorMember[] }
+export type CoordinatorMemberView = CoordinatorMember & { agent: AgentInfo | null }
+export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
+export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
+
 /** One of the user's coordinators: a coordinator with its own Orca folder workspace. */
 export type Coordinator = {
   key: string
   name: string
   repos: string[]
+  sessions?: CoordinatorSessions
+  members?: CoordinatorMemberView[]
+  sessionNotice?: string
+  routing?: string
   /** Its folder workspace in Orca, once added; clicking the coordinator opens it. */
   workspaceId: string | null
-  /** Its own session (the agent in its workspace), when one is open. */
+  /** The explicitly current member's live session, never inferred from focus or provider. */
   session?: AgentInfo | null
   /** The character it was given at creation. */
   look?: Look | null
@@ -235,7 +266,7 @@ export type LinearIssue = {
 }
 
 /** An issue sent to a coordinator that no worktree links yet. */
-export type LinearSent = { coordinator: string; at: number }
+export type LinearSent = { coordinator: string; at: number; recipient?: DeliveryRecipient; delivery?: 'unknown' }
 
 /** What the Linear section shows; null when Linear is not connected. */
 export type LinearData = {
@@ -290,7 +321,9 @@ declare module 'orca' {
     'sidebar.setPriority': { input: { workspaceId: string; priority: Priority | null }; output: { ok: boolean; error?: string } }
     /** A coordinator's menu actions: a new look, a fresh session, ending its session, or deleting it. */
     'sidebar.coordinatorAction': { input: { key: string; action: 'look' | 'restart' | 'end' | 'delete' }; output: { ok: boolean; error?: string } }
-    /** Opens a coordinator's session, starting Claude there if it is not running. */
+    'sidebar.coordinatorSessions': { input: { key: string; action: 'select' | 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; orcaSession?: string; agent?: string }; output: { ok: boolean; error?: string } }
+    'sidebar.coordinatorHistory': { input: { key: string; member: string; terminal?: string; orcaSession?: string | null }; output: CoordinatorHistory }
+    /** Opens only the exact live current member. No implicit launch or resume. */
     'sidebar.openCoordinator': { input: { key: string }; output: { ok: boolean; error?: string } }
     /**
      * Updates Orca Flow now, as the status bar item's second click does: only from available or
@@ -307,11 +340,11 @@ declare module 'orca' {
     /** The Linear section's data, read again when older than a minute; null when Linear is not connected. */
     'sidebar.linear': { input: { force?: boolean }; output: LinearWire | null }
     /**
-     * Sends a Linear issue to a coordinator: types the start message into its chat (starting its
-     * session with it when none is live), moves the issue to In Progress, and assigns it to the user
+     * Sends a Linear issue to the exact current live member and records that recipient;
+     * moves the issue to In Progress, and assigns it to the user
      * when it has no assignee.
      */
-    'sidebar.linearSend': { input: { issue: string; coordinator: string }; output: { ok: boolean; error?: string; warnings?: string[] } }
+    'sidebar.linearSend': { input: { issue: string; coordinator: string }; output: { ok: boolean; error?: string; warnings?: string[]; recipient?: DeliveryRecipient } }
     /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
     'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
   }
