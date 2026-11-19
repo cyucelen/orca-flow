@@ -316,20 +316,24 @@ export const busy = (text: string) => `<span class="rstatus pending"><span class
 export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' }
 
 /**
- * The Sessions menu a coordinator click opens when it needs the person: a header with the reason
- * (the full one in its tooltip), the open conversations to pick from (`sessions`), Retry (`retry`),
- * then Start new conversation of `agent`'s provider.
+ * The Sessions menu a coordinator click opens when it needs the person: a short header, the full
+ * `reason` under it, Retry (`retry`), Show terminal when the attempt left one open (`terminal`), the
+ * open conversations to pick from (`sessions`), then Start new conversation of `agent`'s provider.
  */
-export type WakeMenu = { header: string; tip?: string; sessions: boolean; retry: boolean; agent?: string }
+export type WakeMenu = { header: string; reason?: string; sessions: boolean; retry: boolean; agent?: string; terminal?: { workspaceId: string; terminal: string } }
 
-/** What a coordinator click's outcome shows: a row status, or the Sessions menu. Never buttons on the row. */
+/**
+ * What a coordinator click's outcome shows: a short row status, and the Sessions menu with the full
+ * reason when the person has a choice to make. Never buttons or raw reasons on the row; a coordinator
+ * whose restore failed stays a neutral Sleeping row.
+ */
 export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMenu | null } {
-  const extra = { ...(r.error ? { tip: r.error } : {}), ...(r.agent ? { agent: r.agent } : {}) }
-  if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' || r.kind === 'starting' ? 'Started' : 'Open', tone: 'ok' }, menu: null }
+  const extra = { ...(r.error ? { reason: r.error } : {}), ...(r.agent ? { agent: r.agent } : {}), ...(r.terminal && r.workspaceId ? { terminal: { workspaceId: r.workspaceId, terminal: r.terminal } } : {}) }
+  if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : r.kind === 'starting' ? 'Starting' : 'Open', tone: 'ok' }, menu: null }
   if (r.kind === 'busy') return { row: { text: 'Opening…', tone: 'pending' }, menu: null }
   if (r.kind === 'choose') return { row: null, menu: { header: 'Pick the main conversation', sessions: true, retry: false, ...extra } }
   if (r.kind === 'restore-failed') return { row: null, menu: { header: "Couldn't restore the last conversation", sessions: false, retry: r.retryable === true, ...extra } }
-  return { row: { text: r.error ?? 'Could not open it', tone: 'bad' }, menu: null }
+  return { row: { text: "Couldn't open", tone: 'bad' }, menu: { header: "Couldn't open the coordinator", sessions: false, retry: r.retryable === true, ...extra } }
 }
 
 /** A row's inline status, shown where its time or count normally sits; null when it has none. */

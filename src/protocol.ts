@@ -155,19 +155,26 @@ export type CoordinatorMember = {
   terminals: string[]
   /** Provider resume id from agents.list/status, not Orca's conversation id. */
   resumeSessionId?: string
+  /**
+   * The provider said `sessionId` (this member's resume id when it was refused) has no saved
+   * conversation: it is never launched again; a newly recorded resume id makes it stale.
+   */
+  resumeRefused?: { sessionId: string; reason: string }
   lastAgent?: AgentInfo
 }
 export type CoordinatorSessions = { version: 1; current: string | null; members: CoordinatorMember[] }
 export type CoordinatorMemberView = CoordinatorMember & { agent: AgentInfo | null }
 /**
  * What a coordinator click did. `ok` means a session is now shown. `choose` and `restore-failed` are
- * not errors: the first needs an explicit Sessions choice, the second can be retried (`retryable`) or
- * replaced by a new conversation while the old one stays in history. `busy`: another start, resume or
- * session change for it is still running. `starting`: a new conversation runs and is shown, but its
- * binding is not verified yet; the next click adopts that same terminal, launching nothing.
- * `failed` is an actual failed start, resume or open.
+ * not errors: the first needs an explicit Sessions choice, the second can be retried (`retryable`,
+ * only when the cause may be transient) or replaced by a new conversation while the old one stays in
+ * history. `busy`: another start, resume or session change for it is still running. `starting`: a new
+ * or resumed conversation runs and is shown, but its binding is not verified yet; the next click
+ * adopts that same terminal, launching or resuming nothing. `failed` is an actual failed start or open.
+ * `error` is the full reason, for the Sessions menu, never the row. `terminal` (with `workspaceId`) is
+ * a terminal the attempt left open, for Show terminal.
  */
-export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'starting' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string }
+export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'starting' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string; workspaceId?: string; terminal?: string }
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 

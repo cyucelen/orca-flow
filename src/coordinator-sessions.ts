@@ -175,24 +175,187 @@ export async function deliverCurrent(c: Coordinator, rows: WorkspaceRow[], messa
   return deliveryReceipt(result, recipient)
 }
 
+/**
+ * What became of the terminal a resume returned. `bound`: an agent of that exact terminal's pane
+ * reports a conversation (`resumeSessionId` is the provider id read again from it: Claude may fork a
+ * new one). `exited`: the terminal is gone or nothing but its shell runs in it any more; `detail` is
+ * what the provider printed. `running`: its program still runs but no conversation is bound yet.
+ */
+export type ResumeBinding =
+  | { status: 'bound'; workspaceId: string; agent: AgentInfo; resumeSessionId?: string }
+  | { status: 'exited'; detail: string | null; terminal?: string }
+  | { status: 'running'; terminal: string }
+
 export type ResumeIo = {
-  resume: (input: { workspaceId: string; agent: string; sessionId: string }) => Promise<{ terminalId: string }>
-  binding: (terminalId: string) => Promise<{ workspaceId: string; agent: AgentInfo } | null>
+  /** agent.resume. `started: false`: Orca handed back a terminal it says already runs that session. */
+  resume: (input: { workspaceId: string; agent: string; sessionId: string }) => Promise<{ terminalId: string; started?: boolean }>
+  binding: (terminalId: string, sessionId: string) => Promise<ResumeBinding>
+  /**
+   * Whether the provider saved the conversation `sessionId`: false only when it provably did not
+   * (no transcript anywhere Orca keeps them), null when it cannot be checked. Optional preflight.
+   */
+  saved?: (agent: string, sessionId: string, workspaceId: string) => Promise<boolean | null>
 }
 
-/** A resume was launched but its new terminal could not be tied to the member: never launch again blindly. */
+/** The provider refused the resume or exited: nothing runs. `missing`: it has no such conversation, so Retry would fail the same way. */
+export class ResumeRefusedError extends Error {
+  readonly missing: boolean
+  readonly terminal?: string
+  constructor(message: string, missing: boolean, terminal?: string) {
+    super(message)
+    this.missing = missing
+    if (terminal) this.terminal = terminal
+  }
+}
+
+/** The resumed program still runs, unbound: it is remembered and adopted by the next click, never resumed again. */
+export class ResumeRunningError extends Error {
+  readonly launch: Launch
+  constructor(launch: Launch) {
+    super('The conversation is still resuming in its terminal, which is shown. Click the coordinator again once it is ready; that adopts this same terminal and resumes nothing again.')
+    this.launch = launch
+  }
+}
+
+/** A resume bound to an agent that is not this member's (another provider or workspace in that pane). */
 export class ResumeUnverifiedError extends Error {}
 
-/** Resume is an explicit current-member action. Provider ids and Orca ids stay distinct. */
-export async function resumeExactMember(s: CoordinatorSessions, id: string, io: ResumeIo): Promise<CoordinatorSessions> {
+/** Provider text that says the conversation does not exist (Claude: "No conversation found with session ID: …"). */
+export function conversationMissing(text: string | null | undefined): boolean {
+  return !!text && /no (conversation|session)s? (was |were )?found|no such (conversation|session)|unknown (conversation|session)|could ?n[o']t find (the |a |any )?(conversation|session)|(conversation|session)\b[^\n]{0,80}\b(not found|does ?n[o']t exist|no longer exists)/i.test(text)
+}
+
+/**
+ * What the provider printed after the resume command, from a terminal's rendered lines: the lines
+ * after the command line naming `sessionId`, without the shell prompt that follows (prompt lines
+ * repeat, extend or start lines drawn before the command). Null when the command is not on screen.
+ */
+export function providerMessage(lines: string[], sessionId: string): string | null {
+  const said = (l: string) => l.includes(sessionId) && !conversationMissing(l) && !/error/i.test(l)
+  let at = -1
+  for (let i = lines.length - 1; i >= 0; i--) if (said(lines[i])) { at = i; break }
+  if (at < 0) return null
+  const before = lines.slice(0, at + 1).map((l) => l.trim()).filter(Boolean)
+  const after = lines.slice(at + 1).map((l) => l.trim()).filter(Boolean)
+  // A prompt drawn again may add a segment (`… took 2.2s`) or show only its start (`λ`).
+  const prompt = (l: string) => before.some((b) => b.startsWith(l) || l.startsWith(b))
+  while (after.length && prompt(after[after.length - 1])) after.pop()
+  const text = after.slice(0, 4).join(' ').slice(0, 400)
+  return text || null
+}
+
+/** A shell or login process: what an idle terminal runs, never an agent. */
+const SHELL = /^(login|zsh|bash|sh|dash|fish|tcsh|csh|ksh|mksh|nu|pwsh|xonsh|elvish)$/
+
+/**
+ * Whether a program other than its shell still runs in a terminal whose root process is `root`
+ * (`ps -A -o pid=,ppid=,comm=`): null when the root is not running. The agent CLI a resume starts is
+ * the shell's child; an idle shell has only shell children (prompt helpers).
+ */
+export function programRuns(root: number, procs: { pid: number; ppid: number; name: string }[]): boolean | null {
+  if (!procs.some((p) => p.pid === root)) return null
+  const stack = [root]
+  const seen = new Set<number>()
+  while (stack.length) {
+    const pid = stack.pop()!
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    for (const child of procs) {
+      if (child.ppid !== pid) continue
+      const base = (child.name.trim().split('/').pop() ?? '').replace(/^-/, '')
+      if (!SHELL.test(base)) return true
+      stack.push(child.pid)
+    }
+  }
+  return false
+}
+
+/** `ps -A -o pid=,ppid=,comm=` lines. */
+export function parseProcs(out: string): { pid: number; ppid: number; name: string }[] {
+  return out.split('\n').flatMap((line) => {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
+    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), name: m[3] }] : []
+  })
+}
+
+/**
+ * Whether the provider saved conversation `id` in any of its `homes` (config dirs Orca runs it with):
+ * Claude keeps <home>/projects/<project>/<id>.jsonl, Codex <home>/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl
+ * (or archived_sessions). False only when at least one home was readable and none has it; null for
+ * other providers, an unsafe id or no readable home. `list` returns a folder's names, null if unreadable.
+ */
+export function conversationSaved(agent: string, id: string, homes: string[], list: (dir: string) => string[] | null): boolean | null {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) return null
+  const provider = providerOf(agent)
+  let readable = false
+  for (const home of new Set(homes)) {
+    if (provider === 'claude') {
+      const projects = list(`${home}/projects`)
+      if (!projects) continue
+      readable = true
+      if (projects.some((p) => list(`${home}/projects/${p}`)?.includes(`${id}.jsonl`))) return true
+    } else if (provider === 'codex') {
+      const named = (names: string[] | null) => names?.some((f) => f.startsWith('rollout-') && f.endsWith(`-${id}.jsonl`)) ?? false
+      const sessions = list(`${home}/sessions`)
+      const archived = list(`${home}/archived_sessions`)
+      if (!sessions && !archived) continue
+      readable = true
+      if (named(archived)) return true
+      for (const y of sessions ?? []) for (const m of list(`${home}/sessions/${y}`) ?? []) for (const d of list(`${home}/sessions/${y}/${m}`) ?? []) {
+        if (named(list(`${home}/sessions/${y}/${m}/${d}`))) return true
+      }
+    } else return null
+  }
+  return readable ? false : null
+}
+
+const providerName = (agent: string | null) => {
+  const p = providerOf(agent)
+  return p ? p.charAt(0).toUpperCase() + p.slice(1) : agent ?? 'The agent'
+}
+
+/** The member's resume id was refused before as having no saved conversation. */
+export const resumeRefused = (m: CoordinatorMember) => !!m.resumeSessionId && m.resumeRefused?.sessionId === m.resumeSessionId
+
+/** The member, marked as refused for its resume id with the provider's reason. */
+export function markRefused(s: CoordinatorSessions, id: string, reason: string): CoordinatorSessions {
+  return { ...s, members: s.members.map((m) => m.id === id && m.resumeSessionId ? { ...m, resumeRefused: { sessionId: m.resumeSessionId, reason } } : m) }
+}
+
+/**
+ * Resume is an explicit current-member action. Provider ids and Orca ids stay distinct. `adopt`: a
+ * resume of this member still running from an earlier click, bound now instead of resuming again.
+ */
+export async function resumeExactMember(s: CoordinatorSessions, id: string, io: ResumeIo, adopt?: Launch): Promise<CoordinatorSessions> {
   const m = s.members.find((m) => m.id === id)
   if (!m || s.current !== id) throw new Error('Only the explicitly current member can be resumed. History stays read-only.')
   if (!m.resumeSessionId || !m.agentType) throw new Error('No verified provider resume id was recorded. Orca conversation ids cannot be used as resume ids; nothing was launched.')
-  const result = await io.resume({ workspaceId: m.workspaceId, agent: m.agentType, sessionId: m.resumeSessionId })
-  const bound = await io.binding(result.terminalId)
-  if (!bound || bound.workspaceId !== m.workspaceId || bound.agent.agentType !== m.agentType || !bound.agent.terminal || !bound.agent.orcaSession) throw new ResumeUnverifiedError('Exact resume started, but its new binding could not be verified. No fallback was selected; inspect Sessions before retrying.')
-  const a = bound.agent
-  return { ...s, members: s.members.map((member) => member.id !== id ? member : { ...member, bindings: rememberBinding(member, a), orcaSession: a.orcaSession, paneKey: a.paneKey, terminals: [...new Set([...member.terminals, a.terminal!])], lastAgent: a }) }
+  const name = providerName(m.agentType)
+  if (resumeRefused(m)) throw new ResumeRefusedError(m.resumeRefused!.reason, true)
+  let terminalId: string
+  let started: boolean | undefined
+  if (adopt?.member === id && adopt.sessionId === m.resumeSessionId && adopt.workspaceId === m.workspaceId) terminalId = adopt.terminalId
+  else {
+    const saved = io.saved ? await io.saved(m.agentType, m.resumeSessionId, m.workspaceId).catch(() => null) : null
+    if (saved === false) throw new ResumeRefusedError(`${name} saved no conversation ${m.resumeSessionId}: the previous session ended before its first message, so there is nothing to resume. Nothing was launched; start a new conversation.`, true)
+    ;({ terminalId, started } = await io.resume({ workspaceId: m.workspaceId, agent: m.agentType, sessionId: m.resumeSessionId }))
+  }
+  const b = await io.binding(terminalId, m.resumeSessionId)
+  if (b.status === 'exited') {
+    const missing = conversationMissing(b.detail)
+    const reused = started === false ? ' Orca handed back the terminal of an earlier attempt, where it had already exited; nothing new was launched.' : ''
+    const said = b.detail ? `${name} said: “${b.detail}”` : `${name} exited before the conversation resumed.`
+    throw new ResumeRefusedError(`${said}${reused}${missing ? ' That conversation cannot be resumed; start a new one.' : ''}`, missing, b.terminal)
+  }
+  if (b.status === 'running') throw new ResumeRunningError({ workspaceId: m.workspaceId, terminalId, agent: m.agentType, member: id, sessionId: m.resumeSessionId })
+  if (b.workspaceId !== m.workspaceId || b.agent.agentType !== m.agentType || !b.agent.terminal || !b.agent.orcaSession) throw new ResumeUnverifiedError(`The resumed terminal now runs ${b.agent.agentType ?? 'another agent'} in another conversation, not this member's ${name} one. No fallback was selected; inspect it before retrying.`)
+  const a = b.agent
+  const fresh = b.resumeSessionId && b.resumeSessionId !== a.orcaSession ? b.resumeSessionId : m.resumeSessionId
+  return { ...s, members: s.members.map((member) => {
+    if (member.id !== id) return member
+    const { resumeRefused: _, ...rest } = member
+    return { ...rest, resumeSessionId: fresh, bindings: rememberBinding(member, a), orcaSession: a.orcaSession, paneKey: a.paneKey, terminals: [...new Set([...member.terminals, a.terminal!])], lastAgent: a }
+  }) }
 }
 
 /** Unknown attempts survive restart and cannot be retried by the ordinary Send action. */
@@ -209,18 +372,23 @@ export function deliveryBlock(previous: LinearSent | undefined): string | null {
  */
 export type WakePlan =
   | { kind: 'open'; member: CoordinatorMember; workspaceId: string; terminal: string }
-  | { kind: 'resume'; member: CoordinatorMember }
+  | { kind: 'resume'; member: CoordinatorMember; adopt?: Launch }
   | { kind: 'fresh'; agent: string | null }
   | { kind: 'adopt'; agent: string | null }
   | { kind: 'choose'; reason: string }
 
-/** `launching`: a conversation this coordinator launched is still unbound; it is adopted, never launched again. */
-export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, launching = false): WakePlan {
+/**
+ * `launching`: a conversation this coordinator launched (or the Launch itself) is still unbound; it is
+ * adopted, never launched again. A pending resume of the current member is bound, never resumed again.
+ */
+export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, launching: boolean | Launch = false): WakePlan {
   const s = c.sessions
   const current = s?.members.find((m) => m.id === s.current)
   const live = current ? memberAgent(current, rows) : null
   if (current && live?.terminal && live.live === true) return { kind: 'open', member: current, workspaceId: current.workspaceId, terminal: live.terminal }
-  if (launching) return { kind: 'adopt', agent: current?.agentType ?? null }
+  if (typeof launching === 'object' && launching.member) {
+    if (current?.id === launching.member && current.resumeSessionId === launching.sessionId) return { kind: 'resume', member: current, adopt: launching }
+  } else if (launching) return { kind: 'adopt', agent: current?.agentType ?? null }
   if (current) {
     if (current.resumeSessionId && current.agentType) return { kind: 'resume', member: current }
     if (!live && memberMatches(current, rows) > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
@@ -247,32 +415,46 @@ export type WakeIo = ResumeIo & {
    * `bound: false`: it runs and is shown, but its binding is not verified yet; a later click adopts it.
    */
   fresh: (agent: string) => Promise<{ ok: boolean; error?: string; bound?: boolean }>
+  /** Remembers a resume still running unbound (adopted by the next click), or forgets it (null). */
+  pend?: (launch: Launch | null) => void
 }
 
 /** Orca's panel bridge refuses a result holding an undefined property: an absent agent is an absent key. */
 const agentOf = (agent: string | null | undefined): { agent?: string } => agent ? { agent } : {}
 
-/** Carries out a wake plan. Only a failed start, a failed open or an unverifiable resume is a failure. */
-export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo, launching = false): Promise<WakeOutcome> {
+/** Carries out a wake plan. Only a failed start or a failed open is a failure; a refused resume is a restore that failed. */
+export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo, launching: boolean | Launch = false): Promise<WakeOutcome> {
   const plan = wakePlan(c, rows, liveChoices, launching)
-  if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', error: 'The exact session could not be opened.' }
+  if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', retryable: true, error: 'The exact session could not be opened.' }
   if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, ...agentOf(c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType) }
   if (plan.kind === 'fresh' || plan.kind === 'adopt') {
     const started = await io.fresh(plan.agent || 'claude')
-    if (!started.ok) return { ok: false, kind: 'failed', error: started.error ?? 'The new conversation could not be started.' }
+    if (!started.ok) return { ok: false, kind: 'failed', retryable: true, error: started.error ?? 'The new conversation could not be started.' }
     return started.bound === false ? { ok: true, kind: 'starting', ...(started.error ? { error: started.error } : {}) } : { ok: true, kind: 'started' }
   }
+  const workspaceId = plan.member.workspaceId
   let next: CoordinatorSessions
-  try { next = await resumeExactMember(c.sessions!, plan.member.id, io) }
+  try { next = await resumeExactMember(c.sessions!, plan.member.id, io, plan.adopt) }
   catch (e) {
-    if (e instanceof ResumeUnverifiedError) return { ok: false, kind: 'failed', error: e.message }
-    // Nothing was bound and nothing was written: the member and its history stay as they were.
+    if (e instanceof ResumeRunningError) {
+      io.pend?.(e.launch)
+      return { ok: true, kind: 'starting', error: e.message }
+    }
+    if (plan.adopt) io.pend?.(null)
+    if (e instanceof ResumeRefusedError) {
+      // Remember a conversation the provider says does not exist, so no later click launches it again.
+      if (e.missing && !resumeRefused(plan.member)) try { io.save(markRefused(c.sessions!, plan.member.id, e.message)) } catch {}
+      return { ok: false, kind: 'restore-failed', retryable: !e.missing, ...agentOf(plan.member.agentType), error: e.message, ...(e.terminal ? { workspaceId, terminal: e.terminal } : {}) }
+    }
+    if (e instanceof ResumeUnverifiedError) return { ok: false, kind: 'failed', ...agentOf(plan.member.agentType), error: e.message }
+    // agent.resume itself failed: nothing was bound and nothing was written; it may be transient.
     return { ok: false, kind: 'restore-failed', retryable: true, ...agentOf(plan.member.agentType), error: `The previous conversation could not be restored: ${(e as Error).message}` }
   }
-  try { io.save(next) }
-  catch (e) { return { ok: false, kind: 'failed', error: `The conversation resumed, but its new binding could not be saved (${(e as Error).message}). Check Sessions; do not resume it again.` } }
+  io.pend?.(null)
   const terminal = next.members.find((m) => m.id === plan.member.id)?.lastAgent?.terminal
-  return terminal && await io.open(plan.member.workspaceId, terminal) ? { ok: true, kind: 'resumed' } : { ok: false, kind: 'failed', error: 'The conversation resumed, but its terminal could not be shown.' }
+  try { io.save(next) }
+  catch (e) { return { ok: false, kind: 'failed', ...(terminal ? { workspaceId, terminal } : {}), error: `The conversation resumed, but its new binding could not be saved (${(e as Error).message}). Check Sessions; do not resume it again.` } }
+  return terminal && await io.open(workspaceId, terminal) ? { ok: true, kind: 'resumed' } : { ok: false, kind: 'failed', ...(terminal ? { workspaceId, terminal } : {}), error: 'The conversation resumed, but its terminal could not be shown.' }
 }
 
 /** One start, resume or session change per coordinator at a time; a second click while one runs launches nothing. */
@@ -321,8 +503,11 @@ export function bindLaunched(s: CoordinatorSessions, row: WorkspaceRow, a: Agent
   return selectCurrent({ ...next, members: next.members.map((m) => m.id === id && resumeSessionId && !m.resumeSessionId ? { ...m, resumeSessionId } : m) }, id)
 }
 
-/** A coordinator's launched conversation whose binding is not verified yet. */
-export type Launch = { workspaceId: string; terminalId: string; agent: string }
+/**
+ * A coordinator's launched conversation whose binding is not verified yet. A resume of a member
+ * carries that `member` and the provider `sessionId` it resumed.
+ */
+export type Launch = { workspaceId: string; terminalId: string; agent: string; member?: string; sessionId?: string }
 
 /** Forgets a pending launch once its terminal is gone or it is already a member: then it is settled. */
 export function settlePending(pending: Map<string, Launch>, key: string, terminals: TerminalRecord[], sessions: CoordinatorSessions | undefined): void {
@@ -332,10 +517,13 @@ export function settlePending(pending: Map<string, Launch>, key: string, termina
   if (!t || sessions?.members.some((m) => m.terminals.includes(t.handle))) pending.delete(key)
 }
 
-/** Launches once per coordinator: while a launch is unbound, a second start adopts it and launches nothing. */
+/**
+ * Launches once per coordinator: while a launch is unbound, a second start adopts it and launches
+ * nothing. A pending resume is not a new conversation: Start new launches one.
+ */
 export async function launchOnce(pending: Map<string, Launch>, key: string, workspaceId: string, agent: string, launch: () => Promise<{ terminalId: string }>): Promise<{ launch: Launch; adopted: boolean }> {
   const known = pending.get(key)
-  if (known?.workspaceId === workspaceId) return { launch: known, adopted: true }
+  if (known?.workspaceId === workspaceId && !known.member) return { launch: known, adopted: true }
   const { terminalId } = await launch()
   const next = { workspaceId, terminalId, agent }
   pending.set(key, next)

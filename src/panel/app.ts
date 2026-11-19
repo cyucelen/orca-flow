@@ -862,8 +862,9 @@ async function showHistory(key: string, member: string, terminal?: string, sourc
 
 /**
  * One choice is one explicit switch; opening the dropdown has no side effects. A coordinator click
- * that needs the person opens it with `need`: the reason as its header, then the conversations to
- * pick (or Retry), then Start new conversation.
+ * that needs the person opens it with `need`: a short header with the full reason under it, Retry
+ * when it may help, Show terminal when the attempt left one, the conversations to pick, then Start
+ * new conversation.
  */
 function showSessionPicker(key: string, need?: WakeMenu): void {
   const c = snap?.coordinators.find((c) => c.key === key)
@@ -882,9 +883,11 @@ function showSessionPicker(key: string, need?: WakeMenu): void {
       return result
     })
   }))
+  const shown = need?.terminal
   const items: MenuItem[] = need ? [
-    { header: esc(need.header), ...(need.tip ? { tip: need.tip } : {}) },
+    { header: `${esc(need.header)}${need.reason ? `<div class="mh-reason">${esc(need.reason)}</div>` : ''}` },
     ...(need.retry ? [{ label: 'Retry', icon: 'restart', run: () => wake(key) }] : []),
+    ...(shown ? [{ label: 'Show terminal', icon: 'open', run: () => inline(target, 'Opening…', 'Shown', async () => ({ ok: (await orca.plugin.request('sidebar.open', shown)).opened })) }] : []),
     // A separator only parts picks from Start new; Retry sits directly above it.
     ...(picks.length ? [...picks, 'separator' as const] : []),
     { label: 'Start new conversation', icon: 'plus', run: () => inline(target, 'Starting…', 'Started', () => orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'fresh', ...(need.agent ? { agent: need.agent } : {}) }, { timeoutMs: 90_000 })) }

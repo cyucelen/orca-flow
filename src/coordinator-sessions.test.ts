@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { associateSession, askKey, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
+import { associateSession, askKey, resumeExactMember, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions, conversationMissing, conversationSaved, markRefused, parseProcs, programRuns, providerMessage, ResumeRefusedError, type ResumeBinding } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
 import { askingRows, emptyUi, render, wakeView } from './view.ts'
@@ -223,13 +223,12 @@ test('a stale snapshot cannot overwrite a newer current selection on disk', asyn
 })
 
 test('exact resume uses only a verified provider id, updates binding, and never resumes history', async () => {
-  const { resumeExactMember } = await import('./coordinator-sessions.ts')
   const { rows, sessions } = fixture()
   sessions.members[1].resumeSessionId = 'native-codex-id'
   const calls: unknown[] = []
   const io = {
     resume: async (input: unknown) => { calls.push(input); return { terminalId: 'resumed-host-id' } },
-    binding: async () => ({ workspaceId: rows[0].id, agent: { ...rows[0].agents[1], paneKey: 'resumed:1', orcaSession: 'new-orca-binding', terminal: 'term-resumed' } })
+    binding: async () => ({ status: 'bound' as const, workspaceId: rows[0].id, agent: { ...rows[0].agents[1], paneKey: 'resumed:1', orcaSession: 'new-orca-binding', terminal: 'term-resumed' } })
   }
   const next = await resumeExactMember(sessions, sessions.current!, io)
   assert.deepEqual(calls, [{ workspaceId: 'folder:home', agent: 'codex', sessionId: 'native-codex-id' }])
@@ -623,7 +622,7 @@ function wakeIo(over: Partial<WakeIo> = {}) {
   const io: WakeIo = {
     fresh: async (agent) => { calls.fresh.push(agent); return { ok: true } },
     resume: async (input) => { calls.resume.push(input); return { terminalId: 'resumed-host-id' } },
-    binding: async () => null,
+    binding: async () => ({ status: 'running', terminal: 'term-resumed' }),
     save: (next) => { calls.save.push(next) },
     open: async (workspaceId, terminal) => { calls.open.push([workspaceId, terminal]); return true },
     ...over
@@ -660,7 +659,7 @@ test('a closed current member with a provider id resumes exactly that member, ne
   const plan = wakePlan(c, rows, 1)
   assert.equal(plan.kind, 'resume')
   assert.equal(plan.kind === 'resume' && plan.member.id, current.id)
-  const { io, calls } = wakeIo({ binding: async () => ({ workspaceId: rows[0].id, agent: { ...rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', title: 'Replacement coordinator', terminal: 'term-resumed' } }) })
+  const { io, calls } = wakeIo({ binding: async () => ({ status: 'bound', workspaceId: rows[0].id, agent: { ...rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', title: 'Replacement coordinator', terminal: 'term-resumed' } }) })
   const r = await wakeCoordinator(c, rows, 1, io)
   assert.deepEqual(r, { ok: true, kind: 'resumed' })
   assert.deepEqual(calls.resume, [{ workspaceId: 'folder:home', agent: 'codex', sessionId: 'native-codex-id' }])
@@ -697,16 +696,19 @@ test('a failed restore is retryable and neutral, keeps the old member, and an un
   assert.equal(r.agent, 'codex')
   assert.equal(calls.save.length + calls.fresh.length + calls.open.length, 0, 'nothing written, launched or opened')
   assert.equal(JSON.stringify(sessions), before, 'the old member and its history are preserved')
-  // Not red, nothing on the row: the Sessions menu opens with Retry and Start new (codex), the error in its tooltip.
-  assert.deepEqual(wakeView(r), { row: null, menu: { header: "Couldn't restore the last conversation", tip: r.error, agent: 'codex', sessions: false, retry: true } })
+  // Not red, nothing on the row: the Sessions menu opens with the full reason, Retry and Start new (codex).
+  assert.deepEqual(wakeView(r), { row: null, menu: { header: "Couldn't restore the last conversation", reason: r.error, agent: 'codex', sessions: false, retry: true } })
   assert.equal(wakeView({ ...r, retryable: false }).menu?.retry, false, 'no Retry unless retryable')
-  // Launched, but the new terminal cannot be tied to the member: a real failure, no Retry offered.
+  // Launched and still running, unbound: starting, never a clipped "could not be verified" failure.
   let resumes = 0
-  const unverified = await wakeCoordinator(c, rows, 1, wakeIo({ resume: async () => { resumes++; return { terminalId: 'x' } }, binding: async () => null }).io)
-  assert.equal(unverified.kind, 'failed')
-  assert.equal(unverified.retryable, undefined)
+  const running = await wakeCoordinator(c, rows, 1, wakeIo({ resume: async () => { resumes++; return { terminalId: 'x' } } }).io)
+  assert.equal(running.kind, 'starting')
+  assert.equal(running.ok, true)
   assert.equal(resumes, 1)
-  assert.deepEqual(wakeView(unverified), { row: { text: unverified.error!, tone: 'bad' }, menu: null }, 'a real failure stays red on the row')
+  assert.deepEqual(wakeView(running), { row: { text: 'Starting', tone: 'ok' }, menu: null })
+  // A real failure: a short red label on the row, the full reason in the menu.
+  const failed = { ok: false, kind: 'failed' as const, error: 'The exact session could not be opened.', retryable: true }
+  assert.deepEqual(wakeView(failed), { row: { text: "Couldn't open", tone: 'bad' }, menu: { header: "Couldn't open the coordinator", reason: failed.error, sessions: false, retry: true } })
 })
 
 test('ambiguous history asks for an explicit choice and never picks a member', async () => {
@@ -730,7 +732,7 @@ test('ambiguous history asks for an explicit choice and never picks a member', a
     const view = wakeView(r)
     assert.equal(view.row, null, 'the row keeps Sleeping')
     assert.equal(view.menu?.header, 'Pick the main conversation')
-    assert.equal(view.menu?.tip, r.error)
+    assert.equal(view.menu?.reason, r.error)
     assert.equal(view.menu?.sessions, true)
     assert.equal(view.menu?.retry, false)
   }
@@ -819,7 +821,7 @@ test('every wake outcome is plain JSON with no undefined property, so the panel 
   const closed = fixture()
   closed.sessions.members[1].resumeSessionId = 'native-codex-id'
   closed.rows[0].agents = closed.rows[0].agents.filter((a) => a.paneKey !== 'new:1')
-  record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ binding: async () => ({ workspaceId: closed.rows[0].id, agent: { ...closed.rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', terminal: 'term-resumed' } }) }).io))
+  record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ binding: async () => ({ status: 'bound', workspaceId: closed.rows[0].id, agent: { ...closed.rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', terminal: 'term-resumed' } }) }).io))
   record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ resume: async () => { throw new Error('gone') } }).io))
   const busy = new Set(['home'])
   record(await exclusive(busy, 'home', () => wakeCoordinator(c, rows, 2, wakeIo().io), () => ({ ok: false, kind: 'busy' as const, error: 'A session change is already in progress.' })))
@@ -968,4 +970,168 @@ test('a migrated live member gets its resume id from its exact terminal, then re
   assert.equal(plan.kind, 'resume')
   assert.equal(plan.kind === 'resume' && plan.member.id, member.id)
   assert.equal(plan.kind === 'resume' && plan.member.resumeSessionId, 'provider-claude-id')
+})
+
+// ---------- a resume the provider refused, exited from, or is still starting ----------
+
+/** The reported orca-flow: its current Claude member's provider id was never saved (the session exited with no message). */
+function sleepingClaude() {
+  const { rows, sessions, c } = fixture('claude')
+  sessions.members[1].resumeSessionId = 'f826b397-eb36-45be-95e4-c7166d5b828c'
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  return { rows, sessions, c, id: sessions.members[1].resumeSessionId }
+}
+
+/** The dead resume terminal's rendered screen: the command, Claude's refusal, the shell prompt again. */
+const refusedScreen = (id: string) => [
+  'cagatayyucelen in orca/coordinators/orca-flow',
+  "λ claude --plugin-dir '/Users/x/Library/Application Support/orca/claude-agent-view/4af4/orca-agent-view' --dangerously-skip-permissions",
+  `'--resume' '${id}'`,
+  `No conversation found with session ID: ${id}`,
+  'cagatayyucelen in orca/coordinators/orca-flow took 2.2s',
+  'λ',
+  ''
+]
+
+test('the provider message is what it printed after the resume command, without the shell prompt', () => {
+  const id = 'f826b397-eb36-45be-95e4-c7166d5b828c'
+  const said = providerMessage(refusedScreen(id), id)
+  assert.equal(said, `No conversation found with session ID: ${id}`)
+  assert.ok(conversationMissing(said))
+  assert.equal(providerMessage(['λ', 'λ ls'], id), null, 'the command is not on screen')
+  assert.equal(providerMessage([`λ codex resume ${id}`, 'Error: rate limited, try again later', 'λ'], id), 'Error: rate limited, try again later')
+  assert.ok(!conversationMissing('Error: rate limited, try again later'), 'a transient failure is not a missing conversation')
+  for (const text of ['No conversation found with session ID: x', 'Error: session abc not found', 'No such session: x', 'Conversation x does not exist']) assert.ok(conversationMissing(text), text)
+})
+
+test('only the shell left in a terminal means its program exited; an agent child means it still runs', () => {
+  // Orca's memory report gives the terminal's root (/usr/bin/login); the agent is the shell's child.
+  const procs = parseProcs([
+    '81444  1198 /usr/bin/login', '81445 81444 -/bin/zsh', '82059 81445 -/bin/zsh',
+    '83478  1198 /usr/bin/login', '83479 83478 -/bin/zsh', '83835 83479 -/bin/zsh', '83884 83479 claude',
+    '76503  1198 /usr/bin/login', '76504 76503 -/bin/zsh', '76943 76504 /Users/x/.nvm/versions/node/v24/lib/node_modules/@openai/codex/vendor/bin/codex'
+  ].join('\n'))
+  assert.equal(programRuns(81444, procs), false, 'the dead resume pane: login, zsh and a zsh prompt helper only')
+  assert.equal(programRuns(83478, procs), true, 'claude runs')
+  assert.equal(programRuns(76503, procs), true, 'codex runs')
+  assert.equal(programRuns(99999, procs), null, 'unknown root: cannot say')
+})
+
+test('preflight: a Claude conversation with no transcript in any of Orca\'s config dirs is provably missing', () => {
+  const id = 'f826b397-eb36-45be-95e4-c7166d5b828c'
+  const fs: Record<string, string[]> = {
+    '/p/home/projects': ['-Users-x-orca-coordinators-orca-flow'],
+    '/p/home/projects/-Users-x-orca-coordinators-orca-flow': ['660f6dac.jsonl', '60e4c6a9.jsonl'],
+    '/c/sessions': ['2026'], '/c/sessions/2026': ['11'], '/c/sessions/2026/11': ['19'], '/c/sessions/2026/11/19': [`rollout-2026-11-19T10-00-00-${id}.jsonl`]
+  }
+  const list = (dir: string) => fs[dir] ?? null
+  assert.equal(conversationSaved('claude', id, ['/missing', '/p/home'], list), false)
+  assert.equal(conversationSaved('claude', '660f6dac', ['/p/home'], list), true)
+  assert.equal(conversationSaved('claude', id, ['/missing'], list), null, 'no readable store: cannot say')
+  assert.equal(conversationSaved('codex', id, ['/c'], list), true)
+  assert.equal(conversationSaved('codex', 'other', ['/c'], list), false)
+  assert.equal(conversationSaved('gemini', id, ['/c'], list), null, 'a provider whose store is not known is never refused')
+  assert.equal(conversationSaved('claude', '../x', ['/p/home'], list), null)
+})
+
+test('no transcript: restore-failed with Start new and no Retry, nothing launched, and the next click launches nothing either', async () => {
+  const { rows, sessions, c, id } = sleepingClaude()
+  const saves: CoordinatorSessions[] = []
+  const { io, calls } = wakeIo({ saved: async () => false, save: (next) => { saves.push(next) } })
+  const r = await wakeCoordinator(c, rows, 1, io)
+  assert.equal(r.kind, 'restore-failed')
+  assert.equal(r.retryable, false, 'Retry would fail the same way')
+  assert.equal(r.agent, 'claude')
+  assert.match(r.error!, /saved no conversation f826b397.*nothing to resume/)
+  assert.equal(calls.resume.length + calls.fresh.length + calls.open.length, 0, 'agent.resume was never called')
+  const view = wakeView(r)
+  assert.equal(view.row, null, 'the row stays a neutral Sleeping')
+  assert.deepEqual(view.menu, { header: "Couldn't restore the last conversation", reason: r.error, agent: 'claude', sessions: false, retry: false })
+  // The refusal is remembered on the member (its provider id kept distinct from Orca's conversation id).
+  assert.equal(saves.length, 1)
+  const marked = saves[0].members[1]
+  assert.deepEqual(marked.resumeRefused?.sessionId, id)
+  assert.equal(marked.resumeSessionId, id)
+  assert.equal(marked.orcaSession, sessions.members[1].orcaSession)
+  // Second click: no preflight answer needed, nothing launched, the same reason.
+  const second = wakeIo({ saved: async () => { throw new Error('not asked') } })
+  const again = await wakeCoordinator({ sessions: saves[0] }, rows, 1, second.io)
+  assert.equal(again.kind, 'restore-failed')
+  assert.equal(again.retryable, false)
+  assert.equal(second.calls.resume.length + second.calls.fresh.length, 0)
+  // A newly recorded resume id makes the refusal stale.
+  const renewed = { ...saves[0], members: saves[0].members.map((m, i) => i === 1 ? { ...m, resumeSessionId: 'new-provider-id' } : m) }
+  assert.equal(wakePlan({ sessions: renewed }, rows, 1).kind, 'resume')
+})
+
+test('a provider that exited after agent.resume is restore-failed with its own message, not failed', async () => {
+  const { rows, c, id } = sleepingClaude()
+  const binding = async (): Promise<ResumeBinding> => ({ status: 'exited', detail: providerMessage(refusedScreen(id), id), terminal: 'term_07308cfa' })
+  // agent.resume handed back the earlier idle shell (started: false), as in the report.
+  const { io, calls } = wakeIo({ saved: async () => null, resume: async (input) => { calls.resume.push(input); return { terminalId: 'pty-f4c87192', started: false } }, binding })
+  const r = await wakeCoordinator(c, rows, 1, io)
+  assert.equal(r.kind, 'restore-failed')
+  assert.equal(r.retryable, false)
+  assert.match(r.error!, /Claude said: “No conversation found with session ID: f826b397-eb36-45be-95e4-c7166d5b828c”/)
+  assert.match(r.error!, /handed back the terminal of an earlier attempt/)
+  assert.ok(!/could not be verified/.test(r.error!))
+  assert.deepEqual([r.workspaceId, r.terminal], ['folder:home', 'term_07308cfa'])
+  assert.equal(calls.resume.length, 1)
+  assert.equal(calls.fresh.length + calls.open.length, 0, 'nothing launched again, nothing opened')
+  assert.equal(calls.save.length, 1, 'remembered as refused')
+  assert.deepEqual(wakeView(r).menu?.terminal, { workspaceId: 'folder:home', terminal: 'term_07308cfa' }, 'Show terminal')
+  // A transient exit is retryable.
+  const transient = await wakeCoordinator(c, rows, 1, wakeIo({ binding: async () => ({ status: 'exited', detail: 'Error: rate limited, try again later', terminal: 't' }) }).io)
+  assert.equal(transient.kind, 'restore-failed')
+  assert.equal(transient.retryable, true)
+  // Exited with nothing said (its terminal closed): retryable too.
+  const silent = await wakeCoordinator(c, rows, 1, wakeIo({ binding: async () => ({ status: 'exited', detail: null }) }).io)
+  assert.deepEqual([silent.kind, silent.retryable, silent.terminal], ['restore-failed', true, undefined])
+  assert.match(silent.error!, /Claude exited before the conversation resumed/)
+  // agent.resume itself failed: transient, retryable.
+  const threw = await wakeCoordinator(c, rows, 1, wakeIo({ resume: async () => { throw new Error('timeout') } }).io)
+  assert.deepEqual([threw.kind, threw.retryable], ['restore-failed', true])
+})
+
+test('a resume still running unbound is pending: the next click adopts that terminal with no second agent.resume', async () => {
+  const { rows, sessions, c, id } = sleepingClaude()
+  const pending = new Map<string, Launch>()
+  const pend = (l: Launch | null) => { if (l) pending.set('home', l); else pending.delete('home') }
+  const bindings: string[] = []
+  const first = wakeIo({ pend, binding: async (terminal) => { bindings.push(terminal); return { status: 'running', terminal: 'term_resumed' } } })
+  const r = await wakeCoordinator(c, rows, 1, first.io, pending.get('home') ?? false)
+  assert.deepEqual([r.ok, r.kind], [true, 'starting'])
+  assert.equal(first.calls.resume.length, 1)
+  assert.deepEqual(pending.get('home'), { workspaceId: 'folder:home', terminalId: 'resumed-host-id', agent: 'claude', member: sessions.members[1].id, sessionId: id })
+  assert.equal(wakePlan(c, rows, 1, pending.get('home')).kind, 'resume')
+  // Start new is not the pending resume: it launches its own conversation.
+  let launched = 0
+  const startNew = await launchOnce(new Map(pending), 'home', 'folder:home', 'claude', async () => { launched++; return { terminalId: 'new' } })
+  assert.deepEqual([startNew.adopted, launched], [false, 1])
+  // Next click: the agent has appeared in that terminal; it is bound, not resumed again.
+  const bound = { ...rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'claude', terminal: 'term_resumed' }
+  const second = wakeIo({ pend, binding: async (terminal) => { bindings.push(terminal); return { status: 'bound', workspaceId: 'folder:home', agent: bound, resumeSessionId: 'forked-provider-id' } } })
+  const r2 = await wakeCoordinator(c, rows, 1, second.io, pending.get('home') ?? false)
+  assert.deepEqual(r2, { ok: true, kind: 'resumed' })
+  assert.equal(second.calls.resume.length, 0, 'no second agent.resume')
+  assert.deepEqual(bindings, ['resumed-host-id', 'resumed-host-id'], 'the same terminal both times')
+  assert.ok(!pending.has('home'), 'settled')
+  const saved = second.calls.save[0].members[1]
+  assert.equal(saved.id, sessions.members[1].id, 'the same member')
+  assert.equal(saved.orcaSession, 'resumed-orca')
+  assert.equal(saved.resumeSessionId, 'forked-provider-id', 'the provider id read again after binding')
+  // Adopted and found exited: forgotten, so a later Retry may resume again.
+  pending.set('home', { workspaceId: 'folder:home', terminalId: 'resumed-host-id', agent: 'claude', member: sessions.members[1].id, sessionId: id })
+  const third = wakeIo({ pend, binding: async () => ({ status: 'exited', detail: 'Error: overloaded', terminal: 'term_resumed' }) })
+  const r3 = await wakeCoordinator(c, rows, 1, third.io, pending.get('home') ?? false)
+  assert.deepEqual([r3.kind, r3.retryable, third.calls.resume.length], ['restore-failed', true, 0])
+  assert.ok(!pending.has('home'))
+})
+
+test('a refused member is resumed again only after a new provider id is recorded', async () => {
+  const { sessions } = sleepingClaude()
+  const marked = markRefused(sessions, sessions.current!, 'Claude said: “No conversation found”')
+  let resumed = 0
+  await assert.rejects(resumeExactMember(marked, marked.current!, { resume: async () => { resumed++; return { terminalId: 'x' } }, binding: async () => ({ status: 'running', terminal: 'x' }) }), (e: unknown) => e instanceof ResumeRefusedError && e.missing)
+  assert.equal(resumed, 0)
 })

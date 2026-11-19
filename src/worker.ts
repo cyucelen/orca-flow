@@ -18,7 +18,7 @@ import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, read
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
-import { associateSession, chooseSession, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
+import { associateSession, chooseSession, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -875,9 +875,10 @@ export default function activate(orca: OrcaWorkerApi): void {
     return job
   }
 
-  async function resumeIdOf(workspaceId: string, terminalId: string, agentType: string | null): Promise<string | undefined> {
+  async function resumeIdOf(workspaceId: string, terminalId: string | (string | undefined)[], agentType: string | null): Promise<string | undefined> {
+    const ids = new Set([terminalId].flat().filter(Boolean))
     const listed = await orca.host.call('agents.list', { workspaceId }).catch(() => null)
-    return listed?.agents.find((a) => a.terminalId === terminalId && a.agent === agentType)?.sessionId ?? undefined
+    return listed?.agents.find((a) => a.terminalId && ids.has(a.terminalId) && a.agent === agentType)?.sessionId ?? undefined
   }
 
   async function captureResumeId(member: import('./protocol.ts').CoordinatorMember, terminalId: string): Promise<void> {
@@ -894,24 +895,92 @@ export default function activate(orca: OrcaWorkerApi): void {
     return freshSession(c, 'claude').catch((e: Error) => ({ ok: false, error: e.message }))
   })
 
-  /** Resumes by provider id and finds the exact terminal the resume returned. */
+  /**
+   * Whether a program other than the shell still runs in a terminal: Orca's memory report names the
+   * process of each terminal (by its pty id), and the agent a resume starts is that shell's child.
+   * Null when Orca or ps could not say.
+   */
+  async function programRunsIn(t: TerminalRecord): Promise<boolean | null> {
+    try {
+      const mem = await run(['diagnostics', 'memory'])
+      const session = (mem?.worktrees ?? []).flatMap((w: any) => w.sessions ?? []).find((x: any) => x.sessionId === t.ptyId)
+      if (typeof session?.pid !== 'number') return null
+      const out = await new Promise<string>((resolve, reject) => execFile('ps', ['-A', '-o', 'pid=,ppid=,comm='], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (e, stdout) => e ? reject(e) : resolve(String(stdout))))
+      return programRuns(session.pid, parseProcs(out))
+    } catch { return null }
+  }
+
+  /** A terminal's rendered screen: its lines, and whether Orca reports it exited. */
+  async function screenOf(handle: string): Promise<{ lines: string[]; exited: boolean }> {
+    const read = await run(['terminal', 'read', '--terminal', handle, '--screen']).catch(() => null)
+    const tail = read?.terminal?.tail
+    return { lines: Array.isArray(tail) ? tail.filter((l: unknown): l is string => typeof l === 'string') : [], exited: read?.terminal?.status === 'exited' }
+  }
+
+  /** Every config dir Orca runs `agent` with on this computer, where its saved conversations live. */
+  function providerHomes(agent: string): string[] {
+    const data = join(homedir(), 'Library', 'Application Support', 'orca')
+    const sub = (dir: string) => { try { return readdirSync(dir).map((x) => join(dir, x, 'home')) } catch { return [] } }
+    if (agent === 'claude') {
+      let observed: string[] = []
+      try { observed = JSON.parse(readFileSync(join(data, 'claude-observed-config-dirs.json'), 'utf8')).filter((x: unknown) => typeof x === 'string') } catch {}
+      return [process.env.CLAUDE_CONFIG_DIR, join(homedir(), '.claude'), ...observed, ...sub(join(data, 'claude-profiles'))].filter((x): x is string => !!x)
+    }
+    if (agent === 'codex') return [process.env.CODEX_HOME, join(homedir(), '.codex'), ...sub(join(data, 'codex-accounts'))].filter((x): x is string => !!x)
+    return []
+  }
+  const listDir = (dir: string) => { try { return readdirSync(dir) } catch { return null } }
+
+  /** Resumes by provider id and finds the exact terminal the resume returned, or that the provider exited. */
   const resumeIo: ResumeIo = {
     resume: (input) => {
       type ResumeAgent = Parameters<typeof orca.host.call<'agent.resume'>>[1]['agent']
       return orca.host.call('agent.resume', { ...input, agent: input.agent as ResumeAgent })
     },
-    // agent.resume also starts in the background: show it, then wait for that exact terminal's pane.
-    binding: async (terminalId) => {
+    // Exact where it is cheap: the provider's own transcript store. Orca's session history listing it
+    // with messages overrules a store this worker does not know about.
+    saved: async (agent, sessionId, workspaceId) => {
+      const verdict = conversationSaved(agent, sessionId, providerHomes(agent), listDir)
+      if (verdict !== false) return verdict
+      const history = await orca.host.call('agent.listSessions', { workspaceId, limit: 200 }).catch(() => null)
+      return history?.sessions.some((x) => x.sessionId === sessionId && x.messageCount > 0) ? true : false
+    },
+    // agent.resume also starts in the background: show it, then wait for that exact terminal's pane,
+    // telling a program still starting from one that already exited (nothing but its shell runs).
+    binding: async (terminalId, sessionId) => {
       await orca.host.call('terminal.focus', { terminalId }).catch(() => null)
       const deadline = Date.now() + 15_000
+      let seen = false
+      let ran = false
+      let idle = 0
       for (;;) {
         const t = launchedTerminal(await terminalsNow(), terminalId)
         const pane = terminalPane(t)
         await refresh()
         const row = pane ? allRows.find((r) => r.agents.some((a) => a.paneKey === pane)) : undefined
         const a = row?.agents.find((a) => a.paneKey === pane)
-        if (t && row && a?.orcaSession) return { workspaceId: row.id, agent: { ...a, terminal: t.handle } }
-        if (Date.now() > deadline) return null
+        if (t && row && a?.orcaSession) {
+          // Read the provider id again from this exact terminal: a resume may fork a new one.
+          const id = await resumeIdOf(row.id, [terminalId, t.handle, t.ptyId], a.agentType)
+          return { status: 'bound', workspaceId: row.id, agent: { ...a, terminal: t.handle }, ...(id ? { resumeSessionId: id } : {}) }
+        }
+        const late = Date.now() > deadline
+        if (!t) {
+          if (seen || late) return { status: 'exited', detail: null }
+        } else {
+          seen = true
+          const runs = await programRunsIn(t)
+          if (runs) ran = true
+          idle = runs === false ? idle + 1 : 0
+          // Two looks a second apart with only the shell left: the program ended (or, once the
+          // command is on screen, never stayed). Before the command is typed it is still starting.
+          if (idle >= 2) {
+            const screen = await screenOf(t.handle)
+            const typed = screen.lines.some((l) => l.includes(sessionId))
+            if (ran || typed || late || screen.exited) return { status: 'exited', detail: providerMessage(screen.lines, sessionId), terminal: t.handle }
+          }
+          if (late) return { status: 'running', terminal: t.handle }
+        }
         await new Promise((r) => setTimeout(r, 1000))
       }
     }
@@ -943,8 +1012,9 @@ export default function activate(orca: OrcaWorkerApi): void {
           void captureResumeIds({ key, member: resumed.id })
           refreshSoon()
         },
-        fresh: (agent) => freshSession(c, agent)
-      }, launches.has(key))
+        fresh: (agent) => freshSession(c, agent),
+        pend: (launch) => { if (launch) launches.set(key, launch); else if (launches.get(key)?.member) launches.delete(key) }
+      }, launches.get(key) ?? false)
     } catch (e) { return { ok: false, kind: 'failed', error: (e as Error).message } }
   }, busy)
   orca.panels.handle('sidebar.openCoordinator', ({ key }) => openCoordinator(key))
@@ -991,7 +1061,10 @@ export default function activate(orca: OrcaWorkerApi): void {
           if (shown?.terminal?.ptyId) await captureResumeId(member, shown.terminal.ptyId)
         }
       } else if (action === 'current') sessions = selectCurrent(sessions, id ?? '')
-      else if (action === 'resume') sessions = await resumeExactMember(sessions, id ?? '', resumeIo)
+      else if (action === 'resume') {
+        try { sessions = await resumeExactMember(sessions, id ?? '', resumeIo) }
+        catch (e) { if (e instanceof ResumeRunningError) launches.set(key, e.launch); throw e }
+      }
       writeCoordinatorSessions(c.dir, sessions, { sessions: c.sessions })
       if ((action === 'select' || action === 'resume') && sessions.current) void captureResumeIds({ key, member: sessions.current })
       refreshSoon()
