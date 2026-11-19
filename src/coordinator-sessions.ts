@@ -50,12 +50,40 @@ export function selectCurrent(s: CoordinatorSessions, id: string): CoordinatorSe
   return { ...s, current: id }
 }
 
+export type SessionChoice = { workspaceId: string; paneKey: string; orcaSession: string; agentType: string | null; title: string; current: boolean; agent: AgentInfo }
+
+/** Existing conversations, including unassociated roots; genuine leads never become choices. */
+export function sessionChoices(c: Coordinator, rows: WorkspaceRow[]): SessionChoice[] {
+  const current = c.sessions?.members.find((m) => m.id === c.sessions?.current)
+  const candidates = [
+    ...(c.members ?? []).flatMap((m) => m.agent ? [{ workspaceId: m.workspaceId, a: m.agent }] : []),
+    ...rows.filter((r) => r.folderOf === c.key && r.id === c.workspaceId).flatMap((r) => r.agents.map((a) => ({ workspaceId: r.id, a })))
+  ]
+  const seen = new Set<string>()
+  return candidates.flatMap(({ workspaceId, a }) => {
+    const key = sessionKey(workspaceId, a.orcaSession, a.paneKey)
+    if (seen.has(key) || !a.orcaSession || !a.terminal || a.live !== true || a.parentPane || a.dispatch !== null) return []
+    seen.add(key)
+    return [{ workspaceId, paneKey: a.paneKey, orcaSession: a.orcaSession, agentType: a.agentType, title: a.title, current: current?.workspaceId === workspaceId && current.orcaSession === a.orcaSession && current.agentType === a.agentType, agent: a }]
+  })
+}
+
+/** One explicit user choice creates membership and selects it in the same persisted update. */
+export function chooseSession(s: CoordinatorSessions, row: WorkspaceRow, choice: Pick<SessionChoice, 'workspaceId' | 'paneKey' | 'orcaSession' | 'agentType'>): CoordinatorSessions {
+  const matches = row.agents.filter((a) => a.paneKey === choice.paneKey && a.orcaSession === choice.orcaSession && a.agentType === choice.agentType)
+  const a = matches.length === 1 ? matches[0] : null
+  if (row.id !== choice.workspaceId || !a?.orcaSession || !a.terminal || a.live !== true) throw new Error('That conversation is no longer available. Choose another session.')
+  if (a.parentPane || a.dispatch !== null) throw new Error('That conversation belongs to a task and cannot be the main session.')
+  const associated = associateSession(s, row, a)
+  return selectCurrent(associated, associated.members.find((m) => memberAgent(m, [row]) === a)!.id)
+}
+
 export function currentRecipient(c: Coordinator, rows: WorkspaceRow[]): { member: CoordinatorMember; agent: AgentInfo; recipient: DeliveryRecipient } {
   const member = c.sessions?.members.find((m) => m.id === c.sessions?.current)
-  if (!member) throw new Error('Associate a coordinator session and explicitly make it current before sending.')
+  if (!member) throw new Error('Choose a session beside the coordinator name first.')
   if (!member.orcaSession) throw new Error('The current member has no stable Orca conversation identity. No message was sent.')
   const agent = memberAgent(member, rows)
-  if (!agent?.terminal || agent.live !== true) throw new Error('The current session has no verified live terminal. Open Sessions to resume that exact member; no other conversation will receive this message.')
+  if (!agent?.terminal || agent.live !== true) throw new Error('The selected conversation is offline. Choose an open session first.')
   return { member, agent, recipient: { member: member.id, workspaceId: member.workspaceId, orcaSession: member.orcaSession, terminal: agent.terminal, agentType: member.agentType } }
 }
 
@@ -68,7 +96,7 @@ function rememberBinding(m: CoordinatorMember, a: AgentInfo): NonNullable<Coordi
 }
 
 /** terminal.show lacks conversation identity; a fresh complete ps inventory supplies it. */
-async function verifyConversation(member: CoordinatorMember, run: Run): Promise<void> {
+export async function verifyConversation(member: CoordinatorMember, run: Run): Promise<void> {
   if (!member.workspacePath || !member.orcaSession) throw new Error('No stable workspace/conversation binding is available.')
   const inventory = await run(['worktree', 'ps', '--limit', '10000'])
   if (inventory?.truncated || !Array.isArray(inventory?.worktrees)) throw new Error('The live conversation inventory is incomplete.')

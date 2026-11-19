@@ -926,10 +926,8 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${head}</button>${sessionPicker(c)}${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
-  const notice = !c.you && c.sessionNotice ? `<div class="session-notice">${esc(c.sessionNotice)}</div>` : ''
-  const routing = !c.you && c.routing && c.routing !== 'Existing runs route to the current terminal.' ? `<button class="session-routing" data-sessions="${esc(c.key)}" data-tip="${esc(c.routing)}">Run routing differs or is unverified · Sessions</button>` : ''
-  return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}${notice}${routing}</section>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}${providerBadge(c.session, mixed)}<span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button>${sessionPicker(c)}<span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+  return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
@@ -937,8 +935,9 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
 /** Compact selector; the coordinator's avatar and current status stay separate. */
 function sessionPicker(c: Coordinator): string {
   const member = c.members?.find((m) => m.id === c.sessions?.current)
-  const label = member ? `${member.agentType ?? 'Unknown'} · Current` : 'Choose session'
-  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Sessions for ${esc(c.name)}">${esc(label)} <span>· ${c.members?.length ?? 0} sessions⌄</span></button>`
+  const provider = member?.agentType ?? c.session?.agentType
+  const label = provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : 'Choose session'
+  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" data-tip="${esc(member?.title ?? 'Choose the main conversation')}">${esc(label)} ${ICON.chev}</button>`
 }
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */

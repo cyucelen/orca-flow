@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { associateSession, askKey, currentRecipient, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionKey, validSessions } from './coordinator-sessions.ts'
+import { associateSession, askKey, chooseSession, currentRecipient, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, openAgent } from './worker.ts'
 import { askingRows, emptyUi, render } from './view.ts'
@@ -104,7 +104,7 @@ test('current status comes from current once; previous asks stay source-attribut
   assert.match(html.attention, /data-history="home"/)
   assert.ok(!html.attention.includes('data-coordinator="home"'))
   assert.equal((html.main.match(/data-coordinator="home"/g) ?? []).length, 1)
-  assert.ok(!html.main.includes('Replacement coordinator'), 'current member is not also a workstream lead')
+  assert.ok(!html.main.includes('data-menu="agent:new:1"'), 'current member is not also a workstream lead')
   assert.match(html.main, /data-menu="agent:lead:1"[^>]*data-depth="0" style="--node-x:43.105px"/)
   assert.match(html.main, /data-menu="agent:worker:1"[^>]*data-depth="1" style="--node-x:67.105px"/)
   assert.match(html.main, /data-menu="agent:helper:1"[^>]*data-depth="2" style="--node-x:91.105px"/)
@@ -414,4 +414,76 @@ test('remembered ancestry through an explicitly associated member normalizes to 
     assert.equal(all[0].agents[2].leadPane, null)
     assert.equal(all[0].agents[3].leadPane, lead.paneKey)
   }
+})
+
+test('main-session dropdown is populated before membership; excludes dispatched and offline conversations', () => {
+  const { rows, lineage, c } = fixture('claude')
+  // A parentless folder lead is still a lead, never a coordinator candidate.
+  rows[0].agents[2].parentPane = null
+  const unconfigured = { ...c, sessions: undefined }
+  const all = assignCoordinators(rows, [unconfigured], lineage)
+  const coordinators: Coordinator[] = [{ ...unconfigured }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const choices = sessionChoices(coordinators[0], visible)
+  assert.deepEqual(choices.map((a) => a.orcaSession), ['old-session', 'new-session'])
+  assert.ok(choices.every((a) => !a.current), 'ambiguity never picks by order or provider')
+  all[0].agents[1].live = false
+  const offline = foldCoordinatorFolders(all, coordinators, [c.dir])
+  assert.deepEqual(sessionChoices(coordinators[0], offline).map((a) => a.orcaSession), ['old-session'])
+})
+
+test('one main-session choice atomically associates and selects, keeping history and routing provenance', () => {
+  for (const provider of ['claude', 'codex']) {
+    const { rows, lineage, c } = fixture(provider)
+    const old = { version: 1 as const, current: c.sessions.members[0].id, members: [c.sessions.members[0]] }
+    const before = JSON.stringify(old)
+    const a = rows[0].agents[1]
+    const choice = { workspaceId: rows[0].id, paneKey: a.paneKey, orcaSession: a.orcaSession!, agentType: a.agentType }
+    const next = chooseSession(old, rows[0], choice)
+    assert.equal(JSON.stringify(old), before)
+    assert.equal(next.members.length, 2)
+    assert.equal(next.current, next.members[1].id)
+    assert.deepEqual(next.members[0], old.members[0])
+    assert.equal(chooseSession(next, rows[0], choice).members.length, 2, 'repeat selection never creates a duplicate')
+    const coordinator = { ...c, sessions: next }
+    const all = assignCoordinators(rows, [coordinator], lineage)
+    const coordinators: Coordinator[] = [coordinator]
+    const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+    assert.equal(coordinators[0].session?.paneKey, a.paneKey)
+    assert.equal(currentRecipient(coordinator, all).recipient.terminal, a.terminal)
+    assert.deepEqual(sessionChoices(coordinators[0], visible).map((a) => a.current), [false, true])
+    assert.equal(all[0].agents.find((a) => a.paneKey === 'worker:1')?.leadPane, 'lead:1')
+    assert.equal(askingRows({ rows: visible, coordinators })[0].agents[0].paneKey, 'old:1')
+  }
+})
+
+test('stale dropdown choices cannot select a replacement pane, workspace, provider or task lead', () => {
+  const { rows, sessions } = fixture()
+  const a = rows[0].agents[1]
+  const choice = { workspaceId: rows[0].id, paneKey: a.paneKey, orcaSession: a.orcaSession!, agentType: a.agentType }
+  const before = JSON.stringify(sessions)
+  for (const patch of [{ orcaSession: 'reused-pane' }, { workspaceId: 'elsewhere' }, { agentType: 'claude' }]) {
+    assert.throws(() => chooseSession(sessions, rows[0], { ...choice, ...patch }), /no longer available/)
+  }
+  a.dispatch = 'open'
+  assert.throws(() => chooseSession(sessions, rows[0], choice), /belongs to a task/)
+  a.dispatch = null
+  a.live = false
+  assert.throws(() => chooseSession(sessions, rows[0], choice), /no longer available/)
+  a.live = true // fixture's lastAgent shares this object
+  assert.equal(JSON.stringify(sessions), before)
+})
+
+test('coordinator header puts the main-session dropdown beside its name without management onboarding', () => {
+  const { rows, lineage, c } = fixture()
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c, sessionNotice: 'No verified unambiguous membership', routing: 'Run routing unverified.' }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+  assert.match(html, /class="coord-open"[^]*class="coord-label"[^]*home[^]*<\/button><button class="session-trigger"/)
+  assert.match(html, /aria-label="Main session for home" aria-haspopup="menu"/)
+  assert.ok(!html.includes('sessions⌄'))
+  assert.ok(!html.includes('unambiguous membership'))
+  assert.ok(!html.includes('Run routing'))
+  assert.ok(!html.includes('Associate'))
 })

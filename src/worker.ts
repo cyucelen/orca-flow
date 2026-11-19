@@ -18,7 +18,7 @@ import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, read
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
-import { associateSession, currentRecipient, deliverCurrent, deliveryBlock, DeliveryUncertainError, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent } from './coordinator-sessions.ts'
+import { associateSession, chooseSession, currentRecipient, deliverCurrent, deliveryBlock, DeliveryUncertainError, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, verifyConversation } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -849,7 +849,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   const changing = new Set<string>()
-  orca.panels.handle('sidebar.coordinatorSessions', async ({ key, action, member: id, workspaceId, paneKey, agent }) => {
+  orca.panels.handle('sidebar.coordinatorSessions', async ({ key, action, member: id, workspaceId, paneKey, orcaSession, agent }) => {
     if (changing.has(key)) return { ok: false, error: 'A session change is already in progress.' }
     changing.add(key)
     try {
@@ -858,7 +858,15 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (!c) throw new Error('Coordinator no longer exists.')
       if (action === 'fresh') return await freshSession(c, agent || 'claude')
       let sessions = c.sessions ?? { version: 1 as const, current: null, members: [] }
-      if (action === 'associate') {
+      if (action === 'select') {
+        const row = allRows.find((r) => r.id === workspaceId && r.path === c.dir)
+        if (!row || !paneKey || !orcaSession) throw new Error('That conversation is no longer available. Choose another session.')
+        const verified = await loadLineage(run, Date.now(), true)
+        if (verified.dispatchOf?.has(paneKey) || verified.dispatcherOf.has(paneKey)) throw new Error('That conversation belongs to a task and cannot be the main session.')
+        sessions = chooseSession(sessions, row, { workspaceId: row.id, paneKey, orcaSession, agentType: agent ?? null })
+        const member = sessions.members.find((m) => m.id === sessions.current)!
+        try { await verifyConversation(member, run) } catch { throw new Error('That conversation changed. Open the dropdown and try again.') }
+      } else if (action === 'associate') {
         const row = allRows.find((r) => r.id === workspaceId && r.path === c.dir)
         const a = row?.agents.find((a) => a.paneKey === paneKey)
         if (!row || !a) throw new Error('That exact session is no longer in this coordinator workspace.')

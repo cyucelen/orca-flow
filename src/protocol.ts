@@ -318,7 +318,7 @@ declare module 'orca' {
     'sidebar.setPriority': { input: { workspaceId: string; priority: Priority | null }; output: { ok: boolean; error?: string } }
     /** A coordinator's menu actions: a new look, a fresh session, ending its session, or deleting it. */
     'sidebar.coordinatorAction': { input: { key: string; action: 'look' | 'restart' | 'end' | 'delete' }; output: { ok: boolean; error?: string } }
-    'sidebar.coordinatorSessions': { input: { key: string; action: 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; agent?: string }; output: { ok: boolean; error?: string } }
+    'sidebar.coordinatorSessions': { input: { key: string; action: 'select' | 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; orcaSession?: string; agent?: string }; output: { ok: boolean; error?: string } }
     'sidebar.coordinatorHistory': { input: { key: string; member: string; terminal?: string; orcaSession?: string | null }; output: CoordinatorHistory }
     /** Opens only the exact live current member. No implicit launch or resume. */
     'sidebar.openCoordinator': { input: { key: string }; output: { ok: boolean; error?: string } }
