@@ -617,6 +617,9 @@ let menuTarget: string | null = null
 function markTarget(): void {
   document.querySelectorAll('.menu-open').forEach((el) => el.classList.remove('menu-open'))
   if (menuTarget) document.querySelector(`[data-menu="${CSS.escape(menuTarget)}"]`)?.classList.add('menu-open')
+  document.querySelectorAll<HTMLElement>('.session-trigger').forEach((el) => {
+    el.setAttribute('aria-expanded', String(menuTarget === `sessions:${el.dataset.sessions}`))
+  })
 }
 
 function closeMenu(): void {

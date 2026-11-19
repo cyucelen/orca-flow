@@ -530,6 +530,8 @@ test('multiple same-provider conversations use one logo trigger between avatar a
   const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
   const trigger = /<button class="session-trigger"[^]*?<\/button>/.exec(html)![0]
   assert.match(trigger, /aria-label="Main session for home"/)
+  assert.match(trigger, /aria-expanded="false"/)
+  assert.match(trigger, /data-tip="Switch coordinator session · Replacement coordinator"/)
   assert.match(trigger, /<span class="provider" aria-hidden="true"><svg/)
   assert.match(trigger, /fill="#D97757"/, 'current Claude mark remains visible even without mixed providers')
   assert.ok(!trigger.includes('>Claude') && !trigger.includes('>Choose session'))
@@ -547,7 +549,7 @@ test('unselected alternatives use a neutral logo trigger; a single session keeps
   const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
   const trigger = /<button class="session-trigger"[^]*?<\/button>/.exec(html)![0]
   assert.match(trigger, /aria-label="Main session for home"/)
-  assert.match(trigger, /Choose the main conversation/)
+  assert.match(trigger, /Switch coordinator session/)
   assert.match(trigger, /<rect x="3" y="3"/)
   assert.equal(c.sessions.current, null)
 

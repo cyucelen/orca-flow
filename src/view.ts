@@ -939,7 +939,7 @@ function sessionPicker(c: Coordinator, rows: WorkspaceRow[], mixed: boolean): st
   const member = c.members?.find((m) => m.id === c.sessions?.current)
   const provider = providerOf(member?.agentType ?? c.session?.agentType ?? null)
   const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="13" height="13" rx="3"/><path d="M9 20h9a3 3 0 0 0 3-3V9"/></svg>'
-  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" data-tip="${esc(member?.title ?? 'Choose the main conversation')}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
+  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" aria-expanded="false" data-tip="${esc(`Switch coordinator session${member?.title ? ` · ${member.title}` : ''}`)}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
 }
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */

@@ -535,10 +535,13 @@ button.item.coord { padding: 5px 6px; }
 .coord-label{display:flex;flex-direction:column;min-width:0;width:100%}
 .coord-label .name,.coord-label .sub{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .coord > .r{flex:0 1 auto;min-width:0;max-width:45%;overflow:hidden}
-.session-trigger{flex:none;align-self:center;display:inline-flex;align-items:center;gap:3px;padding:4px;border:1px solid var(--line);border-radius:5px;background:color-mix(in srgb,var(--ink) 3%,transparent);color:var(--muted)}
-.session-trigger:hover,.session-trigger:focus-visible{background:var(--hover);color:var(--ink)}
+.session-trigger{flex:0 0 36px;width:36px;height:28px;align-self:center;display:inline-flex;align-items:center;justify-content:center;gap:3px;padding:0;border:1px solid color-mix(in srgb,var(--ink) 34%,var(--bg));border-radius:6px;background:color-mix(in srgb,var(--ink) 10%,var(--bg));color:var(--ink);transition:background-color .12s,border-color .12s,box-shadow .12s}
+.session-trigger:hover{border-color:color-mix(in srgb,var(--ink) 58%,var(--bg));background:color-mix(in srgb,var(--ink) 22%,var(--bg))}
+.session-trigger[aria-expanded="true"]{border-color:color-mix(in srgb,var(--ink) 68%,var(--bg));background:color-mix(in srgb,var(--ink) 27%,var(--bg));box-shadow:inset 0 1px 3px #0005}
+.session-trigger:focus-visible{outline:2px solid var(--ask);outline-offset:2px}
 .session-chevron{display:inline-flex;align-items:center}
-.session-chevron svg{width:8px;height:8px;transform:rotate(90deg)}
+.session-chevron svg{width:8px;height:8px;transform:rotate(90deg);transition:transform .12s}
+.session-trigger[aria-expanded="true"] .session-chevron svg{transform:rotate(270deg)}
 .ctx.session-menu{width:max-content;min-width:190px;max-width:min(340px,calc(100vw - 12px));max-height:65vh;overflow:auto}
 .session-menu .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-menu .provider{margin:0;width:14px;height:14px}
