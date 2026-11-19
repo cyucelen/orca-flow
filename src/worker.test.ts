@@ -721,7 +721,7 @@ test('stale cards are re-summarized forced, through the shared queue, two at a t
   assert.deepEqual([...started].sort(), ['p1!', 'p2!', 'p3!', 'p4!', 'p5!', 'p9'])
   assert.equal(most, 2, 'never more than two Haiku calls at once')
   assert.ok(gaps.length >= 3 && gaps.every((g) => g === 1000), 'a pause between refreshes')
-  assert.deepEqual(logs, ['summary for p3 failed: Haiku timed out'])
+  assert.deepEqual(logs, ['summary for p3 failed: writer failed unexpectedly; check the writer integration (existing card preserved)'])
   s.dispose()
 })
 

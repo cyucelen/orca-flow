@@ -1,13 +1,14 @@
 // The end-of-turn summarizer: reads an agent's Claude transcript and asks Haiku for a status card
 // (title, about, the ask at a glance, what it is watching, a priority guess). Shared by the plugin
 // worker, which runs it when Orca reports a finished turn, and `orca-flow summarize-run`.
-import { execFile } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
 import type { AgentSummary } from './protocol.ts'
+export { claudeConfigDir } from './writer.ts'
+import { cliProviders, createWriter, WriterError, writerDiagnostic, type Writer } from './writer.ts'
 import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
@@ -236,69 +237,6 @@ function entryFromJson(file: string, pane: string): any {
   return JSON.parse(readFileSync(file, 'utf8'))?.entries?.[pane] ?? null
 }
 
-/** The plugin worker does not inherit the shell's PATH, so look where Claude Code installs. */
-export function claudeBin(): string {
-  const home = homedir()
-  return [
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-    join(home, '.local', 'bin', 'claude'),
-    join(home, '.claude', 'local', 'claude')
-  ].find((p) => existsSync(p)) ?? 'claude'
-}
-
-/** The Claude login Orca's agents use (its selected profile), so Haiku bills the same account. */
-export function claudeConfigDir(): string | null {
-  try {
-    const dir = readFileSync(join(ORCA_DATA, 'claude-profiles', 'selected-host'), 'utf8').trim()
-    return dir && existsSync(dir) ? dir : null
-  } catch {
-    return null
-  }
-}
-
-function callHaiku(prompt: string): Promise<{ summary: any; costUSD?: number }> {
-  // Strip Orca's agent variables so Orca does not mistake this call for an agent in a pane.
-  const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string' && !k.startsWith('ORCA_') && k !== 'CLAUDECODE') env[k] = v
-  env.ORCA_CARD_CHILD = '1'
-  env.MAX_THINKING_TOKENS = '0'
-  // Orca starts plugin workers without HOME/USER, and without them Claude cannot find its login in
-  // the macOS Keychain ("Not logged in").
-  env.HOME ??= homedir()
-  env.USER ??= userInfo().username
-  const config = claudeConfigDir()
-  if (config) env.CLAUDE_CONFIG_DIR = config
-  const args = [
-    '-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--no-session-persistence',
-    '--disable-slash-commands', '--setting-sources', '', '--system-prompt', SYSTEM_PROMPT,
-    '--output-format', 'json', '--json-schema', JSON.stringify(SUMMARY_SCHEMA)
-  ]
-  return new Promise((resolve, reject) => {
-    // The prompt goes on stdin: `claude -p` waits for stdin to close, and a transcript can be long.
-    const child = execFile(claudeBin(), args, { env, maxBuffer: 8 * 1024 * 1024, timeout: 90_000, cwd: homedir() }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(errorOf(stdout, stderr) || err.message.split('\n')[0]))
-      try {
-        const out = JSON.parse(stdout)
-        if (out.is_error) return reject(new Error(out.result ?? 'claude -p error'))
-        resolve({ summary: out.structured_output ?? JSON.parse(out.result), costUSD: out.total_cost_usd })
-      } catch (e) {
-        reject(e as Error)
-      }
-    })
-    child.stdin?.end(prompt)
-  })
-}
-
-/** Claude's own words for a failure: the JSON result if it printed one, else stderr's last line. */
-function errorOf(stdout: string, stderr: string): string {
-  try {
-    const out = JSON.parse(stdout)
-    if (out?.result) return String(out.result)
-  } catch {}
-  return stderr.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('Warning: no stdin')).at(-1) ?? ''
-}
-
 // ---------- the card on disk ----------
 
 const fileKey = (key: string) => key.replace(/[^A-Za-z0-9._-]/g, '_')
@@ -413,22 +351,56 @@ export function withFrame<S extends { needs: Needs; glance?: string }>(d: Pick<D
   return { ...summary, needs, glance, ...(asks && reply ? { reply } : {}), ...(asks ? { status } : {}), source: 'frame' }
 }
 
+/** Validate before facts/frame overrides and before any write; reject unknown metadata too. */
+export function validateSummary(value: unknown): Omit<AgentSummary, 'role' | 'updatedAt'> {
+  const v = value as any
+  const strings = ['title', 'about', 'goal', 'since', 'glance', 'watching']
+  const keys = [...strings, 'needs', 'effort', 'priority']
+  if (!v || typeof v !== 'object' || Array.isArray(v)
+    || Object.keys(v).some((k) => !keys.includes(k))
+    || strings.some((k) => typeof v[k] !== 'string' || v[k].length > 4000)
+    || !v.title.trim() || !v.about.trim()
+    || !['quick', 'deep'].includes(v.effort) || !['P0', 'P1', 'P2', 'P3'].includes(v.priority)
+    || !v.needs || typeof v.needs !== 'object' || Array.isArray(v.needs)
+    || Object.keys(v.needs).some((k) => !['type', 'ask', 'options'].includes(k))
+    || !['none', 'decision', 'approval', 'review', 'info', 'action'].includes(v.needs.type)
+    || typeof v.needs.ask !== 'string' || v.needs.ask.length > 4000
+    || !Array.isArray(v.needs.options) || v.needs.options.length > 4
+    || v.needs.options.some((s: unknown) => typeof s !== 'string' || s.length > 500)) {
+    throw new Error('Invalid writer card')
+  }
+  return v
+}
+
+/** Provider validation is part of the boundary, never a programming-error fallback. */
+export function summaryProviders(providers = cliProviders()) {
+  const checked = (provider: 'haiku' | 'luna', run: Writer): Writer => async (request) => {
+    const value = await run(request)
+    try { return validateSummary(value) } catch { throw new WriterError(provider, 'invalid-output') }
+  }
+  return { haiku: checked('haiku', providers.haiku), luna: checked('luna', providers.luna) }
+}
+
+// The worker and summarize-run share the same writer and output validation.
+const summaryWriter = createWriter(summaryProviders())
+
 /**
  * Summarizes one pane's latest turn into ~/.orca-flow/agents/<pane>.json. Skips a turn already
  * summarized (unless forced), and keeps the newest when two finish close together (even when
  * forced). Returns what it did.
  */
-export async function summarizePane(input: { pane: string; transcript: string; worktreeId?: string; goal?: string; force?: boolean; dir?: string }): Promise<'written' | 'skipped' | 'empty'> {
+export async function summarizePane(input: { pane: string; transcript: string; worktreeId?: string; goal?: string; force?: boolean; dir?: string; writer?: Writer }): Promise<'written' | 'skipped' | 'empty'> {
   const out = join(input.dir ?? AGENTS, `${fileKey(input.pane)}.json`)
   const d = digest(readFileSync(input.transcript, 'utf8').split('\n'))
   if (!d) return 'empty'
   const previous = readJson(out)
   if (!input.force && previous?.turnAt && d.turnAt && previous.turnAt >= d.turnAt) return 'skipped'
-  // Haiku still writes the title, about, since, watching and priority; a valid frame decides the ask.
-  const summary = withFrame(d, withFacts(d, (await callHaiku(promptFor(d, previous, input.goal))).summary))
-  // A newer turn may have finished while Haiku ran; keep the newest, even when forced.
+  // Both providers write the same title/card contract; a valid frame still decides the ask.
+  const generated = await (input.writer ?? summaryWriter)({ prompt: promptFor(d, previous, input.goal), system: SYSTEM_PROMPT, schema: SUMMARY_SCHEMA })
+  const summary = withFrame(d, withFacts(d, validateSummary(generated)))
+  // Another call may have published while the provider ran; never overwrite that same/newer turn.
   const latest = readJson(out)
-  if (latest?.turnAt && d.turnAt && latest.turnAt > d.turnAt) return 'skipped'
+  if (latest?.turnAt && d.turnAt && (latest.turnAt > d.turnAt || (latest.turnAt === d.turnAt && latest.updatedAt !== previous?.updatedAt))) return 'skipped'
   writeJson(out, { pane: input.pane, worktreeId: input.worktreeId ?? '', transcript: input.transcript, turnAt: d.turnAt, updatedAt: Date.now(), role: d.role, summarizer: SUMMARIZER_VERSION, ...summary })
   return 'written'
 }
@@ -474,6 +446,7 @@ export function turnSummarizer(opts: {
   let warned = false
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const running = new Set<string>()
+  const failureNotices = new Map<string, number>()
   const again = new Map<string, Queued>()
   const queue: Queued[] = []
   const settle = (job: Queued) => { for (const w of job.waiters) w() }
@@ -488,7 +461,16 @@ export function turnSummarizer(opts: {
       running.add(job.pane)
       const { waiters: _, ...plain } = job
       opts.run(plain)
-        .catch((e) => opts.log?.(`summary for ${job.pane} failed: ${(e as Error).message}`))
+        .catch((e) => {
+          const diagnostic = writerDiagnostic(e)
+          // A provider outage can affect every pane; one actionable notice is enough.
+          if (e instanceof WriterError) {
+            const now = Date.now()
+            if ((failureNotices.get(diagnostic) ?? 0) + 5 * 60_000 > now) return
+            failureNotices.set(diagnostic, now)
+          }
+          opts.log?.(`summary for ${job.pane} failed: ${diagnostic}`)
+        })
         .finally(() => {
           running.delete(job.pane)
           settle(job)

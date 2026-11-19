@@ -47,7 +47,7 @@ declare module 'node:child_process' {
 declare module 'node:fs' {
   export function renameSync(from: string, to: string): void
 }
-declare const process: { env: Record<string, string | undefined>; pid: number; getBuiltinModule?(id: string): any }
+declare const process: { env: Record<string, string | undefined>; pid: number; kill(pid: number, signal: string): void; getBuiltinModule?(id: string): any }
 declare module 'node:child_process' {
   export function execFile(file: string, args: readonly string[], options: { cwd?: string; timeout?: number; maxBuffer?: number; env?: Record<string, string> }, callback: (error: Error | null, stdout: string, stderr: string) => void): { stdin: { end(data: string): void } | null }
 }
@@ -84,3 +84,14 @@ declare module 'node:string_decoder' {
   }
 }
 declare const Buffer: { byteLength(text: string): number }
+
+declare module 'node:child_process' {
+  export function spawn(file: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; detached: boolean; stdio: string[] }): {
+    pid?: number
+    kill(signal: string): void
+    stdin: { end(data: string): void; on(event: string, listener: (...args: any[]) => void): void }
+    stdout: { setEncoding(encoding: string): { on(event: string, listener: (...args: any[]) => void): void } }
+    stderr: { setEncoding(encoding: string): { on(event: string, listener: (...args: any[]) => void): void } }
+    on(event: string, listener: (...args: any[]) => void): void
+  }
+}

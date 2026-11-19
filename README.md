@@ -17,7 +17,8 @@ macOS only for now.
   chats you started yourself. Click a coordinator to open its session; right-click anything for
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
-  title, a one-line "about" and the ask, so you can switch back in seconds.
+  title, a one-line "about" and the ask, so you can switch back in seconds. If Haiku is
+  unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI.
   When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
   status, Ask and Reply are read as written: Up next labels the ask with the message's own status
   line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later
@@ -39,7 +40,10 @@ macOS only for now.
 ## Requirements
 
 - Orca 1.4.254 or newer, with Claude Code agents.
-- The `claude` CLI, logged in. Summaries use Claude Haiku through the same login Orca's agents use.
+- The `claude` CLI, logged in. Summaries prefer Claude Haiku through the same login Orca's agents use.
+- For writer fallback, a logged-in `codex` CLI supporting `exec --ephemeral --output-schema`
+  (verified with 0.167.0) and access to `gpt-6-luna`. It uses an explicit `CODEX_HOME` when set,
+  otherwise Orca's selected host Codex account (or the system login when selected).
 - Node 22.18 or newer on your PATH, for the `orca-flow` script agents run.
 
 ## Install
@@ -180,10 +184,24 @@ Change the margin and the minimum headroom in `~/.orca-flow/config.json`:
 
 ## Privacy
 
-Summaries run on your machine with your own Claude login. After each turn the plugin sends Claude
-Haiku an excerpt of that agent's conversation: its first request, the latest turn's prompts and
-messages, and the commands and file paths its tools used. The result is written to
-`~/.orca-flow/agents/`; nothing is sent anywhere else. Each summary costs a fraction of a cent.
+The writer invokes local CLIs using your existing logins. After each turn it sends Claude Haiku
+an excerpt of that agent's conversation: its first request, the latest turn's prompts and
+messages, and the commands and file paths its tools used. On an availability failure, that same
+excerpt is sent to OpenAI's [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+through Codex instead. Provider usage limits and billing apply to the selected accounts.
+
+Both providers run separate requests without resuming or changing the source session. Codex runs
+in a temporary directory with a read-only sandbox, no session persistence, and shell, MCP, apps,
+web search and hooks disabled for that invocation; account credentials and config are not rewritten.
+Only a validated card replaces `~/.orca-flow/agents/<pane>.json`; total failure keeps the existing
+title and summary. Temporary schema/output files are removed after the request.
+
+Calls are bounded to 30 seconds each. Quota, rate-limit, authentication and unavailable-provider
+failures skip that provider for five minutes in the worker; timeout/transient failures skip it for
+30 seconds. A later request probes Haiku again, restoring it as primary after recovery. The worker
+logs sanitized, throttled diagnostics. Invalid output and unexpected integration errors preserve
+the card without triggering a broad provider fallback. `summarize-run` uses the same writer;
+its cooldown lasts for that command's process.
 
 ## Where things live
 
@@ -220,7 +238,10 @@ in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordina
 - The panel reads `orca worktree ps --json`, Orca's CLI output, because the plugin API has no call
   for every agent's status. A change to that output in an Orca update can break the panel until
   the plugin is updated.
-- Summaries need Claude Code agents.
+- Summaries need Claude Code transcripts.
+- This fallback covers Orca Flow sidebar titles and summaries. Native Orca chat/tab name
+  generation belongs to the host and is not changed by this plugin; the host plugin API does not
+  expose its text-generation service.
 - Free memory refreshes every 15 seconds, and what each project's dev servers cost every 5 minutes.
 
 ## Develop

@@ -21,7 +21,8 @@ import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
-import { findTranscript, missedTurns, refreshStale, staleCards, summarizePane, turnSummarizer } from './summarize.ts'
+import { createWriter } from './writer.ts'
+import { findTranscript, missedTurns, refreshStale, staleCards, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
@@ -1001,8 +1002,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { ok: true }
   })
 
+  const writer = createWriter({ ...summaryProviders(), log: (message) => orca.log(message) })
   const summarizer = turnSummarizer({
-    run: (job) => summarizePane({ ...job, goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
+    run: (job) => summarizePane({ ...job, writer, goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
     log: (m) => orca.log(m)
   })
   let disposed = false
