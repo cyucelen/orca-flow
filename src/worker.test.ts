@@ -891,17 +891,65 @@ test('capacity is one memory budget: free memory after the margin against what a
   assert.equal(diskFreeOf('Filesystem   1024-blocks      Used Available Capacity  Mounted on\n/dev/disk3s5   482797652 409147004  32401648    93%    /System/Volumes/Data\n'), 30.9)
   assert.equal(diskFreeOf(''), null)
   // Agent sessions: shells with no agent (a few MB) do not count; a project's environment is what its worktrees started.
-  const costs = costsOf([0.012, 0.32, 0.39, 0.53, 1.9], [{ repo: 'shop', gb: 2.6 }, { repo: 'shop', gb: 1.8 }, { repo: 'docs', gb: 0 }])
-  assert.deepEqual(costs, { agentGB: 0.5, envGB: { 'shop': 2.2 } })
-  assert.equal(envCost(costs.envGB, 'docs'), 1.5, 'a project never seen running servers is priced at the fallback')
+  const costs = costsOf([0.012, 0.32, 0.39, 0.53, 1.9], [{ repo: 'shop', gb: 2.6 }, { repo: 'shop', gb: 1.8 }, { repo: 'shop', gb: 0 }])
+  assert.deepEqual(costs, { agentGB: 0.5, envGB: { 'shop': 2.2 } }, 'a shop checkout with its dev server stopped does not pull the price down')
+  assert.equal(envCost(costs.envGB, 'docs'), 1.5, 'a project never seen at work here is priced at the fallback')
   const at = (availableGB: number | null, pressure: 'normal' | 'warn' | 'critical' = 'normal') =>
     decide({ availableGB, pressure, config: DEFAULT_CONFIG, agentGB: 0.5, envGB: 2.2 })
   assert.deepEqual(at(6), { verdict: 'ok', freeGB: 4 })
   assert.deepEqual(at(4), { verdict: 'agents-only', freeGB: 2 })
   assert.deepEqual(at(2.3), { verdict: 'full', freeGB: 0.3 })
-  assert.equal(at(9, 'warn').verdict, 'agents-only', 'pressure warn: no new environments')
   assert.equal(at(9, 'critical').verdict, 'pressure')
   assert.deepEqual(at(null), { verdict: 'ok', freeGB: null }, 'before Orca reports memory, nothing is blocked on a guess')
+})
+
+test('under warn pressure a new worktree starts when it fits with headroom (2 GB or half its environment); critical still blocks', async () => {
+  const { decide, DEFAULT_CONFIG } = await import('./capacity.ts')
+  assert.equal(DEFAULT_CONFIG.warnHeadroomGB, 2)
+  const at = (availableGB: number | null, envGB: number, pressure: 'normal' | 'warn' | 'critical' = 'warn') =>
+    decide({ availableGB, pressure, config: DEFAULT_CONFIG, agentGB: 0.5, envGB }).verdict
+  // The case that started this: 8.9 GB free after the margin, warn.
+  assert.equal(at(10.9, 0), 'ok', 'orca-flow runs no environment: 0.5 + 0 + 2 fits in 8.9')
+  assert.equal(at(10.9, 6.6), 'agents-only', 'mono: 0.5 + 6.6 + 3.3 = 10.4 does not fit in 8.9')
+  assert.equal(at(2 + 10.4, 6.6), 'ok', 'mono fits once 10.4 GB is free')
+  assert.equal(at(2 + 10.3, 6.6), 'agents-only')
+  assert.equal(at(10.9, 6.6, 'normal'), 'ok', 'with no pressure mono fits without the headroom')
+  // The edge for a small environment: the 2 GB floor applies (half of 1.5 is less).
+  assert.equal(at(2 + 0.5 + 1.5 + 2, 1.5), 'ok')
+  assert.equal(at(2 + 0.5 + 1.5 + 1.9, 1.5), 'agents-only')
+  assert.equal(at(2.4, 0), 'full', 'not even an agent fits')
+  assert.equal(at(null, 0), 'agents-only', 'warn with no memory reading: no new worktrees on a guess')
+  assert.equal(at(40, 0, 'critical'), 'pressure', 'critical blocks everything, however much is free')
+  // A config.json written before the headroom setting existed still gets it.
+  assert.equal(decide({ availableGB: 4.4, pressure: 'warn', config: { marginGB: 2 } as never, agentGB: 0.5, envGB: 0 }).verdict, 'agents-only')
+})
+
+test('a project seen at work that started nothing costs 0; a stopped project keeps its measured cost', async () => {
+  const { costsOf, envSamples, envCost, readEnvMemory, typicalEnv, writeEnvMemory } = await import('./capacity.ts')
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  // A shop checkout runs next (two panes), a second shop checkout and the orca-flow checkout have agents but started nothing.
+  const samples = envSamples(
+    [{ path: '/w/shop-a', repo: 'shop', gb: 4 }, { path: '/w/shop-a', repo: 'shop', gb: 2.6 }],
+    [{ path: '/w/shop-a', repo: 'shop' }, { path: '/w/shop-b', repo: 'shop' }, { path: '/w/flow', repo: 'orca-flow' }]
+  )
+  assert.deepEqual(samples, [{ repo: 'shop', gb: 6.6 }, { repo: 'shop', gb: 0 }, { repo: 'orca-flow', gb: 0 }])
+  const now = costsOf([], samples).envGB
+  assert.deepEqual(now, { shop: 6.6, 'orca-flow': 0 })
+  assert.equal(envCost(now, 'orca-flow'), 0, 'measured, not the 1.5 GB fallback')
+  assert.equal(typicalEnv(now), 6.6, 'the typical environment counts only projects that run one')
+  assert.equal(typicalEnv({ 'orca-flow': 0 }), 1.5)
+  // Later every shop dev server is stopped: shop keeps 6.6 instead of dropping to 0.
+  const later = costsOf([], [{ repo: 'shop', gb: 0 }, { repo: 'orca-flow', gb: 0 }], now).envGB
+  assert.deepEqual(later, { shop: 6.6, 'orca-flow': 0 })
+  // A new measurement replaces the remembered one; a project not seen now keeps its memory.
+  assert.deepEqual(costsOf([], [{ repo: 'shop', gb: 5 }], later).envGB, { shop: 5, 'orca-flow': 0 })
+  // The memory survives restarts, shared by the plugin and the CLI.
+  const dir = mkdtempSync(join(tmpdir(), 'env-'))
+  assert.deepEqual(readEnvMemory(dir), {})
+  writeEnvMemory(dir, later)
+  assert.deepEqual(readEnvMemory(dir), later)
 })
 
 test('a worker keeps the title of what it is doing, not the last task it was handed', () => {

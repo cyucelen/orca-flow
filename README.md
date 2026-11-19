@@ -166,14 +166,15 @@ the session, the tier (`block` or `silent`) and the rules missed. Pending remind
 Capacity is memory, not a count of worktrees or agents: a worktree on disk costs nothing, while
 agents (about 0.5 GB each) and dev servers (often 2 GB or more) are what slow the machine. The
 plugin compares free memory with what starting something costs on your machine, measured from your
-own open sessions and from the processes each project's worktrees started. When macOS reports
-memory pressure, no new dev environments start; when the pressure is critical, only urgent (P0)
-work does.
+own open sessions and from the processes each project's worktrees started (kept in
+`~/.orca-flow/env-costs.json` while those are stopped; a project that starts nothing costs 0). When
+macOS reports memory pressure "warn", a new worktree also needs headroom: 2 GB, or half its
+environment when that is more. When the pressure is critical, only urgent (P0) work starts.
 
-Change the margin in `~/.orca-flow/config.json`:
+Change the margin and the minimum headroom in `~/.orca-flow/config.json`:
 
 ```json
-{ "marginGB": 2 }
+{ "marginGB": 2, "warnHeadroomGB": 2 }
 ```
 
 ## Privacy

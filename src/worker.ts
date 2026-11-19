@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeF
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
-import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, FALLBACK, type Pressure } from './capacity.ts'
+import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, readEnvMemory, typicalEnv, writeEnvMemory, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
@@ -307,13 +307,10 @@ function refreshMemory(rows: WorkspaceRow[], onLoaded: () => void): void {
     if (now - envAt >= 5 * 60_000) {
       const [procs, footprint] = await Promise.all([readProcs(), readFootprint()])
       const pids = sessions.map((s) => s.pid).filter((p): p is number => typeof p === 'number')
-      const perWorktree = new Map<string, { repo: string; gb: number }>()
-      for (const g of startedGroups(procs, footprint, pids, rows)) {
-        const w = perWorktree.get(g.path) ?? { repo: g.repo, gb: 0 }
-        w.gb += g.memMB / 1024
-        perWorktree.set(g.path, w)
-      }
-      envGB = costsOf([], [...perWorktree.values()]).envGB
+      const started = startedGroups(procs, footprint, pids, rows).map((g) => ({ path: g.path, repo: g.repo, gb: g.memMB / 1024 }))
+      const checkouts = rows.filter((r) => r.path && r.agents.length > 0 && !isCoordinatorHome(r.path)).map((r) => ({ path: r.path!, repo: r.repo }))
+      envGB = costsOf([], envSamples(started, checkouts), readEnvMemory(DATA_DIR)).envGB
+      writeEnvMemory(DATA_DIR, envGB)
       envAt = now
     }
     const df = await new Promise<string>((resolve) => execFile('df', ['-k', '-P', homedir()], { timeout: 5000 }, (_e, out) => resolve(String(out ?? ''))))
@@ -345,8 +342,7 @@ function readConfig(dir = DATA_DIR): Record<string, unknown> {
 export function capacityOf(rows: WorkspaceRow[], pressure: Pressure, facts: MemoryFacts = memory, dir = DATA_DIR, isHome: (path: string | null) => boolean = isCoordinatorHome): Capacity {
   const config = { ...DEFAULT_CONFIG, ...readConfig(dir) }
   // In general, "can a new workstream start?" prices the typical environment of the projects here.
-  const known = Object.values(facts.envGB).sort((a, b) => a - b)
-  const envGB = known.length ? known[Math.floor((known.length - 1) / 2)] : FALLBACK.envGB
+  const envGB = typicalEnv(facts.envGB)
   const { verdict, freeGB } = decide({ availableGB: facts.availableGB, pressure, config, agentGB: facts.agentGB, envGB })
   const checkouts = rows.filter((r) => r.liveTerminals > 0 && !isHome(r.path))
   return {

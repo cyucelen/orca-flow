@@ -10,12 +10,14 @@ test('priority accepts levels and words, refuses anything else', () => {
   assert.throws(() => normalizePriority('urgent'), /now\/today\/soon\/someday/)
 })
 
-test('capacity: the shared memory decision, pressure overrides', () => {
+test('capacity: the shared memory decision, critical pressure overrides, warn adds headroom', () => {
   const at = (availableGB, pressure = 'normal') => decide({ availableGB, pressure, config: { marginGB: 2 }, agentGB: 0.5, envGB: 2 }).verdict
   assert.equal(at(8), 'ok')
   assert.equal(at(4), 'agents-only')
   assert.equal(at(2.2), 'full')
   assert.equal(at(8, 'critical'), 'pressure')
+  assert.equal(at(8, 'warn'), 'ok', 'warn: 6 GB free covers 0.5 + 2 + 2 GB headroom')
+  assert.equal(at(6, 'warn'), 'agents-only', 'warn: 4 GB free does not')
 })
 
 const line = (type, content, extra = {}) => JSON.stringify({ type, message: { content }, timestamp: extra.at ?? 't', ...extra })

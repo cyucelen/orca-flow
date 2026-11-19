@@ -99,12 +99,19 @@ orca-flow capacity --repo <name> --json   # before creating a worktree for that 
 ```
 
 It compares free memory (what Orca reports as available, minus a 2 GB margin) with what starting
-costs on this machine: an agent, and per project the environment its worktrees run.
+costs on this machine: an agent, and per project the environment its worktrees run. A project's
+environment is measured: what its worktrees started (dev servers), remembered while they are
+stopped. A project whose agents work and start nothing (orca-flow) costs 0 GB; a project never
+seen at work here is priced at 1.5 GB.
+
+When macOS reports `warn` memory pressure, a new worktree also needs headroom: 2 GB, or half its
+environment when that is more. On this machine a new orca-flow worktree needs 0.5 + 0 + 2 = 2.5 GB
+free, a new mono worktree 0.5 + 6.6 + 3.3 = 10.4 GB.
 
 - `ok`: a new worktree with its environment fits; start anything.
 - `agents-only`: another agent fits in an existing worktree; queue anything that needs a new one.
 - `full`: not even an agent fits; queue the task.
-- `pressure`: macOS reports memory pressure; queue everything except P0.
+- `pressure`: macOS reports `critical` memory pressure; queue everything except P0.
 
 Swap use is information only: decide on the verdict alone. Never queue work or warn the user
 because swap looks full. macOS keeps old pages in swap long after RAM is free again, so a full swap

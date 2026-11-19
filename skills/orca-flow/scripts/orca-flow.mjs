@@ -116,7 +116,7 @@ function swap() {
 }
 
 /** The decision lives in src/capacity.ts, shared with the plugin; Node strips its types. */
-const { costsOf, decide, envCost, DEFAULT_CONFIG } = await import(new URL('../../../src/capacity.ts', import.meta.url).href)
+const { costsOf, decide, envCost, envSamples, readEnvMemory, typicalEnv, writeEnvMemory, DEFAULT_CONFIG } = await import(new URL('../../../src/capacity.ts', import.meta.url).href)
 /** Shared with the plugin: coordinator homes are no code checkouts. */
 const { isCoordinatorHome } = await import(new URL('../../../src/coordinators.ts', import.meta.url).href)
 /** Shared with the plugin: what agents started outside their sessions (dev servers). */
@@ -147,9 +147,11 @@ async function capacity(args = {}) {
     w.gb += g.memMB / 1024
     perWorktree.set(g.path, w)
   }
-  const costs = costsOf(sessions.filter((x) => agentPanes.has(x.paneKey)).map((x) => x.memory / 1024 ** 3), [...perWorktree.values()])
-  const known = Object.values(costs.envGB).sort((x, y) => x - y)
-  const envGB = args.repo ? envCost(costs.envGB, args.repo) : known.length ? known[Math.floor((known.length - 1) / 2)] : envCost({}, undefined)
+  // Every checkout where agents work is a sample, 0 when it started nothing; the plugin keeps the same memory.
+  const atWork = rows.filter((r) => r.path && r.agents.length > 0 && !isCoordinatorHome(r.path)).map((r) => ({ path: r.path, repo: r.repo }))
+  const costs = costsOf(sessions.filter((x) => agentPanes.has(x.paneKey)).map((x) => x.memory / 1024 ** 3), envSamples([...perWorktree.values()], atWork), readEnvMemory(DIR))
+  writeEnvMemory(DIR, costs.envGB)
+  const envGB = args.repo ? envCost(costs.envGB, args.repo) : typicalEnv(costs.envGB)
   const pressure = pressureLevel()
   const { verdict, freeGB } = decide({ availableGB: mem.host?.availableMemory ? mem.host.availableMemory / 1024 ** 3 : null, pressure, config, agentGB: costs.agentGB, envGB })
 
