@@ -2,7 +2,7 @@ import { assert, test } from 'orca/testing'
 import { associateSession, askKey, chooseSession, currentRecipient, exclusive, wakeCoordinator, wakePlan, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
-import { askingRows, emptyUi, render, wakeStatus } from './view.ts'
+import { askingRows, emptyUi, render, wakeView } from './view.ts'
 import type { Coordinator, CoordinatorSessions } from './protocol.ts'
 
 function fixture(provider = 'codex') {
@@ -697,16 +697,16 @@ test('a failed restore is retryable and neutral, keeps the old member, and an un
   assert.equal(r.agent, 'codex')
   assert.equal(calls.save.length + calls.fresh.length + calls.open.length, 0, 'nothing written, launched or opened')
   assert.equal(JSON.stringify(sessions), before, 'the old member and its history are preserved')
-  const status = wakeStatus('home', r, false)
-  assert.equal(status.tone, 'note', 'not red')
-  assert.deepEqual(status.actions?.map((a) => [a.label, a.wake, a.agent]), [['Retry', 'retry', undefined], ['Start new', 'fresh', 'codex']])
+  // Not red, nothing on the row: the Sessions menu opens with Retry and Start new (codex), the error in its tooltip.
+  assert.deepEqual(wakeView(r), { row: null, menu: { header: "Couldn't restore the last conversation", tip: r.error, agent: 'codex', sessions: false, retry: true } })
+  assert.equal(wakeView({ ...r, retryable: false }).menu?.retry, false, 'no Retry unless retryable')
   // Launched, but the new terminal cannot be tied to the member: a real failure, no Retry offered.
   let resumes = 0
   const unverified = await wakeCoordinator(c, rows, 1, wakeIo({ resume: async () => { resumes++; return { terminalId: 'x' } }, binding: async () => null }).io)
   assert.equal(unverified.kind, 'failed')
   assert.equal(unverified.retryable, undefined)
   assert.equal(resumes, 1)
-  assert.equal(wakeStatus('home', unverified, false).tone, 'bad')
+  assert.deepEqual(wakeView(unverified), { row: { text: unverified.error!, tone: 'bad' }, menu: null }, 'a real failure stays red on the row')
 })
 
 test('ambiguous history asks for an explicit choice and never picks a member', async () => {
@@ -727,9 +727,12 @@ test('ambiguous history asks for an explicit choice and never picks a member', a
     const r = await wakeCoordinator(cc, rr, 1, io)
     assert.equal(r.kind, 'choose')
     assert.equal(calls.fresh.length + calls.resume.length + calls.save.length + calls.open.length, 0)
-    const status = wakeStatus('home', r, true)
-    assert.equal(status.tone, 'note')
-    assert.deepEqual(status.actions?.map((a) => a.wake), ['sessions', 'fresh'])
+    const view = wakeView(r)
+    assert.equal(view.row, null, 'the row keeps Sleeping')
+    assert.equal(view.menu?.header, 'Pick the main conversation')
+    assert.equal(view.menu?.tip, r.error)
+    assert.equal(view.menu?.sessions, true)
+    assert.equal(view.menu?.retry, false)
   }
   // A closed current with nothing else open has nothing to continue: a new conversation of its provider.
   const alone = fixture()
@@ -748,7 +751,7 @@ test('a second click while a start or resume is in flight launches nothing', asy
   const first = click()
   const second = await click()
   assert.equal(second.kind, 'busy')
-  assert.equal(wakeStatus('home', second, false).tone, 'pending')
+  assert.deepEqual(wakeView(second), { row: { text: 'Opening…', tone: 'pending' }, menu: null }, 'keeps the Opening… spinner')
   release()
   assert.equal((await first).kind, 'started')
   assert.deepEqual(calls.fresh, ['claude'], 'one launch')
@@ -824,5 +827,34 @@ test('every wake outcome is plain JSON with no undefined property, so the panel 
   for (const [kind, r] of outcomes) {
     assert.deepEqual(undefinedPaths(r), [], `${kind} has no undefined property`)
     assert.deepEqual(JSON.parse(JSON.stringify(r)), r, `${kind} round-trips through JSON unchanged`)
+  }
+})
+
+test('a coordinator row never shows wake buttons or a reason: muted Sleeping, red only for a real failure', () => {
+  const { rows, lineage, c } = fixture()
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1' && a.paneKey !== 'old:1')
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const snap = { rows: visible, coordinators, source: 'cli' as const, capacity: null }
+  const rowOf = (html: string) => html.match(/<div class="item coord[^]*?<\/div>/)![0]
+  const sleeping = rowOf(render(snap, emptyUi()).main)
+  assert.match(sleeping, /<span class="r"><span class="rstatus sleeping">Sleeping<\/span><\/span>/)
+  const outcomes = [
+    { ok: false, kind: 'choose' as const, error: 'Its open conversations are not associated yet. Choose one in Sessions or start a new conversation.' },
+    { ok: false, kind: 'restore-failed' as const, retryable: true, agent: 'codex', error: 'The previous conversation could not be restored: gone' },
+    { ok: false, kind: 'failed' as const, error: 'The new conversation could not be started.' },
+    { ok: false, kind: 'busy' as const },
+    { ok: true, kind: 'started' as const }
+  ]
+  for (const r of outcomes) {
+    const ui = emptyUi()
+    const { row } = wakeView(r)
+    if (row) ui.status.set('coordinator:home', row)
+    const html = rowOf(render(snap, ui).main)
+    assert.ok(!/data-wake|rstatus-act|<button[^>]*>(Retry|Start new|Sessions)</.test(html), `${r.kind}: no buttons on the row`)
+    assert.ok(!html.includes('could not be restored') && !html.includes('not associated'), `${r.kind}: no reason on the row`)
+    assert.equal(html.includes('rstatus bad'), r.kind === 'failed', `${r.kind}: red only for a real failure`)
+    if (r.kind === 'choose' || r.kind === 'restore-failed') assert.match(html, />Sleeping</)
   }
 })

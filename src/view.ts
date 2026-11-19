@@ -312,29 +312,31 @@ const size = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${m
 /** Something in progress, inline: a small spinner and a verb. The one inline loading style. */
 export const busy = (text: string) => `<span class="rstatus pending"><span class="refreshing"></span>${esc(text)}</span>`
 
-/**
- * A row's inline status. `note` is neutral: something to choose, not a failure (red `bad` is only for
- * what actually failed). Its actions are small buttons beside it; `tip` holds the full reason.
- */
-export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' | 'note'; tip?: string; actions?: { label: string; wake: 'retry' | 'fresh' | 'sessions'; key: string; agent?: string }[] }
+/** A row's inline status: running, done, or failed (red is only for what actually failed). */
+export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' }
 
-/** What a coordinator click's outcome shows on its row. A sleeping coordinator never shows red. */
-export function wakeStatus(key: string, r: WakeOutcome, canChoose: boolean): RowStatus {
-  const fresh = { label: 'Start new', wake: 'fresh' as const, key, ...(r.agent ? { agent: r.agent } : {}) }
-  if (r.ok) return { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : 'Open', tone: 'ok' }
-  if (r.kind === 'busy') return { text: 'Already opening…', tone: 'pending' }
-  if (r.kind === 'restore-failed') return { text: 'Not restored', tone: 'note', tip: r.error, actions: [...(r.retryable ? [{ label: 'Retry', wake: 'retry' as const, key }] : []), fresh] }
-  if (r.kind === 'choose') return { text: 'Choose a session', tone: 'note', tip: r.error, actions: [...(canChoose ? [{ label: 'Sessions', wake: 'sessions' as const, key }] : []), fresh] }
-  return { text: r.error ?? 'Could not open it', tone: 'bad' }
+/**
+ * The Sessions menu a coordinator click opens when it needs the person: a header with the reason
+ * (the full one in its tooltip), the open conversations to pick from (`sessions`), Retry (`retry`),
+ * then Start new conversation of `agent`'s provider.
+ */
+export type WakeMenu = { header: string; tip?: string; sessions: boolean; retry: boolean; agent?: string }
+
+/** What a coordinator click's outcome shows: a row status, or the Sessions menu. Never buttons on the row. */
+export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMenu | null } {
+  const extra = { ...(r.error ? { tip: r.error } : {}), ...(r.agent ? { agent: r.agent } : {}) }
+  if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : 'Open', tone: 'ok' }, menu: null }
+  if (r.kind === 'busy') return { row: { text: 'Opening…', tone: 'pending' }, menu: null }
+  if (r.kind === 'choose') return { row: null, menu: { header: 'Pick the main conversation', sessions: true, retry: false, ...extra } }
+  if (r.kind === 'restore-failed') return { row: null, menu: { header: "Couldn't restore the last conversation", sessions: false, retry: r.retryable === true, ...extra } }
+  return { row: { text: r.error ?? 'Could not open it', tone: 'bad' }, menu: null }
 }
 
 /** A row's inline status, shown where its time or count normally sits; null when it has none. */
 function rowStatus(ui: UiState, key: string): string | null {
   const st = ui.status.get(key)
   if (!st) return null
-  if (st.tone === 'pending') return busy(st.text)
-  const acts = (st.actions ?? []).map((a) => `<button class="rstatus-act" data-wake="${a.wake}" data-wake-key="${esc(a.key)}"${a.agent ? ` data-wake-agent="${esc(a.agent)}"` : ''}>${esc(a.label)}</button>`).join('')
-  return `<span class="rstatus ${st.tone}"${st.tip ? ` data-tip="${esc(st.tip)}"` : ''}>${esc(st.text)}</span>${acts}`
+  return st.tone === 'pending' ? busy(st.text) : `<span class="rstatus ${st.tone}">${esc(st.text)}</span>`
 }
 
 type ActOpts = { ask?: boolean; tip?: string; cls?: string; icon?: string; aria?: string }
@@ -945,7 +947,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : '<span class="rstatus sleeping">Sleeping</span>')}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
