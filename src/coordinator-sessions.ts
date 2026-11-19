@@ -1,5 +1,5 @@
 import { providerOf } from './providers.ts'
-import type { AgentInfo, Coordinator, CoordinatorHistory, CoordinatorMember, CoordinatorSessions, DeliveryRecipient, LinearSent, WorkspaceRow } from './protocol.ts'
+import type { AgentInfo, Coordinator, CoordinatorHistory, CoordinatorMember, CoordinatorSessions, DeliveryRecipient, LinearSent, WakeOutcome, WorkspaceRow } from './protocol.ts'
 
 /** JSON tuples preserve delimiters and scope identical pane/session ids to their workspace. */
 export const sessionKey = (workspaceId: string, session: string | null, pane: string) => JSON.stringify([workspaceId, session ? 'session' : 'pane', session || pane])
@@ -175,17 +175,22 @@ export async function deliverCurrent(c: Coordinator, rows: WorkspaceRow[], messa
   return deliveryReceipt(result, recipient)
 }
 
-/** Resume is an explicit current-member action. Provider ids and Orca ids stay distinct. */
-export async function resumeExactMember(s: CoordinatorSessions, id: string, io: {
+export type ResumeIo = {
   resume: (input: { workspaceId: string; agent: string; sessionId: string }) => Promise<{ terminalId: string }>
   binding: (terminalId: string) => Promise<{ workspaceId: string; agent: AgentInfo } | null>
-}): Promise<CoordinatorSessions> {
+}
+
+/** A resume was launched but its new terminal could not be tied to the member: never launch again blindly. */
+export class ResumeUnverifiedError extends Error {}
+
+/** Resume is an explicit current-member action. Provider ids and Orca ids stay distinct. */
+export async function resumeExactMember(s: CoordinatorSessions, id: string, io: ResumeIo): Promise<CoordinatorSessions> {
   const m = s.members.find((m) => m.id === id)
   if (!m || s.current !== id) throw new Error('Only the explicitly current member can be resumed. History stays read-only.')
   if (!m.resumeSessionId || !m.agentType) throw new Error('No verified provider resume id was recorded. Orca conversation ids cannot be used as resume ids; nothing was launched.')
   const result = await io.resume({ workspaceId: m.workspaceId, agent: m.agentType, sessionId: m.resumeSessionId })
   const bound = await io.binding(result.terminalId)
-  if (!bound || bound.workspaceId !== m.workspaceId || bound.agent.agentType !== m.agentType || !bound.agent.terminal || !bound.agent.orcaSession) throw new Error('Exact resume started, but its new binding could not be verified. No fallback was selected; inspect Sessions before retrying.')
+  if (!bound || bound.workspaceId !== m.workspaceId || bound.agent.agentType !== m.agentType || !bound.agent.terminal || !bound.agent.orcaSession) throw new ResumeUnverifiedError('Exact resume started, but its new binding could not be verified. No fallback was selected; inspect Sessions before retrying.')
   const a = bound.agent
   return { ...s, members: s.members.map((member) => member.id !== id ? member : { ...member, bindings: rememberBinding(member, a), orcaSession: a.orcaSession, paneKey: a.paneKey, terminals: [...new Set([...member.terminals, a.terminal!])], lastAgent: a }) }
 }
@@ -193,4 +198,78 @@ export async function resumeExactMember(s: CoordinatorSessions, id: string, io: 
 /** Unknown attempts survive restart and cannot be retried by the ordinary Send action. */
 export function deliveryBlock(previous: LinearSent | undefined): string | null {
   return previous?.delivery === 'unknown' ? `A prior delivery to the recorded recipient is unconfirmed${previous.recipient?.receipt?.requestId ? ` (request ${previous.recipient.receipt.requestId})` : ''}. Inspect its source; this action will not resend it.` : null
+}
+
+/**
+ * What clicking a coordinator does. Opening is not delivery: an absent or closed main conversation
+ * is a sleeping coordinator, not an error. It opens the exact live current member, resumes that same
+ * member by its provider id, or starts a new member only when there is nothing to continue. Anything
+ * it cannot tie to one conversation is left to an explicit choice; it never picks another member.
+ * `liveChoices` is how many open conversations the Sessions picker offers (sessionChoices).
+ */
+export type WakePlan =
+  | { kind: 'open'; member: CoordinatorMember; workspaceId: string; terminal: string }
+  | { kind: 'resume'; member: CoordinatorMember }
+  | { kind: 'fresh'; agent: string | null }
+  | { kind: 'choose'; reason: string }
+
+export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number): WakePlan {
+  const s = c.sessions
+  const current = s?.members.find((m) => m.id === s.current)
+  if (current) {
+    const a = memberAgent(current, rows)
+    if (a?.terminal && a.live === true) return { kind: 'open', member: current, workspaceId: current.workspaceId, terminal: a.terminal }
+    if (current.resumeSessionId && current.agentType) return { kind: 'resume', member: current }
+    if (!a && memberMatches(current, rows) > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
+    if (liveChoices > 0) return { kind: 'choose', reason: 'The main conversation is closed and cannot be resumed. Choose an open conversation or start a new one.' }
+    return { kind: 'fresh', agent: current.agentType }
+  }
+  if (s?.members.length) return { kind: 'choose', reason: 'No main conversation is selected among its previous ones. Choose one in Sessions or start a new conversation.' }
+  if (liveChoices > 0) return { kind: 'choose', reason: 'Its open conversations are not associated yet. Choose one in Sessions or start a new conversation.' }
+  return { kind: 'fresh', agent: null }
+}
+
+function memberMatches(m: CoordinatorMember, rows: WorkspaceRow[]): number {
+  return rows.filter((r) => r.id === m.workspaceId).flatMap((r) => r.agents).filter((a) =>
+    m.orcaSession ? a.orcaSession === m.orcaSession && a.agentType === m.agentType : a.paneKey === m.paneKey && a.agentType === m.agentType && !a.orcaSession).length
+}
+
+export type WakeIo = ResumeIo & {
+  /** Shows the exact terminal; false when it could not. */
+  open: (workspaceId: string, terminal: string) => Promise<boolean>
+  /** Compare-and-swap write of the coordinator's sessions against the ones the plan was made from. */
+  save: (next: CoordinatorSessions) => void
+  /** Starts a new explicitly associated member (freshSession). */
+  fresh: (agent: string) => Promise<{ ok: boolean; error?: string }>
+}
+
+/** Carries out a wake plan. Only a failed start, a failed open or an unverifiable resume is a failure. */
+export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo): Promise<WakeOutcome> {
+  const plan = wakePlan(c, rows, liveChoices)
+  if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', error: 'The exact session could not be opened.' }
+  if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, agent: c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType ?? undefined }
+  if (plan.kind === 'fresh') {
+    const started = await io.fresh(plan.agent || 'claude')
+    return started.ok ? { ok: true, kind: 'started' } : { ok: false, kind: 'failed', error: started.error ?? 'The new conversation could not be started.' }
+  }
+  const agent = plan.member.agentType ?? undefined
+  let next: CoordinatorSessions
+  try { next = await resumeExactMember(c.sessions!, plan.member.id, io) }
+  catch (e) {
+    if (e instanceof ResumeUnverifiedError) return { ok: false, kind: 'failed', error: e.message }
+    // Nothing was bound and nothing was written: the member and its history stay as they were.
+    return { ok: false, kind: 'restore-failed', retryable: true, agent, error: `The previous conversation could not be restored: ${(e as Error).message}` }
+  }
+  try { io.save(next) }
+  catch (e) { return { ok: false, kind: 'failed', error: `The conversation resumed, but its new binding could not be saved (${(e as Error).message}). Check Sessions; do not resume it again.` } }
+  const terminal = next.members.find((m) => m.id === plan.member.id)?.lastAgent?.terminal
+  return terminal && await io.open(plan.member.workspaceId, terminal) ? { ok: true, kind: 'resumed' } : { ok: false, kind: 'failed', error: 'The conversation resumed, but its terminal could not be shown.' }
+}
+
+/** One start, resume or session change per coordinator at a time; a second click while one runs launches nothing. */
+export async function exclusive<T>(busy: Set<string>, key: string, run: () => Promise<T>, whenBusy: () => T): Promise<T> {
+  if (busy.has(key)) return whenBusy()
+  busy.add(key)
+  try { return await run() }
+  finally { busy.delete(key) }
 }

@@ -346,6 +346,22 @@ export function deleteFolder(dir: string, root = COORDINATOR_HOME): void {
 
 
 /** Persist explicit membership atomically without changing scope, appearance or other config. */
+/**
+ * Reads, changes and compare-and-swaps a coordinator's sessions in one synchronous step, so
+ * overlapping refreshes in this worker cannot interleave between the read and the write. Returns
+ * what is on disk afterwards; unreadable files and invalid sessions are never overwritten.
+ */
+export function updateCoordinatorSessions(dir: string, change: (onDisk: CoordinatorSessions | undefined) => CoordinatorSessions | undefined): CoordinatorSessions | undefined {
+  const data = readJson<Record<string, unknown>>(join(dir, COORDINATOR_FILE))
+  if (!data) throw new Error('Coordinator configuration could not be read; it was not overwritten.')
+  const onDisk = data.sessions === undefined ? undefined : validSessions(data.sessions)
+  if (data.sessions !== undefined && !onDisk) throw new Error('Invalid session configuration; it was not overwritten.')
+  const next = change(onDisk)
+  if (!next || JSON.stringify(next) === JSON.stringify(onDisk)) return onDisk
+  writeCoordinatorSessions(dir, next, { sessions: onDisk })
+  return next
+}
+
 export function writeCoordinatorSessions(dir: string, sessions: CoordinatorSessions, expected?: { sessions: CoordinatorSessions | undefined }): void {
   const path = join(dir, COORDINATOR_FILE)
   const data = readJson<Record<string, unknown>>(path)

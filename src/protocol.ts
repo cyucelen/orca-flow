@@ -159,6 +159,13 @@ export type CoordinatorMember = {
 }
 export type CoordinatorSessions = { version: 1; current: string | null; members: CoordinatorMember[] }
 export type CoordinatorMemberView = CoordinatorMember & { agent: AgentInfo | null }
+/**
+ * What a coordinator click did. `ok` means a session is now shown. `choose` and `restore-failed` are
+ * not errors: the first needs an explicit Sessions choice, the second can be retried (`retryable`) or
+ * replaced by a new conversation while the old one stays in history. `busy`: another start, resume or
+ * session change for it is still running. `failed` is an actual failed start, resume or open.
+ */
+export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string }
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 
@@ -323,8 +330,12 @@ declare module 'orca' {
     'sidebar.coordinatorAction': { input: { key: string; action: 'look' | 'restart' | 'end' | 'delete' }; output: { ok: boolean; error?: string } }
     'sidebar.coordinatorSessions': { input: { key: string; action: 'select' | 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; orcaSession?: string; agent?: string }; output: { ok: boolean; error?: string } }
     'sidebar.coordinatorHistory': { input: { key: string; member: string; terminal?: string; orcaSession?: string | null }; output: CoordinatorHistory }
-    /** Opens only the exact live current member. No implicit launch or resume. */
-    'sidebar.openCoordinator': { input: { key: string }; output: { ok: boolean; error?: string } }
+    /**
+     * Wakes a coordinator (wakePlan): opens the exact live current member, resumes that same member
+     * by its provider id, or starts a new member when there is no previous conversation. Never
+     * delivers, and never switches to another member; an ambiguous history answers `choose`.
+     */
+    'sidebar.openCoordinator': { input: { key: string }; output: WakeOutcome }
     /**
      * Updates Orca Flow now, as the status bar item's second click does: only from available or
      * failed. An update that needs approval is never approved here; the message names the command.

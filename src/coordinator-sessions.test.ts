@@ -1,8 +1,8 @@
 import { assert, test } from 'orca/testing'
-import { associateSession, askKey, chooseSession, currentRecipient, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
-import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, writeCoordinatorSessions } from './coordinators.ts'
+import { associateSession, askKey, chooseSession, currentRecipient, exclusive, wakeCoordinator, wakePlan, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions } from './coordinator-sessions.ts'
+import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
-import { askingRows, emptyUi, render } from './view.ts'
+import { askingRows, emptyUi, render, wakeStatus } from './view.ts'
 import type { Coordinator, CoordinatorSessions } from './protocol.ts'
 
 function fixture(provider = 'codex') {
@@ -613,4 +613,179 @@ test('owned structured Codex chats remain summary targets without a PTY', () => 
     { paneKey: 'closed-pane', orcaSessionId: 'orca-closed', agentType: 'codex', state: 'done', hasLivePty: false }
   ] }])
   assert.deepEqual(summaryAgents({ rows, coordinators: [] }).map(({ agent }) => [agent.paneKey, agent.orcaSession]), [['chat-pane', 'orca-chat']])
+})
+
+// ---------- waking a coordinator: opening is not delivery ----------
+
+/** Records every launch, resume, write and open a wake makes. */
+function wakeIo(over: Partial<WakeIo> = {}) {
+  const calls: { fresh: string[]; resume: unknown[]; save: CoordinatorSessions[]; open: [string, string][] } = { fresh: [], resume: [], save: [], open: [] }
+  const io: WakeIo = {
+    fresh: async (agent) => { calls.fresh.push(agent); return { ok: true } },
+    resume: async (input) => { calls.resume.push(input); return { terminalId: 'resumed-host-id' } },
+    binding: async () => null,
+    save: (next) => { calls.save.push(next) },
+    open: async (workspaceId, terminal) => { calls.open.push([workspaceId, terminal]); return true },
+    ...over
+  }
+  return { io, calls }
+}
+
+test('a coordinator with no sessions field or no current starts a new conversation instead of the delivery error', async () => {
+  const { rows, c } = fixture()
+  // The reported orca-flow: coordinator.json has no sessions field and nothing of it is running.
+  const empty = rows.map((r) => ({ ...r, agents: [] }))
+  for (const sessions of [undefined, { version: 1 as const, current: null, members: [] }]) {
+    const sleeping = { ...c, sessions }
+    assert.deepEqual(wakePlan(sleeping, empty, 0), { kind: 'fresh', agent: null })
+    const { io, calls } = wakeIo()
+    const r = await wakeCoordinator(sleeping, empty, 0, io)
+    assert.deepEqual(r, { ok: true, kind: 'started' })
+    assert.deepEqual(calls.fresh, ['claude'])
+    assert.equal(calls.resume.length + calls.open.length + calls.save.length, 0)
+    assert.notEqual(r.error, 'No main conversation is selected.')
+  }
+  // Delivery stays strict for the same coordinator.
+  let refused = ''
+  try { currentRecipient({ ...c, sessions: undefined }, empty) } catch (e) { refused = (e as Error).message }
+  assert.equal(refused, 'No main conversation is selected.')
+})
+
+test('a closed current member with a provider id resumes exactly that member, never a live other one', async () => {
+  const { rows, sessions, c } = fixture()
+  const current = sessions.members[1]
+  current.resumeSessionId = 'native-codex-id'
+  // The current conversation's terminal is gone; the other member (old:1) is still live.
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  const plan = wakePlan(c, rows, 1)
+  assert.equal(plan.kind, 'resume')
+  assert.equal(plan.kind === 'resume' && plan.member.id, current.id)
+  const { io, calls } = wakeIo({ binding: async () => ({ workspaceId: rows[0].id, agent: { ...rows[0].agents[0], paneKey: 'resumed:1', orcaSession: 'resumed-orca', agentType: 'codex', title: 'Replacement coordinator', terminal: 'term-resumed' } }) })
+  const r = await wakeCoordinator(c, rows, 1, io)
+  assert.deepEqual(r, { ok: true, kind: 'resumed' })
+  assert.deepEqual(calls.resume, [{ workspaceId: 'folder:home', agent: 'codex', sessionId: 'native-codex-id' }])
+  assert.equal(calls.fresh.length, 0)
+  const saved = calls.save[0]
+  assert.equal(saved.current, current.id, 'the same member stays current')
+  assert.deepEqual(saved.members.map((m) => m.id), sessions.members.map((m) => m.id), 'no member is added or replaced')
+  assert.equal(saved.members[1].orcaSession, 'resumed-orca')
+  assert.deepEqual(saved.members[0], sessions.members[0], 'the live other member is untouched')
+  assert.deepEqual(calls.open, [['folder:home', 'term-resumed']])
+})
+
+test('a running current member opens its exact terminal and launches nothing', async () => {
+  const { rows, c } = fixture()
+  const { io, calls } = wakeIo()
+  const r = await wakeCoordinator(c, rows, 2, io)
+  assert.deepEqual(r, { ok: true, kind: 'opened' })
+  assert.deepEqual(calls.open, [['folder:home', 'term-new:1']])
+  assert.equal(calls.fresh.length + calls.resume.length + calls.save.length, 0)
+  const failed = await wakeCoordinator(c, rows, 2, wakeIo({ open: async () => false }).io)
+  assert.equal(failed.kind, 'failed')
+  assert.equal(failed.ok, false)
+})
+
+test('a failed restore is retryable and neutral, keeps the old member, and an unverified resume is never retried', async () => {
+  const { rows, sessions, c } = fixture()
+  sessions.members[1].resumeSessionId = 'native-codex-id'
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  const before = JSON.stringify(sessions)
+  const { io, calls } = wakeIo({ resume: async () => { throw new Error('session not found') } })
+  const r = await wakeCoordinator(c, rows, 1, io)
+  assert.equal(r.kind, 'restore-failed')
+  assert.equal(r.retryable, true)
+  assert.equal(r.agent, 'codex')
+  assert.equal(calls.save.length + calls.fresh.length + calls.open.length, 0, 'nothing written, launched or opened')
+  assert.equal(JSON.stringify(sessions), before, 'the old member and its history are preserved')
+  const status = wakeStatus('home', r, false)
+  assert.equal(status.tone, 'note', 'not red')
+  assert.deepEqual(status.actions?.map((a) => [a.label, a.wake, a.agent]), [['Retry', 'retry', undefined], ['Start new', 'fresh', 'codex']])
+  // Launched, but the new terminal cannot be tied to the member: a real failure, no Retry offered.
+  let resumes = 0
+  const unverified = await wakeCoordinator(c, rows, 1, wakeIo({ resume: async () => { resumes++; return { terminalId: 'x' } }, binding: async () => null }).io)
+  assert.equal(unverified.kind, 'failed')
+  assert.equal(unverified.retryable, undefined)
+  assert.equal(resumes, 1)
+  assert.equal(wakeStatus('home', unverified, false).tone, 'bad')
+})
+
+test('ambiguous history asks for an explicit choice and never picks a member', async () => {
+  const { rows, sessions, c } = fixture()
+  // Several members, none current.
+  const none = { ...c, sessions: { ...sessions, current: null } }
+  assert.equal(wakePlan(none, rows, 2).kind, 'choose')
+  // Current is closed, has no provider id, and other conversations are open.
+  const closed = fixture()
+  closed.rows[0].agents = closed.rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  assert.equal(wakePlan(closed.c, closed.rows, 1).kind, 'choose')
+  // The recorded conversation matches two panes.
+  const twice = fixture()
+  twice.rows[0].agents.push({ ...twice.rows[0].agents[1], paneKey: 'dup:1', terminal: 'term-dup:1' })
+  assert.equal(wakePlan(twice.c, twice.rows, 1).kind, 'choose')
+  for (const [cc, rr] of [[none, rows], [closed.c, closed.rows], [twice.c, twice.rows]] as const) {
+    const { io, calls } = wakeIo()
+    const r = await wakeCoordinator(cc, rr, 1, io)
+    assert.equal(r.kind, 'choose')
+    assert.equal(calls.fresh.length + calls.resume.length + calls.save.length + calls.open.length, 0)
+    const status = wakeStatus('home', r, true)
+    assert.equal(status.tone, 'note')
+    assert.deepEqual(status.actions?.map((a) => a.wake), ['sessions', 'fresh'])
+  }
+  // A closed current with nothing else open has nothing to continue: a new conversation of its provider.
+  const alone = fixture()
+  alone.rows[0].agents = []
+  assert.deepEqual(wakePlan(alone.c, alone.rows, 0), { kind: 'fresh', agent: 'codex' })
+})
+
+test('a second click while a start or resume is in flight launches nothing', async () => {
+  const { rows, c } = fixture()
+  const empty = rows.map((r) => ({ ...r, agents: [] }))
+  const busy = new Set<string>()
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const { io, calls } = wakeIo({ fresh: async (agent) => { calls.fresh.push(agent); await gate; return { ok: true } } })
+  const click = () => exclusive(busy, 'home', () => wakeCoordinator({ sessions: undefined }, empty, 0, io), () => ({ ok: false, kind: 'busy' as const }))
+  const first = click()
+  const second = await click()
+  assert.equal(second.kind, 'busy')
+  assert.equal(wakeStatus('home', second, false).tone, 'pending')
+  release()
+  assert.equal((await first).kind, 'started')
+  assert.deepEqual(calls.fresh, ['claude'], 'one launch')
+  assert.equal(busy.size, 0)
+  const third = await click()
+  assert.equal(third.kind, 'started', 'the guard is released after the first finishes')
+})
+
+test('overlapping refreshes reconcile what is on disk instead of failing the membership swap', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'flow-refresh-race-'))
+  try {
+    const dir = scaffoldCoordinator(root, { name: 'race', look: null })
+    const { rows, sessions } = fixture()
+    writeCoordinatorSessions(dir, sessions)
+    // Refresh B read the sessions, then awaited ps while refresh A (or a selection) wrote newer ones.
+    const staleB = readCoordinators(root)[0].sessions!
+    const newer = selectCurrent(sessions, sessions.members[0].id)
+    writeCoordinatorSessions(dir, newer, { sessions })
+    rows[0].agents[1].title = 'Renamed meanwhile'
+    // The old path compared against B's stale read and always lost the swap.
+    let refused = false
+    try { writeCoordinatorSessions(dir, reconcileSessions(staleB, rows), { sessions: staleB }) } catch { refused = true }
+    assert.ok(refused, 'documents the logged "Session configuration changed" failure')
+    const saved = updateCoordinatorSessions(dir, (disk) => disk && reconcileSessions(disk, rows))
+    const onDisk = readCoordinators(root)[0].sessions!
+    assert.deepEqual(saved, onDisk)
+    assert.equal(onDisk.current, newer.current, 'the newer selection is preserved')
+    assert.equal(onDisk.members[1].title, 'Renamed meanwhile', 'and the refresh is saved')
+    // Two refreshes both migrating a legacy file: the second reconciles the first's record, no second election.
+    const legacy = scaffoldCoordinator(root, { name: 'legacy', look: null })
+    const migrated = { version: 1 as const, current: sessions.members[1].id, members: [sessions.members[1]] }
+    updateCoordinatorSessions(legacy, (disk) => disk ?? migrated)
+    const other = { ...migrated, current: sessions.members[0].id, members: [sessions.members[0]] }
+    updateCoordinatorSessions(legacy, (disk) => { const base = disk ?? other; return reconcileSessions(base, rows) })
+    assert.equal(readCoordinators(root).find((x) => x.key === 'legacy')!.sessions?.current, sessions.members[1].id)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

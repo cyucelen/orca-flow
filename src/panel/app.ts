@@ -1,8 +1,8 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
-import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WorkspaceRow } from '../protocol.ts'
-import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton } from '../view.ts'
+import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WakeOutcome, WorkspaceRow } from '../protocol.ts'
+import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton, wakeStatus } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
@@ -126,6 +126,12 @@ document.addEventListener('click', (event) => {
     if (row) void removeWorktree(row, rm.dataset.target ?? `agent:${row.id}`)
     return
   }
+  // A coordinator's Retry / Start new / Sessions beside its neutral status.
+  const wakeEl = (event.target as Element).closest<HTMLElement>('[data-wake]')
+  if (wakeEl) {
+    wakeAction(wakeEl)
+    return
+  }
   // The top bar's update button: confirm, then the worker updates (or, needing approval, the command).
   const upd = (event.target as Element).closest<HTMLElement>('[data-update]')
   if (upd) {
@@ -166,7 +172,7 @@ document.addEventListener('click', (event) => {
     return
   }
   if (ui.notice && !ui.notice.ok) ui.notice = null // an error stays until the next click
-  for (const [k, st] of ui.status) if (st.tone === 'bad') ui.status.delete(k)
+  for (const [k, st] of ui.status) if (st.tone === 'bad' || st.tone === 'note') ui.status.delete(k)
   if (d.act) ui.confirming = d.act
   if ('no' in d) ui.confirming = null
   if (d.yes) { void runAction(d.yes); return }
@@ -492,10 +498,33 @@ async function confirmAction(kind: string, title: string, text: string, okLabel:
   })
 }
 
-/** Opens a coordinator, showing "Waking…" on its row while Orca starts or resumes its session. */
-function wake(key: string): Promise<void> {
+/**
+ * Opens a coordinator: its live session, its resumed previous conversation, or a new one. A choice
+ * to make or a conversation that could not be restored is neutral, with Retry / Start new beside it.
+ */
+async function wake(key: string): Promise<void> {
+  const target = `coordinator:${key}`
+  ui.status.set(target, { text: 'Opening…', tone: 'pending' })
+  draw()
+  let r: WakeOutcome
+  try { r = await orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }) }
+  catch (e) { r = { ok: false, kind: 'failed', error: (e as Error).message } }
   const c = snap?.coordinators.find((x) => x.key === key)
-  return inline(`coordinator:${key}`, 'Opening…', 'Open', () => orca.plugin.request('sidebar.openCoordinator', { key }, { timeoutMs: 90_000 }))
+  const status = wakeStatus(key, r, Boolean(c && snap && sessionChoices(c, snap.rows).length))
+  // A busy answer leaves the running action's own status in place.
+  if (r.kind !== 'busy') ui.status.set(target, status)
+  draw()
+  if (r.ok) setTimeout(() => { if (ui.status.get(target)?.tone === 'ok') { ui.status.delete(target); draw() } }, 1800)
+}
+
+/** The buttons beside a neutral coordinator status: retry the wake, start new, or open Sessions. */
+function wakeAction(el: HTMLElement): void {
+  const key = el.dataset.wakeKey
+  if (!key) return
+  ui.status.delete(`coordinator:${key}`)
+  if (el.dataset.wake === 'retry') void wake(key)
+  else if (el.dataset.wake === 'sessions') { draw(); showSessionPicker(key, el) }
+  else if (el.dataset.wake === 'fresh') void inline(`coordinator:${key}`, 'Starting…', 'Started', () => orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'fresh', ...(el.dataset.wakeAgent ? { agent: el.dataset.wakeAgent } : {}) }, { timeoutMs: 90_000 }))
 }
 
 /**
@@ -587,7 +616,7 @@ function coordinatorMenu(key: string): MenuItem[] {
   const items: MenuItem[] = [
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
     'separator',
-    { label: 'Start fresh session', icon: 'restart', danger: true, run: async () => {
+    { label: 'Start new conversation', icon: 'restart', danger: true, run: async () => {
       if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]

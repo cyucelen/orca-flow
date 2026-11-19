@@ -445,6 +445,9 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.pending .refreshing { margin-left: 0; }
 .rstatus.ok { color: #5fbf8a; }
 .rstatus.bad { color: var(--danger); }
+.rstatus.note { color: var(--muted); }
+.rstatus-act { flex: none; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; background: none; color: var(--muted); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
+.rstatus-act:hover { color: var(--ink); background: var(--hover); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
 
 /* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it

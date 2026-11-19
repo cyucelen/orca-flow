@@ -5,7 +5,7 @@ import { askKey, sessionChoices } from './coordinator-sessions.ts'
 // Layout (agreed in the mockup): a one-row cockpit; Up next as collapsible briefings, the first
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
-import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
+import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
 import { mixedProviders, providerBadge, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
@@ -30,7 +30,7 @@ export type UiState = {
   /** The confirmed action still running. */
   pending: string | null
   /** A row's inline action status: running, done, or failed (keyed like data-menu). */
-  status: Map<string, { text: string; tone: 'pending' | 'ok' | 'bad' }>
+  status: Map<string, RowStatus>
   notice: { key: string; text: string; ok: boolean } | null
   /** The chart color each memory consumer wears, kept between refreshes (see colorSlots). */
   colors: Map<string, number>
@@ -312,11 +312,29 @@ const size = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${m
 /** Something in progress, inline: a small spinner and a verb. The one inline loading style. */
 export const busy = (text: string) => `<span class="rstatus pending"><span class="refreshing"></span>${esc(text)}</span>`
 
+/**
+ * A row's inline status. `note` is neutral: something to choose, not a failure (red `bad` is only for
+ * what actually failed). Its actions are small buttons beside it; `tip` holds the full reason.
+ */
+export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' | 'note'; tip?: string; actions?: { label: string; wake: 'retry' | 'fresh' | 'sessions'; key: string; agent?: string }[] }
+
+/** What a coordinator click's outcome shows on its row. A sleeping coordinator never shows red. */
+export function wakeStatus(key: string, r: WakeOutcome, canChoose: boolean): RowStatus {
+  const fresh = { label: 'Start new', wake: 'fresh' as const, key, ...(r.agent ? { agent: r.agent } : {}) }
+  if (r.ok) return { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : 'Open', tone: 'ok' }
+  if (r.kind === 'busy') return { text: 'Already opening…', tone: 'pending' }
+  if (r.kind === 'restore-failed') return { text: 'Not restored', tone: 'note', tip: r.error, actions: [...(r.retryable ? [{ label: 'Retry', wake: 'retry' as const, key }] : []), fresh] }
+  if (r.kind === 'choose') return { text: 'Choose a session', tone: 'note', tip: r.error, actions: [...(canChoose ? [{ label: 'Sessions', wake: 'sessions' as const, key }] : []), fresh] }
+  return { text: r.error ?? 'Could not open it', tone: 'bad' }
+}
+
 /** A row's inline status, shown where its time or count normally sits; null when it has none. */
 function rowStatus(ui: UiState, key: string): string | null {
   const st = ui.status.get(key)
   if (!st) return null
-  return st.tone === 'pending' ? busy(st.text) : `<span class="rstatus ${st.tone}">${esc(st.text)}</span>`
+  if (st.tone === 'pending') return busy(st.text)
+  const acts = (st.actions ?? []).map((a) => `<button class="rstatus-act" data-wake="${a.wake}" data-wake-key="${esc(a.key)}"${a.agent ? ` data-wake-agent="${esc(a.agent)}"` : ''}>${esc(a.label)}</button>`).join('')
+  return `<span class="rstatus ${st.tone}"${st.tip ? ` data-tip="${esc(st.tip)}"` : ''}>${esc(st.text)}</span>${acts}`
 }
 
 type ActOpts = { ask?: boolean; tip?: string; cls?: string; icon?: string; aria?: string }
