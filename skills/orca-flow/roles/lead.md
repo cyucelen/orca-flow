@@ -79,6 +79,10 @@ release, and only when the user wants it (they say so, or the spec you were give
 This worktree holds one branch and one PR; a request for another PR goes to your coordinator
 (step 1 of Each request).
 
+Push with `-u`: `git push -u origin HEAD:<remote branch>`. Then the local branch tracks the branch
+the PR comes from. Orca finds a worktree's PR through the branch it tracks; without it, the sidebar
+shows no PR. A branch you pushed without `-u` gets it with `git branch -u origin/<remote branch>`.
+
 ## Finishing the workstream
 
 Your dispatch came with Orca's worker instructions, which tell you to finish with `worker_done`.
