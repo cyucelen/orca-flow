@@ -6,6 +6,9 @@ export type AskType = 'none' | 'decision' | 'approval' | 'review' | 'info' | 'ac
 
 /** What the end-of-turn summarizer (src/summarize.ts) wrote for one agent after its last turn. */
 export type AgentSummary = {
+  /** Binding only; never used for coordinator membership or provider resume routing. */
+  orcaSession?: string
+  providerSession?: { provider: string; id: string }
   title: string
   /** One stable sentence on what the workstream is for (summaries before this field lack it). */
   about?: string

@@ -22,7 +22,7 @@ import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLoo
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WorkspaceRow, WorkstreamCard } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
-import { findTranscript, missedTurns, refreshStale, staleCards, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
+import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
@@ -142,7 +142,8 @@ function stateOf(a: PsAgent, quiet: (pane: string) => boolean): { state: AgentSt
 function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): AgentInfo | null {
   if (!URGENCY.includes(a.state as AgentState)) return null
   const { state, workingMode } = stateOf(a, quiet)
-  const summary = (a.paneKey && store.summaries[fileKey(a.paneKey)]) || null
+  const saved = (a.paneKey && store.summaries[fileKey(a.paneKey)]) || null
+  const summary = saved && summaryMatches(saved, { orcaSession: a.orcaSessionId, provider: a.agentType }) ? saved : null
   return {
     paneKey: a.paneKey ?? '',
     workingMode,
@@ -676,17 +677,13 @@ export default function activate(orca: OrcaWorkerApi): void {
   let focus: string[] | null = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus })
   const run = orcaRunner(ORCA_BIN)
-  // Once the first full snapshot is in, cards an older summarizer wrote are redone (see below).
-  let staleChecked = false
+  // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
     const [snap, front] = await Promise.all([snapshot(orca, runPs, () => void refresh()), readFocus(run)])
     latest = snap
     focus = front
-    if (!staleChecked && latest.source === 'cli') {
-      staleChecked = true
-      refreshOldSummaries(latest)
-    }
+    if (latest.source === 'cli') refreshOldSummaries(latest)
     orca.panels.post('sidebar.changed', shared(latest))
     void orca.host.call('statusBar.update', statusOf(latest)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     return shared(latest)
@@ -1002,9 +999,15 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { ok: true }
   })
 
+  const currentAgent = (pane: string) => latest && [...latest.rows.flatMap((r) => r.agents), ...latest.coordinators.flatMap((c) => c.session ? [c.session] : [])].find((a) => a.paneKey === pane)
+  const identityFor = (pane: string) => {
+    const a = currentAgent(pane)
+    return { orcaSession: a?.orcaSession, provider: a?.agentType }
+  }
   const writer = createWriter({ ...summaryProviders(), log: (message) => orca.log(message) })
   const summarizer = turnSummarizer({
-    run: (job) => summarizePane({ ...job, writer, goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
+    findTranscript: (pane, identity) => findTranscript(pane, undefined, { ...identityFor(pane), ...identity }),
+    run: (job) => summarizePane({ ...job, writer, isCurrent: () => !job.transcriptSource?.orcaSession || currentAgent(job.pane)?.orcaSession === job.transcriptSource.orcaSession, goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
     log: (m) => orca.log(m)
   })
   let disposed = false
@@ -1016,25 +1019,28 @@ export default function activate(orca: OrcaWorkerApi): void {
   /**
    * A fixed prompt or role rule should show at once, not at each agent's next turn: re-summarize
    * the live agents whose card an older summarizer wrote, in the background, through the same
-   * queue (two Haiku calls at most) with a pause between them, so a restart costs no burst.
+   * queue (two writer calls at most) with a pause between them, so a restart costs no burst.
    */
+  const refreshAttempts = new Map<string, number>()
+  let checkedAt = 0
   function refreshOldSummaries(snap: Snapshot): void {
-    const cards = readStore().summaries
-    const stale = staleCards(cards, livePanes(snap))
-    const jobs = stale.flatMap(({ pane, transcript, worktreeId }) => {
-      const path = transcript && existsSync(transcript) ? transcript : findTranscript(pane).path
-      if (path) return [{ pane, transcript: path, worktreeId }]
-      orca.log(`summary for ${pane} not refreshed: no transcript found`)
-      return []
+    if (Date.now() - checkedAt < 15_000) return
+    checkedAt = Date.now()
+    const agents = [...snap.rows.flatMap((r) => r.agents.map((a) => ({ pane: a.paneKey, state: a.state, identity: { orcaSession: a.orcaSession, provider: a.agentType }, worktreeId: r.id }))),
+      ...snap.coordinators.flatMap((c) => c.session ? [{ pane: c.session.paneKey, state: c.session.state, identity: { orcaSession: c.session.orcaSession, provider: c.session.agentType }, worktreeId: c.workspaceId ?? undefined }] : [])]
+    const jobs = currentSummaryJobs(readStore().summaries, agents).filter((job) => {
+      const key = `${job.pane}:${job.transcriptSource?.orcaSession ?? ''}:${job.transcriptSource?.providerSession?.id ?? job.transcript}`
+      if ((refreshAttempts.get(key) ?? 0) + 5 * 60_000 > Date.now()) return false
+      refreshAttempts.set(key, Date.now())
+      return true
     })
-    // Turns that ended after their card was written but were never summarized (the worker was
-    // stopped, or the turn ended while Orca held the pane in working): summarized once, unforced.
-    const missed = missedTurns(cards, livePanes(snap, true)).filter((m) => !jobs.some((j) => j.pane === m.pane))
-    if (jobs.length === 0 && missed.length === 0) return
-    if (jobs.length) orca.log(`refreshing ${jobs.length} summaries an older summarizer wrote`)
-    if (missed.length) orca.log(`summarizing ${missed.length} turns that ended after their card was written`)
-    void refreshStale({ jobs: [...jobs, ...missed.map((m) => ({ ...m, force: false }))], enqueue: summarizer.enqueue, stopped: () => disposed })
+    if (jobs.length) void refreshStale({ jobs, enqueue: summarizer.enqueue, stopped: () => disposed })
   }
+  // Structured chats are not covered by every host's terminal status event. While this worker is
+  // active, refresh their inventory and catch completed turns/missing cards without a hot loop.
+  const summaryRefresh = setInterval(refreshSoon, 60_000)
+  ;(summaryRefresh as unknown as { unref?: () => void }).unref?.()
+  disposers.push(() => clearInterval(summaryRefresh))
 
   // The summarizer and `orca-flow set` write here; a new summary should show without an event.
   try {

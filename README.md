@@ -184,6 +184,13 @@ Change the margin and the minimum headroom in `~/.orca-flow/config.json`:
 
 ## Privacy
 
+The sidebar and `summarize-run` read Claude transcripts, Codex terminal rollouts, and local Orca
+structured-chat journals. Terminal discovery uses Orca's exact pane binding and verifies the
+Codex rollout's native session ID. Chat discovery uses the live inventory's Orca session ID and
+its separate native provider handle, then reads only visible root items in the current journal
+epoch. Sessions, transcripts, queued drafts and account settings are never modified. Injected
+instructions, orchestration wake notices, reasoning and tool results are excluded from the digest.
+
 The writer invokes local CLIs using your existing logins. After each turn it sends Claude Haiku
 an excerpt of that agent's conversation: its first request, the latest turn's prompts and
 messages, and the commands and file paths its tools used. On an availability failure, that same
@@ -206,10 +213,14 @@ failures skip that provider for five minutes in the worker; timeout/transient fa
 logs sanitized, throttled diagnostics. Invalid output and unexpected integration errors preserve
 the card without triggering a broad provider fallback. `summarize-run` uses the same writer;
 its cooldown lasts for that command's process.
+Missing or stale cards for idle sessions are retried in the background, at most once per session
+every five minutes. While the worker is active, a one-minute inventory refresh also catches chat
+turns on hosts whose plugin status events cover terminals only. Session identity is checked again
+before publication; an old session's card is not shown as a new Codex conversation's summary.
 
 ## Where things live
 
-- `~/.orca-flow/agents/`: one summary per agent session.
+- `~/.orca-flow/agents/`: cards keyed by pane, with separate Orca/native session bindings.
 - `~/.orca-flow/cards/`: a card per worktree (priority, goal), written by coordinators.
 - `~/.orca-flow/config.json`: your settings, if you change any.
 - `~/.orca-flow/format-misses.jsonl`: one line per message that missed the message frame.
@@ -242,10 +253,18 @@ in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordina
 - The panel reads `orca worktree ps --json`, Orca's CLI output, because the plugin API has no call
   for every agent's status. A change to that output in an Orca update can break the panel until
   the plugin is updated.
-- Summaries need Claude Code transcripts.
+- Conversation ingestion currently requires local Claude/Codex files or Orca's local structured
+  journal schema (`agent-session-domain.db`, verified on Orca 1.4.261). Remote/WSL journals,
+  unavailable metadata and unknown schemas fail closed. The public plugin API has no conversation
+  reader; a host schema change can require an adapter update. Codex structured-chat coverage uses
+  synthetic fixtures; live Codex terminal ingestion and writer publication were validated locally.
 - This fallback covers Orca Flow sidebar titles and summaries. Native Orca chat/tab name
-  generation belongs to the host and is not changed by this plugin; the host plugin API does not
-  expose its text-generation service.
+  generation belongs to the host. `orca chat rename` and `orca terminal rename` perform deliberate
+  manual renames; the public plugin API has no conditional auto-title setter or title-origin
+  metadata. The plugin therefore leaves native chat tabs, terminal tabs, native sidebar names and
+  Session History names alone. A host follow-up must expose an expected-session/expected-name
+  auto-title update that refuses user-named conversations, or apply the writer fallback inside
+  the host's own conversation-name generator.
 - Free memory refreshes every 15 seconds, and what each project's dev servers cost every 5 minutes.
 
 ## Develop

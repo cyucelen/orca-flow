@@ -433,7 +433,7 @@ test("transcripts come from Orca's SQLite hook store, newest entry per pane, els
   assert.equal(transcriptOf('tab-b:leaf-2', files), null, 'a transcript that is gone')
   const commitmentOnly = findTranscript('tab-c:leaf-3', files)
   assert.equal(commitmentOnly.path, null, 'a commitment row has no transcript')
-  assert.match(commitmentOnly.path === null ? commitmentOnly.why : '', /last-status\.db has no entry for the pane; .*last-status\.json does not exist/)
+  assert.match(commitmentOnly.path === null ? commitmentOnly.why : '', /No exact pane transcript binding/)
   db.close()
 
   writeFileSync(files.json, JSON.stringify({ entries: { 'tab-d:leaf-4': { providerSession: { transcriptPath: legacy } } } }))
@@ -667,7 +667,7 @@ test('turns are summarized once per burst, one run per pane, newest job after a 
   s.onStatus({ paneKey: 'none-2', workspaceId: null, state: 'done' })
   await until(() => looked('none-2') === 2, "none-2's lookup and retry")
   assert.equal(logs.length, 1, 'a missing transcript is logged once, not every turn')
-  assert.match(logs[0], /SUMMARIES OFF: no Claude transcript found for pane none\b.*no entry/)
+  assert.match(logs[0], /SUMMARIES OFF: no supported transcript found for pane none\b.*no entry/)
   release()
   s.dispose()
 })

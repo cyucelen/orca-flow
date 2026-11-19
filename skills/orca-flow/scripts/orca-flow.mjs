@@ -349,13 +349,14 @@ export const { briefOf, digest, roleOf } = summarize
 async function summarizeRun(args) {
   const pane = args.pane
   if (!pane) throw new Error('summarize-run needs --pane <paneKey>')
-  const found = args.transcript ? { path: args.transcript } : summarize.findTranscript(pane)
+  const live = args.transcript ? null : orca(['worktree', 'ps']).worktrees.flatMap((w) => w.agents ?? []).find((a) => a.paneKey === pane)
+  const found = args.transcript ? { path: args.transcript } : summarize.findTranscript(pane, undefined, { orcaSession: live?.orcaSessionId, provider: live?.agentType })
   if (!found.path) throw new Error(`no transcript known for ${pane}: ${found.why}`)
   const transcript = found.path
   const worktreeId = args.worktreeId || ''
   const card = Object.values(readCardsByWorktreeId()).find((c) => c.worktreeId === worktreeId)
   const started = Date.now()
-  const result = await summarize.summarizePane({ pane, transcript, worktreeId, goal: card?.goal, force: !!args.force, dir: AGENTS })
+  const result = await summarize.summarizePane({ pane, transcript, transcriptSource: found.source, worktreeId, goal: card?.goal, force: !!args.force, dir: AGENTS })
   console.log(`${pane}: ${result} in ${Date.now() - started}ms (summarizer v${summarize.SUMMARIZER_VERSION})`)
 }
 
