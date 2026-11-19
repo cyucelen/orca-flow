@@ -535,7 +535,7 @@ button.item.coord { padding: 5px 6px; }
 .coord-label .sub{position:absolute;bottom:0;left:0;width:max-content;max-width:180px;text-align:left;pointer-events:none}
 .coord-label .name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .coord > .r{flex:1;min-width:0;overflow:hidden}
-.session-trigger{flex:none;align-self:flex-start;margin-top:5px;display:inline-flex;align-items:center;gap:3px;font-size:10px;padding:2px 4px;border-radius:4px;background:transparent;color:var(--muted);white-space:nowrap}
+.session-trigger{flex:none;align-self:center;display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:4px 7px;border:1px solid var(--line);border-radius:5px;background:color-mix(in srgb,var(--ink) 3%,transparent);color:var(--muted);white-space:nowrap}
 .session-trigger:hover,.session-trigger:focus-visible{background:var(--hover);color:var(--ink)}
 .session-trigger svg{width:10px;height:10px;transform:rotate(90deg)}
 .ctx.session-menu{width:max-content;min-width:190px;max-width:min(340px,calc(100vw - 12px));max-height:65vh;overflow:auto}

@@ -80,7 +80,7 @@ export function chooseSession(s: CoordinatorSessions, row: WorkspaceRow, choice:
 
 export function currentRecipient(c: Coordinator, rows: WorkspaceRow[]): { member: CoordinatorMember; agent: AgentInfo; recipient: DeliveryRecipient } {
   const member = c.sessions?.members.find((m) => m.id === c.sessions?.current)
-  if (!member) throw new Error('Choose a session beside the coordinator name first.')
+  if (!member) throw new Error('No main conversation is selected.')
   if (!member.orcaSession) throw new Error('The current member has no stable Orca conversation identity. No message was sent.')
   const agent = memberAgent(member, rows)
   if (!agent?.terminal || agent.live !== true) throw new Error('The selected conversation is offline. Choose an open session first.')

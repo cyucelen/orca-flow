@@ -487,3 +487,36 @@ test('coordinator header puts the main-session dropdown beside its name without 
   assert.ok(!html.includes('Run routing'))
   assert.ok(!html.includes('Associate'))
 })
+
+test('dropdown appears only for two eligible conversations, not for genuine folder leads or offline history', () => {
+  for (const count of [0, 1, 2]) {
+    const { rows, lineage, c } = fixture()
+    // Keep current for one; keep genuine leads/workers in every case.
+    rows[0].agents = rows[0].agents.filter((a) => count === 2 || (a.paneKey !== 'old:1' && (count === 1 || a.paneKey !== 'new:1')))
+    rows[0].agents.find((a) => a.paneKey === 'lead:1')!.parentPane = null
+    const before = JSON.stringify(c.sessions)
+    const all = assignCoordinators(rows, [c], lineage)
+    const coordinators: Coordinator[] = [{ ...c }]
+    const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+    assert.equal(sessionChoices(coordinators[0], visible).length, count)
+    const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+    assert.equal(html.includes('class="session-trigger"'), count > 1)
+    assert.match(html, /data-coordinator="home"/, 'header remains available without a switcher')
+    assert.equal(JSON.stringify(c.sessions), before, 'visibility never changes membership/current')
+    if (count > 0) assert.equal(currentRecipient(c, all).recipient.orcaSession, 'new-session')
+  }
+})
+
+test('one remaining conversation does not replace an offline current or silently claim an unset main', () => {
+  const { rows, lineage, c } = fixture()
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  assert.equal(sessionChoices(coordinators[0], visible).length, 1)
+  assert.equal(coordinators[0].session, null)
+  assert.throws(() => currentRecipient(c, all), /offline/)
+  const unset = { ...c, sessions: { ...c.sessions, current: null } }
+  assert.throws(() => currentRecipient(unset, all), /No main conversation is selected/)
+  assert.equal(c.sessions.current, c.sessions.members[1].id)
+})
