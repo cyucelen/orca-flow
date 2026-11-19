@@ -103,7 +103,7 @@ test('current status comes from current once; previous asks stay source-attribut
   assert.match(html.attention, /previous session · read-only/)
   assert.match(html.attention, /data-history="home"/)
   assert.ok(!html.attention.includes('data-coordinator="home"'))
-  assert.equal((html.main.match(/data-coordinator="home"/g) ?? []).length, 1)
+  assert.equal((html.main.match(/data-coordinator="home"/g) ?? []).length, 2)
   assert.ok(!html.main.includes('data-menu="agent:new:1"'), 'current member is not also a workstream lead')
   assert.match(html.main, /data-menu="agent:lead:1"[^>]*data-depth="0" style="--node-x:43.105px"/)
   assert.match(html.main, /data-menu="agent:worker:1"[^>]*data-depth="1" style="--node-x:67.105px"/)
@@ -480,7 +480,7 @@ test('coordinator header puts the main-session dropdown beside its name without 
   const coordinators: Coordinator[] = [{ ...c, sessionNotice: 'No verified unambiguous membership', routing: 'Run routing unverified.' }]
   const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
   const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
-  assert.match(html, /class="coord-open"[^]*class="coord-label"[^]*home[^]*<\/button><button class="session-trigger"/)
+  assert.match(html, /class="coord-open"[^]*<\/button><button class="session-trigger"[^]*<\/button><button class="coord-name"[^]*class="coord-label"/)
   assert.match(html, /aria-label="Main session for home" aria-haspopup="menu"/)
   assert.ok(!html.includes('sessions⌄'))
   assert.ok(!html.includes('unambiguous membership'))
@@ -519,4 +519,48 @@ test('one remaining conversation does not replace an offline current or silently
   const unset = { ...c, sessions: { ...c.sessions, current: null } }
   assert.throws(() => currentRecipient(unset, all), /No main conversation is selected/)
   assert.equal(c.sessions.current, c.sessions.members[1].id)
+})
+
+test('multiple same-provider conversations use one logo trigger between avatar and clean text column', () => {
+  const { rows, lineage, c } = fixture('claude')
+  rows[0].agents = rows[0].agents.slice(0, 2)
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+  const trigger = /<button class="session-trigger"[^]*?<\/button>/.exec(html)![0]
+  assert.match(trigger, /aria-label="Main session for home"/)
+  assert.match(trigger, /<span class="provider" aria-hidden="true"><svg/)
+  assert.match(trigger, /fill="#D97757"/, 'current Claude mark remains visible even without mixed providers')
+  assert.ok(!trigger.includes('>Claude') && !trigger.includes('>Choose session'))
+  assert.match(html, /class="coord-open"[^]*class="ch(?: |")/)
+  assert.match(html, /<\/button><button class="session-trigger"[^]*?<\/button><button class="coord-name"/)
+  assert.deepEqual(sessionChoices(coordinators[0], visible).map((x) => x.title), ['Original coordinator', 'Replacement coordinator'])
+})
+
+test('unselected alternatives use a neutral logo trigger; a single session keeps normal provider visibility', () => {
+  const { rows, lineage, c } = fixture()
+  c.sessions.current = null
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+  const trigger = /<button class="session-trigger"[^]*?<\/button>/.exec(html)![0]
+  assert.match(trigger, /aria-label="Main session for home"/)
+  assert.match(trigger, /Choose the main conversation/)
+  assert.match(trigger, /<rect x="3" y="3"/)
+  assert.equal(c.sessions.current, null)
+
+  c.sessions.current = c.sessions.members[1].id
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey === 'new:1')
+  const one = assignCoordinators(rows, [c], lineage)
+  const single: Coordinator[] = [{ ...c }]
+  const singleRows = foldCoordinatorFolders(one, single, [c.dir])
+  const alone = render({ rows: singleRows, coordinators: single, source: 'cli', capacity: null }, emptyUi()).main
+  assert.ok(!alone.includes('class="session-trigger"'))
+  assert.ok(!alone.includes('class="provider"'), 'single provider follows normal mixed-provider badge rule')
+  const other = { ...rows[0], id: 'another-workspace', path: '/elsewhere', agents: [{ ...rows[0].agents[0], paneKey: 'another:1', agentType: 'claude', coordinator: 'you' }] }
+  const mixed = render({ rows: [...singleRows, other], coordinators: single, source: 'cli', capacity: null }, emptyUi()).main
+  assert.ok(!mixed.includes('class="session-trigger"'))
+  assert.match(mixed, /class="provider" role="img" aria-label="Codex"/)
 })

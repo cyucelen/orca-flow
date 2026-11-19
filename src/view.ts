@@ -6,7 +6,8 @@ import { askKey, sessionChoices } from './coordinator-sessions.ts'
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WorkspaceRow } from './protocol.ts'
-import { mixedProviders, providerBadge } from './providers.ts'
+import { mixedProviders, providerBadge, providerOf } from './providers.ts'
+import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
 import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, issueLink, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
@@ -926,19 +927,19 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}${providerBadge(c.session, mixed)}<span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button>${sessionPicker(c, rows)}<span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
 
 /** Compact selector; the coordinator's avatar and current status stay separate. */
-function sessionPicker(c: Coordinator, rows: WorkspaceRow[]): string {
-  if (sessionChoices(c, rows).length <= 1) return ''
+function sessionPicker(c: Coordinator, rows: WorkspaceRow[], mixed: boolean): string {
+  if (sessionChoices(c, rows).length <= 1) return providerBadge(c.session, mixed)
   const member = c.members?.find((m) => m.id === c.sessions?.current)
-  const provider = member?.agentType ?? c.session?.agentType
-  const label = provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : 'Choose session'
-  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" data-tip="${esc(member?.title ?? 'Choose the main conversation')}">${esc(label)} ${ICON.chev}</button>`
+  const provider = providerOf(member?.agentType ?? c.session?.agentType ?? null)
+  const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="13" height="13" rx="3"/><path d="M9 20h9a3 3 0 0 0 3-3V9"/></svg>'
+  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" data-tip="${esc(member?.title ?? 'Choose the main conversation')}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
 }
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */
