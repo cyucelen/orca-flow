@@ -186,7 +186,12 @@ Change the margin and the minimum headroom in `~/.orca-flow/config.json`:
 
 The sidebar and `summarize-run` read Claude transcripts, Codex terminal rollouts, and local Orca
 structured-chat journals. Terminal discovery uses Orca's exact pane binding and verifies the
-Codex rollout's native session ID. Chat discovery uses the live inventory's Orca session ID and
+Codex rollout's native session ID. A terminal card claiming an Orca session also requires the
+independent `agent-hooks/agent-identities.db` provider link to match that exact Orca ID, in the
+local host/provider/native-ID namespace. The link is checked again before publication; missing
+or contradictory identity metadata preserves the existing card rather than relabeling an old
+transcript after pane reuse. Legacy Claude files remain readable without claiming an Orca ID.
+Chat discovery uses the live inventory's Orca session ID and
 its separate native provider handle, then reads only visible root items in the current journal
 epoch. Sessions, transcripts, queued drafts and account settings are never modified. Injected
 instructions, orchestration wake notices, reasoning and tool results are excluded from the digest.

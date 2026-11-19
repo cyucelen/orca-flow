@@ -30,7 +30,14 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'flow-transcripts-'))
   const path = join(dir, 'rollout.jsonl')
   writeFileSync(path, rollout().map(line).join('\n'))
-  const files = { db: join(dir, 'hooks.db'), json: join(dir, 'hooks.json'), journal: join(dir, 'domain.db') }
+  const files = { db: join(dir, 'hooks.db'), json: join(dir, 'hooks.json'), journal: join(dir, 'domain.db'), identities: join(dir, 'agent-identities.db') }
+  const { DatabaseSync } = process.getBuiltinModule!('node:sqlite')
+  const authority = new DatabaseSync(files.identities)
+  authority.exec(`CREATE TABLE identities(orca_session_id TEXT PRIMARY KEY, agent TEXT, created_at INTEGER);
+    CREATE TABLE provider_links(execution_host TEXT, wsl_distro TEXT, agent TEXT, provider_session_id TEXT, locator TEXT, orca_session_id TEXT);
+    INSERT INTO identities VALUES ('orca-one', 'codex', 1);
+    INSERT INTO provider_links VALUES ('local', '', 'codex', 'native-one', '', 'orca-one');`)
+  authority.close()
   const bind = (id = 'native-one', orcaSessionId = 'orca-one') => writeFileSync(files.json, line({ entries: { pane: { paneKey: 'pane', orcaSessionId, payload: { agentType: 'codex' }, providerSession: { id, transcriptPath: path } } } }))
   bind()
   const identity = { orcaSession: 'orca-one', provider: 'codex', sessionId: 'native-one' }
@@ -216,5 +223,114 @@ test('a background bootstrap queued behind an event publication does not regener
     assert.equal(await summarizePane({ ...job, refresh: false, dir: f.dir, writer }), 'written')
     assert.equal(await summarizePane({ ...job, dir: f.dir, writer }), 'skipped')
     assert.equal(calls, 1)
+  } finally { f.dispose() }
+})
+
+// Actual terminal hooks omit orcaSessionId; the independent identity authority must supply it.
+function withoutHookOrcaId(f: ReturnType<typeof fixture>) {
+  const hooks = JSON.parse(readFileSync(f.files.json, 'utf8'))
+  delete hooks.entries.pane.orcaSessionId
+  writeFileSync(f.files.json, line(hooks))
+}
+
+test('a reused pane cannot relabel a stale unbound hook with the new live Orca session', async () => {
+  const f = fixture()
+  try {
+    withoutHookOrcaId(f)
+    const current = discoverTranscript('pane', f.files, { orcaSession: 'orca-one', provider: 'codex' })
+    if (!current.path) throw Error('missing fixture')
+    assert.equal(current.source?.orcaSession, 'orca-one', 'authority verifies the binding without a hook Orca id or caller native id')
+    const replacement = { orcaSession: 'orca-two', provider: 'codex' }
+    assert.equal(discoverTranscript('pane', f.files, replacement).path, null)
+    assert.equal(discoverTranscript('pane', f.files, { ...replacement, sessionId: 'native-one' }).path, null, 'even a stale status native ID cannot override the authority')
+    assert.equal(currentSummaryJobs({}, [{ pane: 'pane', state: 'done', identity: replacement }], (pane, id) => discoverTranscript(pane, f.files, id)).length, 0)
+    // A previously persisted source from the vulnerable code must also fail the publication gate.
+    const mislabeled = { ...current.source!, orcaSession: 'orca-two' }
+    assert.equal(sourceCurrent(mislabeled), false)
+    const saved = line({ ...card, orcaSession: 'orca-one', providerSession: { provider: 'codex', id: 'native-one' } })
+    writeFileSync(join(f.dir, 'pane.json'), saved)
+    let calls = 0
+    await assert.rejects(summarizePane({ pane: 'pane', transcript: f.path, transcriptSource: mislabeled, dir: f.dir, writer: async () => { calls++; return card } }))
+    assert.equal(calls, 0)
+    assert.equal(readFileSync(join(f.dir, 'pane.json'), 'utf8'), saved)
+  } finally { f.dispose() }
+})
+
+test('missing, ambiguous, foreign-namespace or contradictory native links fail closed', () => {
+  const changes = [
+    'DELETE FROM provider_links',
+    "UPDATE provider_links SET orca_session_id = 'other-orca'",
+    "UPDATE provider_links SET provider_session_id = 'other-native'",
+    "UPDATE provider_links SET agent = 'claude'",
+    "UPDATE provider_links SET execution_host = 'remote'",
+    "UPDATE provider_links SET wsl_distro = 'Ubuntu'",
+    "UPDATE provider_links SET locator = '/unrelated-transcript'",
+    "UPDATE identities SET agent = 'claude'",
+    'DELETE FROM identities',
+    "INSERT INTO provider_links VALUES ('local', '', 'codex', 'native-one', '', 'other-orca')",
+    'DROP TABLE provider_links'
+  ]
+  for (const change of changes) {
+    const f = fixture()
+    try {
+      withoutHookOrcaId(f)
+      const found = discoverTranscript('pane', f.files, f.identity)
+      if (!found.path) throw Error('missing fixture')
+      const db = new (process.getBuiltinModule!('node:sqlite').DatabaseSync)(f.files.identities)
+      db.exec(change); db.close()
+      assert.equal(discoverTranscript('pane', f.files, { orcaSession: 'orca-one', provider: 'codex' }).path, null, change)
+      assert.equal(sourceCurrent(found.source!), false, change)
+    } finally { f.dispose() }
+  }
+  const f = fixture()
+  try {
+    const found = discoverTranscript('pane', f.files, f.identity)
+    if (!found.path) throw Error('missing fixture')
+    rmSync(f.files.identities)
+    assert.equal(discoverTranscript('pane', f.files, f.identity).path, null, 'an explicit hook Orca id is not a substitute for the authority')
+    assert.equal(sourceCurrent(found.source!), false)
+    assert.equal(sourceCurrent({ ...found.source!, binding: undefined }), false)
+  } finally { f.dispose() }
+})
+
+test('identity authority is rechecked after inference, including sources saved without the identities path', async () => {
+  const f = fixture()
+  try {
+    withoutHookOrcaId(f)
+    const found = discoverTranscript('pane', f.files, { orcaSession: 'orca-one', provider: 'codex' })
+    if (!found.path) throw Error('missing fixture')
+    const source = { ...found.source!, binding: { ...found.source!.binding!, files: { db: f.files.db, json: f.files.json } } }
+    assert.equal(sourceCurrent(source), true, 'older sources locate the authority beside their hook DB')
+    const path = join(f.dir, 'pane.json'), saved = line({ ...card, title: 'Keep existing title' })
+    writeFileSync(path, saved)
+    const result = await summarizePane({ pane: 'pane', transcript: found.path, transcriptSource: source, dir: f.dir, writer: async () => {
+      const db = new (process.getBuiltinModule!('node:sqlite').DatabaseSync)(f.files.identities)
+      db.exec('DELETE FROM provider_links'); db.close()
+      return card
+    } })
+    assert.equal(result, 'skipped')
+    assert.equal(readFileSync(path, 'utf8'), saved)
+  } finally { f.dispose() }
+})
+
+test('legacy Claude reading remains available without inventing an Orca identity', () => {
+  const f = fixture()
+  try {
+    writeFileSync(f.path, [
+      { type: 'user', timestamp: at(1), message: { content: 'Fix checkout' } },
+      { type: 'assistant', timestamp: at(2), message: { content: [{ type: 'text', text: 'Fixed.' }] } }
+    ].map(line).join('\n'))
+    writeFileSync(f.files.json, line({ entries: { pane: { paneKey: 'pane', providerSession: { transcriptPath: f.path } } } }))
+    rmSync(f.files.identities)
+    const found = discoverTranscript('pane', f.files)
+    assert.deepEqual(found, { path: f.path })
+    assert.equal(digest(readTranscript(found.path!))?.lastMessage, 'Fixed.')
+    assert.equal(discoverTranscript('pane', f.files, { orcaSession: 'orca-new' }).path, null)
+    // A native-ID-only legacy record can still be read, but cannot claim a live Orca identity.
+    writeFileSync(f.files.json, line({ entries: { pane: { paneKey: 'pane', payload: { agentType: 'claude' }, providerSession: { id: 'native-claude', transcriptPath: f.path } } } }))
+    const native = discoverTranscript('pane', f.files, { provider: 'claude', sessionId: 'native-claude' })
+    assert.equal(native.path, f.path)
+    if (native.path) assert.equal(native.source?.orcaSession, undefined)
+    assert.equal(discoverTranscript('pane', f.files, { provider: 'claude', orcaSession: 'orca-new', sessionId: 'native-claude' }).path, null)
   } finally { f.dispose() }
 })

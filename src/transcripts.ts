@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 export type ProviderSession = { provider: 'claude' | 'codex'; id: string }
 export type TranscriptIdentity = { orcaSession?: string | null; provider?: string | null; sessionId?: string }
-export type TranscriptFiles = { db: string; json: string; journal?: string }
+export type TranscriptFiles = { db: string; json: string; journal?: string; identities?: string }
 export type TranscriptSource = {
   kind: 'jsonl' | 'journal'
   path: string
@@ -21,7 +21,8 @@ const root = join(homedir(), 'Library', 'Application Support', 'orca')
 export const transcriptFiles: TranscriptFiles = {
   db: join(root, 'agent-hooks', 'last-status.db'),
   json: join(root, 'agent-hooks', 'last-status.json'),
-  journal: join(root, 'agent-session-domain.db')
+  journal: join(root, 'agent-session-domain.db'),
+  identities: join(root, 'agent-hooks', 'agent-identities.db')
 }
 
 function database(path: string) {
@@ -43,6 +44,28 @@ function hookEntry(pane: string, files: TranscriptFiles): any {
     } finally { db.close() }
   }
   return existsSync(files.json) ? JSON.parse(readFileSync(files.json, 'utf8'))?.entries?.[pane] : null
+}
+
+/** Orca's terminal identity authority, not a claim inferred from the pane or hook's native ID.
+ * agent-identity-worker-entry.js uses this exact five-part provider link key. Claude and Codex
+ * resume by ID (empty locator); remote/WSL namespaces are deliberately not searched here.
+ * Read on discovery AND publication, including for sources saved before this check existed.
+ */
+function terminalIdentityMatches(entry: any, files: TranscriptFiles, orcaSession: string): boolean {
+  if (entry?.connectionId || (entry?.orcaSessionId && entry.orcaSessionId !== orcaSession)) return false
+  const provider = entry?.payload?.agentType, nativeId = entry?.providerSession?.id
+  if (!['claude', 'codex'].includes(provider) || typeof nativeId !== 'string' || !nativeId) return false
+  // Older saved sources only carried the hook DB path; Orca puts its identity DB beside it.
+  const path = files.identities ?? join(files.db, '..', 'agent-identities.db')
+  if (!existsSync(path)) return false
+  const db = database(path)
+  try {
+    const rows = db.prepare(`SELECT p.orca_session_id, i.agent FROM provider_links p
+      LEFT JOIN identities i ON i.orca_session_id = p.orca_session_id
+      WHERE p.execution_host = 'local' AND p.wsl_distro = '' AND p.agent = ?
+        AND p.provider_session_id = ? AND p.locator = ''`).all(provider, nativeId) as { orca_session_id: string; agent: string | null }[]
+    return rows.length === 1 && rows[0].orca_session_id === orcaSession && rows[0].agent === provider
+  } finally { db.close() }
 }
 
 function nativeHandle(record: any): ProviderSession | null {
@@ -90,6 +113,9 @@ export function discoverTranscript(pane: string, files = transcriptFiles, identi
       || (identity.orcaSession && entry.orcaSessionId && entry.orcaSessionId !== identity.orcaSession)) {
       return { path: null, why: 'Pane identity changed; waiting for current inventory' }
     }
+    if (identity.orcaSession && !terminalIdentityMatches(entry, files, identity.orcaSession)) {
+      return { path: null, why: 'Orca/native session binding unavailable or changed; waiting for verified identity metadata' }
+    }
     const path = entry.providerSession?.transcriptPath ?? entry.transcriptPath
     if (typeof path !== 'string' || !existsSync(path)) return { path: null, why: 'Exact pane transcript is not on disk yet' }
     if (provider && !['claude', 'codex'].includes(provider)) return { path: null, why: 'Unsupported transcript provider' }
@@ -113,12 +139,13 @@ export function sourceCurrent(source: TranscriptSource): boolean {
       const current = journalIdentity(source.path, source.orcaSession)
       return !!current && current.epoch === source.epoch && current.providerSession.id === source.providerSession.id && current.providerSession.provider === source.providerSession.provider
     }
+    if (source.orcaSession && (!source.binding || !source.providerSession)) return false
     if (source.binding) {
       const entry = hookEntry(source.binding.pane, source.binding.files)
       if (entry?.connectionId) return false
       if ((entry?.providerSession?.transcriptPath ?? entry?.transcriptPath) !== source.path) return false
       if (source.providerSession && (entry?.providerSession?.id !== source.providerSession.id || entry?.payload?.agentType !== source.providerSession.provider)) return false
-      if (source.orcaSession && entry?.orcaSessionId && entry.orcaSessionId !== source.orcaSession) return false
+      if (source.orcaSession && !terminalIdentityMatches(entry, source.binding.files, source.orcaSession)) return false
     }
     if (source.providerSession?.provider === 'codex') {
       const meta = readFileSync(source.path, 'utf8').split('\n').slice(0, 8).map(parse).find((r) => r?.type === 'session_meta')?.payload
