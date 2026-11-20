@@ -330,7 +330,7 @@ declare module 'orca' {
     /** Ends agent sessions by pane; the worker looks up their terminals at that moment. Transcripts stay resumable. */
     'sidebar.closeSessions': { input: { panes: string[] }; output: { closed: number } }
     /** Removes a worktree after re-checking that it is clean and its PR merged. */
-    'sidebar.removeWorktree': { input: { workspaceId: string; force?: boolean }; output: { removed: boolean; reason?: string; dirty?: string[] } }
+    'sidebar.removeWorktree': { input: { workspaceId: string; force?: boolean }; output: { removed: boolean; reason?: string; branch?: string; dirty?: string[] } }
     /** Creates a coordinator with a name and a look, starts its session and opens it. */
     'sidebar.createCoordinator': { input: { name: string; look: Look }; output: { ok: boolean; error?: string } }
     /** Sets a workstream's priority on its card (null clears it); Up next re-ranks. */

@@ -570,11 +570,11 @@ async function removeWorktree(row: WorkspaceRow, target: string): Promise<void> 
   if (!(await confirmAction('remove-worktree', `Remove ${row.name}?`, `${chats} and the checkout is deleted. The branch is kept.`, 'Remove'))) return
   const remove = (force: boolean) => orca.plugin.request('sidebar.removeWorktree', { workspaceId: row.id, force }, { timeoutMs: 200_000 })
   // Set by the first try when what stands in the way can be waived.
-  let waivable = null as { reason: string; dirty: string[] } | null
+  let waivable = null as { reason: string; branch: string; dirty: string[] } | null
   await inline(target, 'Removing…', 'Removed', async () => {
     const r = await remove(false)
-    if (!r.removed && (r.reason === 'PR not merged' || (r.reason === 'uncommitted changes' && r.dirty?.length))) {
-      waivable = { reason: r.reason, dirty: r.dirty ?? [] }
+    if (!r.removed && r.branch && r.reason) {
+      waivable = { reason: r.reason, branch: r.branch, dirty: r.dirty ?? [] }
       return { ok: true }
     }
     return r
@@ -582,12 +582,13 @@ async function removeWorktree(row: WorkspaceRow, target: string): Promise<void> 
   if (!waivable) return
   ui.status.delete(target)
   draw()
-  const { reason, dirty } = waivable
+  const { reason, branch, dirty } = waivable
   const files = dirty.length <= 3 ? dirty.join(', ') : `${dirty.slice(0, 3).join(', ')} and ${dirty.length - 3} more`
   const lost = dirty.length ? ` Uncommitted changes will be lost: ${files}.` : ''
-  const body = reason === 'PR not merged'
-    ? `${row.name} has no merged PR. The branch and its commits are kept.${lost}`
-    : `Uncommitted changes will be lost: ${files}. The branch is kept.`
+  const warning = reason === 'PR status unknown' ? `Could not verify the PR status for branch ${branch}.`
+    : reason === 'PR head differs' ? `The merged PR has a different head commit from branch ${branch}.`
+    : reason === 'PR not merged' ? `No merged PR was found for branch ${branch}.` : ''
+  const body = `${warning}${lost} The branch and its commits are kept.`.trim()
   // Losing work is never remembered: this one always asks.
   if (await confirmAction('remove-anyway', `Remove ${row.name} anyway?`, body, 'Remove anyway', 'trash', 'danger', false))
     await inline(target, 'Removing…', 'Removed', () => remove(true))

@@ -1102,12 +1102,48 @@ test('a working agent stops removal, force or not, before any command runs', asy
   assert.deepEqual(calls, [])
 })
 
-test('no merged PR is refused with the uncommitted files, and removed when the person waives it', async () => {
+test('removal checks the linked PR and current commit even when the local branch has another name', async () => {
+  const { checkRemovable } = await import('./cockpit.ts')
+  const [row] = main.fromPs([{ identity: { key: 'feature' }, repo: 'shop', path: '/w/feature', branch: 'local-feature',
+    linkedPR: { number: 42, url: 'https://github.com/example/shop/pull/42', state: 'merged' } }])
+  const head = 'a'.repeat(40)
+  let response = { number: 42, url: row.pr!.url, state: 'MERGED', headRefOid: head }
+  let lookupOk = true
+  let listed = '[]'
+  const command = async (cmd: string, args: string[]) => {
+    if (cmd === 'git') {
+      if (args[0] === 'status') return { ok: true, out: '' }
+      if (args[0] === 'rev-parse') return { ok: true, out: head }
+    }
+    if (cmd === 'gh' && args[1] === 'view' && args[2] === '42') return { ok: lookupOk, out: JSON.stringify(response) }
+    if (cmd === 'gh' && args[1] === 'list' && args.includes('local-feature')) return { ok: true, out: listed }
+    throw new Error(`Unexpected command: ${cmd} ${args.join(' ')}`)
+  }
+  assert.deepEqual(await checkRemovable(row, command), { ok: true, pr: 42 })
+  for (const state of ['OPEN', 'CLOSED']) {
+    response.state = state
+    assert.equal((await checkRemovable(row, command)).reason, 'PR not merged')
+  }
+  response = { ...response, state: 'MERGED', headRefOid: 'b'.repeat(40) }
+  assert.equal((await checkRemovable(row, command)).reason, 'PR head differs', 'a previous checkout cannot authorize removal')
+  response = { ...response, url: 'https://github.com/other/shop/pull/42', headRefOid: head }
+  assert.equal((await checkRemovable(row, command)).reason, 'PR status unknown', 'same PR number in a different repository')
+  lookupOk = false
+  assert.equal((await checkRemovable(row, command)).reason, 'PR status unknown')
+  const unlinked = { ...row, pr: null }
+  assert.equal((await checkRemovable(unlinked, command)).reason, 'PR not merged', 'empty branch lookup')
+  listed = JSON.stringify([response])
+  assert.deepEqual(await checkRemovable(unlinked, command), { ok: true, pr: 42 }, 'branch lookup confirms the current commit')
+  listed = 'invalid'
+  assert.equal((await checkRemovable(unlinked, command)).reason, 'PR status unknown', 'malformed lookup')
+})
+
+test('unavailable PR status is reported with dirty files and can be explicitly waived', async () => {
   const { removeWorktree } = await import('./cockpit.ts')
   const path = await scratchCheckout(true)
   const [row] = main.fromPs([{ identity: { key: 'n' }, displayName: 'n', repo: 'shop', path, branch: 'refs/heads/me/n', agents: [{ paneKey: 't:1', state: 'done' }] }])
   const refused = removalRun(['t:1'])
-  assert.deepEqual(await removeWorktree(refused.run, row), { removed: false, reason: 'PR not merged', dirty: ['notes.md'] })
+  assert.deepEqual(await removeWorktree(refused.run, row), { removed: false, reason: 'PR status unknown', branch: 'me/n', dirty: ['notes.md'] })
   assert.deepEqual(refused.calls, [], 'nothing closed or removed')
   const forced = removalRun(['t:1'])
   assert.deepEqual(await removeWorktree(forced.run, row, true), { removed: true })

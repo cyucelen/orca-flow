@@ -65,25 +65,46 @@ export function swapUsage(): CockpitStats['swap'] {
   }
 }
 
-/**
- * A worktree is offered for removal only when its checkout is clean and its PR merged on GitHub.
- * Both refusals carry the uncommitted files, so the person can waive them in one confirm.
- */
-export async function checkRemovable(row: WorkspaceRow): Promise<{ ok: boolean; pr?: number; reason?: string; dirty?: string[] }> {
-  if (row.main || !row.path || !row.branch) return { ok: false, reason: 'main checkout' }
-  const status = await sh('git', ['status', '--porcelain'], row.path)
-  if (!status.ok) return { ok: false, reason: 'not a git checkout' }
-  const dirty = status.out.split('\n').filter((l) => l.trim()).map((l) => l.slice(3).trim())
-  // Squash merges never make the branch an ancestor of main, so ask GitHub instead of git.
-  const pr = await sh('gh', ['pr', 'list', '--head', row.branch, '--state', 'merged', '--json', 'number', '--limit', '1'], row.path)
-  const number = pr.ok ? (JSON.parse(pr.out || '[]')[0]?.number as number | undefined) : undefined
-  if (!number) return { ok: false, reason: 'PR not merged', ...(dirty.length ? { dirty } : {}) }
-  if (dirty.length) return { ok: false, pr: number, reason: 'uncommitted changes', dirty }
-  return { ok: true, pr: number }
+type MergeCheck = { ok: boolean; pr?: number; reason?: string; dirty?: string[] }
+
+/** A linked PR can have a different head branch name from the local checkout. Ask GitHub in the
+ * checkout's repository and match the commit, so an old link or a reused branch cannot clear it. */
+async function mergedPr(path: string, branch: string, linked: WorkspaceRow['pr'], command: typeof sh): Promise<MergeCheck> {
+  const unknown = { ok: false, reason: 'PR status unknown' }
+  const unmerged = { ok: false, reason: 'PR not merged' }
+  const fields = 'number,url,state,headRefOid'
+  const args = linked ? ['view', String(linked.number)] : ['list', '--head', branch, '--state', 'all', '--limit', '1']
+  const result = await command('gh', ['pr', ...args, '--json', fields], path)
+  if (!result.ok) return unknown
+  try {
+    const json = JSON.parse(result.out)
+    if (!linked && !Array.isArray(json)) return unknown
+    if (!linked && json.length === 0) return unmerged
+    const pr = linked ? json : json[0]
+    if (!Number.isSafeInteger(pr?.number) || pr.number < 1 || !pr.headRefOid) return unknown
+    if (linked && (pr.number !== linked.number || pr.url !== linked.url)) return unknown
+    if (pr.state === 'OPEN' || pr.state === 'CLOSED') return unmerged
+    if (pr.state !== 'MERGED') return unknown
+    const head = await command('git', ['rev-parse', '--verify', 'HEAD'], path)
+    if (!head.ok) return unknown
+    return head.out.trim() === pr.headRefOid ? { ok: true, pr: pr.number } : { ok: false, reason: 'PR head differs' }
+  } catch {
+    return unknown
+  }
 }
 
-/** What the person may waive (Remove anyway): the branch and its commits are kept either way. */
-const WAIVABLE = new Set(['PR not merged', 'uncommitted changes'])
+/** Check both PR and dirty files before closing sessions, so one confirmation names both risks. */
+export async function checkRemovable(row: WorkspaceRow, command = sh): Promise<MergeCheck> {
+  if (row.main || !row.path || !row.branch) return { ok: false, reason: 'main checkout' }
+  const status = await command('git', ['status', '--porcelain'], row.path)
+  if (!status.ok) return { ok: false, reason: 'not a git checkout' }
+  const dirty = status.out.split('\n').filter((l) => l.trim()).map((l) => l.slice(3).trim())
+  const merge = await mergedPr(row.path, row.branch, row.pr, command)
+  if (!dirty.length) return merge
+  return { ...merge, ok: false, reason: merge.ok ? 'uncommitted changes' : merge.reason, dirty }
+}
+
+const WAIVABLE = new Set(['PR not merged', 'PR head differs', 'PR status unknown', 'uncommitted changes'])
 
 /** Merge checks are slow (network); remember them for ten minutes. */
 const mergedCache = new Map<string, { at: number; result: Awaited<ReturnType<typeof checkRemovable>> }>()
@@ -143,7 +164,7 @@ export async function closeSessions(run: Run, panes: string[]): Promise<{ closed
  * Re-checks right before removing: the worktree may have changed since the cockpit opened. Only an
  * agent mid-turn (Orca's working state) stops it; an idle, asking or blocked one is closed first.
  */
-export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, force = false): Promise<{ removed: boolean; reason?: string; dirty?: string[] }> {
+export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, force = false): Promise<{ removed: boolean; reason?: string; branch?: string; dirty?: string[] }> {
   if (!row) return { removed: false, reason: 'workspace not found' }
   if (row.folderOf) return { removed: false, reason: "a coordinator's folder is never removed" }
   // The sidebar hides removal while an agent works; this catches one that started since.
@@ -152,8 +173,13 @@ export async function removeWorktree(run: Run, row: WorkspaceRow | undefined, fo
   const check = await checkRemovable(row)
   // `force` waives a PR that is not merged and uncommitted files, after the person confirmed; a
   // main checkout or anything else still keeps the worktree.
-  const waived = !check.ok && force && WAIVABLE.has(check.reason ?? '')
-  if (!check.ok && !waived) return { removed: false, reason: check.reason, ...(check.dirty ? { dirty: check.dirty } : {}) }
+  const canWaive = WAIVABLE.has(check.reason ?? '')
+  const waived = !check.ok && force && canWaive
+  if (!check.ok && !waived) return {
+    removed: false, reason: check.reason,
+    ...(canWaive && row.branch ? { branch: row.branch } : {}),
+    ...(check.dirty ? { dirty: check.dirty } : {})
+  }
   mergedCache.delete(row.id)
   await closeSessions(run, row.agents.map((a) => a.paneKey))
   // Removal runs the repo's orca.yaml archive hook (which can stop the worktree's services and
