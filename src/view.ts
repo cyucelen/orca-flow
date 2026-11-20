@@ -341,7 +341,10 @@ export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMen
 function rowStatus(ui: UiState, key: string): string | null {
   const st = ui.status.get(key)
   if (!st) return null
-  return st.tone === 'pending' ? busy(st.text) : `<span class="rstatus ${st.tone}">${esc(st.text)}</span>`
+  if (st.tone === 'pending') return busy(st.text)
+  const detail = st.tone === 'bad' && key.startsWith('coordinator:')
+    ? ` tabindex="0" data-tone="danger" data-tip="${esc(st.text)}"` : ''
+  return `<span class="rstatus ${st.tone}"${detail}>${esc(st.text)}</span>`
 }
 
 type ActOpts = { ask?: boolean; tip?: string; cls?: string; icon?: string; aria?: string }

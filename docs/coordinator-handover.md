@@ -17,8 +17,11 @@ answered, deleted or readdressed by the plugin.
   `agent launch` receipt, `prompt.outcome` (`journaled` or `handed-to-terminal`), exact provider,
   workspace, session identity and absence of dispatch/parent provenance before changing current.
 - Stored transcript recovery through `agent read --limit 100`. The source is never resumed,
-  prompted or asked to summarize. Read failure prevents launch. Orca's bounded history reports
-  truncation; its `limited` flag is kept with the snapshot. Original transcripts are never modified.
+  prompted or asked to summarize. When the host specifically reports a missing transcript, the
+  plugin can use the selected terminal’s output after checking its exact conversation binding
+  before and after reading. This snapshot is labeled partial terminal output and can include CLI
+  chrome. Empty or unverifiable output stops the handover before launch. Other read errors also
+  stop launch. Transcript snapshots retain the host’s `limited` flag.
 - Context files contain scope, goals/cards, workstreams, pending decisions and source history.
   The prompt labels transcript/tool/summary content untrusted reference, points to authoritative
   coordinator and host state, and explicitly loads the coordinator role and skill.

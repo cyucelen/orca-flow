@@ -398,6 +398,13 @@ test('sleeping every finished session is offered only when memory is tight, and 
   assert.match(render(at('full'), ui).copen, /data-act="closeall" data-tip="Sleep 2 finished sessions"><svg[\s\S]*?<\/svg>Sleep all</, 'memory not known yet')
 })
 
+test('the full coordinator error is available on hover and keyboard focus in a narrow panel', () => {
+  const ui = emptyUi()
+  ui.status.set('coordinator:alpha', { tone: 'bad', text: 'Missing <source> transcript. Handover stopped before launch.' })
+  const { main } = render(snap, ui)
+  assert.match(main, /class="rstatus bad" tabindex="0" data-tone="danger" data-tip="Missing &lt;source&gt; transcript\. Handover stopped before launch\."/)
+})
+
 test('coordinators show no team characters on the right', () => {
   const { main } = render(snap, emptyUi())
   noMatch(main, /class="r troops"/)

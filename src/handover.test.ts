@@ -78,6 +78,42 @@ test('quota exhausted source is recovered with stored transcript read, never res
   assert.match(await error(() => readHandoverContext(f.source, async () => ({ orcaSessionId: 'other', entries: [1] }))), /unavailable/)
 })
 
+test('missing provider transcript uses only the verified terminal tail of the selected conversation', async () => {
+  const { source } = fixture()
+  const missing = Object.assign(new Error('transcript missing'), { code: 'agent_no_transcript' })
+  const live = { paneKey: source.paneKey, agentType: source.agentType, orcaSessionId: source.orcaSession, hasLivePty: true }
+  const calls: string[][] = []
+  let tail = ['fixture history']
+  let changeAfterRead = false
+  const run = async (args: string[]) => {
+    calls.push(args)
+    switch (args.slice(0, 2).join(' ')) {
+      case 'agent read': throw missing
+      case 'terminal show': return { terminal: { handle: 'term-source', tabId: 'p', leafId: 'source', worktreePath: source.workspacePath } }
+      case 'worktree ps': return { worktrees: [{ path: source.workspacePath, agents: [live] }] }
+      case 'terminal read':
+        if (changeAfterRead) live.orcaSessionId = 'different'
+        return { terminal: { handle: 'term-source', tail } }
+      default: throw new Error('Unexpected call')
+    }
+  }
+  assert.deepEqual(await readHandoverContext(source, run), {
+    source: source.orcaSession, kind: 'terminal-output', limited: true, text: 'fixture history'
+  })
+  assert.deepEqual(calls.map(a => a.slice(0, 2).join(' ')), ['agent read', 'terminal show', 'worktree ps', 'terminal read', 'worktree ps'])
+  tail = ['   ']
+  assert.match(await error(() => readHandoverContext(source, run)), /verified terminal output/)
+  tail = ['wrong session']
+  changeAfterRead = true
+  assert.match(await error(() => readHandoverContext(source, run)), /verified terminal output/)
+  const otherCalls: string[][] = []
+  assert.match(await error(() => readHandoverContext(source, async args => {
+    otherCalls.push(args)
+    throw Object.assign(new Error('host denied'), { code: 'access_denied' })
+  })), /host denied/)
+  assert.equal(otherCalls.length, 1)
+})
+
 test('failed launch with a replay ID retries the exact launch after restart without duplicate coordinator or prompt', async () => {
   const f = fixture()
   const run = f.io.run; let first = true, accepted = 0
