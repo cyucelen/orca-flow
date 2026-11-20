@@ -24,7 +24,8 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds. If Haiku is
-  unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI.
+  unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI. Pick the
+  writers, their order and Claude's model in [Settings](#settings).
   When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
   status, Ask and Reply are read as written: Up next labels the ask with the message's own status
   line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later
@@ -165,6 +166,51 @@ orca-flow resume             # a woken coordinator takes back the runs it was co
 
 (`orca-flow` here means `node <skill folder>/scripts/orca-flow.mjs`.)
 
+## Settings
+
+The gear at the top of the panel opens Orca Flow Settings. It has four pages:
+
+- **Titles & summaries:** which writers make the sidebar cards, in what order, and Claude's model
+  (Haiku, the default, or Sonnet). Each writer's status comes from what the writer last saw (its
+  last card, or a usage-limit or sign-in cooldown with the time left) and, for a writer not used
+  since Orca Flow started, whether `orca agent installed` lists its CLI. The dialog sends no test
+  requests and starts no sign-in. Antigravity shows as "Not available yet" (see
+  [Card writer](#card-writer)).
+- **Message check:** off, every coordinator and lead, or only in some folders
+  ([Message format](#message-format)).
+- **Capacity:** the memory always kept free and the extra room under memory pressure
+  ([Capacity](#capacity)).
+- **Advanced:** Linear test mode (log the Linear comments and status changes Orca Flow would send,
+  and send nothing) and Show in Finder for the settings file.
+
+Each page has Reset to defaults; the footer has Reset all to defaults, the number of unsaved
+changes, Cancel and Save. Closing with unsaved changes asks first, inside the dialog. Save takes
+effect at once: the writer reads the settings again for every card.
+
+Everything is saved in `~/.orca-flow/config.json` by the plugin's worker. Only settings that
+differ from their defaults are written, a setting put back to its default is removed, and keys
+Orca Flow does not know are kept. The file is replaced atomically. If the file is not valid JSON,
+the dialog says so, Orca Flow uses the defaults, and Save stays off so the file is never
+overwritten; fix or remove it by hand. You can also edit the file directly:
+
+```json
+{
+  "writers": [
+    { "provider": "codex", "model": "gpt-6-luna", "enabled": true },
+    { "provider": "claude", "model": "sonnet", "enabled": true },
+    { "provider": "antigravity", "enabled": false }
+  ],
+  "messageFormat": "all",
+  "marginGB": 3,
+  "warnHeadroomGB": 2,
+  "linearDryRun": false
+}
+```
+
+`writers` is tried in order; a writer left out of the list is off. Without `writers` (or with an
+unusable value) the writer behaves as before: Haiku, then GPT-6 Luna through Codex. Claude's
+`model` is `haiku` or `sonnet`; Codex's is `gpt-6-luna`.
+
 ## Message format
 
 Coordinators and leads end each message with a fixed frame: a bold status line that names what
@@ -186,8 +232,9 @@ replaces the point, that a backticked code name is explained in plain words, and
 warning gives a number. A coordinator can also answer with route lines only. Workers and your own
 chats are never checked.
 
-The check is off until you turn it on in `~/.orca-flow/config.json`, for every agent or only for
-agents working in some folders (a folder and everything under it):
+The check is off until you turn it on in [Settings](#settings) (Message check) or in
+`~/.orca-flow/config.json`, for every agent or only for agents working in some folders (a folder
+and everything under it):
 
 ```json
 { "messageFormat": "all" }
@@ -211,7 +258,8 @@ own open sessions and from the processes each project's worktrees started (kept 
 macOS reports memory pressure "warn", a new worktree also needs headroom: 2 GB, or half its
 environment when that is more. When the pressure is critical, only urgent (P0) work starts.
 
-Change the margin and the minimum headroom in `~/.orca-flow/config.json`:
+Change the margin and the minimum headroom in [Settings](#settings) (Capacity) or in
+`~/.orca-flow/config.json`:
 
 ```json
 { "marginGB": 2, "warnHeadroomGB": 2 }
@@ -231,11 +279,22 @@ its separate native provider handle, then reads only visible root items in the c
 epoch. Sessions, transcripts, queued drafts and account settings are never modified. Injected
 instructions, orchestration wake notices, reasoning and tool results are excluded from the digest.
 
-The writer invokes local CLIs using your existing logins. After each turn it sends Claude Haiku
-an excerpt of that agent's conversation: its first request, the latest turn's prompts and
-messages, and the commands and file paths its tools used. On an availability failure, that same
-excerpt is sent to OpenAI's [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
-through Codex instead. Provider usage limits and billing apply to the selected accounts.
+### Card writer
+
+The writer invokes local CLIs using your existing logins. After each turn it sends the first
+writer turned on in [Settings](#settings) (by default Claude Haiku) an excerpt of that agent's
+conversation: its first request, the latest turn's prompts and messages, and the commands and file
+paths its tools used. On an availability failure, that same excerpt is sent to the next writer
+turned on (by default OpenAI's [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+through Codex). A writer you turn off is never sent anything. Provider usage limits and billing
+apply to the selected accounts; Sonnet uses more of a Claude plan than Haiku.
+
+Writers: Claude (`claude -p --model haiku|sonnet`) and Codex (`codex exec --model gpt-6-luna`).
+Antigravity is not available as a writer yet. Its CLI documents a one-shot JSON mode
+(`agy -p … --output-format json --json-schema`), but its docs give no way to run that request with
+tools off, no system-prompt flag and no option to skip saving the conversation, and headless runs
+default to `auto` mode. A conversation excerpt is untrusted text, and both other writers run with
+tools disabled, so the Antigravity row stays off until its CLI can be isolated the same way.
 
 Both providers run separate requests without resuming or changing the source session. Codex runs
 in a temporary directory with a read-only sandbox, no session persistence, and shell, MCP, apps,
@@ -249,7 +308,7 @@ title and summary. Temporary schema/output files are removed after the request.
 
 Calls are bounded to 30 seconds each. Quota, rate-limit, authentication and unavailable-provider
 failures skip that provider for five minutes in the worker; timeout/transient failures skip it for
-30 seconds. A later request probes Haiku again, restoring it as primary after recovery. The worker
+30 seconds. A later request probes the first writer again, restoring it as primary after recovery. The worker
 logs sanitized, throttled diagnostics. Invalid output and unexpected integration errors preserve
 the card without triggering a broad provider fallback. `summarize-run` uses the same writer;
 its cooldown lasts for that command's process.
@@ -262,7 +321,7 @@ before publication; an old session's card is not shown as a new Codex conversati
 
 - `~/.orca-flow/agents/`: cards keyed by pane, with separate Orca/native session bindings.
 - `~/.orca-flow/cards/`: a card per worktree (priority, goal), written by coordinators.
-- `~/.orca-flow/config.json`: your settings, if you change any.
+- `~/.orca-flow/config.json`: your settings, if you change any (see [Settings](#settings)).
 - `~/.orca-flow/format-misses.jsonl`: one line per message that missed the message frame.
 - `~/orca/coordinators/<name>/`: one folder per coordinator, with its `coordinator.json`.
 - `~/orca/coordinators/CLAUDE.md`: shared coordinator instructions and your project notes.
@@ -313,7 +372,12 @@ in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordina
 scripts/dev.sh check   # types, tsc, plugin tests and orca-flow tests
 scripts/dev.sh load    # load this folder into Orca as local.flow and (re)start its worker
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
+node scripts/settings-preview.mjs                       # the Settings dialog in a browser, with fixture data
+node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots   # every page, dark and light, 360 px and wide
 ```
+
+The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker
+or config writes.
 
 To verify the installed Codex CLI's configuration merging, tool isolation, provider routing and
 model rejection behavior against a local synthetic server (no real model/MCP calls):

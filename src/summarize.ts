@@ -1,4 +1,5 @@
-// The end-of-turn summarizer: reads an agent's Claude or Codex conversation and asks Haiku for a status card
+// The end-of-turn summarizer: reads an agent's Claude or Codex conversation and asks the card writer
+// (Haiku by default; see `writers` in ~/.orca-flow/config.json) for a status card
 // (title, about, the ask at a glance, what it is watching, a priority guess). Shared by the plugin
 // worker, which runs it when Orca reports a finished turn, and `orca-flow summarize-run`.
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
@@ -9,7 +10,8 @@ import { conversationalPrompt, discoverTranscript, normalizedRecords, readTransc
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
 import type { AgentSummary } from './protocol.ts'
 export { claudeConfigDir } from './writer.ts'
-import { cliProviders, createWriter, WriterError, writerDiagnostic, type Writer } from './writer.ts'
+import { cliProviders, createWriter, WriterError, writerDiagnostic, type Provider, type Writer } from './writer.ts'
+import { configuredWriters } from './config.ts'
 import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
@@ -313,16 +315,19 @@ export function validateSummary(value: unknown): Omit<AgentSummary, 'role' | 'up
 }
 
 /** Provider validation is part of the boundary, never a programming-error fallback. */
-export function summaryProviders(providers = cliProviders()) {
-  const checked = (provider: 'haiku' | 'luna', run: Writer): Writer => async (request) => {
+export function summaryProviders<T extends Partial<Record<Provider, Writer>>>(providers: T = cliProviders() as unknown as T): T {
+  const checked = (provider: Provider, run: Writer): Writer => async (request) => {
     const value = await run(request)
     try { return validateSummary(value) } catch { throw new WriterError(provider, 'invalid-output') }
   }
-  return { haiku: checked('haiku', providers.haiku), luna: checked('luna', providers.luna) }
+  const out: Partial<Record<Provider, Writer>> = {}
+  for (const [name, run] of Object.entries(providers) as [Provider, Writer | undefined][]) if (run) out[name] = checked(name, run)
+  return out as T
 }
 
-// The worker and summarize-run share the same writer and output validation.
-const summaryWriter = createWriter(summaryProviders())
+// The worker and summarize-run share the same writer and output validation. The writers and their
+// order come from ~/.orca-flow/config.json (`writers`), read again for every card.
+const summaryWriter = createWriter({ ...summaryProviders(), writers: () => configuredWriters() })
 
 /**
  * Summarizes one pane's latest turn into ~/.orca-flow/agents/<pane>.json. Skips a turn already

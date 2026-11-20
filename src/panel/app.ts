@@ -12,6 +12,7 @@ import { sessionChoices } from '../coordinator-sessions.ts'
 import { providerBadge, providerOf } from '../providers.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
 import { coordinatorHandover } from '../handover-providers.ts'
+import { openSettings, settingsOpen } from './settings.ts'
 import type { HandoverProvider } from '../handover.ts'
 
 const ui = emptyUi()
@@ -279,11 +280,15 @@ function setSearching(on: boolean): void {
   searchBox.hidden = !on
   cockpitEl.hidden = on
   searchOpen.hidden = on
+  settingsBtn.hidden = on
   updateEl.hidden = on
   if (on) { ui.cockpitOpen = false; searchEl.focus() } else { searchEl.value = ''; ui.query = '' }
   draw()
 }
 searchOpen.addEventListener('click', () => setSearching(true))
+// The gear: Orca Flow's Settings dialog (src/panel/settings.ts).
+const settingsBtn = $('settings-open')
+settingsBtn.addEventListener('click', () => openSettings())
 $('search-close').addEventListener('click', () => setSearching(false))
 searchEl.addEventListener('input', () => { ui.query = searchEl.value.trim(); draw() })
 searchEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearching(false) })
@@ -306,8 +311,8 @@ function openNth(n: number): void {
 }
 
 document.addEventListener('keydown', (e) => {
-  // Typing in the search or name field keeps its characters.
-  if ((e.target as Element).closest('input, textarea')) return
+  // Typing in the search or name field keeps its characters; the Settings dialog keeps its keys.
+  if ((e.target as Element).closest('input, textarea') || settingsOpen()) return
   const n = chatDigit(e)
   if (n === null) return
   e.preventDefault()

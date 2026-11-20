@@ -326,6 +326,16 @@ export type LinearWire = Omit<LinearData, 'issues'> & {
   issues: (string | number)[][]
 }
 
+/** What the Settings dialog shows: the saved settings, whether the file can be used, and each writer's status. */
+export type SettingsState = {
+  settings: import('./settings.ts').FlowSettings
+  /** Why ~/.orca-flow/config.json cannot be used (its settings read as defaults); saving is refused while set. */
+  error: string | null
+  /** Orca Flow's version, for the dialog's title; null when unknown. */
+  version: string | null
+  writers: import('./settings.ts').WriterStatus[]
+}
+
 declare module 'orca' {
   interface PluginRequests {
     /** Every workspace with its live agent status. */
@@ -372,6 +382,12 @@ declare module 'orca' {
      * when it has no assignee.
      */
     'sidebar.linearSend': { input: { issue: string; coordinator: string }; output: { ok: boolean; error?: string; warnings?: string[]; recipient?: DeliveryRecipient } }
+    /** The Settings dialog's data. Status comes from what the writer last saw and `orca agent installed`; no test calls. */
+    'sidebar.settings': { output: SettingsState }
+    /** Saves the dialog's settings to ~/.orca-flow/config.json (changed keys only; unknown keys kept; a broken file is never overwritten). */
+    'sidebar.saveSettings': { input: { settings: import('./settings.ts').FlowSettings }; output: { ok: boolean; error?: string; state: SettingsState } }
+    /** Shows ~/.orca-flow/config.json (or its folder, while there is no file) in Finder. */
+    'sidebar.revealSettings': { output: { ok: boolean } }
     /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
     'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
   }

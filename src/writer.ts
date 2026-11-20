@@ -3,21 +3,24 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_SETTINGS, type WriterSetting } from './settings.ts'
 
 // Verified against Codex 0.167.0 models_cache.json and the official GPT-6 Luna model page.
 export const LUNA_MODEL = 'gpt-6-luna'
 export const WRITER_TIMEOUT_MS = 30_000
+const DEFAULT_WRITERS = DEFAULT_SETTINGS.writers
 export const PRIMARY_COOLDOWN_MS = 5 * 60_000
 const TRANSIENT_COOLDOWN_MS = 30_000
 const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
-type Provider = 'haiku' | 'luna'
-type Failure = 'quota' | 'auth' | 'unavailable' | 'timeout' | 'transient' | 'invalid-output' | 'unexpected'
+/** A writer by model; `writer` names the chain itself (no writer turned on). */
+export type Provider = 'haiku' | 'sonnet' | 'luna'
+type Failure = 'quota' | 'auth' | 'unavailable' | 'timeout' | 'transient' | 'invalid-output' | 'unexpected' | 'disabled'
 
 export class WriterError extends Error {
-  readonly provider: Provider
+  readonly provider: Provider | 'writer'
   readonly kind: Failure
-  constructor(provider: Provider, kind: Failure) {
-    const action = kind === 'auth' ? 'check the provider login in Orca' : kind === 'quota' ? 'check provider usage limits' : kind === 'unavailable' ? 'check the CLI installation and selected account' : kind === 'invalid-output' ? 'the provider returned an invalid card' : kind === 'unexpected' ? 'check the writer integration' : 'a later request will retry'
+  constructor(provider: Provider | 'writer', kind: Failure) {
+    const action = kind === 'auth' ? 'check the provider login in Orca' : kind === 'quota' ? 'check provider usage limits' : kind === 'unavailable' ? 'check the CLI installation and selected account' : kind === 'invalid-output' ? 'the provider returned an invalid card' : kind === 'unexpected' ? 'check the writer integration' : kind === 'disabled' ? 'turn on a writer in Orca Flow Settings' : 'a later request will retry'
     super(`${provider}: ${kind}; ${action}`)
     this.provider = provider
     this.kind = kind
@@ -44,11 +47,34 @@ export function writerDiagnostic(error: unknown): string {
 export type WriterRequest = { prompt: string; system: string; schema: object }
 export type Writer = (request: WriterRequest) => Promise<unknown>
 
-/** One primary probe at a time; queued work skips a failed provider until its bounded cooldown. */
-export function createWriter(options: { haiku: Writer; luna: Writer; now?: () => number; log?: (message: string) => void }): Writer {
+/** The CLI behind each writer name: Claude (Haiku, Sonnet) or Codex (Luna). */
+const CLI: Record<Provider, 'claude' | 'codex'> = { haiku: 'claude', sonnet: 'claude', luna: 'codex' }
+const LABEL: Record<Provider, string> = { haiku: 'Haiku', sonnet: 'Sonnet', luna: 'Codex Luna' }
+type Slot = { cli: 'claude' | 'codex'; name: Provider; write: Writer }
+
+/** The enabled writers of a `writers` setting, in order, that have an adapter. */
+export function writerChain(writers: readonly WriterSetting[], providers: Partial<Record<Provider, Writer>>): Slot[] {
+  return writers.flatMap((w): Slot[] => {
+    if (!w.enabled) return []
+    const name: Provider | null = w.provider === 'claude' ? (w.model === 'sonnet' ? 'sonnet' : 'haiku') : w.provider === 'codex' ? 'luna' : null
+    const write = name ? providers[name] : undefined
+    return name && write ? [{ cli: CLI[name], name, write }] : []
+  })
+}
+
+/** What the writer last saw of one CLI, for the Settings dialog. Kept in memory only. */
+export type WriterHealth = { provider: 'claude' | 'codex'; lastSuccessAt: number | null; failure: { kind: Failure; until: number } | null }
+export type ManagedWriter = Writer & { health(): WriterHealth[] }
+
+/**
+ * Tries the enabled writers in order (`writers`, read again for every request; absent: Haiku, then
+ * Luna). One probe of the first writer at a time; queued work skips a failed CLI until its bounded
+ * cooldown ends. Invalid output and unexpected errors never fall through to the next writer.
+ */
+export function createWriter(options: Partial<Record<Provider, Writer>> & { writers?: () => readonly WriterSetting[]; now?: () => number; log?: (message: string) => void }): ManagedWriter {
   const now = options.now ?? Date.now
-  const blocked = { haiku: 0, luna: 0 }
-  let fallbackFailure: WriterError | undefined
+  const providers: Partial<Record<Provider, Writer>> = { haiku: options.haiku, sonnet: options.sonnet, luna: options.luna }
+  const state = { claude: { blocked: 0, failure: undefined as WriterError | undefined, lastSuccessAt: null as number | null }, codex: { blocked: 0, failure: undefined as WriterError | undefined, lastSuccessAt: null as number | null } }
   let primary: Promise<void> | undefined
   const noticeAt = new Map<string, number>()
   const note = (message: string) => {
@@ -56,40 +82,54 @@ export function createWriter(options: { haiku: Writer; luna: Writer; now?: () =>
     noticeAt.set(message, now())
     options.log?.(message)
   }
-  const failed = (provider: Provider, error: unknown) => {
-    if (!(error instanceof WriterError) || ['invalid-output', 'unexpected'].includes(error.kind)) throw error
-    if (provider === 'luna') fallbackFailure = error
-    blocked[provider] = now() + (['timeout', 'transient'].includes(error.kind) ? TRANSIENT_COOLDOWN_MS : PRIMARY_COOLDOWN_MS)
-    note(`${writerDiagnostic(error)}; ${provider === 'haiku' ? 'trying Codex Luna during cooldown' : 'existing card preserved during cooldown'}`)
+  const chain = () => {
+    let writers: readonly WriterSetting[] = DEFAULT_WRITERS
+    try { if (options.writers) writers = options.writers() } catch { /* keep today's order */ }
+    return writerChain(writers, providers)
   }
-  return async (request) => {
+  const failed = (slot: Slot, next: Slot | undefined, error: unknown) => {
+    if (!(error instanceof WriterError) || ['invalid-output', 'unexpected'].includes(error.kind)) throw error
+    const s = state[slot.cli]
+    s.failure = error
+    s.blocked = now() + (['timeout', 'transient'].includes(error.kind) ? TRANSIENT_COOLDOWN_MS : PRIMARY_COOLDOWN_MS)
+    note(`${writerDiagnostic(error)}; ${next ? `trying ${LABEL[next.name]} during cooldown` : 'existing card preserved during cooldown'}`)
+  }
+  const succeeded = (slot: Slot, first: boolean) => {
+    const s = state[slot.cli]
+    if (first && s.blocked) note(`${LABEL[slot.name]} recovered; primary writer restored`)
+    s.blocked = 0
+    s.failure = undefined
+    s.lastSuccessAt = now()
+  }
+  const write = async (request: WriterRequest) => {
     while (primary) await primary
-    if (now() >= blocked.haiku) {
-      let release!: () => void
-      primary = new Promise<void>((resolve) => { release = resolve })
+    const slots = chain()
+    if (!slots.length) throw new WriterError('writer', 'disabled')
+    let last: WriterError | undefined
+    for (const [i, slot] of slots.entries()) {
+      const s = state[slot.cli]
+      if (now() < s.blocked) { last = s.failure ?? last; continue }
+      let release: (() => void) | undefined
+      if (i === 0) primary = new Promise<void>((resolve) => { release = resolve })
       try {
-        const output = await options.haiku(request)
-        if (blocked.haiku) note('Haiku recovered; primary writer restored')
-        blocked.haiku = 0
+        const output = await slot.write(request)
+        succeeded(slot, i === 0)
         return output
       } catch (error) {
-        failed('haiku', error)
+        failed(slot, slots[i + 1], error)
+        last = error as WriterError
       } finally {
-        primary = undefined
-        release()
+        if (release) { primary = undefined; release() }
       }
     }
-    if (now() < blocked.luna) throw fallbackFailure
-    try {
-      const output = await options.luna(request)
-      blocked.luna = 0
-      fallbackFailure = undefined
-      return output
-    } catch (error) {
-      failed('luna', error)
-      throw error
-    }
+    throw last ?? new WriterError(slots[0].name, 'unavailable')
   }
+  return Object.assign(write, {
+    health: (): WriterHealth[] => (['claude', 'codex'] as const).map((provider) => {
+      const s = state[provider]
+      return { provider, lastSuccessAt: s.lastSuccessAt, failure: s.failure ? { kind: s.failure.kind, until: s.blocked } : null }
+    })
+  })
 }
 
 function binary(name: string): string {
@@ -157,33 +197,36 @@ export function codexHomeFromAccounts(result: any, data = ORCA_DATA, home = home
   return join(data, 'codex-accounts', id, 'home')
 }
 
-export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Writer; luna: Writer } {
+export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Writer; sonnet: Writer; luna: Writer } {
+  /** `claude -p --model <haiku|sonnet>` with no tools, MCP, slash commands, settings or saved session. */
+  const claude = (model: 'haiku' | 'sonnet'): Writer => async ({ prompt, system, schema }) => {
+    const env = writerEnvironment()
+    env.MAX_THINKING_TOKENS = '0'
+    const config = claudeConfigDir()
+    if (config) env.CLAUDE_CONFIG_DIR = config
+    const result = await run({ bin: binary('claude'), args: ['-p', '--model', model, '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', '', '--system-prompt', system, '--output-format', 'json', '--json-schema', JSON.stringify(schema)], env, cwd: homedir(), input: prompt })
+    let out: any
+    try { out = JSON.parse(result.stdout) } catch {
+      if (result.error) throw providerFailure(model, result.error, `${result.stdout}\n${result.stderr}`)
+      throw new WriterError(model, 'invalid-output')
+    }
+    // Process failure takes precedence even when stdout is valid JSON of the wrong shape.
+    // Claude's error result uses `errors: string[]`; API errors use `error: {type, message}`.
+    const errorEnvelope = out?.is_error === true || out?.type === 'error' || (typeof out?.subtype === 'string' && out.subtype.startsWith('error_'))
+    const detail = errorEnvelope ? [
+      typeof out.result === 'string' ? out.result : '',
+      typeof out.api_error_status === 'number' ? String(out.api_error_status) : '',
+      ...(Array.isArray(out.errors) ? out.errors.filter((e: unknown) => typeof e === 'string') : []),
+      typeof out.error?.type === 'string' ? out.error.type : '',
+      typeof out.error?.message === 'string' ? out.error.message : ''
+    ].join('\n') : ''
+    if (result.error || errorEnvelope) throw providerFailure(model, result.error, `${detail}\n${result.stderr}`)
+    if (!out || typeof out !== 'object' || Array.isArray(out)) throw new WriterError(model, 'invalid-output')
+    try { return out.structured_output ?? JSON.parse(out.result) } catch { throw new WriterError(model, 'invalid-output') }
+  }
   return {
-    haiku: async ({ prompt, system, schema }) => {
-      const env = writerEnvironment()
-      env.MAX_THINKING_TOKENS = '0'
-      const config = claudeConfigDir()
-      if (config) env.CLAUDE_CONFIG_DIR = config
-      const result = await run({ bin: binary('claude'), args: ['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', '', '--system-prompt', system, '--output-format', 'json', '--json-schema', JSON.stringify(schema)], env, cwd: homedir(), input: prompt })
-      let out: any
-      try { out = JSON.parse(result.stdout) } catch {
-        if (result.error) throw providerFailure('haiku', result.error, `${result.stdout}\n${result.stderr}`)
-        throw new WriterError('haiku', 'invalid-output')
-      }
-      // Process failure takes precedence even when stdout is valid JSON of the wrong shape.
-      // Claude's error result uses `errors: string[]`; API errors use `error: {type, message}`.
-      const errorEnvelope = out?.is_error === true || out?.type === 'error' || (typeof out?.subtype === 'string' && out.subtype.startsWith('error_'))
-      const detail = errorEnvelope ? [
-        typeof out.result === 'string' ? out.result : '',
-        typeof out.api_error_status === 'number' ? String(out.api_error_status) : '',
-        ...(Array.isArray(out.errors) ? out.errors.filter((e: unknown) => typeof e === 'string') : []),
-        typeof out.error?.type === 'string' ? out.error.type : '',
-        typeof out.error?.message === 'string' ? out.error.message : ''
-      ].join('\n') : ''
-      if (result.error || errorEnvelope) throw providerFailure('haiku', result.error, `${detail}\n${result.stderr}`)
-      if (!out || typeof out !== 'object' || Array.isArray(out)) throw new WriterError('haiku', 'invalid-output')
-      try { return out.structured_output ?? JSON.parse(out.result) } catch { throw new WriterError('haiku', 'invalid-output') }
-    },
+    haiku: claude('haiku'),
+    sonnet: claude('sonnet'),
     luna: async ({ prompt, system, schema }) => {
       const env = writerEnvironment()
       // The plugin process normally has no CODEX_HOME. Explicit caller configuration wins.

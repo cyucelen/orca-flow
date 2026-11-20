@@ -21,9 +21,11 @@ import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder,
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
+import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
+import { normalizeSettings, WRITER_PROVIDERS, type WriterStatus } from './settings.ts'
 import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
@@ -717,6 +719,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   // The panes in front in every workspace; only the focused workspace's agents among them wear the current border.
   let focus: string[] | null = null
   let handoverProviders: Snapshot['handoverProviders'] = null
+  /** Agent ids `orca agent installed` listed at the last refresh; the Settings dialog shows a never-used writer's CLI by it. */
+  let installedAgents: string[] | null = null
   let firstProviders: Snapshot['coordinatorProviders'] = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
@@ -725,6 +729,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     // When the coordinator lineage finishes loading, draw again with it.
     const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh()), readFocus(run), readInstalledProviders(run)])
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
+    installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
     latest = snap
     focus = front
@@ -1366,7 +1371,36 @@ export default function activate(orca: OrcaWorkerApi): void {
     const a = currentAgent(pane)
     return { orcaSession: a?.orcaSession, provider: a?.agentType }
   }
-  const writer = createWriter({ ...summaryProviders(), log: (message) => orca.log(message) })
+  // The writers and their order come from config.json, read again for every card, so Save applies at once.
+  const writer = createWriter({ ...summaryProviders(), writers: () => configuredWriters(DATA_DIR), log: (message) => orca.log(message) })
+
+  // ---------- Settings dialog ----------
+  let version: string | null = null
+  try { version = JSON.parse(readFileSync(join(dir ?? '', 'orca-plugin.json'), 'utf8')).version ?? null } catch {}
+  const settingsState = async (): Promise<SettingsState> => {
+    const read = readSettings(DATA_DIR)
+    if (!installedAgents) installedAgents = (await readInstalledProviders(run))?.map((a) => a.id) ?? null
+    const health = writer.health()
+    const writers: WriterStatus[] = WRITER_PROVIDERS.map((provider) => {
+      const h = health.find((x) => x.provider === provider)
+      return { provider, lastSuccessAt: h?.lastSuccessAt ?? null, failure: h?.failure ?? null, installed: installedAgents ? installedAgents.includes(provider) : null }
+    })
+    return { settings: read.settings, error: read.error, version, writers }
+  }
+  orca.panels.handle('sidebar.settings', () => settingsState())
+  orca.panels.handle('sidebar.saveSettings', async ({ settings }) => {
+    try {
+      writeSettings(normalizeSettings(settings), DATA_DIR)
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, state: await settingsState() }
+    }
+    refreshSoon()
+    return { ok: true, state: await settingsState() }
+  })
+  orca.panels.handle('sidebar.revealSettings', () => new Promise((resolve) => {
+    const file = configFile(DATA_DIR)
+    execFile('/usr/bin/open', existsSync(file) ? ['-R', file] : [DATA_DIR], { timeout: 5000 }, (error) => resolve({ ok: !error }))
+  }))
   const summarizer = turnSummarizer({
     findTranscript: (pane, identity) => currentAgent(pane)
       ? findTranscript(pane, undefined, { ...identityFor(pane), ...identity })

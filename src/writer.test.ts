@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cliProviders, codexHomeFromAccounts, createWriter, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
 import { SUMMARY_SCHEMA, summarizePane, summaryProviders, turnSummarizer, validateSummary } from './summarize.ts'
+import { configuredWriters } from './config.ts'
+import type { WriterSetting } from './settings.ts'
 
 const card = (title = 'Guest checkout') => ({ title, about: 'Enable guest checkout.', goal: 'Buy without an account.', since: 'Tests pass.', needs: { type: 'none', ask: '', options: [] }, glance: '', watching: '', effort: 'quick', priority: 'P1' })
 const request = { prompt: 'Synthetic checkout task', system: 'Write a card.', schema: SUMMARY_SCHEMA }
@@ -274,5 +276,87 @@ test('Luna strips inherited endpoint overrides without changing the selected aut
     assert.deepEqual(await providers.luna(request), card())
   } finally {
     keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i] })
+  }
+})
+
+// ---------- writers from config.json ----------
+
+const chainOf = (...entries: [string, string | undefined, boolean][]) => entries.map(([provider, model, enabled]) => ({ provider, ...(model ? { model } : {}), enabled }) as WriterSetting)
+const named = (name: string, calls: string[], fail?: () => WriterError | undefined) => async () => { calls.push(name); const e = fail?.(); if (e) throw e; return card(name) }
+
+test('absent config = today: Haiku first, then Luna', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca-writer-config-'))
+  try {
+    const calls: string[] = []
+    let haikuDown = false
+    const writer = createWriter({ writers: () => configuredWriters(dir), haiku: named('haiku', calls, () => haikuDown ? new WriterError('haiku', 'quota') : undefined), sonnet: named('sonnet', calls), luna: named('luna', calls) })
+    assert.equal((await writer(request) as any).title, 'haiku')
+    haikuDown = true
+    assert.equal((await writer(request) as any).title, 'luna')
+    assert.deepEqual(calls, ['haiku', 'haiku', 'luna'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('order, enable and Claude model come from config, read again for every request', async () => {
+  const calls: string[] = []
+  let writers = chainOf(['codex', 'gpt-6-luna', true], ['claude', 'sonnet', true], ['antigravity', undefined, false])
+  const writer = createWriter({ writers: () => writers, haiku: named('haiku', calls), sonnet: named('sonnet', calls), luna: named('luna', calls) })
+  assert.equal((await writer(request) as any).title, 'luna')
+  writers = chainOf(['codex', 'gpt-6-luna', false], ['claude', 'sonnet', true])
+  assert.equal((await writer(request) as any).title, 'sonnet')
+  writers = chainOf(['claude', 'haiku', true], ['codex', 'gpt-6-luna', true])
+  assert.equal((await writer(request) as any).title, 'haiku')
+  assert.deepEqual(calls, ['luna', 'sonnet', 'haiku'])
+})
+
+test('a turned-off writer is never called, even as the last resort', async () => {
+  const calls: string[] = []
+  const writer = createWriter({ writers: () => chainOf(['claude', 'haiku', true], ['codex', 'gpt-6-luna', false]), haiku: named('haiku', calls, () => new WriterError('haiku', 'quota')), luna: named('luna', calls) })
+  await assert.rejects(writer(request), /haiku: quota/)
+  await assert.rejects(writer(request), /haiku: quota/)
+  assert.deepEqual(calls, ['haiku'])
+})
+
+test('no writer turned on: the card waits with an actionable error', async () => {
+  const writer = createWriter({ writers: () => chainOf(['claude', 'haiku', false], ['codex', 'gpt-6-luna', false]), haiku: async () => card(), luna: async () => card() })
+  await assert.rejects(writer(request), (e) => e instanceof WriterError && e.kind === 'disabled' && /turn on a writer/.test(e.message))
+})
+
+test('cooldowns follow the configured order; one probe of the first writer at a time; health reports them', async () => {
+  let now = 1_000
+  const calls: string[] = []
+  let codexDown = true
+  const writer = createWriter({
+    now: () => now,
+    writers: () => chainOf(['codex', 'gpt-6-luna', true], ['claude', 'haiku', true]),
+    luna: async () => { calls.push('luna'); await new Promise((r) => setTimeout(r, 5)); if (codexDown) throw new WriterError('luna', 'auth'); return card('luna') },
+    haiku: named('haiku', calls)
+  })
+  const results = await Promise.all([writer(request), writer(request), writer(request)]) as any[]
+  assert.deepEqual(results.map((r) => r.title), ['haiku', 'haiku', 'haiku'])
+  assert.equal(calls.filter((c) => c === 'luna').length, 1, 'one failed probe shared by queued work')
+  const health = writer.health()
+  assert.deepEqual(health.find((h) => h.provider === 'codex')?.failure, { kind: 'auth', until: 1_000 + PRIMARY_COOLDOWN_MS })
+  assert.equal(health.find((h) => h.provider === 'claude')?.lastSuccessAt, 1_000)
+  now += PRIMARY_COOLDOWN_MS
+  codexDown = false
+  assert.equal((await writer(request) as any).title, 'luna')
+  assert.equal(writer.health().find((h) => h.provider === 'codex')?.failure, null)
+})
+
+test('invalid output from the first configured writer never falls through', async () => {
+  const calls: string[] = []
+  const configured = createWriter({ ...summaryProviders({ sonnet: async () => ({ title: 'incomplete' }), luna: named('luna', calls) }), writers: () => chainOf(['claude', 'sonnet', true], ['codex', 'gpt-6-luna', true]) })
+  await assert.rejects(configured(request), /sonnet: invalid-output/)
+  assert.deepEqual(calls, [])
+})
+
+test('the Claude adapter passes the configured model to claude -p --model', async () => {
+  for (const model of ['haiku', 'sonnet'] as const) {
+    let args: string[] = []
+    const providers = cliProviders(async (command) => { args = command.args; return { stdout: JSON.stringify({ structured_output: card() }), stderr: '', error: null } })
+    assert.deepEqual(await providers[model](request), card())
+    assert.equal(args[args.indexOf('--model') + 1], model)
+    assert.equal(args[args.indexOf('--tools') + 1], '')
   }
 })
