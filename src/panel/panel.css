@@ -536,7 +536,7 @@ button.item.coord { padding: 5px 6px; }
 
 /* Provider marks leave the character/ring geometry and the row’s click target intact. */
 .provider { display: inline-flex; flex: 0 0 14px; width: 14px; height: 14px; align-items: center; justify-content: center; color: var(--ink); }
-.provider svg { display: block; width: 14px; height: 14px; }
+.provider svg, .provider img { display: block; width: 14px; height: 14px; object-fit: contain; }
 /* A compact secondary session selector keeps the coordinator's character and current status. */
 .coord-label{display:flex;flex-direction:column;min-width:0;width:100%}
 .coord-label .name,.coord-label .sub{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

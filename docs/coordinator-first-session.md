@@ -47,8 +47,10 @@ Evidence paths relative to the installed host's `out/shared/`:
 The picker inventory is `CoordinatorProvider = { id: string; name: string }`, exposed as optional
 `Snapshot.coordinatorProviders` (`null` means unknown). `sidebar.openCoordinator` accepts optional
 `provider`; its `WakeOutcome` can return `kind: provider` and `providers` before any launch.
-New supported host contracts require updating the capability allowlist. This does not add new
-logos, transcript adapters, hook parity claims or provider-specific integrations. **Handover remains
+New supported host contracts require updating the capability allowlist. The picker itself adds no
+provider adapters or hook parity claims. The combined Antigravity integration supplies its mark and
+adds workspace readiness and original-native-conversation guards;
+see [Antigravity support](antigravity.md). **Handover remains
 Claude/Codex-only**, independent of first-session choices.
 
 ## Verification

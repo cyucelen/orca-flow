@@ -15,7 +15,7 @@ const current = agent('current', 'codex', 'Replacement coordinator')
 const member = (a) => ({ id: JSON.stringify(['folder:shop', 'session', a.orcaSession]), workspaceId: 'folder:shop', orcaSession: a.orcaSession, agentType: a.agentType, title: a.title, paneKey: a.paneKey, terminals: [a.terminal], resumeSessionId: `provider-${a.paneKey}`, lastAgent: a, agent: a })
 const members = [member(old), member(current)]
 const row = (id, a, extra = {}) => ({ id, name: a.title, branch: 'feature', repo: 'shop', path: '/fixture/shop', main: false, agents: [a], state: a.state, priority: null, card: null, parentId: null, liveTerminals: 1, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: 1, createdAt: 1, pr: null, ...extra })
-const fixture = { coordinatorProviders: [{id:'claude',name:'Claude'},{id:'codex',name:'Codex'},{id:'hermes',name:'Hermes'}], handoverProviders: ['claude', 'codex'], source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
+const fixture = { coordinatorProviders: [{id:'claude',name:'Claude'},{id:'codex',name:'Codex'},{id:'hermes',name:'Hermes'},{id:'antigravity',name:'Antigravity'}], handoverProviders: ['claude', 'codex'], source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
   row('folder:shop', agent('lead', 'claude', 'Planner workstream', { dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('worker', 'codex', 'Validate totals', { leadPane: 'lead', parentPane: 'lead', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('helper', 'claude', 'Check edge cases', { leadPane: 'worker', parentPane: 'worker', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
@@ -29,6 +29,7 @@ const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
 const listeners = new Map();
 window.previewCalls = [];
 window.previewLaunches = [];
+window.previewResumes = [];
 let firstPending = false;
 const neverStarted = (name='New coordinator',key='first') => ({key,name,repos:[],workspaceId:null,session:null,sessions:{version:1,current:null,members:[]},members:[]});
 window.orca = { plugin: {
@@ -41,6 +42,13 @@ window.orca = { plugin: {
   if(name==='sidebar.openCoordinator') {
    const c=fixture.coordinators.find(c=>c.key===data.key);
    if(c.session) return {ok:true,kind:'opened'};
+   const saved=c.sessions?.members.find(m=>m.id===c.sessions.current);
+   if(saved?.resumeSessionId) {
+    previewResumes.push({provider:saved.agentType,sessionId:saved.resumeSessionId});
+    const a={...saved.lastAgent,live:true,state:'working'};
+    c.session=a;for(const m of c.members)if(m.id===saved.id)m.agent=a;
+    listeners.get('sidebar.changed')?.(structuredClone(fixture));return {ok:true,kind:'resumed'};
+   }
    if(firstPending) return {ok:true,kind:'starting'};
    const choices=fixture.coordinatorProviders;
    const selected=data.provider ? choices?.find(p=>p.id===data.provider) : choices?.length===1 ? choices[0] : null;
@@ -77,6 +85,7 @@ window.orca = { plugin: {
 window.fixtureState=()=>structuredClone(fixture);
 window.previewNeverStarted=()=>{fixture.coordinators=[neverStarted()];fixture.rows=[];previewCalls.length=0;previewLaunches.length=0;firstPending=false;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewFirstProviders=(providers)=>{fixture.coordinatorProviders=providers;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
+window.previewSleepCurrent=()=>{const c=fixture.coordinators[0];for(const m of c.members)if(m.id===c.sessions.current){m.lastAgent={...m.agent,live:false};m.resumeSessionId='native-original-'+m.agentType;m.agent=null;}c.sessions.members=structuredClone(c.members);c.session=null;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewAvailable=(providers)=>{fixture.handoverProviders=providers;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewProvider=(provider)=>{const c=fixture.coordinators[0];c.session.agentType=provider;for(const m of c.members)if(m.id===c.sessions.current){m.agentType=provider;m.agent.agentType=provider;}delete c.handover;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 </script>`

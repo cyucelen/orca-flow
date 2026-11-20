@@ -22,7 +22,7 @@ test('Claude profile selection and Codex USER discovery use separate roots acros
   assert.equal(claudeDiscoveryDir('/user', null), '/user/.claude')
   for (const home of ['/users/one', '/users/two']) for (const claudeDir of [`${home}/.claude`, `${home}/orca/profiles/account-two`]) {
     const links = linksFor('/installed/flow', home, claudeDir)
-    assert.deepEqual(links.map((l) => l.from), [`${claudeDir}/skills/orca-flow`, `${home}/.agents/skills/orca-flow`])
+    assert.deepEqual(links.map((l) => l.from), [`${claudeDir}/skills/orca-flow`, `${home}/.agents/skills/orca-flow`, `${home}/.gemini/config/skills/orca-flow`])
     assert.ok(links.every((l) => l.to === '/installed/flow/skills/orca-flow'))
   }
 })
@@ -180,4 +180,30 @@ test('both hooks go in once, next to Orca\'s own hooks, each updated in place', 
   writeFileSync(hook.path, '{"hooks":{"UserPromptSubmit":{}}}')
   assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`])
   rmSync(home, { recursive: true })
+})
+
+test('Antigravity discovers the installed Flow skill and preserves existing user links', async () => {
+  const { ensureOwnLinks, linksFor } = await import('./install.ts')
+  const { home, claudeDir } = profile()
+  try {
+    const path = join(home, '.gemini', 'config', 'skills', 'orca-flow')
+    const plugin = join(home, 'plugins', 'cyucelen.flow')
+    const first = join(plugin, 'a'.repeat(64)), next = join(plugin, 'b'.repeat(64))
+    const links = linksFor(first, home, claudeDir)
+    ensureOwnLinks(links, false)
+    assert.equal(existsSync(join(home, '.gemini')), false)
+    ensureOwnLinks(links, true)
+    assert.equal(readlinkSync(path), join(first, 'skills/orca-flow'))
+    ensureOwnLinks(linksFor(next, home, claudeDir), true)
+    assert.equal(readlinkSync(path), join(next, 'skills/orca-flow'))
+    rmSync(path)
+    symlinkSync('/fixture/user-owned', path)
+    for (const repairOnly of [true, false]) ensureOwnLinks(links, true, { repairOnly })
+    assert.equal(readlinkSync(path), '/fixture/user-owned')
+    rmSync(path)
+    const foreign = join(home, 'plugins', 'other.flow', 'c'.repeat(64), 'skills/orca-flow')
+    symlinkSync(foreign, path)
+    ensureOwnLinks(links, true)
+    assert.equal(readlinkSync(path), foreign, 'a content-addressed path of another plugin is not ours')
+  } finally { rmSync(home, { recursive: true }) }
 })

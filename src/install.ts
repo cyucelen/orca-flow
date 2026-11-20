@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path'
 import { COORDINATOR_HOME } from './coordinators.ts'
 import { claudeConfigDir } from './summarize.ts'
 
-export type Link = { from: string; to: string }
+export type Link = { from: string; to: string; preserveUserLinks?: boolean }
 
 /** Orca's selected host profile wins; an explicit profile is the fallback outside profile management. */
 export function claudeDiscoveryDir(home: string, selected: string | null, explicit?: string): string {
@@ -29,7 +29,8 @@ export function linksFor(dir: string, home = homedir(), claudeDir = claudeDiscov
     { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') },
     // USER discovery is HOME, not CODEX_HOME: Orca's selected account changes CODEX_HOME,
     // but shares the user's .agents skills. Never modify account credentials/configuration.
-    { from: join(home, '.agents', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
+    { from: join(home, '.agents', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') },
+    { from: join(home, '.gemini', 'config', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow'), preserveUserLinks: true }
   ]
 }
 
@@ -71,7 +72,7 @@ export function ensureSeeds(seeds: Link[]): string[] {
  */
 export function ensureLinks(links: Link[], { repairOnly = false } = {}): string[] {
   const done: string[] = []
-  for (const { from, to } of links) {
+  for (const { from, to, preserveUserLinks } of links) {
     let stat: { isSymbolicLink(): boolean } | null = null
     try {
       stat = lstatSync(from)
@@ -81,7 +82,14 @@ export function ensureLinks(links: Link[], { repairOnly = false } = {}): string[
         if (!repairOnly) done.push(`kept ${from}: not a link`)
         continue
       }
-      if (stat && readlinkSync(from) === to) continue
+      const previous = stat ? readlinkSync(from) : null
+      if (previous === to) continue
+      if (previous && preserveUserLinks) {
+        // Installed releases live under the same plugin key in content-addressed directories.
+        const release = /^(.*\/plugins\/[^/]+)\/(?:[a-f0-9]{64}|current)\/skills\/orca-flow$/
+        const owner = release.exec(to)?.[1]
+        if (!owner || release.exec(previous)?.[1] !== owner) continue
+      }
       if (stat && repairOnly && existsSync(from)) continue
       if (stat) unlinkSync(from)
       mkdirSync(join(from, '..'), { recursive: true })

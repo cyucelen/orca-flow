@@ -7,6 +7,12 @@ to a lead and workers, and keep you out of the details.
 
 macOS only for now.
 
+**Antigravity CLI** sessions show their host-reported title, state and worker relationships.
+The Antigravity mark appears beside the role avatar in mixed-provider sidebars. Terminal
+coordination and exact-session resume have fixture coverage. Live sign-in, dispatch and resume
+remain untested. Flow has no Antigravity transcript summary or structured handover adapter.
+[Support details and verification](docs/antigravity.md)
+
 ## What you get
 
 - **Top bar:** free memory and free disk, always visible. Click it for the details: RAM and swap,

@@ -9,6 +9,7 @@
 // Cards (coordinator's goal and priority) come from ~/.orca-flow/cards, written by `orca-flow set`.
 // Summaries (end-of-turn status by Haiku) are written to ~/.orca-flow/agents by this worker when
 // Orca reports a finished turn (src/summarize.ts). The worker watches that folder.
+import { antigravityTurnRecorded, launchAntigravityCoordinator, requireAntigravity } from './antigravity.ts'
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -141,7 +142,7 @@ export function questionOf(a: PsAgent): string | null {
  * Monitor ended, and no cron or scheduled wake-up.
  */
 function stateOf(a: PsAgent, quiet: (pane: string) => boolean): { state: AgentState; workingMode: string | null } {
-  const idleWatcher = a.state === 'working' && a.workingMode === 'monitoring' && a.mainAgent?.state === 'done'
+  const idleWatcher = a.agentType !== 'antigravity' && a.state === 'working' && a.workingMode === 'monitoring' && a.mainAgent?.state === 'done'
     && a.programStatus?.state === 'done' && !!a.paneKey && quiet(a.paneKey)
   return idleWatcher ? { state: 'done', workingMode: null } : { state: a.state as AgentState, workingMode: a.workingMode ?? null }
 }
@@ -844,7 +845,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     bootstrapCoordinator(c.dir)
     const workspaceId = await workspaceFor(c.dir)
     if (!workspaceId) return { ok: false, error: 'Orca did not add the folder' }
-    const { launch } = await launchOnce(launches, c.key, workspaceId, agent, () => orca.host.call('agent.launch', { workspaceId, agent, prompt: coordinatorPrompt(skill) }))
+    const { launch } = await launchOnce(launches, c.key, workspaceId, agent, async () => {
+      if (agent === 'antigravity') {
+        return launchAntigravityCoordinator(workspaceId, c.dir, dir, run, (input) => orca.host.call('agent.launch', input))
+      }
+      return orca.host.call('agent.launch', { workspaceId, agent, prompt: coordinatorPrompt(skill) })
+    })
     await orca.host.call('terminal.focus', { terminalId: launch.terminalId }).catch((e: Error) => orca.log(`showing the launched terminal failed: ${e.message}`))
     // Agents take seconds to start and report a conversation id; wait for it, not for the newest pane.
     const deadline = Date.now() + 15_000
@@ -854,8 +860,18 @@ export default function activate(orca: OrcaWorkerApi): void {
       const row = allRows.find((r) => r.id === workspaceId)
       const a = launchedAgent(launch, terminals, row)
       if (row && a) {
-        const resumeSessionId = await resumeIdOf(workspaceId, launch.terminalId, a.agentType)
-        updateCoordinatorSessions(c.dir, (disk) => bindLaunched(disk ?? { version: 1, current: null, members: [] }, row, a, resumeSessionId))
+        const resumeSessionId = await resumeIdOf(workspaceId, [launch.terminalId, a.terminal ?? undefined], a.agentType)
+        if (launch.agent === 'antigravity') {
+          const history = await orca.host.call('agent.listSessions', { workspaceId, limit: 200 }).catch(() => null)
+          if (!a.live || resumeSessionId === a.orcaSession || !antigravityTurnRecorded(history?.sessions ?? [], workspaceId, resumeSessionId)) {
+            return { ok: false, bound: false, error: 'Antigravity opened. Check its terminal for sign-in or workspace trust. After its first response, select the conversation in Sessions.' }
+          }
+          await verifyConversation(memberFrom(row, a), run)
+        }
+        updateCoordinatorSessions(c.dir, (disk) => {
+          if (launch.agent === 'antigravity' && (disk?.current ?? null) !== (c.sessions?.current ?? null)) throw new Error('The main conversation changed during Antigravity startup. Select the new conversation in Sessions.')
+          return bindLaunched(disk ?? { version: 1, current: null, members: [] }, row, a, resumeSessionId)
+        })
         launches.delete(c.key)
         refreshSoon()
         return { ok: true }
@@ -904,7 +920,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   async function resumeIdOf(workspaceId: string, terminalId: string | (string | undefined)[], agentType: string | null): Promise<string | undefined> {
     const ids = new Set([terminalId].flat().filter(Boolean))
     const listed = await orca.host.call('agents.list', { workspaceId }).catch(() => null)
-    return listed?.agents.find((a) => a.terminalId && ids.has(a.terminalId) && a.agent === agentType)?.sessionId ?? undefined
+    const matches = listed?.agents.filter((a) => a.terminalId && ids.has(a.terminalId) && a.agent === agentType && a.sessionId)
+    return matches?.length === 1 ? matches[0].sessionId ?? undefined : undefined
   }
 
   async function captureResumeId(member: import('./protocol.ts').CoordinatorMember, terminalId: string): Promise<void> {
@@ -958,7 +975,12 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   /** Resumes by provider id and finds the exact terminal the resume returned, or that the provider exited. */
   const resumeIo: ResumeIo = {
-    resume: (input) => {
+    resume: async (input) => {
+      if (input.agent === 'antigravity') {
+        const workspace = (await orca.host.call('workspace.list')).workspaces.find((w) => w.id === input.workspaceId)
+        if (!workspace?.path) throw new Error('The Antigravity workspace is unavailable.')
+        await requireAntigravity(workspace.path, run)
+      }
       type ResumeAgent = Parameters<typeof orca.host.call<'agent.resume'>>[1]['agent']
       return orca.host.call('agent.resume', { ...input, agent: input.agent as ResumeAgent })
     },

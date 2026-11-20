@@ -73,7 +73,10 @@ and hand actions before picks and reviews, then longest waiting.
   nothing (search, read docs, summarize code). No tracking, no extra memory.
 - **Orca worker (`orca orchestration worker-start`):** when you hand off work that edits files,
   takes more than a few minutes, or the user may want to watch or talk to.
-- **Agent:** always `--agent claude`. Use Codex only when the user names it.
+- **Agent:** use `--agent claude` by default. When the user requests Codex or Antigravity, use
+  `--agent codex` or `--agent antigravity` in the role examples. Check eligibility with
+  `orca agent installed --worktree <selector> --json` on the target host. If the requested
+  provider is unavailable, report that before dispatching.
 
 **Worker lifecycle is Orca's job.** A finished worker closes on its own and frees its memory.
 `orca orchestration send --to dispatch:<id>` reaches it in any state: a closed one is reopened with

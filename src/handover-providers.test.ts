@@ -10,6 +10,7 @@ test('handover offers enabled supported alternatives, not sessions or unrelated 
   assert.deepEqual(handoverTargets(available, 'claude'), ['codex'])
   assert.deepEqual(handoverTargets(available, 'codex'), ['claude'])
   assert.deepEqual(handoverTargets(available, 'other'), ['claude', 'codex'])
+  assert.deepEqual(handoverTargets(['claude', 'codex', 'antigravity'], 'codex'), ['claude'])
 })
 
 test('unavailable and unknown discovery never advertises a provider', async () => {

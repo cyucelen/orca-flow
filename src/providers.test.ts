@@ -158,3 +158,32 @@ test('missing parents, self-parenting and cycles cannot hide or duplicate sideba
   const html = render(s, emptyUi()).main
   for (const key of ['a', 'b', 'c', 'd']) assert.equal((html.match(new RegExp(`data-menu="agent:${key}"`, 'g')) ?? []).length, 1)
 })
+
+test('Antigravity has its own mark in both provider pairings and follows pane lifecycle', () => {
+  const ag = { ...codex, agentType: 'antigravity', paneKey: 'search', parentPaneKey: 'lead', taskTitle: 'Search worker' }
+  for (const partner of [claude, codex]) {
+    const s = snapshot([{ ...partner, paneKey: 'lead' }, ag, { ...ag, paneKey: 'other', agentType: 'agy' }])
+    s.rows = assignCoordinators(s.rows, [], { dispatcherOf: new Map(), paneOf: new Map() })
+    const a = s.rows[0].agents[1]
+    assert.equal(a.leadPane, 'lead')
+    const html = render(s, emptyUi()).main
+    assert.deepEqual(badges(html).sort(), ['Antigravity', partner === claude ? 'Claude' : 'Codex', 'Unknown provider'])
+    assert.match(providerBadge(a, true), /data-tip="Antigravity"><img .*src="data:image\/png;base64,/)
+    a.dispatch = 'settled'
+    assert.equal(mixedProviders(s), false)
+    a.dispatch = 'open'
+    assert.equal(mixedProviders(s), true)
+    a.live = false
+    assert.equal(mixedProviders(s), false)
+  }
+  assert.deepEqual(badges(render(snapshot([ag]), emptyUi()).main), [])
+  assert.equal(providerOf('agy'), null)
+})
+
+test('Antigravity keeps host status and task title when a pane has an old Claude card', () => {
+  const [row] = fromPs([{ identity: { key: 'example' }, agents: [{
+    paneKey: 'example', agentType: 'antigravity', state: 'working', workingMode: 'monitoring',
+    mainAgent: { state: 'done' }, programStatus: { state: 'done' }, taskTitle: 'Index catalog'
+  }] }], { cards: {}, summaries: { example: { title: 'Previous conversation' } as never } }, new Map(), () => true)
+  assert.deepEqual([row.agents[0].title, row.agents[0].state, row.agents[0].summary], ['Index catalog', 'working', null])
+})

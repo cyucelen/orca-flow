@@ -349,6 +349,7 @@ export async function resumeExactMember(s: CoordinatorSessions, id: string, io: 
   }
   if (b.status === 'running') throw new ResumeRunningError({ workspaceId: m.workspaceId, terminalId, agent: m.agentType, member: id, sessionId: m.resumeSessionId })
   if (b.workspaceId !== m.workspaceId || b.agent.agentType !== m.agentType || !b.agent.terminal || !b.agent.orcaSession) throw new ResumeUnverifiedError(`The resumed terminal now runs ${b.agent.agentType ?? 'another agent'} in another conversation, not this member's ${name} one. No fallback was selected; inspect it before retrying.`)
+  if (m.agentType === 'antigravity' && (!b.agent.live || b.resumeSessionId !== m.resumeSessionId)) throw new ResumeUnverifiedError('Orca could not confirm the original Antigravity conversation in the resumed terminal. Check its sign-in and conversation before selecting it.')
   const a = b.agent
   const fresh = b.resumeSessionId && b.resumeSessionId !== a.orcaSession ? b.resumeSessionId : m.resumeSessionId
   return { ...s, members: s.members.map((member) => {
@@ -388,7 +389,7 @@ export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[],
   if (current && live?.terminal && live.live === true) return { kind: 'open', member: current, workspaceId: current.workspaceId, terminal: live.terminal }
   if (typeof launching === 'object' && launching.member) {
     if (current?.id === launching.member && current.resumeSessionId === launching.sessionId) return { kind: 'resume', member: current, adopt: launching }
-  } else if (launching) return { kind: 'adopt', agent: current?.agentType ?? null }
+  } else if (launching) return { kind: 'adopt', agent: typeof launching === 'object' ? launching.agent : current?.agentType ?? null }
   if (current) {
     if (current.resumeSessionId && current.agentType) return { kind: 'resume', member: current }
     if (!live && memberMatches(current, rows) > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
@@ -532,7 +533,10 @@ export function settlePending(pending: Map<string, Launch>, key: string, termina
  */
 export async function launchOnce(pending: Map<string, Launch>, key: string, workspaceId: string, agent: string, launch: () => Promise<{ terminalId: string }>): Promise<{ launch: Launch; adopted: boolean }> {
   const known = pending.get(key)
-  if (known?.workspaceId === workspaceId && !known.member) return { launch: known, adopted: true }
+  if (known?.workspaceId === workspaceId && !known.member) {
+    if (known.agent !== agent) throw new Error('A different provider already has a pending launch. Inspect that terminal before starting another coordinator conversation.')
+    return { launch: known, adopted: true }
+  }
   const { terminalId } = await launch()
   const next = { workspaceId, terminalId, agent }
   pending.set(key, next)
