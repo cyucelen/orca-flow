@@ -34,7 +34,7 @@ const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: s
     tip: 'After each agent turn, one request writes the title, summary and ask on its Orca Flow card. Only Orca Flow’s sidebar cards change: Orca names its own tabs and chats, and Antigravity sessions get no card.' },
   { id: 'format', label: 'Message Check', tint: '#30b158', keys: ['format', 'folders'],
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
-  { id: 'capacity', label: 'Capacity', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
+  { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
     tip: 'Before a coordinator or lead starts more work, Orca Flow checks free memory. Each agent costs about 0.5 GB, plus any dev servers its project runs.' },
   { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' }
 ]
@@ -133,9 +133,9 @@ function stepper(key: 'marginGB' | 'warnHeadroomGB', name: string): string {
 
 function pageCapacity(): string {
   return group([
-    row(label('Always keep free', 'New work waits when starting it would go below this. Default 2 GB.'), stepper('marginGB', 'Always keep free')),
-    row(label('Extra room when memory is tight', 'Under macOS memory pressure, a new worktree also needs this much spare, or half its dev servers’ size if larger. Default 2 GB.'), stepper('warnHeadroomGB', 'Extra room when memory is tight'))
-  ])
+    row(label('Always', 'New work waits when starting it would leave less free memory than this. Default 2 GB.'), stepper('marginGB', 'Free memory to keep, always')),
+    row(label('Under memory pressure', 'When macOS reports memory pressure, a new worktree also needs this much spare, or half its dev servers’ size if larger. Default 2 GB.'), stepper('warnHeadroomGB', 'Free memory to keep under memory pressure'))
+  ], { text: 'Free memory to keep', tip: 'Orca Flow keeps this much RAM free before agents start more work.' })
 }
 
 function pageAdvanced(): string {
