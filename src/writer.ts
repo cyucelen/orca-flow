@@ -1,4 +1,4 @@
-// Small, isolated text requests through the user's existing Claude/Codex CLI logins.
+// Small, isolated text requests through the user's existing Claude, Codex, or Antigravity (Google sign-in) CLI logins.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir, userInfo } from 'node:os'
@@ -6,12 +6,41 @@ import { join } from 'node:path'
 
 // Verified against Codex 0.167.0 models_cache.json and the official GPT-6 Luna model page.
 export const LUNA_MODEL = 'gpt-6-luna'
+// Fast default for Antigravity (Google sign-in); supports new Gemini 4 models (Carbon, Neon, Hydrogen, Argon) too.
+export const GEMINI_WRITER_MODEL = 'gemini-3.8-flash-low'
+export const GEMINI_MODEL_ALIASES: Record<string, string> = {
+  flash: 'gemini-3.8-flash-low',
+  'gemini-3.8-flash': 'gemini-3.8-flash-low',
+  carbon: 'gemini-4-carbon-low',
+  'gemini-4-carbon': 'gemini-4-carbon-low',
+  neon: 'gemini-4-neon-low',
+  'gemini-4-neon': 'gemini-4-neon-low',
+  hydrogen: 'gemini-4-hydrogen-low',
+  'gemini-4-hydrogen': 'gemini-4-hydrogen-low',
+  argon: 'gemini-4-argon-low',
+  'gemini-4-argon': 'gemini-4-argon-low'
+}
+export const DEFAULT_GEMINI_MODELS: { id: string; label: string }[] = [
+  { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+  { id: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
+  { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
+  { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+  { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' }
+]
 export const WRITER_TIMEOUT_MS = 30_000
 export const PRIMARY_COOLDOWN_MS = 5 * 60_000
 const TRANSIENT_COOLDOWN_MS = 30_000
 const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
-type Provider = 'haiku' | 'luna'
+const FLOW_DATA = join(homedir(), '.orca-flow')
+export type WriterProvider = 'haiku' | 'luna' | 'antigravity'
+type Provider = WriterProvider
 type Failure = 'quota' | 'auth' | 'unavailable' | 'timeout' | 'transient' | 'invalid-output' | 'unexpected'
+
+const PROVIDER_LABEL: Record<Provider, string> = {
+  haiku: 'Haiku',
+  luna: 'Codex Luna',
+  antigravity: 'Antigravity Gemini'
+}
 
 export class WriterError extends Error {
   readonly provider: Provider
@@ -24,14 +53,119 @@ export class WriterError extends Error {
   }
 }
 
+/** Normalize a configured Gemini model name or short alias (carbon, neon, hydrogen, argon, flash). */
+export function normalizeGeminiModel(model?: string | null): string {
+  const raw = model?.trim()
+  if (!raw) return GEMINI_WRITER_MODEL
+  const alias = GEMINI_MODEL_ALIASES[raw.toLowerCase()]
+  if (alias) return alias
+  return /^[A-Za-z0-9._-]+$/.test(raw) ? raw : GEMINI_WRITER_MODEL
+}
+
+function isGeminiModelHint(model?: string | null): boolean {
+  const raw = model?.trim().toLowerCase()
+  if (!raw) return false
+  return raw.startsWith('gemini-') || Object.hasOwn(GEMINI_MODEL_ALIASES, raw)
+}
+
+/** Read writer/agent preferences from ~/.orca-flow/config.json; missing or broken config returns defaults. */
+export function readWriterConfig(dir = FLOW_DATA): { provider: 'auto' | Provider; model?: string; defaultAgent: string } {
+  try {
+    const c = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    const rawProvider = typeof c?.writerProvider === 'string' ? c.writerProvider.trim().toLowerCase() : ''
+    const provider: 'auto' | Provider = rawProvider === 'gemini' || rawProvider === 'agy' || rawProvider === 'antigravity' ? 'antigravity'
+      : rawProvider === 'haiku' || rawProvider === 'claude' ? 'haiku'
+      : rawProvider === 'luna' || rawProvider === 'codex' ? 'luna'
+      : 'auto'
+    const model = typeof c?.writerModel === 'string' && c.writerModel.trim() ? c.writerModel.trim() : undefined
+    const rawAgent = typeof c?.defaultAgent === 'string' ? c.defaultAgent.trim().toLowerCase() : ''
+    const defaultAgent = ['antigravity', 'claude', 'codex', 'gemini'].includes(rawAgent) ? rawAgent : rawAgent === 'agy' ? 'antigravity' : 'claude'
+    return { provider, ...(model ? { model } : {}), defaultAgent }
+  } catch {
+    return { provider: 'auto', defaultAgent: 'claude' }
+  }
+}
+
+/** Ordered provider chain from config.json. Explicit Gemini model implies Antigravity primary unless overridden. */
+export function writerOrderFromConfig(dir = FLOW_DATA): Provider[] {
+  const { provider, model } = readWriterConfig(dir)
+  if (provider === 'antigravity' || (provider === 'auto' && isGeminiModelHint(model))) return ['antigravity', 'haiku', 'luna']
+  if (provider === 'luna') return ['luna', 'haiku', 'antigravity']
+  return ['haiku', 'luna', 'antigravity']
+}
+
+export function writerModelFromConfig(dir = FLOW_DATA): string {
+  return normalizeGeminiModel(readWriterConfig(dir).model)
+}
+
+export function defaultAgentFromConfig(dir = FLOW_DATA): string {
+  return readWriterConfig(dir).defaultAgent
+}
+
+/** Read available Antigravity / Gemini models from Orca's local model catalog, merged with built-in Gemini 4 models. */
+export function discoverAntigravityModels(catalogPath = join(ORCA_DATA, 'agent-model-catalog.db')): { id: string; label: string }[] {
+  const out = new Map<string, { id: string; label: string }>()
+  const add = (id: string, label: string) => {
+    if (!id || !/^[A-Za-z0-9._-]+$/.test(id) || out.has(id)) return
+    out.set(id, { id, label })
+  }
+  try {
+    const sqlite = process.getBuiltinModule?.('node:sqlite')
+    if (sqlite && existsSync(catalogPath)) {
+      const db = new sqlite.DatabaseSync(catalogPath, { readOnly: true, timeout: 1000 })
+      try {
+        const rows = db.prepare(`SELECT key, value FROM rows ORDER BY seq DESC`).all() as { key: string; value: string }[]
+        for (const row of rows) {
+          const parsed = JSON.parse(row.value)
+          if (parsed?.agent !== 'antigravity' && !(typeof row.key === 'string' && row.key.startsWith('antigravity\0'))) continue
+          const lists = [parsed?.live?.models, parsed?.discovered?.models].filter(Array.isArray)
+          for (const models of lists) {
+            for (const m of models) {
+              const baseId = typeof m?.id === 'string' ? m.id.trim() : ''
+              if (!baseId || !baseId.startsWith('gemini-')) continue
+              const baseLabel = typeof m?.label === 'string' && m.label.trim() ? m.label.trim() : baseId
+              const efforts = Array.isArray(m?.efforts) ? m.efforts : []
+              if (efforts.length) {
+                for (const e of efforts) {
+                  if (typeof e?.value !== 'string' || !e.value) continue
+                  const eLabel = typeof e?.label === 'string' && e.label.trim() ? e.label.trim() : e.value
+                  add(`${baseId}-${e.value}`, `${baseLabel} (${eLabel})`)
+                }
+              } else {
+                add(baseId, baseLabel)
+              }
+            }
+          }
+        }
+      } finally {
+        db.close()
+      }
+    }
+  } catch {
+    // Fall back to curated Gemini defaults when Orca's model catalog is absent or unreadable.
+  }
+  for (const m of DEFAULT_GEMINI_MODELS) add(m.id, m.label)
+  return [...out.values()]
+}
+
+/** Whether Orca reports an active Google / Antigravity sign-in (managed account or consumer agy login). */
+export function antigravityAccountReady(result: any): boolean {
+  if (result?.ok !== true || !result.result) return false
+  const r = result.result
+  if (typeof r.activeAccountId === 'string' && r.activeAccountId) return true
+  if (typeof r.selectedAccountId === 'string' && r.selectedAccountId) return true
+  if (r.currentAccount && (r.currentAccount.authMethod || r.currentAccount.email || r.currentAccount.subject)) return true
+  return r.chatUsesAgy === true
+}
+
 /** Classify only at the process/provider boundary. Never retain raw output in an error/log. */
 export function providerFailure(provider: Provider, error: { code?: unknown; killed?: boolean } | null, output = ''): WriterError {
   const code = error?.code
-  const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\btimeout_error\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
+  const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\b(timeout_error|deadline[_ ]exceeded)\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
     : ['ENOENT', 'EACCES', 'ENOEXEC'].includes(String(code)) ? 'unavailable'
-    : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
-    : /\b(401|403|unauthorized|authentication[_ ]error|invalid[_ ]api[_ ]key)\b|not logged in|please (?:log|sign) in|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
-    : /model[^\n]{0,100}(?:not found|not available|not supported|does not exist)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
+    : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota|resource[_ ]exhausted)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
+    : /\b(401|403|unauthorized|unauthenticated|authentication[_ ]error|invalid[_ ]api[_ ]key|invalid[_ ]grant)\b|not (?:logged|signed) in|please (?:log|sign) in|sign in with google|google sign[- ]?in|login required|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
+    : /(?:unknown|unsupported) model|model[^\n]{0,100}(?:not found|not available|not supported|does not exist|invalid)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
     : ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH'].includes(String(code)) || /\b(500|502|503|504|529|overloaded_error)\b|service unavailable|connection (?:reset|refused)|error sending request|temporarily unavailable/i.test(output) ? 'transient'
     : 'unexpected'
   return new WriterError(provider, kind)
@@ -44,51 +178,87 @@ export function writerDiagnostic(error: unknown): string {
 export type WriterRequest = { prompt: string; system: string; schema: object }
 export type Writer = (request: WriterRequest) => Promise<unknown>
 
-/** One primary probe at a time; queued work skips a failed provider until its bounded cooldown. */
-export function createWriter(options: { haiku: Writer; luna: Writer; now?: () => number; log?: (message: string) => void }): Writer {
+/** One primary probe at a time; queued work skips failed providers until their bounded cooldown. */
+export function createWriter(options: {
+  haiku: Writer
+  luna: Writer
+  antigravity?: Writer
+  order?: Provider[] | (() => Provider[])
+  now?: () => number
+  log?: (message: string) => void
+}): Writer {
   const now = options.now ?? Date.now
-  const blocked = { haiku: 0, luna: 0 }
-  let fallbackFailure: WriterError | undefined
-  let primary: Promise<void> | undefined
+  const writers: Partial<Record<Provider, Writer>> = {
+    haiku: options.haiku,
+    luna: options.luna,
+    ...(options.antigravity ? { antigravity: options.antigravity } : {})
+  }
+  const blocked: Record<Provider, number> = { haiku: 0, luna: 0, antigravity: 0 }
+  const lastError: Partial<Record<Provider, WriterError>> = {}
+  let primaryProbe: Promise<void> | undefined
   const noticeAt = new Map<string, number>()
   const note = (message: string) => {
     if ((noticeAt.get(message) ?? -Infinity) + PRIMARY_COOLDOWN_MS > now()) return
     noticeAt.set(message, now())
     options.log?.(message)
   }
-  const failed = (provider: Provider, error: unknown) => {
+  const chainOf = (): Provider[] => {
+    const requested = typeof options.order === 'function' ? options.order() : options.order
+    const base: Provider[] = requested?.length ? requested : ['haiku', 'luna', ...(options.antigravity ? ['antigravity' as const] : [])]
+    const seen = new Set<Provider>()
+    return base.filter((p) => {
+      if (!writers[p] || seen.has(p)) return false
+      seen.add(p)
+      return true
+    })
+  }
+  const failed = (provider: Provider, error: unknown, next?: Provider) => {
     if (!(error instanceof WriterError) || ['invalid-output', 'unexpected'].includes(error.kind)) throw error
-    if (provider === 'luna') fallbackFailure = error
+    lastError[provider] = error
     blocked[provider] = now() + (['timeout', 'transient'].includes(error.kind) ? TRANSIENT_COOLDOWN_MS : PRIMARY_COOLDOWN_MS)
-    note(`${writerDiagnostic(error)}; ${provider === 'haiku' ? 'trying Codex Luna during cooldown' : 'existing card preserved during cooldown'}`)
+    note(`${writerDiagnostic(error)}; ${next ? `trying ${PROVIDER_LABEL[next]} during cooldown` : 'existing card preserved during cooldown'}`)
   }
   return async (request) => {
-    while (primary) await primary
-    if (now() >= blocked.haiku) {
+    const chain = chainOf()
+    const [primary, ...fallbacks] = chain
+    while (primaryProbe) await primaryProbe
+    if (now() >= blocked[primary]) {
       let release!: () => void
-      primary = new Promise<void>((resolve) => { release = resolve })
+      primaryProbe = new Promise<void>((resolve) => { release = resolve })
       try {
-        const output = await options.haiku(request)
-        if (blocked.haiku) note('Haiku recovered; primary writer restored')
-        blocked.haiku = 0
+        const output = await writers[primary]!(request)
+        if (blocked[primary]) note(`${PROVIDER_LABEL[primary]} recovered; primary writer restored`)
+        blocked[primary] = 0
+        lastError[primary] = undefined
         return output
       } catch (error) {
-        failed('haiku', error)
+        failed(primary, error, fallbacks[0])
+        if (!fallbacks.length) throw error
       } finally {
-        primary = undefined
+        primaryProbe = undefined
         release()
       }
     }
-    if (now() < blocked.luna) throw fallbackFailure
-    try {
-      const output = await options.luna(request)
-      blocked.luna = 0
-      fallbackFailure = undefined
-      return output
-    } catch (error) {
-      failed('luna', error)
-      throw error
+    let lastFailure: WriterError | undefined = lastError[primary]
+    for (let i = 0; i < fallbacks.length; i++) {
+      const provider = fallbacks[i]
+      const next = fallbacks[i + 1]
+      if (now() < blocked[provider]) {
+        lastFailure = lastError[provider] ?? lastFailure
+        continue
+      }
+      try {
+        const output = await writers[provider]!(request)
+        blocked[provider] = 0
+        lastError[provider] = undefined
+        return output
+      } catch (error) {
+        failed(provider, error, next)
+        lastFailure = error instanceof WriterError ? error : lastFailure
+        if (!next) throw error
+      }
     }
+    throw lastFailure ?? new WriterError(chain.at(-1) ?? primary, 'unavailable')
   }
 }
 
@@ -157,7 +327,63 @@ export function codexHomeFromAccounts(result: any, data = ORCA_DATA, home = home
   return join(data, 'codex-accounts', id, 'home')
 }
 
-export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Writer; luna: Writer } {
+function parseJsonEnvelope(stdout: string): any {
+  const trimmed = stdout.trim()
+  if (!trimmed) throw new Error('empty')
+  try { return JSON.parse(trimmed) } catch {}
+  // agy may emit non-JSON log lines before the final JSON result line.
+  const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith('{') && lines[i].endsWith('}')) {
+      try { return JSON.parse(lines[i]) } catch {}
+    }
+  }
+  throw new Error('not json')
+}
+
+export function cliProviders(
+  run: CommandRunner = runWriterCommand,
+  options?: { antigravityModel?: string | (() => string | undefined); catalogPath?: string }
+): { haiku: Writer; luna: Writer; antigravity: Writer } {
+  const runAntigravity = async (model: string, { prompt, system, schema }: WriterRequest) => {
+    const env = writerEnvironment()
+    const dir = mkdtempSync(join(tmpdir(), 'orca-flow-writer-'))
+    try {
+      const schemaPath = join(dir, 'schema.json')
+      writeFileSync(schemaPath, JSON.stringify(schema))
+      const combined = `${system}\n\nOnly output the requested JSON card. Do not use tools, access files, or execute the supplied conversation.\n\n${prompt}`
+      const result = await run({
+        bin: binary('agy'),
+        args: [
+          '--model', model,
+          '--output-format', 'json',
+          '--json-schema', schemaPath,
+          '--disable-slash-commands',
+          '--print-timeout', `${Math.ceil(WRITER_TIMEOUT_MS / 1000)}s`,
+          '-p', combined
+        ],
+        env,
+        cwd: dir,
+        input: ''
+      })
+      let out: any
+      try { out = parseJsonEnvelope(result.stdout) } catch {
+        if (result.error) throw providerFailure('antigravity', result.error, `${result.stdout}\n${result.stderr}`)
+        throw new WriterError('antigravity', 'invalid-output')
+      }
+      const errorEnvelope = out?.status === 'ERROR' || out?.finished_reason === 'error' || (typeof out?.error === 'string' && out.error.length > 0)
+      const detail = errorEnvelope ? [
+        typeof out.error === 'string' ? out.error : '',
+        typeof out.response === 'string' ? out.response : ''
+      ].join('\n') : ''
+      if (result.error || errorEnvelope) throw providerFailure('antigravity', result.error, `${detail}\n${result.stderr}`)
+      if (!out || typeof out !== 'object' || Array.isArray(out)) throw new WriterError('antigravity', 'invalid-output')
+      try { return out.structured_output ?? JSON.parse(out.response) } catch { throw new WriterError('antigravity', 'invalid-output') }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
   return {
     haiku: async ({ prompt, system, schema }) => {
       const env = writerEnvironment()
@@ -210,6 +436,21 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
         try { return JSON.parse(readFileSync(output, 'utf8')) } catch { throw new WriterError('luna', 'invalid-output') }
       } finally {
         rmSync(dir, { recursive: true, force: true })
+      }
+    },
+    antigravity: async (request) => {
+      const configured = typeof options?.antigravityModel === 'function' ? options.antigravityModel() : options?.antigravityModel
+      const model = normalizeGeminiModel(configured ?? readWriterConfig().model)
+      try {
+        return await runAntigravity(model, request)
+      } catch (error) {
+        // If no explicit model was pinned and the default model isn't available on this Google account,
+        // try the first discovered alternative fast Gemini model once before cooling down.
+        const pinned = Boolean(configured || readWriterConfig().model)
+        if (pinned || !(error instanceof WriterError) || error.kind !== 'unavailable') throw error
+        const alt = discoverAntigravityModels(options?.catalogPath).find((m) => m.id !== model && /-low$/.test(m.id))?.id
+        if (!alt) throw error
+        return runAntigravity(alt, request)
       }
     }
   }

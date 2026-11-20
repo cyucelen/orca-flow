@@ -21,13 +21,18 @@ export function pluginDir(moduleUrl: string): string | null {
 
 export function linksFor(dir: string, home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): Link[] {
   return [
-    { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
+    { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') },
+    { from: join(home, '.gemini', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
   ]
 }
 
 /** Files copied once from a template, then left to the user. */
 export function seedsFor(dir: string, home = COORDINATOR_HOME): Link[] {
-  return [{ from: join(home, 'CLAUDE.md'), to: join(dir, 'skills', 'orca-flow', 'templates', 'coordinators-CLAUDE.md') }]
+  const template = join(dir, 'skills', 'orca-flow', 'templates', 'coordinators-CLAUDE.md')
+  return [
+    { from: join(home, 'CLAUDE.md'), to: template },
+    { from: join(home, 'AGENTS.md'), to: template }
+  ]
 }
 
 /** Writes each missing file from its template; a link left by an older version becomes a real copy. */

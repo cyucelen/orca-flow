@@ -10,7 +10,7 @@
 // Summaries (end-of-turn status by Haiku) are written to ~/.orca-flow/agents by this worker when
 // Orca reports a finished turn (src/summarize.ts). The worker watches that folder.
 import { execFile, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
@@ -20,9 +20,9 @@ import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder,
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, FlowSettings, LinearData, Priority, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
-import { createWriter } from './writer.ts'
+import { antigravityAccountReady, cliProviders, createWriter, defaultAgentFromConfig, discoverAntigravityModels, normalizeGeminiModel, readWriterConfig, writerModelFromConfig, writerOrderFromConfig } from './writer.ts'
 import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
@@ -341,10 +341,20 @@ function refreshMemory(rows: WorkspaceRow[], onLoaded: () => void): void {
 function readConfig(dir = DATA_DIR): Record<string, unknown> {
   try {
     const c = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
-    return c && typeof c === 'object' ? c : {}
+    return c && typeof c === 'object' && !Array.isArray(c) ? c : {}
   } catch {
     return {}
   }
+}
+
+/** Merge settings into ~/.orca-flow/config.json atomically, preserving every other key. */
+export function writeConfig(patch: Record<string, unknown>, dir = DATA_DIR): void {
+  const path = join(dir, 'config.json')
+  const next = { ...readConfig(dir), ...patch }
+  mkdirSync(dir, { recursive: true })
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n')
+  renameSync(tmp, path)
 }
 
 /** The same decision `orca-flow capacity` makes, from facts the worker keeps. */
@@ -484,7 +494,7 @@ export async function snapshot(
   onLineage: () => void = () => {}
 ): Promise<Snapshot> {
   const onDisk = readCoordinators()
-  const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, sessions, sessionNotice }) => ({ key, name, repos, look, linearTeams, sessions, sessionNotice, members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
+  const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, agent, linearTeams, sessions, sessionNotice }) => ({ key, name, repos, look, ...(agent ? { agent } : {}), linearTeams, sessions, sessionNotice, members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
   try {
     refreshLineage(orca, onLineage, allRows.flatMap((r) => r.agents.map((a) => a.paneKey)))
     refreshMemory(allRows, onLineage)
@@ -886,13 +896,51 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (id) member.resumeSessionId = id
   }
 
-  orca.panels.handle('sidebar.createCoordinator', async ({ name, look }) => {
+  orca.panels.handle('sidebar.createCoordinator', async ({ name, look, agent }) => {
     const invalid = validateName(name.trim(), readCoordinators().map((c) => c.name))
     if (invalid) return { ok: false, error: invalid }
-    scaffoldCoordinator(COORDINATOR_HOME, { name: name.trim(), look })
+    const chosen = typeof agent === 'string' && ['antigravity', 'claude', 'codex', 'gemini'].includes(agent.trim().toLowerCase()) ? agent.trim().toLowerCase() : defaultAgentFromConfig(DATA_DIR)
+    scaffoldCoordinator(COORDINATOR_HOME, { name: name.trim(), look, agent: chosen })
     const c = readCoordinators().find((c) => c.name === name.trim())!
     writeCoordinatorSessions(c.dir, { version: 1, current: null, members: [] })
-    return freshSession(c, 'claude').catch((e: Error) => ({ ok: false, error: e.message }))
+    return freshSession(c, chosen).catch((e: Error) => ({ ok: false, error: e.message }))
+  })
+
+  orca.panels.handle('sidebar.settings', async (): Promise<FlowSettings> => {
+    const cfg = readWriterConfig(DATA_DIR)
+    const account = await run(['account', 'list', '--agent', 'antigravity']).catch(() => null)
+    const antigravitySignedIn = antigravityAccountReady(account ? { ok: true, result: account } : null)
+    const antigravityModels = discoverAntigravityModels()
+    return {
+      writerProvider: cfg.provider,
+      writerModel: normalizeGeminiModel(cfg.model),
+      defaultAgent: cfg.defaultAgent,
+      antigravitySignedIn,
+      antigravityModels
+    }
+  })
+
+  orca.panels.handle('sidebar.setSettings', async ({ writerProvider, writerModel, defaultAgent }) => {
+    try {
+      const patch: Record<string, unknown> = {}
+      if (writerProvider !== undefined) {
+        const p = writerProvider.trim().toLowerCase()
+        if (!['auto', 'haiku', 'luna', 'antigravity', 'gemini'].includes(p)) return { ok: false, error: `Unsupported writer provider: ${writerProvider}` }
+        patch.writerProvider = p === 'gemini' ? 'antigravity' : p
+      }
+      if (writerModel !== undefined) {
+        patch.writerModel = normalizeGeminiModel(writerModel)
+      }
+      if (defaultAgent !== undefined) {
+        const a = defaultAgent.trim().toLowerCase()
+        if (!['antigravity', 'claude', 'codex', 'gemini'].includes(a)) return { ok: false, error: `Unsupported agent: ${defaultAgent}` }
+        patch.defaultAgent = a
+      }
+      if (Object.keys(patch).length) writeConfig(patch, DATA_DIR)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
   })
 
   /**
@@ -927,6 +975,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       return [process.env.CLAUDE_CONFIG_DIR, join(homedir(), '.claude'), ...observed, ...sub(join(data, 'claude-profiles'))].filter((x): x is string => !!x)
     }
     if (agent === 'codex') return [process.env.CODEX_HOME, join(homedir(), '.codex'), ...sub(join(data, 'codex-accounts'))].filter((x): x is string => !!x)
+    if (agent === 'antigravity') return [process.env.ANTIGRAVITY_HOME, join(homedir(), '.gemini', 'antigravity-cli')].filter((x): x is string => !!x)
     return []
   }
   const listDir = (dir: string) => { try { return readdirSync(dir) } catch { return null } }
@@ -1014,7 +1063,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         },
         fresh: (agent) => freshSession(c, agent),
         pend: (launch) => { if (launch) launches.set(key, launch); else if (launches.get(key)?.member) launches.delete(key) }
-      }, launches.get(key) ?? false)
+      }, launches.get(key) ?? false, c.agent || defaultAgentFromConfig(DATA_DIR))
     } catch (e) { return { ok: false, kind: 'failed', error: (e as Error).message } }
   }, busy)
   orca.panels.handle('sidebar.openCoordinator', ({ key }) => openCoordinator(key))
@@ -1037,7 +1086,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       await refresh()
       const c = readCoordinators().find((c) => c.key === key)
       if (!c) throw new Error('Coordinator no longer exists.')
-      if (action === 'fresh') return await freshSession(c, agent || 'claude')
+      if (action === 'fresh') return await freshSession(c, agent || c.agent || defaultAgentFromConfig(DATA_DIR))
       let sessions = c.sessions ?? { version: 1 as const, current: null, members: [] }
       if (action === 'select') {
         const row = allRows.find((r) => r.id === workspaceId && r.path === c.dir)
@@ -1104,7 +1153,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       } else if (action === 'end') {
         await closeSessions(run, panes)
       } else if (action === 'restart') {
-        return await exclusive(changing, key, () => freshSession(c, current?.agentType || 'claude'), busy)
+        return await exclusive(changing, key, () => freshSession(c, current?.agentType || c.agent || defaultAgentFromConfig(DATA_DIR)), busy)
       } else if (action === 'delete') {
         await closeSessions(run, panes)
         // Close every terminal it still has (Orca refuses to remove a project with open ones), then
@@ -1244,7 +1293,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     const a = currentAgent(pane)
     return { orcaSession: a?.orcaSession, provider: a?.agentType }
   }
-  const writer = createWriter({ ...summaryProviders(), log: (message) => orca.log(message) })
+  const writer = createWriter({
+    ...summaryProviders(cliProviders(undefined, { antigravityModel: () => writerModelFromConfig(DATA_DIR) })),
+    order: () => writerOrderFromConfig(DATA_DIR),
+    log: (message) => orca.log(message)
+  })
   const summarizer = turnSummarizer({
     findTranscript: (pane, identity) => currentAgent(pane)
       ? findTranscript(pane, undefined, { ...identityFor(pane), ...identity })

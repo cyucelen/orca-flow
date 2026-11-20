@@ -2,7 +2,7 @@ import { assert, test } from 'orca/testing'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { cliProviders, codexHomeFromAccounts, createWriter, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
+import { antigravityAccountReady, cliProviders, codexHomeFromAccounts, createWriter, discoverAntigravityModels, GEMINI_WRITER_MODEL, LUNA_MODEL, normalizeGeminiModel, PRIMARY_COOLDOWN_MS, providerFailure, readWriterConfig, runWriterCommand, WriterError, writerDiagnostic, writerOrderFromConfig, type CommandRunner } from './writer.ts'
 import { SUMMARY_SCHEMA, summarizePane, summaryProviders, turnSummarizer, validateSummary } from './summarize.ts'
 
 const card = (title = 'Guest checkout') => ({ title, about: 'Enable guest checkout.', goal: 'Buy without an account.', since: 'Tests pass.', needs: { type: 'none', ask: '', options: [] }, glance: '', watching: '', effort: 'quick', priority: 'P1' })
@@ -275,4 +275,93 @@ test('Luna strips inherited endpoint overrides without changing the selected aut
   } finally {
     keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i] })
   }
+})
+
+test('Antigravity Google sign-in adapter supports new Gemini models (Carbon, Neon, Hydrogen, Argon, 3.8 Flash)', async () => {
+  assert.equal(normalizeGeminiModel('carbon'), 'gemini-4-carbon-low')
+  assert.equal(normalizeGeminiModel('neon'), 'gemini-4-neon-low')
+  assert.equal(normalizeGeminiModel('hydrogen'), 'gemini-4-hydrogen-low')
+  assert.equal(normalizeGeminiModel('argon'), 'gemini-4-argon-low')
+  assert.equal(normalizeGeminiModel('flash'), 'gemini-3.8-flash-low')
+  assert.equal(normalizeGeminiModel('gemini-4-neon-high'), 'gemini-4-neon-high')
+  assert.equal(normalizeGeminiModel('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen-xhigh')
+  assert.equal(normalizeGeminiModel(''), GEMINI_WRITER_MODEL)
+
+  assert.equal(antigravityAccountReady({ ok: true, result: { currentAccount: { authMethod: 'consumer' }, chatUsesAgy: true } }), true)
+  assert.equal(antigravityAccountReady({ ok: true, result: { activeAccountId: 'acct-1' } }), true)
+  assert.equal(antigravityAccountReady({ ok: false }), false)
+  assert.equal(antigravityAccountReady({ ok: true, result: { accounts: [], activeAccountId: null, currentAccount: null, chatUsesAgy: false } }), false)
+
+  const calls: Parameters<CommandRunner>[0][] = []
+  const providers = cliProviders(async (command) => {
+    calls.push(command)
+    const schemaPath = command.args[command.args.indexOf('--json-schema') + 1]
+    assert.deepEqual(JSON.parse(readFileSync(schemaPath, 'utf8')), SUMMARY_SCHEMA)
+    assert.equal(command.args[command.args.indexOf('--model') + 1], 'gemini-4-neon-low')
+    assert.equal(command.args[command.args.indexOf('--output-format') + 1], 'json')
+    assert.ok(command.args.includes('--disable-slash-commands'))
+    assert.ok(command.args.includes('-p'))
+    return { stdout: JSON.stringify({ status: 'SUCCESS', structured_output: card('Neon title') }), stderr: '', error: null }
+  }, { antigravityModel: 'neon' })
+  assert.deepEqual(await providers.antigravity(request), card('Neon title'))
+  assert.equal(calls.length, 1)
+  assert.ok(!existsSync(calls[0].cwd), 'temporary schema dir removed')
+})
+
+test('three-provider fallback chain reaches Antigravity Google sign-in and respects config priority', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca-writer-cfg-'))
+  try {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ writerModel: 'gemini-4-hydrogen-low', defaultAgent: 'antigravity' }))
+    assert.equal(readWriterConfig(dir).defaultAgent, 'antigravity')
+    assert.deepEqual(writerOrderFromConfig(dir), ['antigravity', 'haiku', 'luna'])
+
+    let agyCalls = 0
+    const writer = createWriter({
+      haiku: failure('haiku', 'quota'),
+      luna: failure('luna', 'unavailable'),
+      antigravity: async () => { agyCalls++; return card('Google Gemini title') }
+    })
+    assert.deepEqual(await writer(request), card('Google Gemini title'))
+    assert.equal(agyCalls, 1)
+
+    // Antigravity error envelope classifies Google sign-in auth, quota, timeout, and unsupported model.
+    for (const [errText, kind] of [
+      ['Please sign in with Google to use agy', 'auth'],
+      ['RESOURCE_EXHAUSTED: quota exceeded', 'quota'],
+      ['DEADLINE_EXCEEDED', 'timeout'],
+      ['unknown model gemini-4-missing', 'unavailable']
+    ] as const) {
+      const p = cliProviders(async () => ({ stdout: JSON.stringify({ status: 'ERROR', error: errText, finished_reason: 'error' }), stderr: '', error: { code: 1 } }), { antigravityModel: 'gemini-4-missing' })
+      await assert.rejects(p.antigravity(request), (e) => e instanceof WriterError && e.kind === kind)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Antigravity model discovery reads Orca catalog DB and merges Gemini 4 defaults', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca-model-cat-'))
+  const dbPath = join(dir, 'agent-model-catalog.db')
+  try {
+    const { DatabaseSync } = process.getBuiltinModule!('node:sqlite')
+    const db = new DatabaseSync(dbPath)
+    db.exec(`CREATE TABLE rows(key TEXT PRIMARY KEY, seq INTEGER, value TEXT);`)
+    db.prepare('INSERT INTO rows VALUES (?, ?, ?)').run('antigravity\0fp1', 1, JSON.stringify({
+      agent: 'antigravity',
+      discovered: {
+        models: [
+          { id: 'gemini-4-carbon', label: 'Gemini 4 Carbon', efforts: [{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }] },
+          { id: 'gemini-4-neon', label: 'Gemini 4 Neon', efforts: [{ value: 'low', label: 'Low' }, { value: 'xhigh', label: 'XHigh' }] },
+          { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', efforts: [{ value: 'low', label: 'Low' }] }
+        ]
+      }
+    }))
+    db.close()
+    const models = discoverAntigravityModels(dbPath)
+    const ids = models.map((m) => m.id)
+    assert.ok(ids.includes('gemini-4-carbon-low'))
+    assert.ok(ids.includes('gemini-4-carbon-high'))
+    assert.ok(ids.includes('gemini-4-neon-xhigh'))
+    assert.ok(ids.includes('gemini-4-hydrogen-low'))
+    assert.ok(ids.includes('gemini-3.8-flash-low'))
+    assert.ok(!ids.includes('claude-opus-5-5-low'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

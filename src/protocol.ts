@@ -193,6 +193,8 @@ export type Coordinator = {
   session?: AgentInfo | null
   /** The character it was given at creation. */
   look?: Look | null
+  /** Preferred agent provider recorded at creation (e.g. antigravity, claude, codex, gemini). */
+  agent?: string | null
   /** Its workspace is the one focused in Orca (its row is marked only when its session's tab is, see Snapshot.focusedPanes). */
   active?: boolean
   /** Linear team keys it owns (coordinator.json `linearTeams`): their issues suggest it when sent. */
@@ -321,6 +323,14 @@ export type LinearWire = Omit<LinearData, 'issues'> & {
   issues: (string | number)[][]
 }
 
+export type FlowSettings = {
+  writerProvider: 'auto' | 'haiku' | 'luna' | 'antigravity'
+  writerModel: string
+  defaultAgent: string
+  antigravitySignedIn: boolean
+  antigravityModels: { id: string; label: string }[]
+}
+
 declare module 'orca' {
   interface PluginRequests {
     /** Every workspace with its live agent status. */
@@ -331,8 +341,12 @@ declare module 'orca' {
     'sidebar.closeSessions': { input: { panes: string[] }; output: { closed: number } }
     /** Removes a worktree after re-checking that it is clean and its PR merged. */
     'sidebar.removeWorktree': { input: { workspaceId: string; force?: boolean }; output: { removed: boolean; reason?: string; branch?: string; dirty?: string[] } }
-    /** Creates a coordinator with a name and a look, starts its session and opens it. */
-    'sidebar.createCoordinator': { input: { name: string; look: Look }; output: { ok: boolean; error?: string } }
+    /** Creates a coordinator with a name, look and optional agent provider, starts its session and opens it. */
+    'sidebar.createCoordinator': { input: { name: string; look: Look; agent?: string }; output: { ok: boolean; error?: string } }
+    /** Current writer provider, Gemini model, default coordinator agent, Google sign-in status, and discovered Gemini models. */
+    'sidebar.settings': { output: FlowSettings }
+    /** Updates writer provider, Gemini model, or default coordinator agent in ~/.orca-flow/config.json. */
+    'sidebar.setSettings': { input: { writerProvider?: string; writerModel?: string; defaultAgent?: string }; output: { ok: boolean; error?: string } }
     /** Sets a workstream's priority on its card (null clears it); Up next re-ranks. */
     'sidebar.setPriority': { input: { workspaceId: string; priority: Priority | null }; output: { ok: boolean; error?: string } }
     /** A coordinator's menu actions: a new look, a fresh session, ending its session, or deleting it. */

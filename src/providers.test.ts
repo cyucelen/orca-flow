@@ -21,6 +21,8 @@ test('zero, single, repeated and aliased providers do not show logos', () => {
   }
   assert.equal(providerOf(' CoDeX '), 'codex')
   assert.equal(providerOf('opencode2'), 'opencode')
+  assert.equal(providerOf('antigravity'), 'antigravity')
+  assert.equal(providerOf(' AGY '), 'antigravity')
 })
 
 test('each pane in a mixed worktree shows its own accessible provider and tooltip', () => {
@@ -112,7 +114,7 @@ test('unknown or missing metadata never invents a provider, injects markup or tr
 })
 
 test('all bundled known providers have usable inline marks and never need remote images', () => {
-  for (const agentType of ['claude', 'codex', 'gemini', 'cursor', 'copilot', 'opencode']) {
+  for (const agentType of ['claude', 'codex', 'gemini', 'antigravity', 'cursor', 'copilot', 'opencode']) {
     const s = snapshot([{ ...codex, agentType }])
     const badge = providerBadge(s.rows[0].agents[0], true)
     assert.match(badge, /<svg viewBox="0 0 \d+ \d+"/)

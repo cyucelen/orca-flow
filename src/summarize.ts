@@ -9,7 +9,7 @@ import { conversationalPrompt, discoverTranscript, normalizedRecords, readTransc
 import { COORDINATOR_HOME, isCoordinatorHome } from './coordinators.ts'
 import type { AgentSummary } from './protocol.ts'
 export { claudeConfigDir } from './writer.ts'
-import { cliProviders, createWriter, WriterError, writerDiagnostic, type Writer } from './writer.ts'
+import { cliProviders, createWriter, WriterError, writerDiagnostic, writerOrderFromConfig, type Writer, type WriterProvider } from './writer.ts'
 import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
@@ -136,9 +136,9 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
       for (const c of content) {
         if (c.type === 'text' && c.text.trim()) events.push({ kind: 'assistant', text: c.text.trim(), at: d.timestamp, final: !d.codex || !d.channel || d.channel === 'final' })
         if (c.type === 'tool_use') {
-          const detail = c.input?.command ?? c.input?.cmd ?? c.input?.file_path ?? c.input?.description ?? ''
+          const detail = c.input?.command ?? c.input?.cmd ?? c.input?.CommandLine ?? c.input?.file_path ?? c.input?.Path ?? c.input?.description ?? c.input?.toolSummary ?? ''
           // Judged on the whole command: the shown one is clipped.
-          const reports = ['Bash', 'exec_command', 'functions.exec_command'].includes(c.name) && SENDS_DONE.test(String(c.input?.command ?? c.input?.cmd ?? '').replace(/\s+/g, ' '))
+          const reports = ['Bash', 'exec_command', 'functions.exec_command', 'execute', 'run_command'].includes(c.name) && SENDS_DONE.test(String(c.input?.command ?? c.input?.cmd ?? c.input?.CommandLine ?? '').replace(/\s+/g, ' '))
           events.push({ kind: 'tool', text: `${c.name}${detail ? `: ${clip(String(detail).replace(/\s+/g, ' '), 140)}` : ''}`, at: d.timestamp, reports })
         }
       }
@@ -313,16 +313,20 @@ export function validateSummary(value: unknown): Omit<AgentSummary, 'role' | 'up
 }
 
 /** Provider validation is part of the boundary, never a programming-error fallback. */
-export function summaryProviders(providers = cliProviders()) {
-  const checked = (provider: 'haiku' | 'luna', run: Writer): Writer => async (request) => {
+export function summaryProviders(providers: { haiku: Writer; luna: Writer; antigravity?: Writer } = cliProviders()) {
+  const checked = (provider: WriterProvider, run: Writer): Writer => async (request) => {
     const value = await run(request)
     try { return validateSummary(value) } catch { throw new WriterError(provider, 'invalid-output') }
   }
-  return { haiku: checked('haiku', providers.haiku), luna: checked('luna', providers.luna) }
+  return {
+    haiku: checked('haiku', providers.haiku),
+    luna: checked('luna', providers.luna),
+    ...(providers.antigravity ? { antigravity: checked('antigravity', providers.antigravity) } : {})
+  }
 }
 
 // The worker and summarize-run share the same writer and output validation.
-const summaryWriter = createWriter(summaryProviders())
+const summaryWriter = createWriter({ ...summaryProviders(), order: () => writerOrderFromConfig() })
 
 /**
  * Summarizes one pane's latest turn into ~/.orca-flow/agents/<pane>.json. Skips a turn already
@@ -502,12 +506,12 @@ export function turnSummarizer(opts: {
 
 type Card = { pane?: string; transcript?: string; transcriptSource?: TranscriptSource; orcaSession?: string; providerSession?: { provider: string; id: string }; worktreeId?: string; summarizer?: number; updatedAt?: number }
 
-/** An unbound legacy Claude card can stay visible; a Codex card needs a verified binding. */
+/** An unbound legacy Claude card can stay visible; non-Claude cards need a verified binding. */
 export function summaryMatches(card: Card, identity: TranscriptIdentity): boolean {
   if (identity.orcaSession && card.orcaSession && card.orcaSession !== identity.orcaSession) return false
   if (identity.provider && card.providerSession && card.providerSession.provider !== identity.provider) return false
   if (identity.sessionId && card.providerSession?.id !== identity.sessionId) return false
-  if (identity.provider === 'codex' && (!card.providerSession || (identity.orcaSession && card.orcaSession !== identity.orcaSession))) return false
+  if (['codex', 'antigravity', 'gemini'].includes(identity.provider ?? '') && (!card.providerSession || (identity.orcaSession && card.orcaSession !== identity.orcaSession))) return false
   return true
 }
 

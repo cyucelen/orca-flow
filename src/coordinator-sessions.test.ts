@@ -1030,6 +1030,8 @@ test('preflight: a Claude conversation with no transcript in any of Orca\'s conf
   assert.equal(conversationSaved('claude', id, ['/missing'], list), null, 'no readable store: cannot say')
   assert.equal(conversationSaved('codex', id, ['/c'], list), true)
   assert.equal(conversationSaved('codex', 'other', ['/c'], list), false)
+  assert.equal(conversationSaved('antigravity', id, ['/missing', '/a'], (d) => d === '/a/brain' ? [id] : d === `/a/brain/${id}/.system_generated/logs` ? ['transcript.jsonl'] : null), true)
+  assert.equal(conversationSaved('antigravity', 'missing-id', ['/a'], (d) => d === '/a/brain' ? [id] : null), false)
   assert.equal(conversationSaved('gemini', id, ['/c'], list), null, 'a provider whose store is not known is never refused')
   assert.equal(conversationSaved('claude', '../x', ['/p/home'], list), null)
 })

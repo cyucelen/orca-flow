@@ -304,6 +304,11 @@ export function conversationSaved(agent: string, id: string, homes: string[], li
       for (const y of sessions ?? []) for (const m of list(`${home}/sessions/${y}`) ?? []) for (const d of list(`${home}/sessions/${y}/${m}`) ?? []) {
         if (named(list(`${home}/sessions/${y}/${m}/${d}`))) return true
       }
+    } else if (provider === 'antigravity') {
+      const brain = list(`${home}/brain`)
+      if (!brain) continue
+      readable = true
+      if (brain.includes(id) && list(`${home}/brain/${id}/.system_generated/logs`)?.includes('transcript.jsonl')) return true
     } else return null
   }
   return readable ? false : null
@@ -423,12 +428,12 @@ export type WakeIo = ResumeIo & {
 const agentOf = (agent: string | null | undefined): { agent?: string } => agent ? { agent } : {}
 
 /** Carries out a wake plan. Only a failed start or a failed open is a failure; a refused resume is a restore that failed. */
-export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo, launching: boolean | Launch = false): Promise<WakeOutcome> {
+export async function wakeCoordinator(c: Pick<Coordinator, 'sessions' | 'agent'>, rows: WorkspaceRow[], liveChoices: number, io: WakeIo, launching: boolean | Launch = false, defaultAgent = 'claude'): Promise<WakeOutcome> {
   const plan = wakePlan(c, rows, liveChoices, launching)
   if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', retryable: true, error: 'The exact session could not be opened.' }
   if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, ...agentOf(c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType) }
   if (plan.kind === 'fresh' || plan.kind === 'adopt') {
-    const started = await io.fresh(plan.agent || 'claude')
+    const started = await io.fresh(plan.agent || c.agent || defaultAgent)
     if (!started.ok) return { ok: false, kind: 'failed', retryable: true, error: started.error ?? 'The new conversation could not be started.' }
     return started.bound === false ? { ok: true, kind: 'starting', ...(started.error ? { error: started.error } : {}) } : { ok: true, kind: 'started' }
   }

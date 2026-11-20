@@ -1,7 +1,7 @@
 import type { AgentInfo, Snapshot } from './protocol.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 
-const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', cursor: 'Cursor', copilot: 'GitHub Copilot', opencode: 'OpenCode' } as const
+const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', antigravity: 'Antigravity', cursor: 'Cursor', copilot: 'GitHub Copilot', opencode: 'OpenCode' } as const
 type Provider = keyof typeof NAMES
 
 /** Only host agent ids and explicit aliases; model names and conversation text are not evidence. */
@@ -9,6 +9,7 @@ export function providerOf(agentType: string | null): Provider | null {
   const id = agentType?.trim().toLowerCase()
   if (id === 'claude-agent-teams') return 'claude'
   if (id === 'opencode2') return 'opencode'
+  if (id === 'agy') return 'antigravity'
   return id && Object.hasOwn(NAMES, id) ? id as Provider : null
 }
 

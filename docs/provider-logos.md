@@ -13,8 +13,8 @@ open in their worktree. A follow-up with an open dispatch counts again. Older ho
 without positive per-agent evidence omit badges rather than guess from workspace counts.
 
 Only `agentType` identifies a provider: trimmed, case-insensitive exact ids `claude`, `codex`,
-`gemini`, `cursor`, `copilot`, `opencode`; `claude-agent-teams` maps to Claude and `opencode2` to
-OpenCode. Models, titles, summaries and transcript contents never identify providers. Missing or
+`gemini`, `antigravity`, `cursor`, `copilot`, `opencode`; `claude-agent-teams` maps to Claude,
+`opencode2` to OpenCode, and `agy` to Antigravity. Models, titles, summaries and transcript contents never identify providers. Missing or
 unrecognized ids do not increase the threshold; in a mixed sidebar their live rows show a neutral
 robot with the accessible name and tooltip “Unknown provider”. Add new supported ids and bundled
 marks together in `providers.ts` / `provider-logos.ts`.

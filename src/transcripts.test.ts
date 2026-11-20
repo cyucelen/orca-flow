@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { discoverTranscript, readTranscript, sourceCurrent } from './transcripts.ts'
@@ -372,5 +372,63 @@ test('integrated non-current Codex member publishes fallback summary without cha
     foldCoordinatorFolders(rows, coordinators, ['/synthetic/coordinator'])
     assert.equal(currentRecipient(c, rows).agent.paneKey, 'pane')
     assert.equal(summaryAgents(snapshot).length, 2, 'current selection does not govern summary eligibility')
+  } finally { f.dispose() }
+})
+
+test('Antigravity terminal transcripts and ACP structured chats discover, normalize, and verify identity', () => {
+  const f = fixture()
+  try {
+    const convId = 'agy-conv-1'
+    const agyHome = join(f.dir, 'agy-home')
+    const logDir = join(agyHome, 'brain', convId, '.system_generated', 'logs')
+    mkdirSync(logDir, { recursive: true })
+    const agyPath = join(logDir, 'transcript.jsonl')
+    writeFileSync(agyPath, [
+      { step_index: 0, type: 'USER_INPUT', status: 'DONE', created_at: at(1), content: '<USER_REQUEST>\nFix Google sign-in\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nnow\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nGemini 4 Neon\n</USER_SETTINGS_CHANGE>' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(2), thinking: 'Private thoughts', tool_calls: [{ name: 'run_command', args: { CommandLine: '"orca orchestration send --type worker_done --body ok"' } }] },
+      { step_index: 2, type: 'GENERIC', status: 'DONE', created_at: at(3), content: 'Private tool stdout' },
+      { step_index: 3, type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: at(4), content: 'Internal reminder' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(5), content: 'Google sign-in and Gemini 4 models are ready.' }
+    ].map(line).join('\n'))
+
+    const { DatabaseSync } = process.getBuiltinModule!('node:sqlite')
+    const authDb = new DatabaseSync(f.files.identities)
+    authDb.exec(`INSERT INTO identities VALUES ('orca-agy', 'antigravity', 2);
+      INSERT INTO provider_links VALUES ('local', '', 'antigravity', '${convId}', '', 'orca-agy');`)
+    authDb.close()
+    writeFileSync(f.files.json, line({ entries: { 'agy-pane': { paneKey: 'agy-pane', payload: { agentType: 'antigravity' }, providerSession: { key: 'conversation_id', id: convId } } } }))
+    const files = { ...f.files, antigravityHome: agyHome }
+    const found = discoverTranscript('agy-pane', files, { orcaSession: 'orca-agy', provider: 'antigravity', sessionId: convId })
+    assert.equal(found.path, agyPath)
+    if (!found.path) throw Error('missing antigravity transcript')
+    assert.equal(sourceCurrent(found.source!), true)
+    assert.equal(lastTurnEnd(found.path), Date.parse(at(5)))
+    const d = digest(readTranscript(found.path, found.source))!
+    assert.equal(d.firstPrompt, 'Fix Google sign-in')
+    assert.equal(d.lastMessage, 'Google sign-in and Gemini 4 models are ready.')
+    assert.ok(!JSON.stringify(d).includes('Private'))
+    assert.ok(!JSON.stringify(d).includes('USER_SETTINGS_CHANGE'))
+    assert.equal(summaryMatches({ updatedAt: 1 }, { provider: 'antigravity', orcaSession: 'orca-agy' }), false)
+
+    // Structured chat journal with ACP handle (`handle.agent` instead of `handle.provider`).
+    const db = journal(f)
+    try {
+      db.prepare('INSERT INTO agent_session_records VALUES (?, ?)').run('orca-agy-chat', line({
+        sessionId: 'orca-agy-chat',
+        provider: 'antigravity',
+        location: { executionHostId: 'local' },
+        providerHandleChain: [{ handle: { transport: 'acp', agent: 'antigravity', nativeId: 'acp-native-1' } }]
+      }))
+      db.prepare('INSERT INTO journal_chat_state VALUES (?, ?)').run('orca-agy-chat', 'agy-epoch')
+      db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 1, 1, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ observedAt: Date.parse(at(1)), body: { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'Support Gemini 4 Carbon' }] } }))
+      db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 2, 2, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ observedAt: Date.parse(at(2)), body: { kind: 'message', role: 'assistant', blocks: [{ type: 'text', text: 'Done with Carbon.' }], completedAt: Date.parse(at(2)) } }))
+      db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 3, 3, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ observedAt: Date.parse(at(3)), body: { kind: 'turn', state: 'completed', completedAt: Date.parse(at(3)) } }))
+      const chat = discoverTranscript('agy-chat-pane', files, { orcaSession: 'orca-agy-chat', provider: 'antigravity', sessionId: 'acp-native-1' })
+      assert.equal(chat.path, files.journal)
+      if (!chat.path) throw Error('missing antigravity chat')
+      const cd = digest(readTranscript(chat.path, chat.source))!
+      assert.equal(cd.firstPrompt, 'Support Gemini 4 Carbon')
+      assert.equal(cd.lastMessage, 'Done with Carbon.')
+    } finally { db.close() }
   } finally { f.dispose() }
 })

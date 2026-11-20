@@ -4,9 +4,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export type ProviderSession = { provider: 'claude' | 'codex'; id: string }
+export type ProviderSession = { provider: 'claude' | 'codex' | 'antigravity' | 'gemini'; id: string }
+const TRANSCRIPT_PROVIDERS = new Set(['claude', 'codex', 'antigravity', 'gemini'])
 export type TranscriptIdentity = { orcaSession?: string | null; provider?: string | null; sessionId?: string }
-export type TranscriptFiles = { db: string; json: string; journal?: string; identities?: string }
+export type TranscriptFiles = { db: string; json: string; journal?: string; identities?: string; antigravityHome?: string }
 export type TranscriptSource = {
   kind: 'jsonl' | 'journal'
   path: string
@@ -22,7 +23,8 @@ export const transcriptFiles: TranscriptFiles = {
   db: join(root, 'agent-hooks', 'last-status.db'),
   json: join(root, 'agent-hooks', 'last-status.json'),
   journal: join(root, 'agent-session-domain.db'),
-  identities: join(root, 'agent-hooks', 'agent-identities.db')
+  identities: join(root, 'agent-hooks', 'agent-identities.db'),
+  antigravityHome: process.env.ANTIGRAVITY_HOME || join(homedir(), '.gemini', 'antigravity-cli')
 }
 
 function database(path: string) {
@@ -46,15 +48,31 @@ function hookEntry(pane: string, files: TranscriptFiles): any {
   return existsSync(files.json) ? JSON.parse(readFileSync(files.json, 'utf8'))?.entries?.[pane] : null
 }
 
+/** Deterministic Antigravity CLI transcript path for a verified conversation id. */
+function antigravityTranscriptPath(id: string, files: TranscriptFiles): string | null {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) return null
+  const home = files.antigravityHome ?? join(homedir(), '.gemini', 'antigravity-cli')
+  return join(home, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl')
+}
+
+function entryTranscriptPath(entry: any, files: TranscriptFiles): string | null {
+  const explicit = entry?.providerSession?.transcriptPath ?? entry?.transcriptPath
+  if (typeof explicit === 'string' && explicit) return explicit
+  const provider = entry?.payload?.agentType
+  const id = entry?.providerSession?.id
+  if (provider === 'antigravity' && typeof id === 'string' && id) return antigravityTranscriptPath(id, files)
+  return null
+}
+
 /** Orca's terminal identity authority, not a claim inferred from the pane or hook's native ID.
- * agent-identity-worker-entry.js uses this exact five-part provider link key. Claude and Codex
- * resume by ID (empty locator); remote/WSL namespaces are deliberately not searched here.
+ * agent-identity-worker-entry.js uses this exact five-part provider link key. Claude, Codex,
+ * Antigravity and Gemini resume by ID (empty locator); remote/WSL namespaces are deliberately not searched here.
  * Read on discovery AND publication, including for sources saved before this check existed.
  */
 function terminalIdentityMatches(entry: any, files: TranscriptFiles, orcaSession: string): boolean {
   if (entry?.connectionId || (entry?.orcaSessionId && entry.orcaSessionId !== orcaSession)) return false
   const provider = entry?.payload?.agentType, nativeId = entry?.providerSession?.id
-  if (!['claude', 'codex'].includes(provider) || typeof nativeId !== 'string' || !nativeId) return false
+  if (!TRANSCRIPT_PROVIDERS.has(provider) || typeof nativeId !== 'string' || !nativeId) return false
   // Older saved sources only carried the hook DB path; Orca puts its identity DB beside it.
   const path = files.identities ?? join(files.db, '..', 'agent-identities.db')
   if (!existsSync(path)) return false
@@ -71,8 +89,9 @@ function terminalIdentityMatches(entry: any, files: TranscriptFiles, orcaSession
 function nativeHandle(record: any): ProviderSession | null {
   const h = record?.providerHandleChain?.at(-1)?.handle
   const provider = record?.provider
-  if (!h || h.provider !== provider || !['claude', 'codex'].includes(provider)) return null
-  const id = h.nativeId ?? (provider === 'codex' ? h.threadId : h.sessionId)
+  const handleProvider = h?.provider ?? h?.agent
+  if (!h || handleProvider !== provider || !TRANSCRIPT_PROVIDERS.has(provider)) return null
+  const id = h.nativeId ?? (provider === 'codex' ? h.threadId : h.sessionId ?? h.conversationId)
   return typeof id === 'string' && id ? { provider, id } : null
 }
 
@@ -116,11 +135,11 @@ export function discoverTranscript(pane: string, files = transcriptFiles, identi
     if (identity.orcaSession && !terminalIdentityMatches(entry, files, identity.orcaSession)) {
       return { path: null, why: 'Orca/native session binding unavailable or changed; waiting for verified identity metadata' }
     }
-    const path = entry.providerSession?.transcriptPath ?? entry.transcriptPath
+    const path = entryTranscriptPath(entry, files)
     if (typeof path !== 'string' || !existsSync(path)) return { path: null, why: 'Exact pane transcript is not on disk yet' }
-    if (provider && !['claude', 'codex'].includes(provider)) return { path: null, why: 'Unsupported transcript provider' }
+    if (provider && !TRANSCRIPT_PROVIDERS.has(provider)) return { path: null, why: 'Unsupported transcript provider' }
     const providerSession: ProviderSession | undefined = provider && typeof id === 'string' ? { provider, id } : undefined
-    if (provider === 'codex' && !providerSession) return { path: null, why: 'Codex native session identity is unavailable' }
+    if (provider && provider !== 'claude' && !providerSession) return { path: null, why: `${provider} native session identity is unavailable` }
     // Preserve the legacy discovery shape for old Claude hook records without identity metadata.
     if (!providerSession && !identity.orcaSession) return { path }
     const source: TranscriptSource = { kind: 'jsonl', path, providerSession, ...(identity.orcaSession ? { orcaSession: identity.orcaSession } : {}), binding: { pane, files } }
@@ -143,7 +162,7 @@ export function sourceCurrent(source: TranscriptSource): boolean {
     if (source.binding) {
       const entry = hookEntry(source.binding.pane, source.binding.files)
       if (entry?.connectionId) return false
-      if ((entry?.providerSession?.transcriptPath ?? entry?.transcriptPath) !== source.path) return false
+      if (entryTranscriptPath(entry, source.binding.files) !== source.path) return false
       if (source.providerSession && (entry?.providerSession?.id !== source.providerSession.id || entry?.payload?.agentType !== source.providerSession.provider)) return false
       if (source.orcaSession && !terminalIdentityMatches(entry, source.binding.files, source.orcaSession)) return false
     }
@@ -159,6 +178,31 @@ const parse = (line: string): any => { try { return JSON.parse(line) } catch { r
 const timestamp = (n: unknown): string | undefined => typeof n === 'number' && Number.isFinite(n) ? new Date(n).toISOString() : typeof n === 'string' ? n : undefined
 const text = (blocks: any): string => Array.isArray(blocks) ? blocks.filter((b) => ['text', 'input_text', 'output_text'].includes(b?.type) && typeof b.text === 'string').map((b) => b.text).join('\n') : ''
 
+/** Strip Antigravity XML wrappers (<USER_REQUEST>, <ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>). */
+function antigravityUserText(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  const req = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(raw)
+  if (req) return req[1].trim()
+  return raw
+    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
+    .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
+    .trim()
+}
+
+/** Antigravity transcript tool_calls args can store JSON-encoded string values like "\"cmd\"". */
+function parseAntigravityArgs(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      try { out[k] = JSON.parse(v) } catch { out[k] = v }
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
 /** Filter only known injected envelopes/notices, never arbitrary user instructions. */
 export function conversationalPrompt(raw: string): string {
   if (raw.includes('=== TASK ===')) return raw
@@ -168,9 +212,31 @@ export function conversationalPrompt(raw: string): string {
   return raw
 }
 
-/** Codex response items are canonical; older rollouts may contain only event_msg prose. */
+/** Normalize Codex rollouts, Antigravity CLI transcripts, and Claude JSONL into one event stream. */
 export function normalizedRecords(lines: string[]): any[] {
   const records = lines.map(parse).filter(Boolean)
+  const antigravity = records.some((r) => typeof r.step_index === 'number' && ['USER_INPUT', 'PLANNER_RESPONSE', 'GENERIC', 'SYSTEM_MESSAGE'].includes(r.type))
+  if (antigravity) {
+    const out: any[] = []
+    for (const r of records) {
+      const at = timestamp(r.created_at)
+      if (r.type === 'USER_INPUT') {
+        const prompt = antigravityUserText(r.content)
+        if (prompt) out.push({ type: 'user', timestamp: at, message: { content: prompt } })
+      } else if (r.type === 'PLANNER_RESPONSE') {
+        const calls = Array.isArray(r.tool_calls) ? r.tool_calls : []
+        const content: any[] = []
+        for (const tc of calls) {
+          if (typeof tc?.name === 'string') content.push({ type: 'tool_use', name: tc.name, input: parseAntigravityArgs(tc.args) })
+        }
+        const reply = typeof r.content === 'string' ? r.content.trim() : ''
+        if (reply) content.push({ type: 'text', text: reply })
+        if (content.length) out.push({ type: 'assistant', timestamp: at, message: { content } })
+        if (r.status === 'DONE' && calls.length === 0 && reply) out.push({ type: 'system', subtype: 'turn_duration', timestamp: at })
+      }
+    }
+    return out
+  }
   const codex = records.some((r) => ['session_meta', 'response_item', 'event_msg', 'turn_context'].includes(r.type))
   if (!codex) return records
   const hasMessages = new Set(records.filter((r) => r.type === 'response_item' && r.payload?.type === 'message').map((r) => r.payload.role))

@@ -42,11 +42,11 @@ export function readCoordinators(root = COORDINATOR_HOME): CoordinatorInfo[] {
   const out: CoordinatorInfo[] = []
   for (const name of readdirSync(root).sort()) {
     const dir = join(root, name)
-    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown; sessions?: unknown }>(join(dir, COORDINATOR_FILE))
+    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; agent?: string; linearTeams?: unknown; sessions?: unknown }>(join(dir, COORDINATOR_FILE))
     const linearTeams = Array.isArray(c?.linearTeams) ? c.linearTeams.filter((t): t is string => typeof t === 'string') : []
     if (!c?.name) continue
     const sessions = validSessions(c.sessions)
-    out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams,
+    out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, ...(typeof c.agent === 'string' && c.agent ? { agent: c.agent } : {}), linearTeams,
       ...(c.sessions !== undefined ? { sessions: sessions ?? { version: 1, current: null, members: [] }, ...(!sessions ? { sessionNotice: 'Invalid session configuration. Repair coordinator.json before associating a session.' } : {}) } : {}) })
   }
   return out
@@ -63,11 +63,13 @@ export function validateName(name: string, existing: string[]): string | null {
  * Writes a new coordinator's folder. It starts owning every project; it narrows its own scope in
  * its COORDINATOR_FILE as the user tells it what it is for.
  */
-export function scaffoldCoordinator(root: string, input: { name: string; look: Look | null }): string {
+export function scaffoldCoordinator(root: string, input: { name: string; look: Look | null; agent?: string }): string {
   const dir = join(root, input.name)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, COORDINATOR_FILE), JSON.stringify({ name: input.name, repos: [], about: '', look: input.look }, null, 2) + '\n')
-  writeFileSync(join(dir, 'CLAUDE.md'), `# Coordinator: ${input.name}\n\nYour scope is not set yet: you take work for any project. When the user tells you what you are for, record it in ${COORDINATOR_FILE} in this folder (\`repos\`: the Orca project names you own; \`about\`: one sentence) and from then on name the coordinator that owns any other project instead of taking it.\n`)
+  writeFileSync(join(dir, COORDINATOR_FILE), JSON.stringify({ name: input.name, repos: [], about: '', look: input.look, ...(input.agent ? { agent: input.agent } : {}) }, null, 2) + '\n')
+  const instructions = `# Coordinator: ${input.name}\n\nYour scope is not set yet: you take work for any project. When the user tells you what you are for, record it in ${COORDINATOR_FILE} in this folder (\`repos\`: the Orca project names you own; \`about\`: one sentence) and from then on name the coordinator that owns any other project instead of taking it.\n`
+  writeFileSync(join(dir, 'CLAUDE.md'), instructions)
+  writeFileSync(join(dir, 'AGENTS.md'), instructions)
   return dir
 }
 

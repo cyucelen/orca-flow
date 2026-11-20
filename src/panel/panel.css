@@ -378,6 +378,8 @@ button.item.coord { padding: 5px 6px; }
 .shuffle svg { width: 14px; height: 14px; }
 .sheet .name { all: unset; box-sizing: border-box; width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink); font-size: 13px; text-align: center; user-select: text; }
 .sheet .name:focus { border-color: var(--ask); }
+.sheet .agent-select { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink); font: 12.5px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; cursor: pointer; }
+.sheet .agent-select:focus { outline: none; border-color: var(--ask); }
 .err { color: var(--danger); font-size: 11.5px; margin-top: -6px; }
 .actions { display: flex; gap: 8px; width: 100%; }
 .actions button { flex: 1; text-align: center; padding: 6px 0; border-radius: 7px; font-size: 12.5px; font-weight: 500; }

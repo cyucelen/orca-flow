@@ -18,7 +18,11 @@ macOS only for now.
   actions.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds. If Haiku is
-  unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI.
+  unavailable, the writer falls back to GPT-6 Luna (`gpt-6-luna`) through the Codex CLI, and then
+  to Google Antigravity (`agy`, using your Google sign-in) with Gemini models (`gemini-3.8-flash-low`,
+  `gemini-4-carbon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemini-4-argon`). You can pick your
+  preferred summarizer provider, Gemini model, and default coordinator agent from the sidebar's
+  settings menu or `~/.orca-flow/config.json`.
   When a coordinator's or lead's message ends in a valid [message frame](#message-format), its
   status, Ask and Reply are read as written: Up next labels the ask with the message's own status
   line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later

@@ -1,7 +1,7 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
-import type { AgentInfo, CockpitStats, Coordinator, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WakeOutcome, WorkspaceRow } from '../protocol.ts'
+import type { AgentInfo, CockpitStats, Coordinator, FlowSettings, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton, wakeView, type WakeMenu } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
@@ -23,7 +23,11 @@ const attentionEl = $('attention')
 const searchEl = $('search') as HTMLInputElement
 const searchBox = $('searchbox')
 const searchOpen = $('search-open')
+const settingsOpen = $('settings-open')
 const copenEl = $('copen')
+let flowSettings: FlowSettings | null = null
+const loadSettings = () => orca.plugin.request('sidebar.settings').then((s) => (flowSettings = s as FlowSettings)).catch(() => flowSettings)
+void loadSettings()
 const updateEl = $('update-slot')
 const linearEl = $('linear')
 const toastEl = $('toast')
@@ -267,11 +271,17 @@ function setSearching(on: boolean): void {
   searchBox.hidden = !on
   cockpitEl.hidden = on
   searchOpen.hidden = on
+  settingsOpen.hidden = on
   updateEl.hidden = on
   if (on) { ui.cockpitOpen = false; searchEl.focus() } else { searchEl.value = ''; ui.query = '' }
   draw()
 }
 searchOpen.addEventListener('click', () => setSearching(true))
+settingsOpen.addEventListener('click', async () => {
+  if (!opener.shouldOpen('settings')) return
+  await loadSettings()
+  openMenu(settingsMenu, 0, 0, 'settings', settingsOpen.getBoundingClientRect(), 'display')
+})
 $('search-close').addEventListener('click', () => setSearching(false))
 searchEl.addEventListener('input', () => { ui.query = searchEl.value.trim(); draw() })
 searchEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearching(false) })
@@ -367,6 +377,7 @@ document.addEventListener('pointerdown', hideTip)
 const modal = $('modal')
 const form = $('coord-form') as HTMLFormElement
 const nameEl = $('coord-name') as HTMLInputElement
+const agentEl = $('coord-agent') as HTMLSelectElement
 const lookEl = $('coord-look')
 const errorEl = $('coord-error')
 const createEl = $('coord-create') as HTMLButtonElement
@@ -389,6 +400,8 @@ function openModal(): void {
   showError(null)
   createEl.disabled = false
   createEl.textContent = 'Create'
+  agentEl.value = flowSettings?.defaultAgent ?? (flowSettings?.antigravitySignedIn ? 'antigravity' : 'claude')
+  void loadSettings().then((s) => { if (s && !modal.hidden) agentEl.value = s.defaultAgent })
   look = null
   shuffle()
   modal.hidden = false
@@ -412,7 +425,7 @@ form.addEventListener('submit', async (e) => {
   createEl.disabled = true
   createEl.innerHTML = busy('Creating…')
   try {
-    const r = await orca.plugin.request('sidebar.createCoordinator', { name, look: look! }, { timeoutMs: 90_000 })
+    const r = await orca.plugin.request('sidebar.createCoordinator', { name, look: look!, agent: agentEl.value }, { timeoutMs: 90_000 })
     if (r.ok) closeModal()
     else showError(r.error ?? 'Could not create it')
   } catch (err) {
@@ -726,8 +739,9 @@ document.addEventListener('contextmenu', (e) => {
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-sessions]') : null
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-sessions],[data-settings]') : null
   if (!el) return null
+  if ('settings' in el.dataset) return 'settings'
   if (el.dataset.sessions) return `sessions:${el.dataset.sessions}`
   return 'ldisplay' in el.dataset ? 'display' : `linear:${el.dataset.lsend}`
 }
@@ -804,6 +818,73 @@ function hideToast(): void {
   toastEl.hidden = true
 }
 
+
+/** Provider & Gemini model settings popover (Google sign-in / Antigravity, Claude, Codex). */
+function settingsMenu(): MenuItem[] {
+  const s = flowSettings
+  if (!s) return [{ header: 'Loading settings…' }]
+  const save = async (patch: { writerProvider?: string; writerModel?: string; defaultAgent?: string }) => {
+    const next = {
+      ...s,
+      ...(patch.writerProvider ? { writerProvider: patch.writerProvider as FlowSettings['writerProvider'] } : {}),
+      ...(patch.writerModel ? { writerModel: patch.writerModel } : {}),
+      ...(patch.defaultAgent ? { defaultAgent: patch.defaultAgent } : {})
+    }
+    flowSettings = next
+    await orca.plugin.request('sidebar.setSettings', patch).catch(() => null)
+    await loadSettings()
+  }
+  const providers: [FlowSettings['writerProvider'], string][] = [
+    ['auto', 'Auto'],
+    ['antigravity', 'Google'],
+    ['haiku', 'Claude'],
+    ['luna', 'Codex']
+  ]
+  const agents: [string, string][] = [
+    ['antigravity', 'Antigravity'],
+    ['claude', 'Claude'],
+    ['codex', 'Codex'],
+    ['gemini', 'Gemini']
+  ]
+  const models = s.antigravityModels.some((m) => m.id === s.writerModel)
+    ? s.antigravityModels
+    : [{ id: s.writerModel, label: s.writerModel }, ...s.antigravityModels]
+  return [
+    {
+      header: `Google sign-in · <b>${s.antigravitySignedIn ? 'Connected' : 'Not connected'}</b>`,
+      tip: s.antigravitySignedIn ? 'Using your Antigravity (agy) Google login' : 'Sign in via agy or Orca Settings > AI Provider Accounts'
+    },
+    'separator',
+    {
+      chips: 'Summarizer',
+      stay: true,
+      wrap: true,
+      options: providers.map(([id, label]) => ({
+        label,
+        active: s.writerProvider === id,
+        run: () => save({ writerProvider: id })
+      }))
+    },
+    {
+      chips: 'Default agent',
+      stay: true,
+      wrap: true,
+      options: agents.map(([id, label]) => ({
+        label,
+        active: s.defaultAgent === id,
+        run: () => save({ defaultAgent: id })
+      }))
+    },
+    'separator',
+    { header: 'Gemini model (Google sign-in)' },
+    ...models.map((m): MenuItem => ({
+      label: m.label,
+      checked: s.writerModel === m.id,
+      stay: true,
+      run: () => save({ writerModel: m.id, ...(s.writerProvider === 'auto' ? {} : { writerProvider: 'antigravity' }) })
+    }))
+  ]
+}
 
 // ---------- the Linear section's Display popover ----------
 
