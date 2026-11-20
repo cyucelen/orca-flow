@@ -3,7 +3,8 @@
 // saves are recorded in window.previewCalls.
 //   node scripts/settings-preview.mjs                 serve; open the printed URL (add ?page=format&theme=light)
 //   node scripts/settings-preview.mjs --shots <dir>   capture every page, dark and light, narrow and wide, then exit
-//                                                     (--broken adds an unreadable config.json; --tips adds tooltips shown)
+//                                                     (--broken adds an unreadable config.json; --tips adds tooltips shown;
+//                                                     --updates captures About in every Check for Updates state instead)
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -27,7 +28,7 @@ const snapshot = {
     state: 'working', priority: null, card: null, parentId: null, liveTerminals: 2, pinned: false, unread: false, active: true, workspaceStatus: null, lastActivityAt: now, createdAt: 1, pr: null }]
 }
 const settings = {
-  version: '0.2.63', error: null,
+  version: '0.2.64', error: null,
   settings: {
     writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', enabled: false }],
     messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false
@@ -44,11 +45,22 @@ const q = new URLSearchParams(location.search);
 if (q.get('theme') === 'light') { document.documentElement.classList.add('light'); for (const [k, v] of Object.entries(${JSON.stringify(LIGHT)})) document.documentElement.style.setProperty(k, v); }
 const snapshot = ${JSON.stringify(snapshot)};
 const settings = ${JSON.stringify(settings)};
+// ?update=idle|checking|current|available|failed|cannot: what Check for Updates answers. No real check or update runs.
+const at = Date.now() - 60000;
+const CHECKS = {
+  current: { kind: 'current', current: '0.2.64', latest: '0.2.64', at },
+  available: { kind: 'available', current: '0.2.64', version: '0.2.65', at },
+  failed: { kind: 'failed', current: '0.2.64', reason: 'Could not resolve host: github.com', at },
+  cannot: { kind: 'cannot', current: '0.2.64', reason: 'This copy was installed from commit ca5e689, not the 0.2.64 release, so it isn’t updated from here. Reinstall from a release to get updates.', latest: '0.2.64', at }
+};
+const upd = q.get('update');
+settings.updateCheck = CHECKS[upd] ?? null;
+if (upd === 'available') settings.update = { kind: 'available', version: '0.2.65' };
 if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
 window.previewCalls = [];
 window.orca = {
   plugin: {
-    request: async (name, data) => { previewCalls.push({ name, data }); return name === 'sidebar.list' ? snapshot : name === 'sidebar.settings' ? settings : name === 'sidebar.saveSettings' ? { ok: true, state: { ...settings, settings: data.settings } } : name === 'sidebar.linear' ? null : { ok: true }; },
+    request: async (name, data) => { previewCalls.push({ name, data }); return name === 'sidebar.list' ? snapshot : name === 'sidebar.settings' ? settings : name === 'sidebar.checkUpdates' ? (upd === 'checking' ? new Promise(() => {}) : CHECKS[upd] ?? CHECKS.current) : name === 'sidebar.update' ? { started: false, message: 'preview: no update runs' } : name === 'sidebar.saveSettings' ? { ok: true, state: { ...settings, settings: data.settings } } : name === 'sidebar.linear' ? null : { ok: true }; },
     on: () => () => {}
   },
   storage: { get: async () => null, set: async () => {} }, shell: { openExternal: async () => {} }
@@ -56,6 +68,7 @@ window.orca = {
 window.addEventListener('load', () => setTimeout(() => {
   document.getElementById('settings-open').click();
   setTimeout(() => document.querySelector('[data-page="' + (q.get('page') || 'summaries') + '"]')?.click(), 100);
+  if (upd === 'checking') setTimeout(() => document.getElementById('s-check')?.click(), 400);
   // ?tip=<selector>: hover that element so its tooltip shows (for screenshots).
   if (q.get('tip')) setTimeout(() => document.querySelector(q.get('tip'))?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })), 900);
 }, 200));
@@ -92,6 +105,12 @@ server.listen(0, '127.0.0.1', () => {
   const jobs = []
   for (const page of ['summaries', 'format', 'capacity', 'advanced']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page, theme, w, width, height })
   if (process.argv.includes('--broken')) jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, state: 'broken' })
+  // --updates: About's rows in every Check for Updates state, instead of the four pages.
+  if (process.argv.includes('--updates')) {
+    jobs.length = 0
+    for (const update of ['idle', 'checking', 'current', 'available', 'failed', 'cannot']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'about', theme, w, width, height, update, name: `about-${update}` })
+    for (const [update, theme, w] of [['cannot', 'dark', 'wide'], ['failed', 'light', '360'], ['current', 'dark', '360']]) jobs.push({ page: 'about', theme, w, width: sizes[w][0], height: sizes[w][1], update, tip: '#s-page .s-value[data-tip]', name: `about-${update}-tooltip` })
+  }
   if (process.argv.includes('--tips')) {
     jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-gh .s-label', name: 'tooltip-writers' })
     jobs.push({ page: 'summaries', theme: 'light', w: '360', width: 360, height: 820, tip: '[data-writer="claude"] .s-dot', name: 'tooltip-status' })
@@ -101,7 +120,7 @@ server.listen(0, '127.0.0.1', () => {
     for (const j of jobs) {
       const file = join(out, `${j.name ? `${j.name}-${j.theme}-${j.w}` : `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}`}.png`)
       await new Promise((resolve, reject) => {
-        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}`
+        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}`
         const framed = j.width < 600 || !!j.tip
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
           framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]

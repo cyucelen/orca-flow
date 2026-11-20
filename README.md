@@ -185,6 +185,8 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
   ([Capacity](#capacity)).
 - **Advanced:** Linear test mode (log the Linear comments and status changes Orca Flow would send,
   and send nothing) and Show in Finder for the settings file.
+- **About:** the running version, and Check for Updates (see
+  [Updating and uninstalling](#updating-and-uninstalling)).
 
 A page that differs from its defaults shows Reset to Defaults at its bottom. If a save fails, the
 control goes back to the saved value and the page says "Couldn’t save", with the reason in its
@@ -338,6 +340,16 @@ orca plugin install cyucelen/orca-flow
 ```
 
 Orca asks for approval again only when a release needs different access.
+
+Orca Flow also looks for a newer release every 15 minutes, and at once from Settings > About >
+Check for Updates. A newer release shows there as "0.2.65 available" with an Update button, in the
+status bar, and as the panel's update button; all three update through the same confirm. Only a
+release newer than the running version is ever offered. A copy that cannot update to a release
+shows Check for Updates turned off, with the reason in its tooltip: a development folder, a
+manifest without a version, a folder install, or a Git install whose commit is not its version's
+release tag (installed from a branch or a commit). `orca plugin update` would move such a copy along
+its branch or leave a commit pin where it is, not install the release, so reinstall from a release
+(the command above) to get updates.
 
 To uninstall:
 

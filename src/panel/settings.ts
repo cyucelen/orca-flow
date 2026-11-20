@@ -2,15 +2,17 @@
 // rounded groups with the label left and the control right, and every explanation in a tooltip
 // (the panel's [data-tip]). Changes apply at once: each one is saved through the worker
 // (sidebar.saveSettings), which owns ~/.orca-flow/config.json; a failed save puts the control back.
-import type { SettingsState } from '../protocol.ts'
+import type { SettingsState, UpdateState } from '../protocol.ts'
+import type { UpdateCheck } from '../update.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
-import { DEFAULT_DRAFT, settingsSession, statusView, WRITABLE, type Draft, type DraftKey, type WriterProvider } from '../settings.ts'
+import { ago, DEFAULT_DRAFT, settingsSession, statusView, WRITABLE, type Draft, type DraftKey, type WriterProvider } from '../settings.ts'
 
 const glyph = (d: string) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
 const ICON = {
   summaries: glyph('<rect x="2.5" y="3" width="11" height="10" rx="2"/><path d="M5 6.5h6M5 9.5h4"/>'),
   format: glyph('<path d="M3 3.5h10v7H6.5L3 13.5z"/><path d="M6 7l1.5 1.5L10.5 5.5"/>'),
   capacity: glyph('<rect x="2" y="4.5" width="12" height="7" rx="1.5"/><path d="M5 7v2M8 7v2M11 7v2"/>'),
+  about: glyph('<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.6M8 5.1v.1"/>'),
   advanced: glyph('<path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6"/><circle cx="10" cy="5" r="1.5"/><circle cx="6" cy="11" r="1.5"/>'),
   grip: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/></svg>',
   minus: glyph('<path d="M4.5 8h7"/>'),
@@ -28,7 +30,7 @@ const PROVIDERS: Record<WriterProvider, { name: string; logo: string; tip: strin
 }
 const MODEL_LABEL: Record<string, string> = { haiku: 'Claude Haiku', sonnet: 'Claude Sonnet', 'gpt-6-luna': 'GPT-6 Luna', 'agy-default': 'Antigravity' }
 
-type PageId = 'summaries' | 'format' | 'capacity' | 'advanced'
+type PageId = 'summaries' | 'format' | 'capacity' | 'advanced' | 'about'
 const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: string }[] = [
   { id: 'summaries', label: 'Titles & Summaries', tint: '#0a84ff', keys: ['writers', 'enabled', 'models'],
     tip: 'After each agent turn, one request writes the title, summary and ask on its Orca Flow card. Only Orca Flow’s sidebar cards change: Orca names its own tabs and chats, and Antigravity sessions get no card.' },
@@ -36,7 +38,8 @@ const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: s
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
   { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
     tip: 'Before a coordinator or lead starts more work, Orca Flow checks free memory. Each agent costs about 0.5 GB, plus any dev servers its project runs.' },
-  { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' }
+  { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' },
+  { id: 'about', label: 'About', tint: '#6e6e73', keys: [], tip: 'Orca Flow’s version and updates.' }
 ]
 
 const $ = (id: string) => document.getElementById(id)!
@@ -155,6 +158,63 @@ function focusKey(el: Element | null): string | null {
   return el.classList.contains('s-dot') ? `[data-writer="${el.closest<HTMLElement>('[data-writer]')?.dataset.writer}"] .s-dot` : null
 }
 
+// ---------- About: version and updates ----------
+
+let checking = false
+let updateCheck: UpdateCheck | null = null
+let updateState: UpdateState | undefined
+/** The panel's own update path (src/panel/app.ts): its confirm, then sidebar.update. */
+export const settingsHooks: { update: (state: UpdateState) => void } = { update: () => {} }
+/** Every snapshot carries the update state; the status bar item and the panel's button show the same. */
+export function settingsUpdateState(state: UpdateState | undefined): void {
+  updateState = state
+  if (settingsOpen() && pageId === 'about') render()
+}
+
+function updatesRow(): string {
+  const u = updateState, c = updateCheck
+  const value = (text: string, tip?: string) => tip
+    ? `<span class="s-value" tabindex="0" data-tip="${esc(tip)}" aria-description="${esc(tip)}">${esc(text)}</span>`
+    : `<span class="s-value">${esc(text)}</span>`
+  // A disabled button gets no pointer events, so its reason sits on a wrapper.
+  const checkBtn = (disabled = false, tip = '') => `<span class="s-tipwrap" ${tip ? `data-tip="${esc(tip)}"` : ''}><button type="button" class="s-push" id="s-check" ${disabled ? 'disabled' : ''} ${tip ? `aria-description="${esc(tip)}"` : ''}>Check for Updates</button></span>`
+  const updateBtn = (version: string, text = 'Update') => `<button type="button" class="s-push primary" id="s-update" data-version="${esc(version)}">${text}</button>`
+  if (u?.kind === 'updating') return value(`Updating to ${u.version}…`)
+  if (u?.kind === 'approval') return value('Needs approval', `${u.reason} To approve and update, run: ${u.command}`) + updateBtn(u.version, 'Update…')
+  if (u?.kind === 'failed') return value('Update failed', u.reason) + updateBtn(u.version, 'Try Again')
+  if (checking) return value('Checking…') + checkBtn(true)
+  if (c?.kind === 'cannot') {
+    const why = `${c.reason}${c.latest && c.latest !== c.current ? ` The newest release is ${c.latest}.` : ''}`
+    return value('Can’t update', why) + checkBtn(true, why)
+  }
+  const offered = u?.kind === 'available' || u?.kind === 'confirm' ? u.version : c?.kind === 'available' ? c.version : null
+  if (offered) return value(`${offered} available`) + updateBtn(offered)
+  if (u?.kind === 'updated') return value(`Updated to ${u.version}`) + checkBtn()
+  if (c?.kind === 'current') return value('Up to date', `${c.latest && c.latest !== c.current ? `You run ${c.current}; the newest release is ${c.latest}.` : `${c.current} is the newest release.`} Checked ${ago(Date.now() - c.at)}.`) + checkBtn()
+  if (c?.kind === 'failed') return value('Couldn’t check', c.reason) + checkBtn()
+  return checkBtn()
+}
+
+function pageAbout(): string {
+  return group([
+    row(label('Version', 'The Orca Flow version running now.'), `<span class="s-value">${esc(state?.version ?? '–')}</span>`),
+    row(label('Updates', 'Looks for a newer Orca Flow release now; Orca Flow also looks every 15 minutes. Updating installs it and restarts Orca Flow.'), updatesRow(), 's-about')
+  ])
+}
+
+async function checkUpdates(): Promise<void> {
+  checking = true
+  render()
+  try {
+    updateCheck = await orca.plugin.request('sidebar.checkUpdates') as UpdateCheck
+  } catch (e) {
+    updateCheck = { kind: 'failed', current: state?.version ?? '', reason: (e as Error).message, at: Date.now() }
+  }
+  checking = false
+  focusAfter = '#s-check'
+  render()
+}
+
 function render(): void {
   if ($('settings').hidden) return
   focusAfter ??= focusKey(document.activeElement)
@@ -163,7 +223,7 @@ function render(): void {
   const narrow = window.innerWidth <= 520
   $('s-title').dataset.tip = state?.version ? `Orca Flow ${state.version}` : 'Orca Flow'
   $('s-nav').innerHTML = PAGES.map((p) => `<button class="s-nav-btn" type="button" data-page="${p.id}" ${p.id === pageId ? 'aria-current="page"' : ''} aria-label="${esc(p.label)}"${narrow ? ` data-tip="${esc(p.label)}"` : ''}><span class="s-tile" style="background:${p.tint}">${ICON[p.id]}</span><span class="s-nav-label">${esc(p.label)}</span></button>`).join('')
-  const body = !state && !loadError ? '<p class="s-loading">Loading…</p>' : { summaries: pageSummaries, format: pageFormat, capacity: pageCapacity, advanced: pageAdvanced }[pageId]()
+  const body = !state && !loadError ? '<p class="s-loading">Loading…</p>' : { summaries: pageSummaries, format: pageFormat, capacity: pageCapacity, advanced: pageAdvanced, about: pageAbout }[pageId]()
   const reset = state && !locked() && !session.isDefault(page.keys) ? `<div class="s-foot"><button type="button" class="s-push" data-reset="${page.id}">Reset to Defaults</button></div>` : ''
   $('s-page').innerHTML = `<h3 class="s-ptitle">${label(page.label, page.tip)}</h3>${errorLine()}${body}${reset}`
   if (focusAfter) {
@@ -186,7 +246,13 @@ export function openSettings(): void {
   render()
   dialog.focus()
   orca.plugin.request('sidebar.settings')
-    .then((s) => { state = s as SettingsState; session.load(state.settings); render() })
+    .then((s) => {
+      state = s as SettingsState
+      updateCheck = state.updateCheck ?? null
+      if (state.update) updateState = state.update
+      session.load(state.settings)
+      render()
+    })
     .catch((e: Error) => { loadError = e.message; render() })
 }
 
@@ -222,6 +288,8 @@ function onClick(e: MouseEvent): void {
   switch (t.id) {
     case 's-x': close(); break
     case 's-addfolder': addFolder(); break
+    case 's-check': void checkUpdates(); break
+    case 's-update': settingsHooks.update(updateState && updateState.kind !== 'none' ? updateState : { kind: 'available', version: t.dataset.version! }); break
     case 's-reveal': void orca.plugin.request('sidebar.revealSettings').catch(() => null); break
   }
 }

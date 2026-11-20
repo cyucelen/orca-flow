@@ -1,7 +1,7 @@
 // Wires the panel: asks the worker for snapshots, redraws with src/view.ts, handles clicks.
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
-import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, WakeOutcome, WorkspaceRow } from '../protocol.ts'
+import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton, wakeView, type WakeMenu } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
@@ -12,7 +12,7 @@ import { sessionChoices } from '../coordinator-sessions.ts'
 import { providerBadge, providerOf } from '../providers.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
 import { coordinatorHandover } from '../handover-providers.ts'
-import { openSettings, settingsOpen } from './settings.ts'
+import { openSettings, settingsHooks, settingsOpen, settingsUpdateState } from './settings.ts'
 import type { HandoverProvider } from '../handover.ts'
 
 const ui = emptyUi()
@@ -91,8 +91,8 @@ function toggle(set: Set<string>, key: string): void {
 // The first snapshot can take a few seconds (Orca's CLI is slow on a busy machine).
 mainEl.innerHTML = crew('Loading workspaces…')
 setTimeout(draw, LINEAGE_WAIT_MS)
-orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
-orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), draw()))
+orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
+orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), draw()))
 // Relative times ("4m") stay current.
 setInterval(draw, 60_000)
 
@@ -263,8 +263,8 @@ async function runAction(key: string): Promise<void> {
  * as the status bar's second click does; the button follows the state the worker posts. An update
  * that needs approval is never approved from here: the dialog shows the command to run.
  */
-async function updateClick(): Promise<void> {
-  const st = snap?.update
+async function updateClick(given?: UpdateState): Promise<void> {
+  const st = given ?? snap?.update
   if (!st) return
   if (st.kind === 'available' || st.kind === 'confirm' || st.kind === 'failed') {
     if (!(await confirmAction('update', `Update Orca Flow to ${st.version}?`, 'Orca Flow restarts on the new version.', 'Update', 'download', 'warn', false))) return
@@ -289,6 +289,8 @@ searchOpen.addEventListener('click', () => setSearching(true))
 // The gear: Orca Flow's Settings dialog (src/panel/settings.ts).
 const settingsBtn = $('settings-open')
 settingsBtn.addEventListener('click', () => openSettings())
+// Settings' Update button goes through the same confirm and sidebar.update as the top bar's.
+settingsHooks.update = (state) => void updateClick(state)
 $('search-close').addEventListener('click', () => setSearching(false))
 searchEl.addEventListener('input', () => { ui.query = searchEl.value.trim(); draw() })
 searchEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearching(false) })

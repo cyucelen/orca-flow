@@ -46,6 +46,73 @@ export function latestRelease(git = ['/usr/bin/git', '/opt/homebrew/bin/git', 'g
   })
 }
 
+/** A release and the commit its tag points to. */
+export type Release = { version: string; commit: string }
+
+/** Releases from `git ls-remote --tags` (no --refs): an annotated tag's peeled `^{}` line gives its commit. */
+export function releasesFromTags(lsRemote: string): Release[] {
+  const byVersion = new Map<string, string>()
+  for (const line of lsRemote.split('\n')) {
+    const m = /^([0-9a-f]{40})\s+refs\/tags\/v(\d+\.\d+\.\d+)(\^\{\})?$/.exec(line.trim())
+    if (m && (m[3] || !byVersion.has(m[2]))) byVersion.set(m[2], m[1])
+  }
+  return [...byVersion].map(([version, commit]) => ({ version, commit }))
+}
+
+export function readReleases(git = ['/usr/bin/git', '/opt/homebrew/bin/git', 'git'].find((p) => p === 'git' || existsSync(p))!): Promise<Release[]> {
+  return new Promise((resolve, reject) => {
+    execFile(git, ['ls-remote', '--tags', REPO], { timeout: 30_000, maxBuffer: 1024 * 1024, env: { GIT_TERMINAL_PROMPT: '0', PATH: '/usr/bin:/bin:/opt/homebrew/bin' } }, (err, stdout) => {
+      if (err) return reject(new Error(err.message.split('\n')[0]))
+      resolve(releasesFromTags(stdout))
+    })
+  })
+}
+
+/** This plugin as `orca plugin list` reports it: where Orca installed it from. */
+export type InstalledPlugin = { isDev?: boolean; source?: { kind?: string; resolvedCommit?: string } | null } | null
+
+/**
+ * Why this copy cannot update itself to a newer release, or null when it can. `orca plugin update`
+ * moves a Git install from a version tag to the newest tag, but a branch install to its branch's
+ * newest commit and leaves a commit pin where it is; a folder install re-copies its folder. So only a
+ * copy whose commit is the running version's release tag (or a catalog install) updates to a release.
+ */
+export function cannotUpdate(key: string | null, current: string, plugin: InstalledPlugin, releases: Release[]): string | null {
+  if (!key || plugin?.isDev) return DEV_FOLDER
+  if (!current) return NO_VERSION
+  const source = plugin?.source
+  if (!source?.kind || source.kind === 'catalog') return null
+  if (source.kind !== 'git') return `This copy was installed from a ${source.kind}, not a release, so it isn’t updated from here.`
+  const tag = releases.find((r) => r.version === current)
+  if (tag && source.resolvedCommit && tag.commit === source.resolvedCommit) return null
+  return `This copy was installed from commit ${(source.resolvedCommit ?? 'unknown').slice(0, 7)}, not the ${current} release, so it isn’t updated from here. Reinstall from a release to get updates.`
+}
+
+/** What a check for updates found. `latest` is the newest release, which may be older than a development build. */
+export type UpdateCheck =
+  | { kind: 'current'; current: string; latest: string | null; at: number }
+  | { kind: 'available'; current: string; version: string; at: number }
+  | { kind: 'failed'; current: string; reason: string; at: number }
+  | { kind: 'cannot'; current: string; reason: string; latest: string | null; at: number }
+
+/**
+ * One check, the same for the 15-minute timer and Settings' Check for Updates: only a release newer
+ * than the running version is ever offered, and only to a copy that can update to it.
+ */
+export async function checkForUpdates(d: { key: string | null; current: string; releases: () => Promise<Release[]>; plugin: () => Promise<InstalledPlugin>; now?: () => number }): Promise<UpdateCheck> {
+  const at = (d.now ?? Date.now)()
+  const current = d.current
+  if (!d.key || !current) return { kind: 'cannot', current, reason: d.key ? NO_VERSION : DEV_FOLDER, latest: null, at }
+  let releases: Release[]
+  try { releases = await d.releases() } catch (e) { return { kind: 'failed', current, reason: (e as Error).message || 'The release list could not be read.', at } }
+  const plugin = await d.plugin().catch(() => null)
+  const latest = [...releases.map((r) => r.version)].sort(compareVersions).at(-1) ?? null
+  const reason = cannotUpdate(d.key, current, plugin, releases)
+  if (reason) return { kind: 'cannot', current, reason, latest, at }
+  const version = newerVersion(current, releases.map((r) => r.version))
+  return version ? { kind: 'available', current, version, at } : { kind: 'current', current, latest, at }
+}
+
 // ---------- what the status bar item says ----------
 
 /** How an update ended, as the status bar shows it. */
@@ -123,6 +190,7 @@ export type UpdaterDeps = {
 }
 
 export const DEV_FOLDER = 'Updates apply to an installed Orca Flow, not a development folder.'
+export const NO_VERSION = 'The manifest has no version, so there is nothing to compare releases with.'
 
 /**
  * The update's state and its actions. The status bar command (two clicks) and the panel's request
@@ -168,6 +236,8 @@ export function updater(d: UpdaterDeps) {
     found(version: string | null): void {
       latest = version
       if (latest && (state.kind === 'none' || state.kind === 'available')) show({ kind: 'available', version: latest })
+      // Nothing to offer any more (a copy that cannot update, a withdrawn release): stop offering it.
+      else if (!latest && state.kind === 'available') show({ kind: 'none' })
     },
     /** The status bar command. */
     click(): string {

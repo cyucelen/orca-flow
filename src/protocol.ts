@@ -334,6 +334,10 @@ export type SettingsState = {
   /** Orca Flow's version, for the dialog's title; null when unknown. */
   version: string | null
   writers: import('./settings.ts').WriterStatus[]
+  /** The update in progress or offered (the status bar item and the panel's update button show the same). */
+  update?: UpdateState
+  /** The last check for updates (timer or Check for Updates); null before the first one. */
+  updateCheck?: import('./update.ts').UpdateCheck | null
 }
 
 declare module 'orca' {
@@ -386,6 +390,8 @@ declare module 'orca' {
     'sidebar.settings': { output: SettingsState }
     /** Saves the dialog's settings to ~/.orca-flow/config.json (changed keys only; unknown keys kept; a broken file is never overwritten). */
     'sidebar.saveSettings': { input: { settings: import('./settings.ts').FlowSettings }; output: { ok: boolean; error?: string; state: SettingsState } }
+    /** Checks for a newer Orca Flow release now, as the 15-minute timer does; an offered update shows everywhere. */
+    'sidebar.checkUpdates': { output: import('./update.ts').UpdateCheck }
     /** Shows ~/.orca-flow/config.json (or its folder, while there is no file) in Finder. */
     'sidebar.revealSettings': { output: { ok: boolean } }
     /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
