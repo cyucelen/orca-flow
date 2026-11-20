@@ -168,30 +168,33 @@ orca-flow resume             # a woken coordinator takes back the runs it was co
 
 ## Settings
 
-The gear at the top of the panel opens Orca Flow Settings. It has four pages:
+The gear at the top of the panel opens Settings, laid out like macOS System Settings: a page
+per topic, one row per setting, and the explanation of each row in its tooltip (hover the label).
+Changes apply at once; there is no Save button. Close it with the × or Escape.
 
-- **Titles & summaries:** which writers make the sidebar cards, in what order, and Claude's model
-  (Haiku, the default, or Sonnet). Each writer's status comes from what the writer last saw (its
-  last card, or a usage-limit or sign-in cooldown with the time left) and, for a writer not used
-  since Orca Flow started, whether `orca agent installed` lists its CLI. The dialog sends no test
-  requests and starts no sign-in. Antigravity shows as "Not available yet" (see
-  [Card writer](#card-writer)).
-- **Message check:** off, every coordinator and lead, or only in some folders
-  ([Message format](#message-format)).
+- **Titles & Summaries:** the card writers, tried top to bottom (drag a row's handle, or focus it
+  and press the up and down arrows). Each row has Claude's model menu (Haiku, the default, or
+  Sonnet), a status dot and a switch. The dot's tooltip says what the writer last saw (its last
+  card, or a usage-limit or sign-in cooldown with the time left) or, for a writer not used since
+  Orca Flow started, whether `orca agent installed` lists its CLI. Nothing is tested from the
+  dialog. "Writing now" names the writer the next card would use. Antigravity is "Not available
+  yet" (see [Card writer](#card-writer)).
+- **Message Check:** Off, All agents (every coordinator and lead) or Some folders, with the folder
+  list ([Message format](#message-format)).
 - **Capacity:** the memory always kept free and the extra room under memory pressure
   ([Capacity](#capacity)).
 - **Advanced:** Linear test mode (log the Linear comments and status changes Orca Flow would send,
   and send nothing) and Show in Finder for the settings file.
 
-Each page has Reset to defaults; the footer has Reset all to defaults, the number of unsaved
-changes, Cancel and Save. Closing with unsaved changes asks first, inside the dialog. Save takes
-effect at once: the writer reads the settings again for every card.
+A page that differs from its defaults shows Reset to Defaults at its bottom. If a save fails, the
+control goes back to the saved value and the page says "Couldn’t save", with the reason in its
+tooltip. The writer reads the settings again for every card, so a change applies to the next one.
 
 Everything is saved in `~/.orca-flow/config.json` by the plugin's worker. Only settings that
 differ from their defaults are written, a setting put back to its default is removed, and keys
 Orca Flow does not know are kept. The file is replaced atomically. If the file is not valid JSON,
-the dialog says so, Orca Flow uses the defaults, and Save stays off so the file is never
-overwritten; fix or remove it by hand. You can also edit the file directly:
+the dialog says "Settings file can’t be read", Orca Flow uses the defaults, and the controls stay
+off so the file is never overwritten; fix or remove it by hand. You can also edit the file directly:
 
 ```json
 {
@@ -373,7 +376,7 @@ scripts/dev.sh check   # types, tsc, plugin tests and orca-flow tests
 scripts/dev.sh load    # load this folder into Orca as local.flow and (re)start its worker
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
 node scripts/settings-preview.mjs                       # the Settings dialog in a browser, with fixture data
-node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots   # every page, dark and light, 360 px and wide
+node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots-v2 --tips   # every page, dark and light, 360 px and wide, plus tooltips
 ```
 
 The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker

@@ -59,15 +59,13 @@
     <div id="settings" class="s-scrim" hidden>
       <section class="s-dialog" role="dialog" aria-modal="true" aria-labelledby="s-title" tabindex="-1">
         <header class="s-head">
-          <h2 id="s-title">Orca Flow Settings<span class="s-ver" id="s-ver"></span></h2>
-          <button class="s-icon-btn" id="s-x" type="button" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+          <h2 id="s-title" data-tip="Orca Flow">Settings</h2>
+          <button class="s-x" id="s-x" type="button" aria-label="Close settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
         </header>
         <div class="s-body">
           <nav aria-label="Settings pages" id="s-nav"></nav>
           <div class="s-page" id="s-page"></div>
         </div>
-        <div class="s-foot" id="s-foot"></div>
-        <div class="s-toast" id="s-toast" role="status" hidden></div>
       </section>
     </div>
     <script type="module" src="./app.ts"></script>

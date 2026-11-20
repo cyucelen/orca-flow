@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applySettings, changedKeys, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, statusView, toDraft } from './settings.ts'
+import { applySettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
   assert.deepEqual(normalizeWriters([
@@ -23,18 +23,6 @@ test('draft round trip: dialog controls map back to the same settings', () => {
   assert.deepEqual(DEFAULT_DRAFT.folders, ['~/orca/coordinators'])
 })
 
-test('changed keys: folders count only while the folder choice is in play', () => {
-  const saved = structuredClone(DEFAULT_DRAFT)
-  const draft = structuredClone(DEFAULT_DRAFT)
-  draft.folders = ['~/elsewhere']
-  assert.deepEqual(changedKeys(draft, saved), [])
-  draft.format = 'folders'
-  assert.deepEqual(changedKeys(draft, saved), ['format', 'folders'])
-  draft.models.claude = 'sonnet'
-  draft.writers.reverse()
-  assert.deepEqual(changedKeys(draft, saved), ['writers', 'models', 'format', 'folders'])
-})
-
 test('applySettings touches only changed keys', () => {
   assert.deepEqual(applySettings({ other: 1, marginGB: 'x' }, { ...DEFAULT_SETTINGS, linearDryRun: true }), { other: 1, marginGB: 'x', linearDryRun: true })
 })
@@ -50,4 +38,67 @@ test('status comes from what the writer last saw, then from the install list', (
   assert.deepEqual(statusView(s({ installed: false }), 'codex', now), { tone: 'bad', text: 'Not installed', sub: 'Orca doesn’t see the Codex CLI', usable: false })
   assert.equal(statusView(undefined, 'claude', now).text, 'Not used yet')
   assert.deepEqual(statusView(s({ installed: true }), 'antigravity', now), { tone: 'idle', text: 'Not available yet', sub: 'Orca Flow can’t write cards with the Antigravity CLI yet', usable: false })
+})
+
+// ---------- instant save ----------
+
+const saver = (answer: (s: FlowSettings, n: number) => SaveReply | Promise<SaveReply>) => {
+  const calls: FlowSettings[] = []
+  return { calls, save: async (s: FlowSettings) => { calls.push(structuredClone(s)); return answer(s, calls.length) } }
+}
+
+test('a change shows at once and sends exactly one save of the new settings', async () => {
+  const io = saver((s) => ({ ok: true, settings: s }))
+  let updates = 0
+  const session = settingsSession(io.save, () => updates++)
+  session.load(DEFAULT_SETTINGS)
+  const done = session.change((d) => { d.models.claude = 'sonnet' })
+  assert.equal(session.shown.models.claude, 'sonnet', 'shown before the save answers')
+  await done
+  assert.equal(io.calls.length, 1)
+  assert.deepEqual(io.calls[0].writers[0], { provider: 'claude', model: 'sonnet', enabled: true })
+  assert.equal(session.saved.models.claude, 'sonnet')
+  assert.equal(session.error, null)
+  assert.ok(updates >= 2)
+})
+
+test('a failed save puts the control back to the saved value and keeps a short error', async () => {
+  for (const io of [saver(() => ({ ok: false, error: 'config.json isn’t valid JSON' })), saver(() => { throw new Error('worker gone') })]) {
+    const session = settingsSession(io.save)
+    session.load({ ...DEFAULT_SETTINGS, marginGB: 3 })
+    await session.change((d) => { d.marginGB = 3.5; d.linearDryRun = true })
+    assert.equal(io.calls.length, 1)
+    assert.equal(session.shown.marginGB, 3)
+    assert.equal(session.shown.linearDryRun, false)
+    assert.ok(session.error)
+  }
+})
+
+test('changes made while a save is in flight go in one more save, newest last', async () => {
+  let release!: () => void
+  const first = new Promise<void>((r) => { release = r })
+  const io = saver(async (s, n) => { if (n === 1) await first; return { ok: true, settings: s } })
+  const session = settingsSession(io.save)
+  session.load(DEFAULT_SETTINGS)
+  const a = session.change((d) => { d.marginGB = 2.5 })
+  const b = session.change((d) => { d.marginGB = 3 })
+  const c = session.change((d) => { d.marginGB = 3.5 })
+  release()
+  await Promise.all([a, b, c])
+  assert.deepEqual(io.calls.map((s) => s.marginGB), [2.5, 3.5])
+  assert.equal(session.shown.marginGB, 3.5)
+})
+
+test('a change that does not reach the file sends nothing, and reset saves defaults once', async () => {
+  const io = saver((s) => ({ ok: true, settings: s }))
+  const session = settingsSession(io.save)
+  session.load({ ...DEFAULT_SETTINGS, linearDryRun: true, messageFormat: 'all' })
+  // Editing the folder list while "All agents" is chosen changes nothing in config.json.
+  await session.change((d) => { d.folders.push('~/x') })
+  assert.equal(io.calls.length, 0)
+  assert.equal(session.isDefault(['linearDryRun']), false)
+  await session.reset(['linearDryRun', 'format', 'folders'])
+  assert.equal(io.calls.length, 1)
+  assert.deepEqual(io.calls[0], DEFAULT_SETTINGS)
+  assert.equal(session.isDefault(['linearDryRun', 'format']), true)
 })

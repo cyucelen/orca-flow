@@ -3,6 +3,7 @@
 // saves are recorded in window.previewCalls.
 //   node scripts/settings-preview.mjs                 serve; open the printed URL (add ?page=format&theme=light)
 //   node scripts/settings-preview.mjs --shots <dir>   capture every page, dark and light, narrow and wide, then exit
+//                                                     (--broken adds an unreadable config.json; --tips adds tooltips shown)
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -38,12 +39,12 @@ const settings = {
   ]
 }
 const LIGHT = { '--orca-background': '#f7f7f9', '--orca-foreground': '#1c1c20', '--orca-muted-foreground': '#5f5f69', '--orca-border': '#e1e1e7', '--orca-accent': '#ececf0', '--orca-popover': '#ffffff', '--orca-popover-foreground': '#1c1c20' }
-const bridge = `<script>
+const bridge = `<style>.tip { transition: none !important; }</style><script>
 const q = new URLSearchParams(location.search);
 if (q.get('theme') === 'light') { document.documentElement.classList.add('light'); for (const [k, v] of Object.entries(${JSON.stringify(LIGHT)})) document.documentElement.style.setProperty(k, v); }
 const snapshot = ${JSON.stringify(snapshot)};
 const settings = ${JSON.stringify(settings)};
-if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON: Expected double-quoted property name in JSON at position 18';
+if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
 window.previewCalls = [];
 window.orca = {
   plugin: {
@@ -55,6 +56,8 @@ window.orca = {
 window.addEventListener('load', () => setTimeout(() => {
   document.getElementById('settings-open').click();
   setTimeout(() => document.querySelector('[data-page="' + (q.get('page') || 'summaries') + '"]')?.click(), 100);
+  // ?tip=<selector>: hover that element so its tooltip shows (for screenshots).
+  if (q.get('tip')) setTimeout(() => document.querySelector(q.get('tip'))?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })), 900);
 }, 200));
 </script>`
 const html = readFileSync(join(root, 'src/panel/index.html'), 'utf8')
@@ -66,8 +69,9 @@ const assets = new Map([
   ['/app.js', ['text/javascript', readFileSync(join(build, 'app.js'))]]
 ])
 rmSync(build, { recursive: true, force: true })
-// Chrome will not size a window under ~500 px, so a narrow panel is an iframe of exactly that width.
-const frame = (q) => `<!doctype html><body style="margin:0;background:#888;display:flex;justify-content:center"><iframe src="/?${q}" style="border:0;display:block;width:${new URLSearchParams(q).get('w')}px;height:${new URLSearchParams(q).get('h')}px"></iframe>`
+// Chrome will not size a window under ~500 px, and resizes the viewport as it captures (moving a shown
+// tooltip's target), so narrow panels and tooltip shots render in an iframe of exactly that size.
+const frame = (q) => `<!doctype html><body style="margin:0;background:#888;display:flex;justify-content:center;align-items:center;min-height:100vh"><iframe src="/?${q}" style="border:0;display:block;flex:none;width:${new URLSearchParams(q).get('w')}px;height:${new URLSearchParams(q).get('h')}px"></iframe>`
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://x')
   if (url.pathname === '/frame') { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(frame(url.searchParams.toString())); return }
@@ -80,7 +84,7 @@ const shots = process.argv.indexOf('--shots')
 server.listen(0, '127.0.0.1', () => {
   const base = `http://127.0.0.1:${server.address().port}/`
   if (shots < 0) return console.log(`Settings fixture: ${base}?page=summaries&theme=dark`)
-  const out = process.argv[shots + 1] || '/tmp/orca-settings-shots'
+  const out = process.argv[shots + 1] || '/tmp/orca-settings-shots-v2'
   mkdirSync(out, { recursive: true })
   const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
   const profile = mkdtempSync(join(tmpdir(), 'orca-flow-chrome-'))
@@ -88,18 +92,23 @@ server.listen(0, '127.0.0.1', () => {
   const jobs = []
   for (const page of ['summaries', 'format', 'capacity', 'advanced']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page, theme, w, width, height })
   if (process.argv.includes('--broken')) jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, state: 'broken' })
+  if (process.argv.includes('--tips')) {
+    jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-gh .s-label', name: 'tooltip-writers' })
+    jobs.push({ page: 'summaries', theme: 'light', w: '360', width: 360, height: 820, tip: '[data-writer="claude"] .s-dot', name: 'tooltip-status' })
+    jobs.push({ page: 'capacity', theme: 'dark', w: '360', width: 360, height: 820, tip: '.s-row .s-label', name: 'tooltip-capacity' })
+  }
   const run = async () => {
     for (const j of jobs) {
-      const file = join(out, `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}.png`)
+      const file = join(out, `${j.name ? `${j.name}-${j.theme}-${j.w}` : `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}`}.png`)
       await new Promise((resolve, reject) => {
-        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}`
-        const narrow = j.width < 600
-        const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${narrow ? 600 : j.width},${j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
-          narrow ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]
+        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}`
+        const framed = j.width < 600 || !!j.tip
+        const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
+          framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]
         execFile(chrome, args, { timeout: 60_000 }, (e) => {
           if (e) return reject(e)
           // Keep just the panel: sips crops around the centre, where the iframe sits.
-          if (narrow) execFileSync('sips', ['--cropToHeightWidth', String(j.height), String(j.width), file], { stdio: 'ignore' })
+          if (framed) execFileSync('sips', ['--cropToHeightWidth', String(j.height), String(j.width), file], { stdio: 'ignore' })
           resolve()
         })
       })

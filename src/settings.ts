@@ -147,10 +147,6 @@ export function fromDraft(d: Draft): FlowSettings {
 export const DEFAULT_DRAFT: Draft = toDraft(DEFAULT_SETTINGS)
 export const DRAFT_KEYS = Object.keys(DEFAULT_DRAFT) as DraftKey[]
 
-/** Controls whose value differs from what is saved. Folders count only while "Only in some folders" is chosen. */
-export function changedKeys(draft: Draft, saved: Draft): DraftKey[] {
-  return DRAFT_KEYS.filter((k) => !same(draft[k], saved[k]) && (k !== 'folders' || draft.format === 'folders' || saved.format === 'folders'))
-}
 
 // ---------- writer status ----------
 
@@ -201,4 +197,65 @@ export function statusView(s: WriterStatus | undefined, provider: WriterProvider
   if (s?.installed === false) return { tone: 'bad', text: 'Not installed', sub: `Orca doesn’t see the ${NAME[provider]} CLI`, usable: false }
   if (s?.installed === true) return { tone: 'ok', text: 'Installed', sub: 'No cards from it since Orca Flow started', usable: true }
   return { tone: 'idle', text: 'Not used yet', sub: 'No cards from it since Orca Flow started', usable: true }
+}
+
+// ---------- instant save ----------
+
+/** What one save answered: the settings now in the file, or why nothing was written. */
+export type SaveReply = { ok: boolean; error?: string; settings?: FlowSettings }
+
+/**
+ * The dialog's state with changes applied at once, as System Settings does: each change shows
+ * immediately and is saved; while a save is in flight, later changes wait and go in one more save.
+ * A failed save puts every control back to what the file holds and keeps the error.
+ */
+export function settingsSession(save: (settings: FlowSettings) => Promise<SaveReply>, onUpdate: () => void = () => {}) {
+  const s = { saved: clone(DEFAULT_DRAFT), shown: clone(DEFAULT_DRAFT), error: null as string | null }
+  let saving: Promise<void> | null = null
+  let again = false
+  /** The folder list is kept while another choice is on, though only "Some folders" saves it. */
+  const keepFolders = (d: Draft, from: Draft) => (d.format === 'folders' ? d : { ...d, folders: [...from.folders] })
+  const run = async () => {
+    do {
+      again = false
+      const want = fromDraft(s.shown)
+      if (same(want, fromDraft(s.saved))) break
+      let reply: SaveReply
+      try { reply = await save(want) } catch (e) { reply = { ok: false, error: (e as Error).message } }
+      if (reply.ok && reply.settings) {
+        s.saved = keepFolders(toDraft(reply.settings), s.shown)
+        s.error = null
+        if (!again) s.shown = clone(s.saved)
+      } else {
+        s.shown = clone(s.saved)
+        s.error = reply.error ?? 'The settings could not be saved.'
+        again = false
+      }
+      onUpdate()
+    } while (again)
+  }
+  const flush = (): Promise<void> => {
+    if (saving) { again = true; return saving }
+    saving = run().finally(() => { saving = null })
+    return saving
+  }
+  return {
+    get saved() { return s.saved },
+    get shown() { return s.shown },
+    get error() { return s.error },
+    /** The file's settings, as the dialog opens. */
+    load(settings: FlowSettings) { s.saved = toDraft(settings); s.shown = clone(s.saved); s.error = null },
+    /** Applies a change to the controls and saves it. */
+    change(mutate: (d: Draft) => void): Promise<void> {
+      mutate(s.shown)
+      s.error = null
+      onUpdate()
+      return flush()
+    },
+    /** Puts some controls back to their defaults, in one save. */
+    reset(keys: readonly DraftKey[]): Promise<void> {
+      return this.change((d) => { for (const k of keys) (d as Record<string, unknown>)[k] = clone(DEFAULT_DRAFT[k]) })
+    },
+    isDefault: (keys: readonly DraftKey[]) => keys.every((k) => same(s.shown[k], DEFAULT_DRAFT[k]))
+  }
 }
