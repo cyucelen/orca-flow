@@ -406,6 +406,8 @@ function memberMatches(m: CoordinatorMember, rows: WorkspaceRow[]): number {
 }
 
 export type WakeIo = ResumeIo & {
+  /** Required only for a never-started coordinator, after pending/eligible/history checks. */
+  first?: () => Promise<{ kind: 'start'; agent: string } | WakeOutcome>
   /** Shows the exact terminal; false when it could not. */
   open: (workspaceId: string, terminal: string) => Promise<boolean>
   /** Compare-and-swap write of the coordinator's sessions against the ones the plan was made from. */
@@ -428,7 +430,14 @@ export async function wakeCoordinator(c: Pick<Coordinator, 'sessions'>, rows: Wo
   if (plan.kind === 'open') return await io.open(plan.workspaceId, plan.terminal) ? { ok: true, kind: 'opened' } : { ok: false, kind: 'failed', retryable: true, error: 'The exact session could not be opened.' }
   if (plan.kind === 'choose') return { ok: false, kind: 'choose', error: plan.reason, ...agentOf(c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType) }
   if (plan.kind === 'fresh' || plan.kind === 'adopt') {
-    const started = await io.fresh(plan.agent || 'claude')
+    let agent = plan.agent || 'claude'
+    if (plan.kind === 'fresh' && !c.sessions?.members.length && !launching && liveChoices === 0) {
+      const choice = await io.first?.()
+      if (!choice) return { ok: false, kind: 'provider', providers: [], error: 'Check agent availability before starting the first conversation.' }
+      if (choice.kind !== 'start') return choice
+      agent = choice.agent
+    }
+    const started = await io.fresh(agent)
     if (!started.ok) return { ok: false, kind: 'failed', retryable: true, error: started.error ?? 'The new conversation could not be started.' }
     return started.bound === false ? { ok: true, kind: 'starting', ...(started.error ? { error: started.error } : {}) } : { ok: true, kind: 'started' }
   }

@@ -1,9 +1,10 @@
 import { assert, test } from 'orca/testing'
 import { associateSession, askKey, resumeExactMember, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions, conversationMissing, conversationSaved, markRefused, parseProcs, programRuns, providerMessage, ResumeRefusedError, type ResumeBinding } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
-import { foldCoordinatorFolders, fromPs, livePanes, openAgent, summaryAgents } from './worker.ts'
+import { foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, summaryAgents } from './worker.ts'
 import { askingRows, emptyUi, render, wakeView } from './view.ts'
 import type { Coordinator, CoordinatorSessions } from './protocol.ts'
+import { firstProvider } from './coordinator-providers.ts'
 
 function fixture(provider = 'codex') {
   const rows = fromPs([{ worktreeId: 'r::/fixture/home', path: '/fixture/home', displayName: 'home', repo: 'home', liveTerminalCount: 5, agents: [
@@ -620,6 +621,7 @@ test('owned structured Codex chats remain summary targets without a PTY', () => 
 function wakeIo(over: Partial<WakeIo> = {}) {
   const calls: { fresh: string[]; resume: unknown[]; save: CoordinatorSessions[]; open: [string, string][] } = { fresh: [], resume: [], save: [], open: [] }
   const io: WakeIo = {
+    first: async () => firstProvider([{ id: 'claude', name: 'Claude' }]),
     fresh: async (agent) => { calls.fresh.push(agent); return { ok: true } },
     resume: async (input) => { calls.resume.push(input); return { terminalId: 'resumed-host-id' } },
     binding: async () => ({ status: 'running', terminal: 'term-resumed' }),
@@ -630,7 +632,7 @@ function wakeIo(over: Partial<WakeIo> = {}) {
   return { io, calls }
 }
 
-test('a coordinator with no sessions field or no current starts a new conversation instead of the delivery error', async () => {
+test('a never-started coordinator starts the sole usable harness instead of the delivery error', async () => {
   const { rows, c } = fixture()
   // The reported orca-flow: coordinator.json has no sessions field and nothing of it is running.
   const empty = rows.map((r) => ({ ...r, agents: [] }))
@@ -670,6 +672,71 @@ test('a closed current member with a provider id resumes exactly that member, ne
   assert.equal(saved.members[1].orcaSession, 'resumed-orca')
   assert.deepEqual(saved.members[0], sessions.members[0], 'the live other member is untouched')
   assert.deepEqual(calls.open, [['folder:home', 'term-resumed']])
+})
+
+test('normal first click never launches for zero, unknown or multiple providers; choosing starts exactly that provider', async () => {
+  const c = { sessions: { version: 1 as const, current: null, members: [] } }
+  const options = [{ id: 'claude', name: 'Claude' }, { id: 'codex', name: 'Codex' }, { id: 'hermes', name: 'Hermes' }]
+  for (const providers of [null, [], options]) {
+    const { io, calls } = wakeIo({ first: async () => firstProvider(providers) })
+    assert.equal((await wakeCoordinator(c, [], 0, io)).kind, 'provider')
+    assert.equal(calls.fresh.length + calls.resume.length + calls.open.length + calls.save.length, 0)
+  }
+  for (const chosen of ['claude', 'codex', 'hermes']) {
+    const { io, calls } = wakeIo({ first: async () => firstProvider(options, chosen) })
+    assert.equal((await wakeCoordinator(c, [], 0, io)).kind, 'started')
+    assert.deepEqual(calls.fresh, [chosen])
+  }
+  const stale = wakeIo({ first: async () => firstProvider([options[0]], 'hermes') })
+  assert.equal((await wakeCoordinator(c, [], 0, stale.io)).kind, 'provider')
+  assert.equal(stale.calls.fresh.length, 0)
+  const missing = wakeIo(); delete missing.io.first
+  assert.equal((await wakeCoordinator(c, [], 0, missing.io)).kind, 'provider')
+  assert.equal(missing.calls.fresh.length, 0, 'shortcuts cannot restore an implicit Claude default')
+  const shortcut = wakeIo({ first: async () => firstProvider(options) })
+  assert.equal(await openNthChat([{ key: 'first', coordinator: 'first' }], 1, { coordinator: () => wakeCoordinator(c, [], 0, shortcut.io), chat: async () => {} }), 'Choose a provider for the first conversation.')
+  assert.equal(shortcut.calls.fresh.length, 0)
+})
+
+test('creating a coordinator seeds instructions and empty membership without needing a launcher', async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'first-coordinator-'))
+  try {
+    const dir = scaffoldCoordinator(root, { name: 'brand-new', look: null })
+    const disk = JSON.parse(readFileSync(join(dir, 'coordinator.json'), 'utf8'))
+    assert.deepEqual(disk.sessions, { version: 1, current: null, members: [] })
+    assert.match(readFileSync(join(dir, 'AGENTS.md'), 'utf8'), /Your role: coordinator/)
+    assert.match(readFileSync(join(dir, 'CLAUDE.md'), 'utf8'), /roles\/coordinator.md/)
+    const { io, calls } = wakeIo({ first: async () => firstProvider([{ id: 'claude', name: 'Claude' }, { id: 'hermes', name: 'Hermes' }]) })
+    assert.equal((await wakeCoordinator(disk, [], 0, io)).kind, 'provider')
+    assert.equal(calls.fresh.length, 0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('provider discovery never intercepts live, sleeping, history, eligible or pending conversations', async () => {
+  const f = fixture()
+  const io = () => wakeIo({ first: async () => { throw Error('must not inspect first-start providers') } }).io
+  assert.equal((await wakeCoordinator(f.c, f.rows, 1, io())).kind, 'opened')
+  const current = f.sessions.members.find(m => m.id === f.sessions.current)!
+  current.resumeSessionId = 'provider-resume'
+  assert.equal((await wakeCoordinator(f.c, [], 0, io())).kind, 'starting')
+  assert.equal((await wakeCoordinator({ sessions: { ...f.sessions, current: null } }, [], 0, io())).kind, 'choose')
+  assert.equal((await wakeCoordinator({ sessions: undefined }, f.rows, 1, io())).kind, 'choose')
+  assert.equal((await wakeCoordinator({ sessions: undefined }, [], 0, io(), true)).kind, 'started')
+})
+
+test('Hermes uses exact host terminal/session binding and preserves its provider resume id', () => {
+  const { row, terminal, launch, agent } = launched()
+  const hermes = { ...agent, agentType: 'hermes' }
+  const r = { ...row, agents: [hermes] }
+  const found = launchedAgent({ ...launch, agent: 'hermes' }, [terminal], r)!
+  assert.equal(found.agentType, 'hermes')
+  const bound = bindLaunched({ version: 1, current: null, members: [] }, r, found, 'hermes-native-id')
+  assert.equal(bound.members[0].agentType, 'hermes')
+  assert.equal(bound.members[0].resumeSessionId, 'hermes-native-id')
+  assert.equal(wakePlan({ sessions: bound }, [], 0).kind, 'resume')
 })
 
 test('a running current member opens its exact terminal and launches nothing', async () => {
@@ -763,7 +830,7 @@ test('a second click while a start or resume is in flight launches nothing', asy
 })
 
 test('overlapping refreshes reconcile what is on disk instead of failing the membership swap', async () => {
-  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { mkdtempSync, rmSync, readFileSync, writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const root = mkdtempSync(join(tmpdir(), 'flow-refresh-race-'))
@@ -787,6 +854,9 @@ test('overlapping refreshes reconcile what is on disk instead of failing the mem
     assert.equal(onDisk.members[1].title, 'Renamed meanwhile', 'and the refresh is saved')
     // Two refreshes both migrating a legacy file: the second reconciles the first's record, no second election.
     const legacy = scaffoldCoordinator(root, { name: 'legacy', look: null })
+    const oldRecord = JSON.parse(readFileSync(join(legacy, 'coordinator.json'), 'utf8'))
+    delete oldRecord.sessions // Existing legacy files predate explicit empty membership on creation.
+    writeFileSync(join(legacy, 'coordinator.json'), JSON.stringify(oldRecord))
     const migrated = { version: 1 as const, current: sessions.members[1].id, members: [sessions.members[1]] }
     updateCoordinatorSessions(legacy, (disk) => disk ?? migrated)
     const other = { ...migrated, current: sessions.members[0].id, members: [sessions.members[0]] }
@@ -809,6 +879,9 @@ test('every wake outcome is plain JSON with no undefined property, so the panel 
   record(await wakeCoordinator(c, rows, 2, wakeIo().io))
   const empty = rows.map((r) => ({ ...r, agents: [] }))
   record(await wakeCoordinator({ sessions: undefined }, empty, 0, wakeIo().io))
+  const pick = await wakeCoordinator({ sessions: undefined }, empty, 0, wakeIo({ first: async () => firstProvider(null) }).io)
+  record(pick)
+  assert.deepEqual(wakeView(pick), { row: null, menu: null }, 'provider choice is not a failed wake or a history picker')
   record(await wakeCoordinator({ sessions: undefined }, empty, 0, wakeIo({ fresh: async () => ({ ok: false }) }).io))
   // The reported orca-flow: no sessions field and two open conversations in its folder.
   record(await wakeCoordinator({ sessions: undefined }, rows, 2, wakeIo().io))
@@ -825,7 +898,7 @@ test('every wake outcome is plain JSON with no undefined property, so the panel 
   record(await wakeCoordinator(closed.c, closed.rows, 1, wakeIo({ resume: async () => { throw new Error('gone') } }).io))
   const busy = new Set(['home'])
   record(await exclusive(busy, 'home', () => wakeCoordinator(c, rows, 2, wakeIo().io), () => ({ ok: false, kind: 'busy' as const, error: 'A session change is already in progress.' })))
-  assert.deepEqual([...outcomes.keys()].sort(), ['busy', 'choose', 'failed', 'opened', 'restore-failed', 'resumed', 'started'])
+  assert.deepEqual([...outcomes.keys()].sort(), ['busy', 'choose', 'failed', 'opened', 'provider', 'restore-failed', 'resumed', 'started'])
   for (const [kind, r] of outcomes) {
     assert.deepEqual(undefinedPaths(r), [], `${kind} has no undefined property`)
     assert.deepEqual(JSON.parse(JSON.stringify(r)), r, `${kind} round-trips through JSON unchanged`)

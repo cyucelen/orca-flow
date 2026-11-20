@@ -174,7 +174,8 @@ export type CoordinatorMemberView = CoordinatorMember & { agent: AgentInfo | nul
  * `error` is the full reason, for the Sessions menu, never the row. `terminal` (with `workspaceId`) is
  * a terminal the attempt left open, for Show terminal.
  */
-export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'starting' | 'choose' | 'restore-failed' | 'busy' | 'failed'; error?: string; retryable?: boolean; agent?: string; workspaceId?: string; terminal?: string }
+export type CoordinatorProvider = { id: string; name: string }
+export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' | 'starting' | 'choose' | 'provider' | 'restore-failed' | 'busy' | 'failed'; providers?: CoordinatorProvider[]; error?: string; retryable?: boolean; agent?: string; workspaceId?: string; terminal?: string }
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 
@@ -217,6 +218,7 @@ export type UpdateState =
 export type Snapshot = {
   /** Enabled local host launchers for coordinator handover; null/absent means discovery failed. */
   handoverProviders?: import('./handover.ts').HandoverProvider[] | null
+  coordinatorProviders?: CoordinatorProvider[] | null
   rows: WorkspaceRow[]
   source: 'cli' | 'api'
   capacity: Capacity | null
@@ -334,7 +336,7 @@ declare module 'orca' {
     'sidebar.closeSessions': { input: { panes: string[] }; output: { closed: number } }
     /** Removes a worktree after re-checking that it is clean and its PR merged. */
     'sidebar.removeWorktree': { input: { workspaceId: string; force?: boolean }; output: { removed: boolean; reason?: string; dirty?: string[] } }
-    /** Creates a coordinator with a name and a look, starts its session and opens it. */
+    /** Creates its folder, instructions and empty membership; first click chooses/starts a provider. */
     'sidebar.createCoordinator': { input: { name: string; look: Look }; output: { ok: boolean; error?: string } }
     /** Sets a workstream's priority on its card (null clears it); Up next re-ranks. */
     'sidebar.setPriority': { input: { workspaceId: string; priority: Priority | null }; output: { ok: boolean; error?: string } }
@@ -347,8 +349,9 @@ declare module 'orca' {
      * Wakes a coordinator (wakePlan): opens the exact live current member, resumes that same member
      * by its provider id, or starts a new member when there is no previous conversation. Never
      * delivers, and never switches to another member; an ambiguous history answers `choose`.
+     * A never-started coordinator answers `provider` when a harness choice or availability retry is needed.
      */
-    'sidebar.openCoordinator': { input: { key: string }; output: WakeOutcome }
+    'sidebar.openCoordinator': { input: { key: string; provider?: string }; output: WakeOutcome }
     /**
      * Updates Orca Flow now, as the status bar item's second click does: only from available or
      * failed. An update that needs approval is never approved here; the message names the command.

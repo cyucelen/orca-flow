@@ -15,7 +15,7 @@ const current = agent('current', 'codex', 'Replacement coordinator')
 const member = (a) => ({ id: JSON.stringify(['folder:shop', 'session', a.orcaSession]), workspaceId: 'folder:shop', orcaSession: a.orcaSession, agentType: a.agentType, title: a.title, paneKey: a.paneKey, terminals: [a.terminal], resumeSessionId: `provider-${a.paneKey}`, lastAgent: a, agent: a })
 const members = [member(old), member(current)]
 const row = (id, a, extra = {}) => ({ id, name: a.title, branch: 'feature', repo: 'shop', path: '/fixture/shop', main: false, agents: [a], state: a.state, priority: null, card: null, parentId: null, liveTerminals: 1, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: 1, createdAt: 1, pr: null, ...extra })
-const fixture = { handoverProviders: ['claude', 'codex'], source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
+const fixture = { coordinatorProviders: [{id:'claude',name:'Claude'},{id:'codex',name:'Codex'},{id:'hermes',name:'Hermes'}], handoverProviders: ['claude', 'codex'], source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
   row('folder:shop', agent('lead', 'claude', 'Planner workstream', { dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('worker', 'codex', 'Validate totals', { leadPane: 'lead', parentPane: 'lead', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('helper', 'claude', 'Check edge cases', { leadPane: 'worker', parentPane: 'worker', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
@@ -23,16 +23,35 @@ const fixture = { handoverProviders: ['claude', 'codex'], source: 'cli', capacit
   row('feature:second', agent('second', 'codex', 'Independent workstream', { dispatch: 'open' })),
   row('folder:shop', agent('candidate', 'codex', 'Fresh same-provider conversation'), { folderOf: 'shop', branch: null, main: true })
 ] }
+fixture.coordinators.push({ key: 'first', name: 'New coordinator', repos: [], workspaceId: null, session: null, sessions: { version: 1, current: null, members: [] }, members: [] })
 const bridge = `<script>
 const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
 const listeners = new Map();
 window.previewCalls = [];
+window.previewLaunches = [];
+let firstPending = false;
+const neverStarted = (name='New coordinator',key='first') => ({key,name,repos:[],workspaceId:null,session:null,sessions:{version:1,current:null,members:[]},members:[]});
 window.orca = { plugin: {
  request: async (name, data) => {
   previewCalls.push({name, data});
   const c = fixture.coordinators[0];
   if(name==='sidebar.list') return structuredClone(fixture);
   if(name==='sidebar.linear') return null;
+  if(name==='sidebar.createCoordinator') { fixture.coordinators.push(neverStarted(data.name,data.name));listeners.get('sidebar.changed')?.(structuredClone(fixture));return {ok:true}; }
+  if(name==='sidebar.openCoordinator') {
+   const c=fixture.coordinators.find(c=>c.key===data.key);
+   if(c.session) return {ok:true,kind:'opened'};
+   if(firstPending) return {ok:true,kind:'starting'};
+   const choices=fixture.coordinatorProviders;
+   const selected=data.provider ? choices?.find(p=>p.id===data.provider) : choices?.length===1 ? choices[0] : null;
+   if(!selected) return {ok:false,kind:'provider',providers:choices??[],error:data.provider ? 'That provider is no longer available. Choose an enabled provider or check Orca Settings → Agents.' : choices===null ? 'Could not check agent availability. Retry, or check Orca Settings → Agents.' : !choices.length ? 'No supported provider is enabled. Install or enable an agent with coordinator session tracking in Orca Settings → Agents, then Retry.' : 'Choose a provider for the first conversation.'};
+   firstPending=true; previewLaunches.push({key:data.key,provider:selected.id});
+   await new Promise(resolve=>setTimeout(resolve,250));
+   const a={...fixture.rows[0]?.agents[0],paneKey:'first-pane',agentType:selected.id,title:'First conversation',orcaSession:'first-session',terminal:'term-first',live:true,state:'working',parentPane:null,dispatch:null,coordinator:data.key,leadPane:null};
+   const m={id:'first-member',workspaceId:'folder:'+data.key,orcaSession:a.orcaSession,agentType:a.agentType,title:a.title,paneKey:a.paneKey,terminals:[a.terminal],agent:a,lastAgent:a};
+   c.session=a;c.workspaceId=m.workspaceId;c.members=[m];c.sessions={version:1,current:m.id,members:[m]};firstPending=false;
+   listeners.get('sidebar.changed')?.(structuredClone(fixture));return {ok:true,kind:'started'};
+  }
   if(name==='sidebar.handover') {
    c.handover={provider:data.provider,phase:'launching'};
    listeners.get('sidebar.changed')?.(structuredClone(fixture));
@@ -56,6 +75,8 @@ window.orca = { plugin: {
  },on:(name,fn)=>{listeners.set(name,fn);return()=>listeners.delete(name)}
 },storage:{get:async()=>null,set:async()=>{}},shell:{openExternal:async()=>{}}};
 window.fixtureState=()=>structuredClone(fixture);
+window.previewNeverStarted=()=>{fixture.coordinators=[neverStarted()];fixture.rows=[];previewCalls.length=0;previewLaunches.length=0;firstPending=false;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
+window.previewFirstProviders=(providers)=>{fixture.coordinatorProviders=providers;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewAvailable=(providers)=>{fixture.handoverProviders=providers;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewProvider=(provider)=>{const c=fixture.coordinators[0];c.session.agentType=provider;for(const m of c.members)if(m.id===c.sessions.current){m.agentType=provider;m.agent.agentType=provider;}delete c.handover;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 </script>`

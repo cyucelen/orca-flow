@@ -328,6 +328,7 @@ export type WakeMenu = { header: string; reason?: string; sessions: boolean; ret
  * whose restore failed stays a neutral Sleeping row.
  */
 export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMenu | null } {
+  if (r.kind === 'provider') return { row: null, menu: null } // The first-start provider picker is separate from session history.
   const extra = { ...(r.error ? { reason: r.error } : {}), ...(r.agent ? { agent: r.agent } : {}), ...(r.terminal && r.workspaceId ? { terminal: { workspaceId: r.workspaceId, terminal: r.terminal } } : {}) }
   if (r.ok) return { row: { text: r.kind === 'resumed' ? 'Resumed' : r.kind === 'started' ? 'Started' : r.kind === 'starting' ? 'Starting' : 'Open', tone: 'ok' }, menu: null }
   if (r.kind === 'busy') return { row: { text: 'Opening…', tone: 'pending' }, menu: null }
@@ -951,7 +952,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : '<span class="rstatus sleeping">Sleeping</span>')}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 

@@ -76,7 +76,10 @@ this does not claim identical enforcement between providers.
 ## Getting started
 
 1. **Create a coordinator.** In the panel, click **New coordinator**, pick a name and a look. Orca
-   opens its session in a folder under `~/orca/coordinators/`.
+   creates its folder under `~/orca/coordinators/` without launching. Click its row to start: if
+   several supported harnesses are enabled, pick a logo (or provider name) in the anchored menu.
+   One usable harness starts directly; unavailable agents give feedback and a Retry action.
+   See [first-session provider support](docs/coordinator-first-session.md) for the host capability boundary.
 2. **Tell it what it is for**, for example "you own the `web` and `api` repos". It records that in
    its own `coordinator.json`. A coordinator with no scope takes any project.
 3. **Ask for work.** "Add guest checkout" makes the coordinator check there is room, create a

@@ -67,7 +67,7 @@ export function validateName(name: string, existing: string[]): string | null {
 export function scaffoldCoordinator(root: string, input: { name: string; look: Look | null }): string {
   const dir = join(root, input.name)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, COORDINATOR_FILE), JSON.stringify({ name: input.name, repos: [], about: '', look: input.look }, null, 2) + '\n')
+  writeFileSync(join(dir, COORDINATOR_FILE), JSON.stringify({ name: input.name, repos: [], about: '', look: input.look, sessions: { version: 1, current: null, members: [] } }, null, 2) + '\n')
   bootstrapCoordinator(dir)
   return dir
 }
