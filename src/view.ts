@@ -1,3 +1,4 @@
+import { coordinatorHandover } from './handover-providers.ts'
 import { askKey, sessionChoices } from './coordinator-sessions.ts'
 // The panel as pure functions: a snapshot and the UI state in, HTML out. No DOM, so it is tested
 // in Node; src/panel/app.ts only wires clicks and redraws.
@@ -912,7 +913,8 @@ export function coordinatorCharacter(c: Coordinator, size = 16, face: Face = c.s
   return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face, size, true, c.session ? askKindOf(c.session) : 'question')
 }
 
-function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coordinators: Coordinator[], ui: UiState, focused: string[] | null | undefined, mixed: boolean, rows: WorkspaceRow[]): string {
+function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap: Snapshot, ui: UiState, mixed: boolean): string {
+  const { coordinators, focusedPanes: focused } = snap
   const single = c.repos.length === 1 ? c.repos[0] : null
   const color = coordinatorColor(c)
   const shape: Shape = c.you ? 'solo' : (c.look?.shape ?? 'pentagon')
@@ -955,15 +957,16 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], coord
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, rows, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, snap, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
 
 /** Compact selector; the coordinator's avatar and current status stay separate. */
-function sessionPicker(c: Coordinator, rows: WorkspaceRow[], mixed: boolean): string {
-  if (sessionChoices(c, rows).length <= 1) return providerBadge(c.session, mixed)
+function sessionPicker(c: Coordinator, snap: Snapshot, mixed: boolean): string {
+  const recorded = c.handover && c.handover.phase !== 'complete'
+  if (!recorded && !coordinatorHandover(c, snap.handoverProviders, false).choices.length && sessionChoices(c, snap.rows).length <= 1) return providerBadge(c.session, mixed)
   const member = c.members?.find((m) => m.id === c.sessions?.current)
   const provider = providerOf(member?.agentType ?? c.session?.agentType ?? null)
   const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="13" height="13" rx="3"/><path d="M9 20h9a3 3 0 0 0 3-3V9"/></svg>'
@@ -1111,7 +1114,7 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
 
   // Sleep and remove are in the rows' menus.
   const idleRows = snap.rows.filter((r) => r.agents.length === 0 && !needsYou(r)).sort((x, y) => x.createdAt - y.createdAt)
-  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap.coordinators, ui, snap.focusedPanes, mixed, snap.rows)).join('')
+  const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap, ui, mixed)).join('')
 
   const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 

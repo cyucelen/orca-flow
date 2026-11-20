@@ -4,6 +4,7 @@ import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoord
 import { foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, summaryAgents } from './worker.ts'
 import { askingRows, emptyUi, render, wakeView } from './view.ts'
 import type { Coordinator, CoordinatorSessions } from './protocol.ts'
+import { coordinatorHandover } from './handover-providers.ts'
 import { firstProvider } from './coordinator-providers.ts'
 
 function fixture(provider = 'codex') {
@@ -504,6 +505,37 @@ test('dropdown appears only for two eligible conversations, not for genuine fold
     assert.match(html, /data-coordinator="home"/, 'header remains available without a switcher')
     assert.equal(JSON.stringify(c.sessions), before, 'visibility never changes membership/current')
     if (count > 0) assert.equal(currentRecipient(c, all).recipient.orcaSession, 'new-session')
+  }
+})
+
+test('one selected conversation exposes the badge menu for eligible handover and recorded retry', () => {
+  for (const source of ['claude', 'codex'] as const) {
+    const { rows, sessions, c, lineage } = fixture(source)
+    sessions.members = sessions.members.slice(1)
+    rows[0].agents = rows[0].agents.filter(a => a.paneKey === 'new:1')
+    const all = assignCoordinators(rows, [c], lineage)
+    const coordinator: Coordinator = { ...c }
+    const visible = foldCoordinatorFolders(all, [coordinator], [c.dir])
+    const other = source === 'claude' ? 'codex' : 'claude'
+    const name = other === 'codex' ? 'Codex' : 'Claude'
+    const badge = (available: ('claude' | 'codex')[]) => render({
+      rows: visible, coordinators: [coordinator], source: 'cli', capacity: null, handoverProviders: available
+    }, emptyUi()).main.includes('class="session-trigger"')
+    assert.equal(sessionChoices(coordinator, visible).length, 1)
+    assert.equal(badge([source]), false)
+    assert.equal(badge([other]), true)
+    assert.deepEqual(coordinatorHandover(coordinator, [source, other], false).choices, [
+      { provider: other, retry: false, label: `Handover to ${name}` }
+    ])
+    coordinator.handover = { phase: 'launching', provider: other }
+    assert.deepEqual(coordinatorHandover(coordinator, [source, other], true), { choices: [], note: 'Handing over…' })
+    assert.deepEqual(coordinatorHandover(coordinator, [source, other], false).choices, [
+      { provider: other, retry: true, label: `Retry handover to ${name}` }
+    ])
+    assert.equal(badge([source]), true)
+    assert.deepEqual(coordinatorHandover(coordinator, [source], false).choices, [])
+    coordinator.handover = { phase: 'invalid' }
+    assert.deepEqual(coordinatorHandover(coordinator, [other], false).choices, [])
   }
 })
 

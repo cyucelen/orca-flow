@@ -11,7 +11,7 @@ import { canRemove } from '../rank.ts'
 import { sessionChoices } from '../coordinator-sessions.ts'
 import { providerBadge, providerOf } from '../providers.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
-import { handoverTargets } from '../handover-providers.ts'
+import { coordinatorHandover } from '../handover-providers.ts'
 import type { HandoverProvider } from '../handover.ts'
 
 const ui = emptyUi()
@@ -605,39 +605,35 @@ async function removeWorktree(row: WorkspaceRow, target: string): Promise<void> 
     await inline(target, 'Removing…', 'Removed', () => remove(true))
 }
 
+function handoverItems(c: Coordinator, compact: boolean): MenuItem[] {
+  const key = c.key
+  const status = ui.status.get(`coordinator:${key}`)
+  const { choices, note, tip } = coordinatorHandover(c, snap?.handoverProviders, status?.tone === 'pending' && status.text === 'Handing over…')
+  const actions = choices.map(({ provider, label, retry }) => ({
+    provider, label, run: () => inline(`coordinator:${key}`, 'Handing over…', 'Handed over',
+      () => orca.plugin.request('sidebar.handover', { key, provider, retry }, { timeoutMs: 150_000 }))
+  }))
+  const items: MenuItem[] = compact && actions.length ? [{ handover: actions, note }]
+    : actions.length ? actions.map(a => ({ ...a, iconHtml: `<span class="provider" aria-hidden="true">${PROVIDER_LOGOS[a.provider]}</span>` }))
+    : [{ header: note === 'Unavailable' ? 'Handover unavailable' : 'Handing over…', tip }]
+  if (c.handover?.error) items.push({ header: 'Handover incomplete', tip: c.handover.error })
+  return items
+}
+
 function coordinatorMenu(key: string): MenuItem[] {
   const c = snap?.coordinators.find((x) => x.key === key)
   if (!c) return []
   const VERBS = { look: ['Shuffling…', 'New look'], restart: ['Restarting…', 'Fresh session'], end: ['Sleeping…', 'Asleep'], delete: ['Deleting…', 'Deleted'] } as const
   const run = (action: 'look' | 'restart' | 'end' | 'delete', _label: string) =>
     inline(`coordinator:${key}`, VERBS[action][0], VERBS[action][1], () => orca.plugin.request('sidebar.coordinatorAction', { key, action }, { timeoutMs: 90_000 }))
-  const handover = (provider: 'claude' | 'codex', retry = false) =>
-    inline(`coordinator:${key}`, 'Handing over…', 'Handed over', () => orca.plugin.request('sidebar.handover', { key, provider, retry }, { timeoutMs: 150_000 }))
-  const currentProvider = c.session?.agentType ?? c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType
-  const pending = ui.status.get(`coordinator:${key}`)
-  let handoverItem: MenuItem
-  if (pending?.tone === 'pending' && pending.text === 'Handing over…') handoverItem = { label: 'Handing over…' }
-  else if (c.handover?.phase === 'invalid') handoverItem = { label: 'Handover unavailable' }
-  else if (c.handover?.provider && c.handover.phase !== 'complete') {
-    const provider = c.handover.provider
-    const name = provider === 'codex' ? 'Codex' : 'Claude'
-    handoverItem = snap?.handoverProviders?.includes(provider)
-      ? { handover: [{ provider, label: `Retry handover to ${name}`, run: () => handover(provider, true) }], note: 'Retry' }
-      : { handover: [], note: 'Unavailable', tip: `Retry handover to ${name} when that provider is available. The original attempt is preserved.` }
-  } else {
-    const targets = handoverTargets(snap?.handoverProviders, currentProvider)
-    handoverItem = { handover: targets.map((provider) => ({ provider, label: `Handover to ${provider === 'codex' ? 'Codex' : 'Claude'}`, run: () => handover(provider) })),
-      ...(!targets.length ? { note: 'Unavailable', tip: snap?.handoverProviders ? 'No other supported provider is available. Enable Claude or Codex in Orca Settings → Agents.' : 'Agent availability could not be verified. Reopen the menu after refreshing.' } : {}) }
-  }
   const items: MenuItem[] = [
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
-    handoverItem,
+    ...handoverItems(c, true),
     'separator',
     { label: 'Start new conversation', icon: 'restart', danger: true, run: async () => {
       if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]
-  if (c.handover?.error) items.splice(2, 0, { header: 'Handover incomplete', tip: c.handover.error })
   if (c.members?.length) items.splice(1, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
   // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
@@ -942,7 +938,7 @@ function showSessionPicker(key: string, need?: WakeMenu): void {
     // A separator only parts picks from Start new; Retry sits directly above it.
     ...(picks.length ? [...picks, 'separator' as const] : []),
     { label: 'Start new conversation', icon: 'plus', run: () => inline(target, 'Starting…', 'Started', () => orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'fresh', ...(need.agent ? { agent: need.agent } : {}) }, { timeoutMs: 90_000 })) }
-  ] : picks.length ? picks : [{ header: 'No open conversations' }]
+  ] : [...(picks.length ? picks : [{ header: 'No open conversations' }]), 'separator', ...handoverItems(c, false)]
   if (!need && menuTarget === `sessions:${key}`) { closeMenu(); return }
   openMenu(items, 12, 12, `sessions:${key}`, anchor?.getBoundingClientRect(), 'session-menu')
 }
