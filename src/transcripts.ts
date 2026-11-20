@@ -93,6 +93,7 @@ function journalIdentity(path: string, orcaSession: string): { providerSession: 
 
 /** The live inventory's Orca id and a status event's native id are different namespaces. */
 export function discoverTranscript(pane: string, files = transcriptFiles, identity: TranscriptIdentity = {}): FoundTranscript {
+  if (identity.provider === 'antigravity') return { path: null, why: 'Unsupported transcript provider' }
   try {
     // A structured chat has a record keyed by its exact Orca id. Never use this id as a native id.
     if (identity.orcaSession && files.journal && existsSync(files.journal)) {

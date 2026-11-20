@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { COORDINATOR_HOME } from './coordinators.ts'
 import { claudeConfigDir } from './summarize.ts'
 
-export type Link = { from: string; to: string }
+export type Link = { from: string; to: string; preserveUserLinks?: boolean }
 
 /** The plugin folder: this file lives in <plugin>/src. */
 export function pluginDir(moduleUrl: string): string | null {
@@ -21,6 +21,7 @@ export function pluginDir(moduleUrl: string): string | null {
 
 export function linksFor(dir: string, home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): Link[] {
   return [
+    { from: join(home, '.gemini', 'config', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow'), preserveUserLinks: true },
     { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
   ]
 }
@@ -60,7 +61,7 @@ export function ensureSeeds(seeds: Link[]): string[] {
  */
 export function ensureLinks(links: Link[], { repairOnly = false } = {}): string[] {
   const done: string[] = []
-  for (const { from, to } of links) {
+  for (const { from, to, preserveUserLinks } of links) {
     let stat: { isSymbolicLink(): boolean } | null = null
     try {
       stat = lstatSync(from)
@@ -70,7 +71,14 @@ export function ensureLinks(links: Link[], { repairOnly = false } = {}): string[
         if (!repairOnly) done.push(`kept ${from}: not a link`)
         continue
       }
-      if (stat && readlinkSync(from) === to) continue
+      const previous = stat ? readlinkSync(from) : null
+      if (previous === to) continue
+      if (previous && preserveUserLinks) {
+        // Installed releases live under the same plugin key in content-addressed directories.
+        const release = /^(.*\/plugins\/[^/]+)\/(?:[a-f0-9]{64}|current)\/skills\/orca-flow$/
+        const owner = release.exec(to)?.[1]
+        if (!owner || release.exec(previous)?.[1] !== owner) continue
+      }
       if (stat && repairOnly && existsSync(from)) continue
       if (stat) unlinkSync(from)
       mkdirSync(join(from, '..'), { recursive: true })

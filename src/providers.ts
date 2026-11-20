@@ -1,7 +1,7 @@
 import type { AgentInfo, Snapshot } from './protocol.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 
-const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', cursor: 'Cursor', copilot: 'GitHub Copilot', opencode: 'OpenCode' } as const
+const NAMES = { antigravity: 'Antigravity', claude: 'Claude', codex: 'Codex', gemini: 'Gemini', cursor: 'Cursor', copilot: 'GitHub Copilot', opencode: 'OpenCode' } as const
 type Provider = keyof typeof NAMES
 
 /** Only host agent ids and explicit aliases; model names and conversation text are not evidence. */

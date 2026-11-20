@@ -13,13 +13,13 @@ open in their worktree. A follow-up with an open dispatch counts again. Older ho
 without positive per-agent evidence omit badges rather than guess from workspace counts.
 
 Only `agentType` identifies a provider: trimmed, case-insensitive exact ids `claude`, `codex`,
-`gemini`, `cursor`, `copilot`, `opencode`; `claude-agent-teams` maps to Claude and `opencode2` to
+`antigravity`, `gemini`, `cursor`, `copilot`, `opencode`; `claude-agent-teams` maps to Claude and `opencode2` to
 OpenCode. Models, titles, summaries and transcript contents never identify providers. Missing or
 unrecognized ids do not increase the threshold; in a mixed sidebar their live rows show a neutral
 robot with the accessible name and tooltip “Unknown provider”. Add new supported ids and bundled
 marks together in `providers.ts` / `provider-logos.ts`.
 
-Marks are inline SVG with an accessible provider name and the panel's existing hover tooltip.
+Marks are bundled images with an accessible provider name and the panel's existing hover tooltip.
 They add no controls or tab stops; clicks retain the enclosing row's existing session target.
 Characters, state rings, focus marks and coordinator membership remain independent of providers.
 
@@ -31,7 +31,7 @@ This changes neither coordinator-session selection nor assignment to coordinator
 
 ## Assets
 
-Bundled paths are from [Simple Icons](https://github.com/simple-icons/simple-icons), distributed
+The SVG paths are from [Simple Icons](https://github.com/simple-icons/simple-icons), distributed
 under [CC0](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md); brand marks
 belong to their respective owners. No provider asset is fetched at runtime. Retrieved 2026-11-19:
 
@@ -42,7 +42,12 @@ belong to their respective owners. No provider asset is fetched at runtime. Retr
 - GitHub Copilot: [`githubcopilot.svg`](https://github.com/simple-icons/simple-icons/blob/develop/icons/githubcopilot.svg).
 - OpenCode: [`opencode.svg`](https://github.com/simple-icons/simple-icons/blob/develop/icons/opencode.svg).
 
-The other marks inherit the foreground for both themes. SVG path data is bundled, not interpolated
+Antigravity uses Google’s [official transparent mark](https://antigravity.google/assets/image/antigravity-logo.png),
+cropped to its visible bounds and scaled proportionally to 42 pixels for the 14-pixel badge. Its
+colour PNG is embedded in the panel bundle. The original SHA-256 is
+`193ba1805de11c23cd0c7a1df92aa0a886708e57350f6f7766100afe5befed73`.
+
+The monochrome marks inherit the foreground for both themes. SVG path data is bundled, not interpolated
 from agent metadata. The unknown robot is drawn locally.
 
 ## Verification

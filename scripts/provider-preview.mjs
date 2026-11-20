@@ -51,6 +51,16 @@ window.orca = {
 };
 window.previewCase = (kind) => {
   const s = structuredClone(fixture);
+  if (kind === 'claude-antigravity' || kind === 'codex-antigravity') {
+    const partner = kind.split('-')[0];
+    s.coordinators[0].session.agentType = partner;
+    s.rows[0].agents = [
+      { ...s.rows[0].agents[1], paneKey: 'Catalog lead', title: 'Catalog lead', agentType: partner, leadPane: null },
+      { ...s.rows[0].agents[2], paneKey: 'Search worker', title: 'Search worker', agentType: 'antigravity', leadPane: 'Catalog lead', state: 'waiting' }
+    ];
+    s.rows.pop();
+    s.focusedPanes = ['Search worker'];
+  }
   if (kind === 'single') {
     s.coordinators[0].session.agentType = 'codex';
     s.rows.flatMap(r => r.agents).forEach(a => { if (a.agentType === 'claude') a.agentType = 'codex'; });

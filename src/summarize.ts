@@ -504,6 +504,7 @@ type Card = { pane?: string; transcript?: string; transcriptSource?: TranscriptS
 
 /** An unbound legacy Claude card can stay visible; a Codex card needs a verified binding. */
 export function summaryMatches(card: Card, identity: TranscriptIdentity): boolean {
+  if (identity.provider === 'antigravity') return false // No Antigravity transcript adapter.
   if (identity.orcaSession && card.orcaSession && card.orcaSession !== identity.orcaSession) return false
   if (identity.provider && card.providerSession && card.providerSession.provider !== identity.provider) return false
   if (identity.sessionId && card.providerSession?.id !== identity.sessionId) return false

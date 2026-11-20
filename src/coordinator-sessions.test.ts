@@ -39,7 +39,7 @@ test('ambiguous roots are never chosen by list order, provider, focus, newest or
 })
 
 test('explicit adoption preserves two same-provider members and cross-provider replacements without absorbing leads', () => {
-  for (const provider of ['claude', 'codex']) {
+  for (const provider of ['claude', 'codex', 'antigravity']) {
     const { rows, lineage, c } = fixture(provider)
     let sessions: CoordinatorSessions = { version: 1, current: null, members: [] }
     sessions = associateSession(sessions, rows[0], rows[0].agents[0])
@@ -432,7 +432,7 @@ test('main-session dropdown is populated before membership; excludes dispatched 
 })
 
 test('one main-session choice atomically associates and selects, keeping history and routing provenance', () => {
-  for (const provider of ['claude', 'codex']) {
+  for (const provider of ['claude', 'codex', 'antigravity']) {
     const { rows, lineage, c } = fixture(provider)
     const old = { version: 1 as const, current: c.sessions.members[0].id, members: [c.sessions.members[0]] }
     const before = JSON.stringify(old)
@@ -1134,4 +1134,60 @@ test('a refused member is resumed again only after a new provider id is recorded
   let resumed = 0
   await assert.rejects(resumeExactMember(marked, marked.current!, { resume: async () => { resumed++; return { terminalId: 'x' } }, binding: async () => ({ status: 'running', terminal: 'x' }) }), (e: unknown) => e instanceof ResumeRefusedError && e.missing)
   assert.equal(resumed, 0)
+})
+
+test('Antigravity resume requires the exact live provider conversation before updating the member', async () => {
+  const { rows, c, sessions } = fixture('antigravity')
+  sessions.members[1].resumeSessionId = 'native-original'
+  const agent = { ...rows[0].agents[1], orcaSession: 'resumed-session', terminal: 'term-resumed' }
+  for (const id of [undefined, 'other', 'native-original']) {
+    const { io, calls } = wakeIo({ binding: async () => ({ status: 'bound', workspaceId: rows[0].id, agent, resumeSessionId: id }) })
+    const result = await wakeCoordinator(c, [], 0, io)
+    assert.equal(result.ok, id === 'native-original')
+    assert.equal(calls.save.length, id === 'native-original' ? 1 : 0)
+    assert.deepEqual(calls.fresh, [])
+  }
+})
+
+test('Antigravity checks the target host and fresh conversation before automatic selection', async () => {
+  const { antigravityTurnRecorded, requireAntigravity } = await import('./antigravity.ts')
+  for (const reply of [null, { agents: [{ id: 'gemini' }] }, { agents: [{ id: 'antigravity' }] }]) {
+    const check = requireAntigravity('/fixture/home', async (args) => {
+      assert.deepEqual(args, ['agent', 'installed', '--worktree', 'path:/fixture/home'])
+      return reply
+    })
+    if (reply?.agents[0].id === 'antigravity') await check
+    else await assert.rejects(check, /enabled Antigravity CLI/)
+  }
+  const h = { agent: 'antigravity', workspaceId: 'folder', sessionId: 'native', messageCount: 2, totalTokens: 100 }
+  assert.equal(antigravityTurnRecorded([h], 'folder', 'native'), true)
+  for (const history of [[], [h, h], [{ ...h, agent: 'gemini' }], [{ ...h, totalTokens: 0 }], [{ ...h, workspaceId: 'other' }], [{ ...h, sessionId: 'other' }]]) {
+    assert.equal(antigravityTurnRecorded(history, 'folder', 'native'), false)
+  }
+})
+
+test('a pending Antigravity terminal keeps its provider across wake and explicit fresh requests', async () => {
+  const launch = { workspaceId: 'folder', terminalId: 'pty', agent: 'antigravity' }
+  const pending = new Map([['home', launch]])
+  assert.deepEqual(wakePlan({}, [], 0, launch), { kind: 'adopt', agent: 'antigravity' })
+  const start = async () => { throw new Error('Should reuse the pending terminal') }
+  await assert.rejects(launchOnce(pending, 'home', 'folder', 'codex', start), /different provider/)
+  assert.deepEqual(await launchOnce(pending, 'home', 'folder', 'antigravity', start), { launch, adopted: true })
+})
+
+test('terminal launch supplies the Flow coordinator role and fails before host launch when unavailable', async () => {
+  const { launchAntigravityCoordinator } = await import('./antigravity.ts')
+  const calls: { workspaceId: string; agent: string; prompt: string }[] = []
+  const start = (enabled: boolean, dir: string | null) => launchAntigravityCoordinator('folder', '/fixture/home', dir,
+    async () => ({ agents: enabled ? [{ id: 'antigravity' }] : [] }),
+    async (input) => { calls.push(input); return { terminalId: 'fixture-terminal' } })
+  await assert.rejects(start(false, '/fixture/plugin'), /enabled Antigravity CLI/)
+  await assert.rejects(start(true, null), /skill/)
+  assert.equal(calls.length, 0)
+  assert.deepEqual(await start(true, '/fixture/plugin'), { terminalId: 'fixture-terminal' })
+  assert.equal(calls[0].workspaceId, 'folder')
+  assert.equal(calls[0].agent, 'antigravity')
+  assert.match(calls[0].prompt, /Your role: coordinator/)
+  assert.match(calls[0].prompt, /\/fixture\/plugin\/skills\/orca-flow\/roles\/coordinator.md/)
+  assert.match(calls[0].prompt, /coordinator.json/)
 })

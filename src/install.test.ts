@@ -105,3 +105,24 @@ test('both hooks go in once, next to Orca\'s own hooks, each updated in place', 
   assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`])
   rmSync(home, { recursive: true })
 })
+
+test('Antigravity discovers the installed Flow skill and preserves existing user links', async () => {
+  const { ensureOwnLinks, linksFor } = await import('./install.ts')
+  const { home, claudeDir } = profile()
+  try {
+    const path = join(home, '.gemini', 'config', 'skills', 'orca-flow')
+    const plugin = join(home, 'plugins', 'example.flow')
+    const first = join(plugin, 'a'.repeat(64)), next = join(plugin, 'b'.repeat(64))
+    const links = linksFor(first, home, claudeDir)
+    ensureOwnLinks(links, false)
+    assert.equal(existsSync(join(home, '.gemini')), false)
+    ensureOwnLinks(links, true)
+    assert.equal(readlinkSync(path), join(first, 'skills/orca-flow'))
+    ensureOwnLinks(linksFor(next, home, claudeDir), true)
+    assert.equal(readlinkSync(path), join(next, 'skills/orca-flow'))
+    rmSync(path)
+    symlinkSync('/fixture/user-owned', path)
+    for (const repairOnly of [true, false]) ensureOwnLinks(links, true, { repairOnly })
+    assert.equal(readlinkSync(path), '/fixture/user-owned')
+  } finally { rmSync(home, { recursive: true }) }
+})
