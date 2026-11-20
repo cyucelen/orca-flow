@@ -156,9 +156,18 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
+  if (d.handover) {
+    const target = `handover:${d.handover}`
+    if (menuTarget === target) closeMenu()
+    else if (opener.shouldOpen(target)) {
+      const c = snap?.coordinators.find(c => c.key === d.handover)
+      if (c) openMenu(handoverItems(c, false), 12, 12, target, el.getBoundingClientRect(), 'session-menu')
+    }
+    return
+  }
   if (d.sessions) { if (opener.shouldOpen(`sessions:${d.sessions}`)) showSessionPicker(d.sessions); return }
   if (d.history && d.member) { void showHistory(d.history, d.member, d.historyTerminal, d.historySession); return }
   // One action at a time; opening, folding and briefs still work while one runs.
@@ -616,7 +625,7 @@ function handoverItems(c: Coordinator, compact: boolean): MenuItem[] {
   const items: MenuItem[] = compact && actions.length ? [{ handover: actions, note }]
     : actions.length ? actions.map(a => ({ ...a, iconHtml: `<span class="provider" aria-hidden="true">${PROVIDER_LOGOS[a.provider]}</span>` }))
     : [{ header: note === 'Unavailable' ? 'Handover unavailable' : 'Handing over…', tip }]
-  if (c.handover?.error) items.push({ header: 'Handover incomplete', tip: c.handover.error })
+  if (compact && c.handover?.error) items.push({ header: 'Handover incomplete', tip: c.handover.error })
   return items
 }
 
@@ -661,7 +670,7 @@ function markTarget(): void {
   document.querySelectorAll('.menu-open').forEach((el) => el.classList.remove('menu-open'))
   if (menuTarget) document.querySelector(`[data-menu="${CSS.escape(menuTarget)}"]`)?.classList.add('menu-open')
   document.querySelectorAll<HTMLElement>('.session-trigger').forEach((el) => {
-    el.setAttribute('aria-expanded', String(menuTarget === `sessions:${el.dataset.sessions}`))
+    el.setAttribute('aria-expanded', String(menuTarget === `handover:${el.dataset.handover}`))
   })
 }
 
@@ -763,8 +772,9 @@ document.addEventListener('contextmenu', (e) => {
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-sessions]') : null
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-handover],[data-sessions]') : null
   if (!el) return null
+  if (el.dataset.handover) return `handover:${el.dataset.handover}`
   if (el.dataset.sessions) return `sessions:${el.dataset.sessions}`
   return 'ldisplay' in el.dataset ? 'display' : `linear:${el.dataset.lsend}`
 }
@@ -916,8 +926,7 @@ function showFirstProviderPicker(key: string, providers: CoordinatorProvider[], 
 function showSessionPicker(key: string, need?: WakeMenu): void {
   const c = snap?.coordinators.find((c) => c.key === key)
   if (!c || !snap) return
-  const anchor = document.querySelector<HTMLElement>(`.session-trigger[data-sessions="${CSS.escape(key)}"]`)
-    ?? document.querySelector<HTMLElement>(`[data-menu="coordinator:${CSS.escape(key)}"] .coord-name`)
+  const anchor = document.querySelector<HTMLElement>(`[data-menu="coordinator:${CSS.escape(key)}"] .coord-name`)
   const target = `coordinator:${key}`
   const choices = !need || need.sessions ? sessionChoices(c, snap.rows) : []
   const picks: MenuItem[] = choices.map((choice) => ({
@@ -938,7 +947,7 @@ function showSessionPicker(key: string, need?: WakeMenu): void {
     // A separator only parts picks from Start new; Retry sits directly above it.
     ...(picks.length ? [...picks, 'separator' as const] : []),
     { label: 'Start new conversation', icon: 'plus', run: () => inline(target, 'Starting…', 'Started', () => orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'fresh', ...(need.agent ? { agent: need.agent } : {}) }, { timeoutMs: 90_000 })) }
-  ] : [...(picks.length ? picks : [{ header: 'No open conversations' }]), 'separator', ...handoverItems(c, false)]
+  ] : picks.length ? picks : [{ header: 'No open conversations' }]
   if (!need && menuTarget === `sessions:${key}`) { closeMenu(); return }
   openMenu(items, 12, 12, `sessions:${key}`, anchor?.getBoundingClientRect(), 'session-menu')
 }

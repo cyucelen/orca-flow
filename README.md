@@ -100,8 +100,8 @@ The coordinator menu also has a compact **Handover** row with target-provider lo
 available Claude/Codex alternatives, excluding the current provider; tooltips name each target. It reads the
 stored source transcript, including when the source has exhausted its quota, and launches the target
 in the same workspace with scope, workstreams and pending decisions. Original conversations stay
-in history. The provider-logo session dropdown keeps its one-step selection; **Start new
-conversation** remains a fresh start.
+in history. Click the provider badge beside the coordinator name to choose **Handover to Claude**
+or **Handover to Codex**. If wake needs an existing conversation, it opens a separate picker.
 
 **Current host limitation:** menu handover refuses coordinators with owned runs before launching:
 Orca exposes no atomic ownership transfer that preserves report routes and pending asks. A target

@@ -1,5 +1,5 @@
 import { coordinatorHandover } from './handover-providers.ts'
-import { askKey, sessionChoices } from './coordinator-sessions.ts'
+import { askKey } from './coordinator-sessions.ts'
 // The panel as pure functions: a snapshot and the UI state in, HTML out. No DOM, so it is tested
 // in Node; src/panel/app.ts only wires clicks and redraws.
 //
@@ -957,20 +957,21 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${sessionPicker(c, snap, mixed)}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
 // ---------- the tree's order, and the Option+1..9 chat shortcuts ----------
 
 /** Compact selector; the coordinator's avatar and current status stay separate. */
-function sessionPicker(c: Coordinator, snap: Snapshot, mixed: boolean): string {
+function handoverBadge(c: Coordinator, snap: Snapshot, mixed: boolean, status?: RowStatus): string {
+  const pending = status?.tone === 'pending' && status.text === 'Handing over…'
   const recorded = c.handover && c.handover.phase !== 'complete'
-  if (!recorded && !coordinatorHandover(c, snap.handoverProviders, false).choices.length && sessionChoices(c, snap.rows).length <= 1) return providerBadge(c.session, mixed)
+  if (!pending && !recorded && !coordinatorHandover(c, snap.handoverProviders, false).choices.length) return providerBadge(c.session, mixed)
   const member = c.members?.find((m) => m.id === c.sessions?.current)
   const provider = providerOf(member?.agentType ?? c.session?.agentType ?? null)
   const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="13" height="13" rx="3"/><path d="M9 20h9a3 3 0 0 0 3-3V9"/></svg>'
-  return `<button class="session-trigger" data-sessions="${esc(c.key)}" aria-label="Main session for ${esc(c.name)}" aria-haspopup="menu" aria-expanded="false" data-tip="${esc(`Switch coordinator session${member?.title ? ` · ${member.title}` : ''}`)}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
+  return `<button class="session-trigger" data-handover="${esc(c.key)}" aria-controls="ctx" aria-label="Handover for ${esc(c.name)}" aria-haspopup="menu" aria-expanded="false" data-tip="${esc(`Handover for ${c.name}`)}"><span class="provider" aria-hidden="true">${mark}</span><span class="session-chevron" aria-hidden="true">${ICON.chev}</span></button>`
 }
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */

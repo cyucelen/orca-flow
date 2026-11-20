@@ -12,7 +12,8 @@ answered, deleted or readdressed by the plugin.
   accessible names, inline progress and errors. Host `agent installed` discovery filters to enabled
   Claude/Codex alternatives; current providers, unrelated providers and existing sessions are excluded.
   No available target (or failed discovery) displays an unavailable state instead of a launch button.
-  The avatar/provider-logo/name order and one-step session dropdown remain intact.
+  The provider badge beside the coordinator name opens the labeled handover actions. Wake and
+  recovery use their own conversation picker.
 - A Claude ↔ Codex terminal handover in the same workspace when no member owns a run. It verifies
   `agent launch` receipt, `prompt.outcome` (`journaled` or `handed-to-terminal`), exact provider,
   workspace, session identity and absence of dispatch/parent provenance before changing current.
