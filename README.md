@@ -87,7 +87,8 @@ this does not claim identical enforcement between providers.
 6. **Sleep what you are not using.** Right-click a coordinator or session and choose **Sleep** to
    free its memory. Clicking a sleeping coordinator wakes it in the same conversation.
 
-The coordinator menu also has a compact **Handover → To Claude / To Codex** choice. It reads the
+The coordinator menu also has a compact **Handover** row with target-provider logos. It offers
+available Claude/Codex alternatives, excluding the current provider; tooltips name each target. It reads the
 stored source transcript, including when the source has exhausted its quota, and launches the target
 in the same workspace with scope, workstreams and pending decisions. Original conversations stay
 in history. The provider-logo session dropdown keeps its one-step selection; **Start new

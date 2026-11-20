@@ -27,6 +27,7 @@ import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summa
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, requireCoordinatorNavigation, requireTransferableOwnership, runRoutes, saveHandover, type Handover } from './handover.ts'
+import { readHandoverProviders } from './handover-providers.ts'
 import { latestRelease, newerVersion, startUpdate, updateItem, updater, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 import { backgroundReader } from './background.ts'
@@ -713,12 +714,14 @@ export default function activate(orca: OrcaWorkerApi): void {
   let updateState: UpdateState = { kind: 'none' }
   // The panes in front in every workspace; only the focused workspace's agents among them wear the current border.
   let focus: string[] | null = null
-  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus })
+  let handoverProviders: Snapshot['handoverProviders'] = null
+  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders })
   const run = orcaRunner(ORCA_BIN)
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
-    const [snap, front] = await Promise.all([snapshot(orca, runPs, () => void refresh()), readFocus(run)])
+    const [snap, front, available] = await Promise.all([snapshot(orca, runPs, () => void refresh()), readFocus(run), readHandoverProviders(run)])
+    handoverProviders = available
     latest = snap
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
@@ -1015,6 +1018,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (!attempt) {
         const source = c.sessions.members.find((m) => m.id === c.sessions!.current)!
         if (source.agentType === provider) throw new Error('Choose the other provider for handover, or Start new conversation for a fresh start.')
+        const available = await readHandoverProviders(run)
+        if (!available?.includes(provider)) throw new Error(`${provider === 'codex' ? 'Codex' : 'Claude'} is not currently available for handover. Check the agent installation and Orca Settings → Agents.`)
         const workspaceId = await workspaceFor(c.dir)
         if (!workspaceId) throw new Error('The coordinator workspace is unavailable.')
         requireTransferableOwnership(await runRoutes(run), c.sessions)

@@ -8,7 +8,10 @@ answered, deleted or readdressed by the plugin.
 
 ## Supported behavior
 
-- Compact target provider choice in the existing coordinator menu, with inline progress and errors.
+- Compact logo-only target buttons in the existing coordinator menu, with target/retry tooltips,
+  accessible names, inline progress and errors. Host `agent installed` discovery filters to enabled
+  Claude/Codex alternatives; current providers, unrelated providers and existing sessions are excluded.
+  No available target (or failed discovery) displays an unavailable state instead of a launch button.
   The avatar/provider-logo/name order and one-step session dropdown remain intact.
 - A Claude ↔ Codex terminal handover in the same workspace when no member owns a run. It verifies
   `agent launch` receipt, `prompt.outcome` (`journaled` or `handed-to-terminal`), exact provider,

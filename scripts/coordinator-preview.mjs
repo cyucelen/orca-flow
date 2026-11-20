@@ -15,7 +15,7 @@ const current = agent('current', 'codex', 'Replacement coordinator')
 const member = (a) => ({ id: JSON.stringify(['folder:shop', 'session', a.orcaSession]), workspaceId: 'folder:shop', orcaSession: a.orcaSession, agentType: a.agentType, title: a.title, paneKey: a.paneKey, terminals: [a.terminal], resumeSessionId: `provider-${a.paneKey}`, lastAgent: a, agent: a })
 const members = [member(old), member(current)]
 const row = (id, a, extra = {}) => ({ id, name: a.title, branch: 'feature', repo: 'shop', path: '/fixture/shop', main: false, agents: [a], state: a.state, priority: null, card: null, parentId: null, liveTerminals: 1, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: 1, createdAt: 1, pr: null, ...extra })
-const fixture = { source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
+const fixture = { handoverProviders: ['claude', 'codex'], source: 'cli', capacity: null, ready: true, focusedPanes: [], coordinators: [{ key: 'shop', name: 'Shop', repos: ['shop'], workspaceId: 'folder:shop', session: current, sessions: { version: 1, current: members[1].id, members }, members, routing: 'Some runs still route to a previous member. Pending asks retain their source.' }], rows: [
   row('folder:shop', agent('lead', 'claude', 'Planner workstream', { dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('worker', 'codex', 'Validate totals', { leadPane: 'lead', parentPane: 'lead', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
   row('folder:shop', agent('helper', 'claude', 'Check edge cases', { leadPane: 'worker', parentPane: 'worker', dispatch: 'open' }), { folderOf: 'shop', branch: null, main: true }),
@@ -56,6 +56,7 @@ window.orca = { plugin: {
  },on:(name,fn)=>{listeners.set(name,fn);return()=>listeners.delete(name)}
 },storage:{get:async()=>null,set:async()=>{}},shell:{openExternal:async()=>{}}};
 window.fixtureState=()=>structuredClone(fixture);
+window.previewAvailable=(providers)=>{fixture.handoverProviders=providers;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 window.previewProvider=(provider)=>{const c=fixture.coordinators[0];c.session.agentType=provider;for(const m of c.members)if(m.id===c.sessions.current){m.agentType=provider;m.agent.agentType=provider;}delete c.handover;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 </script>`
 const html = readFileSync(join(root, 'src/panel/index.html'), 'utf8').replace('<head>', '<head><title>Coordinator fixture · Orca Flow</title>').replace('<script type="module" src="./app.ts"></script>', `${bridge}<script type="module" src="./app.js"></script>`)

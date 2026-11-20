@@ -215,6 +215,8 @@ export type UpdateState =
   | { kind: 'failed'; version: string; reason: string }
 
 export type Snapshot = {
+  /** Enabled local host launchers for coordinator handover; null/absent means discovery failed. */
+  handoverProviders?: import('./handover.ts').HandoverProvider[] | null
   rows: WorkspaceRow[]
   source: 'cli' | 'api'
   capacity: Capacity | null

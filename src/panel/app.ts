@@ -10,6 +10,9 @@ import { externalLink } from './links.ts'
 import { canRemove } from '../rank.ts'
 import { sessionChoices } from '../coordinator-sessions.ts'
 import { providerBadge } from '../providers.ts'
+import { PROVIDER_LOGOS } from '../provider-logos.ts'
+import { handoverTargets } from '../handover-providers.ts'
+import type { HandoverProvider } from '../handover.ts'
 
 const ui = emptyUi()
 let snap: Snapshot | null = null
@@ -436,7 +439,8 @@ type Action = { label: string; icon?: string; iconHtml?: string; right?: string;
 type Chips = { chips: string; icon?: string; iconHtml?: string; stay?: boolean; wrap?: boolean; options: { label: string; active: boolean; run: () => void | Promise<void> }[] }
 /** A line of text heading the menu; `header` is HTML, escaped by whoever builds it; `tip` is its tooltip (text). */
 type Header = { header: string; tip?: string }
-type MenuItem = Action | Chips | Header | 'separator'
+type HandoverChoices = { handover: { provider: HandoverProvider; label: string; run: () => void | Promise<void> }[]; note?: string; tip?: string }
+type MenuItem = Action | Chips | Header | HandoverChoices | 'separator'
 
 // Icons in Orca's menu style (16px outline).
 const MI: Record<string, string> = {
@@ -608,11 +612,14 @@ function coordinatorMenu(key: string): MenuItem[] {
   else if (c.handover?.phase === 'invalid') handoverItem = { label: 'Handover unavailable' }
   else if (c.handover?.provider && c.handover.phase !== 'complete') {
     const provider = c.handover.provider
-    handoverItem = { label: `Retry handover to ${provider === 'codex' ? 'Codex' : 'Claude'}`, icon: 'restart', run: () => handover(provider, true) }
-  } else handoverItem = {
-    chips: 'Handover', icon: 'shuffle', options: (['claude', 'codex'] as const).filter((p) => p !== currentProvider).map((provider) => ({
-      label: `To ${provider === 'codex' ? 'Codex' : 'Claude'}`, active: false, run: () => handover(provider)
-    }))
+    const name = provider === 'codex' ? 'Codex' : 'Claude'
+    handoverItem = snap?.handoverProviders?.includes(provider)
+      ? { handover: [{ provider, label: `Retry handover to ${name}`, run: () => handover(provider, true) }], note: 'Retry' }
+      : { handover: [], note: 'Unavailable', tip: `Retry handover to ${name} when that provider is available. The original attempt is preserved.` }
+  } else {
+    const targets = handoverTargets(snap?.handoverProviders, currentProvider)
+    handoverItem = { handover: targets.map((provider) => ({ provider, label: `Handover to ${provider === 'codex' ? 'Codex' : 'Claude'}`, run: () => handover(provider) })),
+      ...(!targets.length ? { note: 'Unavailable', tip: snap?.handoverProviders ? 'No other supported provider is available. Enable Claude or Codex in Orca Settings → Agents.' : 'Agent availability could not be verified. Reopen the menu after refreshing.' } : {}) }
   }
   const items: MenuItem[] = [
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
@@ -673,6 +680,8 @@ function menuHtml(items: MenuItem[]): string {
   return items.map((it, i) =>
     it === 'separator' ? '<div class="sep" role="separator"></div>'
       : 'header' in it ? `<div class="mh"${it.tip ? ` data-tip="${esc(it.tip)}"` : ''}>${it.header}</div>`
+      : 'handover' in it
+        ? `<div class="mchips handover-row"${it.tip ? ` data-tip="${esc(it.tip)}"` : ''}>${iconOf({ icon: 'shuffle' })}<span class="ml">Handover</span>${it.note ? `<span class="mr">${esc(it.note)}</span>` : ''}${it.handover.map((o, j) => `<button class="mi handover-target" role="menuitem" aria-label="${esc(o.label)}" data-tip="${esc(o.label)}" title="${esc(o.label)}" data-i="${i}" data-j="${j}"><span class="provider" aria-hidden="true">${PROVIDER_LOGOS[o.provider]}</span></button>`).join('')}</div>`
       : 'chips' in it
         ? `<div class="mchips" role="group" aria-label="${esc(it.chips)}">${iconOf(it)}<span class="ml">${esc(it.chips)}</span></div><div class="chips${it.wrap ? ' wrap' : ''}">${it.options.map((o, j) => `<button class="mi chip${o.active ? ' on' : ''}" role="menuitemradio" aria-checked="${o.active}" data-i="${i}" data-j="${j}">${esc(o.label)}</button>`).join('')}</div>`
         : `<button class="mi${it.danger ? ' danger' : ''}" role="${it.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}"${it.checked === undefined ? '' : ` aria-checked="${it.checked}"`} data-i="${i}">${iconOf(it)}<span class="ml">${esc(it.label)}</span>${it.right ? `<span class="mr${it.accent ? ' sug' : ''}">${esc(it.right)}</span>` : ''}${it.checked === undefined ? '' : `<span class="check">${it.checked ? '✓' : ''}</span>`}</button>`
@@ -690,9 +699,10 @@ function runFrom(items: MenuItem[], e: MouseEvent, build?: () => MenuItem[]): vo
   if (!b) return
   const item = items[Number(b.dataset.i)]
   if (!item || item === 'separator' || 'header' in item) return
-  const stay = Boolean(item.stay && build)
+  const stay = Boolean('stay' in item && item.stay && build)
   if (!stay) closeMenu()
-  if ('chips' in item) void item.options[Number(b.dataset.j)]?.run()
+  if ('handover' in item) void item.handover[Number(b.dataset.j)]?.run()
+  else if ('chips' in item) void item.options[Number(b.dataset.j)]?.run()
   else void item.run?.()
   if (stay) showItems(tidy(build!()), build)
 }
