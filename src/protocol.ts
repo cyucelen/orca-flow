@@ -187,6 +187,7 @@ export type Coordinator = {
   members?: CoordinatorMemberView[]
   sessionNotice?: string
   routing?: string
+  handover?: import('./handover.ts').HandoverStatus
   /** Its folder workspace in Orca, once added; clicking the coordinator opens it. */
   workspaceId: string | null
   /** The explicitly current member's live session, never inferred from focus or provider. */
@@ -337,6 +338,7 @@ declare module 'orca' {
     'sidebar.setPriority': { input: { workspaceId: string; priority: Priority | null }; output: { ok: boolean; error?: string } }
     /** A coordinator's menu actions: a new look, a fresh session, ending its session, or deleting it. */
     'sidebar.coordinatorAction': { input: { key: string; action: 'look' | 'restart' | 'end' | 'delete' }; output: { ok: boolean; error?: string } }
+    'sidebar.handover': { input: { key: string; provider: 'claude' | 'codex'; retry?: boolean }; output: { ok: boolean; error?: string } }
     'sidebar.coordinatorSessions': { input: { key: string; action: 'select' | 'associate' | 'current' | 'resume' | 'fresh'; member?: string; workspaceId?: string; paneKey?: string; orcaSession?: string; agent?: string }; output: { ok: boolean; error?: string } }
     'sidebar.coordinatorHistory': { input: { key: string; member: string; terminal?: string; orcaSession?: string | null }; output: CoordinatorHistory }
     /**

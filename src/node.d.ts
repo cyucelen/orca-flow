@@ -8,6 +8,7 @@ declare module 'node:child_process' {
   ): unknown
 }
 declare module 'node:fs' {
+  export function writeFileSync(path: string, data: string, options: { flag?: string; mode?: number }): void
   export function existsSync(path: string): boolean
 }
 declare module 'node:fs' {
@@ -21,6 +22,7 @@ declare module 'node:os' {
 }
 declare module 'node:path' {
   export function join(...parts: string[]): string
+  export function resolve(...parts: string[]): string
 }
 declare module 'node:child_process' {
   export function execFileSync(file: string, args: readonly string[], options: { encoding: 'utf8' }): string

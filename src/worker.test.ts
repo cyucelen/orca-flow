@@ -1114,7 +1114,7 @@ test('no merged PR is refused with the uncommitted files, and removed when the p
   assert.deepEqual(forced.calls, ['terminal list', 'terminal close term-t:1', 'worktree rm --force'])
 })
 
-test('a development folder never links the skill; the installed copy repairs a dangling link only', async () => {
+test('a development folder never links the skill; the installed copy preserves an unowned dangling link', async () => {
   const { ensureOwnLinks } = await import('./install.ts')
   const { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -1137,9 +1137,8 @@ test('a development folder never links the skill; the installed copy repairs a d
   assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [], 'a link into another existing folder is kept by later checks')
   assert.equal(readlinkSync(from), other)
   rmSync(join(t, 'other'), { recursive: true })
-  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [`linked ${from}`], 'its folder was removed: repaired')
-  assert.equal(readlinkSync(from), own)
-  assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [], 'then left alone')
+  assert.match(ensureOwnLinks(links, true, { repairOnly: true })[0], /ownership is unverified/, 'a missing target does not prove ownership')
+  assert.equal(readlinkSync(from), other)
   rmSync(from)
   assert.deepEqual(ensureOwnLinks(links, true, { repairOnly: true }), [`linked ${from}`], 'a missing link is created')
   assert.ok(lstatSync(from).isSymbolicLink())

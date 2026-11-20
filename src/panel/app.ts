@@ -599,13 +599,30 @@ function coordinatorMenu(key: string): MenuItem[] {
   const VERBS = { look: ['Shuffling…', 'New look'], restart: ['Restarting…', 'Fresh session'], end: ['Sleeping…', 'Asleep'], delete: ['Deleting…', 'Deleted'] } as const
   const run = (action: 'look' | 'restart' | 'end' | 'delete', _label: string) =>
     inline(`coordinator:${key}`, VERBS[action][0], VERBS[action][1], () => orca.plugin.request('sidebar.coordinatorAction', { key, action }, { timeoutMs: 90_000 }))
+  const handover = (provider: 'claude' | 'codex', retry = false) =>
+    inline(`coordinator:${key}`, 'Handing over…', 'Handed over', () => orca.plugin.request('sidebar.handover', { key, provider, retry }, { timeoutMs: 150_000 }))
+  const currentProvider = c.session?.agentType ?? c.sessions?.members.find((m) => m.id === c.sessions?.current)?.agentType
+  const pending = ui.status.get(`coordinator:${key}`)
+  let handoverItem: MenuItem
+  if (pending?.tone === 'pending' && pending.text === 'Handing over…') handoverItem = { label: 'Handing over…' }
+  else if (c.handover?.phase === 'invalid') handoverItem = { label: 'Handover unavailable' }
+  else if (c.handover?.provider && c.handover.phase !== 'complete') {
+    const provider = c.handover.provider
+    handoverItem = { label: `Retry handover to ${provider === 'codex' ? 'Codex' : 'Claude'}`, icon: 'restart', run: () => handover(provider, true) }
+  } else handoverItem = {
+    chips: 'Handover', icon: 'shuffle', options: (['claude', 'codex'] as const).filter((p) => p !== currentProvider).map((provider) => ({
+      label: `To ${provider === 'codex' ? 'Codex' : 'Claude'}`, active: false, run: () => handover(provider)
+    }))
+  }
   const items: MenuItem[] = [
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
+    handoverItem,
     'separator',
     { label: 'Start new conversation', icon: 'restart', danger: true, run: async () => {
       if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]
+  if (c.handover?.error) items.splice(2, 0, { header: 'Handover incomplete', tip: c.handover.error })
   if (c.members?.length) items.splice(1, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
   // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.

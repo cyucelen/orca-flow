@@ -33,8 +33,17 @@ window.orca = { plugin: {
   const c = fixture.coordinators[0];
   if(name==='sidebar.list') return structuredClone(fixture);
   if(name==='sidebar.linear') return null;
+  if(name==='sidebar.handover') {
+   c.handover={provider:data.provider,phase:'launching'};
+   listeners.get('sidebar.changed')?.(structuredClone(fixture));
+   await new Promise(resolve=>setTimeout(resolve,1200));
+   c.handover={provider:data.provider,phase:'launching',error:'Synthetic launch reply lost. Retry replays the same operation; the original stays current.'};
+   listeners.get('sidebar.changed')?.(structuredClone(fixture));
+   return {ok:false,error:c.handover.error};
+  }
   if(name==='sidebar.coordinatorHistory') return {title:c.members.find(m=>m.id===data.member).title,text:'Synthetic historical scrollback.\\nOriginal approval remains with this source session.\\n<script>escaped content<\\/script>',truncated:true};
   if(name==='sidebar.coordinatorSessions') {
+   if(data.action==='select') { const m=c.members.find(m=>m.orcaSession===data.orcaSession&&m.workspaceId===data.workspaceId);if(m){c.sessions.current=m.id;c.session=m.agent;} }
    if(data.action==='current') { c.sessions.current=data.member; c.session=c.members.find(m=>m.id===data.member).agent; }
    if(data.action==='associate') {
     const r=fixture.rows.find(r=>r.id===data.workspaceId&&r.agents.some(a=>a.paneKey===data.paneKey));
@@ -47,8 +56,9 @@ window.orca = { plugin: {
  },on:(name,fn)=>{listeners.set(name,fn);return()=>listeners.delete(name)}
 },storage:{get:async()=>null,set:async()=>{}},shell:{openExternal:async()=>{}}};
 window.fixtureState=()=>structuredClone(fixture);
+window.previewProvider=(provider)=>{const c=fixture.coordinators[0];c.session.agentType=provider;for(const m of c.members)if(m.id===c.sessions.current){m.agentType=provider;m.agent.agentType=provider;}delete c.handover;listeners.get('sidebar.changed')?.(structuredClone(fixture));};
 </script>`
 const html = readFileSync(join(root, 'src/panel/index.html'), 'utf8').replace('<head>', '<head><title>Coordinator fixture · Orca Flow</title>').replace('<script type="module" src="./app.ts"></script>', `${bridge}<script type="module" src="./app.js"></script>`)
 const assets = new Map([['/', ['text/html', html]], ['/panel.css', ['text/css', readFileSync(join(root, 'src/panel/panel.css'))]], ['/app.js', ['text/javascript', readFileSync(join(output, 'app.js'))]]])
 const server = createServer((req, res) => { const a = assets.get(req.url); if(!a){res.writeHead(404);res.end();return} res.writeHead(200, {'Content-Type': a[0]});res.end(a[1]) })
-server.listen(0, '127.0.0.1', () => console.log(`Coordinator fixture: http://127.0.0.1:${server.address().port}`))
+server.listen(Number(process.env.ORCA_FLOW_PREVIEW_PORT || 0), '127.0.0.1', () => console.log(`Coordinator fixture: http://127.0.0.1:${server.address().port}`))

@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import type { Coordinator, CoordinatorSessions, LinearSent, Look, WorkspaceRow } from './protocol.ts'
 
 import { memberAgent, terminalPane, unambiguousSession, validSessions } from './coordinator-sessions.ts'
+import { bootstrapCoordinator } from './coordinator-bootstrap.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
@@ -67,7 +68,7 @@ export function scaffoldCoordinator(root: string, input: { name: string; look: L
   const dir = join(root, input.name)
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, COORDINATOR_FILE), JSON.stringify({ name: input.name, repos: [], about: '', look: input.look }, null, 2) + '\n')
-  writeFileSync(join(dir, 'CLAUDE.md'), `# Coordinator: ${input.name}\n\nYour scope is not set yet: you take work for any project. When the user tells you what you are for, record it in ${COORDINATOR_FILE} in this folder (\`repos\`: the Orca project names you own; \`about\`: one sentence) and from then on name the coordinator that owns any other project instead of taking it.\n`)
+  bootstrapCoordinator(dir)
   return dir
 }
 
@@ -241,13 +242,13 @@ export function writeLinearMemory(memory: LinearMemory, path = LINEAR_FILE): voi
 
 // ---------- loading the lineage from the orca CLI (slow on a busy machine, so cached) ----------
 
-type Run = (args: string[], options?: { timeoutMs?: number }) => Promise<any>
+type Run = (args: string[], options?: { timeoutMs?: number; cwd?: string }) => Promise<any>
 
 /** Runs `orca <args> --json`; a failure carries Orca's own error message, not just the exit code. */
 export function orcaRunner(bin: string): Run {
   return (args, options = {}) =>
     new Promise((resolve, reject) => {
-      execFile(bin, [...args, '--json'], { maxBuffer: 32 * 1024 * 1024, timeout: options.timeoutMs ?? 20_000 }, (err, stdout) => {
+      execFile(bin, [...args, '--json'], { maxBuffer: 32 * 1024 * 1024, timeout: options.timeoutMs ?? 20_000, ...(options.cwd ? { cwd: options.cwd } : {}) }, (err, stdout) => {
         let parsed: any = null
         try {
           parsed = JSON.parse(stdout)
@@ -255,6 +256,7 @@ export function orcaRunner(bin: string): Run {
         if (parsed?.ok) return resolve(parsed.result)
         if (parsed?.error?.message) return reject(Object.assign(new Error(parsed.error.message), { code: parsed.error.code, data: parsed.error.data }))
         if (err && (err as Error & { killed?: boolean }).killed) return reject(new Error(`orca ${args[0]} ${args[1] ?? ''} timed out`))
+        if (args[0] === 'agent' && args[1] === 'launch') return reject(new Error('Orca did not return a launch receipt. Inspect the saved handover before retrying.'))
         reject(err ?? new Error(`orca ${args.join(' ')} failed`))
       })
     })

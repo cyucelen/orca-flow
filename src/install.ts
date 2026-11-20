@@ -7,11 +7,16 @@
 // passes its quiet reminders to the agent (prompt-check.mjs); both do nothing until the user opts in.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { COORDINATOR_HOME } from './coordinators.ts'
 import { claudeConfigDir } from './summarize.ts'
 
 export type Link = { from: string; to: string }
+
+/** Orca's selected host profile wins; an explicit profile is the fallback outside profile management. */
+export function claudeDiscoveryDir(home: string, selected: string | null, explicit?: string): string {
+  return selected || explicit || join(home, '.claude')
+}
 
 /** The plugin folder: this file lives in <plugin>/src. */
 export function pluginDir(moduleUrl: string): string | null {
@@ -19,9 +24,12 @@ export function pluginDir(moduleUrl: string): string | null {
   return existsSync(join(dir, 'orca-plugin.json')) ? dir : null
 }
 
-export function linksFor(dir: string, home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): Link[] {
+export function linksFor(dir: string, home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): Link[] {
   return [
-    { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
+    { from: join(claudeDir, 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') },
+    // USER discovery is HOME, not CODEX_HOME: Orca's selected account changes CODEX_HOME,
+    // but shares the user's .agents skills. Never modify account credentials/configuration.
+    { from: join(home, '.agents', 'skills', 'orca-flow'), to: join(dir, 'skills', 'orca-flow') }
   ]
 }
 
@@ -42,6 +50,9 @@ export function ensureSeeds(seeds: Link[]): string[] {
         // missing: written below
       }
       if (existsSync(from) && !link) continue
+      // Only the exact legacy template link may be converted. Other plugins/user links belong
+      // to their owner, even when dangling.
+      if (link && resolve(from, '..', readlinkSync(from)) !== resolve(to)) continue
       if (link) unlinkSync(from)
       mkdirSync(join(from, '..'), { recursive: true })
       copyFileSync(to, from)
@@ -88,7 +99,28 @@ export function ensureLinks(links: Link[], { repairOnly = false } = {}): string[
  * worktree) leaves them alone: a link into a worktree breaks every agent's skill once it is removed.
  */
 export function ensureOwnLinks(links: Link[], installed: boolean, options: { repairOnly?: boolean } = {}): string[] {
-  if (installed) return ensureLinks(links, options)
+  if (installed) return links.flatMap((link) => {
+    try {
+      const stat = lstatSync(link.from)
+      if (stat.isSymbolicLink()) {
+        if (options.repairOnly && existsSync(link.from)) return []
+        const target = resolve(link.from, '..', readlinkSync(link.from))
+        if (target !== resolve(link.to)) {
+          const install = /^(.*\/plugins\/cyucelen\.flow)\/(?:[a-f0-9]{64}|current)\/skills\/orca-flow$/
+          const oldInstall = install.exec(target), newInstall = install.exec(resolve(link.to))
+          // Known installed release paths retain ownership even after Orca removes an old hash.
+          if (oldInstall && newInstall && oldInstall[1] === newInstall[1]) return ensureLinks([link], options)
+          // A symlink alone is not proof of ownership. Only our installed plugin's skill can
+          // be replaced; unknown/dangling destinations are preserved for the user.
+          const manifest = JSON.parse(readFileSync(join(target, '..', '..', 'orca-plugin.json'), 'utf8'))
+          if (manifest.id !== 'flow' || manifest.name !== 'Orca Flow') return [`kept ${link.from}: belongs to another source`]
+        }
+      }
+    } catch (e) {
+      try { lstatSync(link.from); return [`kept ${link.from}: ownership is unverified`] } catch {}
+    }
+    return ensureLinks([link], options)
+  })
   return options.repairOnly ? [] : [`left ${links.map((l) => l.from).join(', ')} to the installed copy: this is a development folder`]
 }
 
@@ -112,12 +144,12 @@ function hookFor(claudeDir: string, event: HookEvent, mark: string): StopHook {
 }
 
 /** The profile's settings.json and our Stop hook entry. */
-export function stopHookFor(home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): StopHook {
+export function stopHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
   return hookFor(claudeDir, 'Stop', STOP_HOOK_MARK)
 }
 
 /** The profile's settings.json and our UserPromptSubmit hook entry. */
-export function promptHookFor(home = homedir(), claudeDir = claudeConfigDir() ?? join(home, '.claude')): StopHook {
+export function promptHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
   return hookFor(claudeDir, 'UserPromptSubmit', PROMPT_HOOK_MARK)
 }
 

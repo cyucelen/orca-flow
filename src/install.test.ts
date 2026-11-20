@@ -4,6 +4,9 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureOwnStopHook, ensureStopHook, promptHookFor, stopHookFor } from './install.ts'
+import { claudeDiscoveryDir, ensureOwnLinks, ensureSeeds, linksFor } from './install.ts'
+import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
+import { scaffoldCoordinator } from './coordinators.ts'
 
 const profile = () => {
   const home = mkdtempSync(join(tmpdir(), 'stop-hook-'))
@@ -12,6 +15,79 @@ const profile = () => {
   return { home, claudeDir, hook: stopHookFor(home, claudeDir) }
 }
 const read = (path: string) => JSON.parse(readFileSync(path, 'utf8'))
+
+test('Claude profile selection and Codex USER discovery use separate roots across accounts', () => {
+  assert.equal(claudeDiscoveryDir('/user', '/selected-profile', '/explicit-profile'), '/selected-profile')
+  assert.equal(claudeDiscoveryDir('/user', null, '/explicit-profile'), '/explicit-profile')
+  assert.equal(claudeDiscoveryDir('/user', null), '/user/.claude')
+  for (const home of ['/users/one', '/users/two']) for (const claudeDir of [`${home}/.claude`, `${home}/orca/profiles/account-two`]) {
+    const links = linksFor('/installed/flow', home, claudeDir)
+    assert.deepEqual(links.map((l) => l.from), [`${claudeDir}/skills/orca-flow`, `${home}/.agents/skills/orca-flow`])
+    assert.ok(links.every((l) => l.to === '/installed/flow/skills/orca-flow'))
+  }
+})
+
+test('known installed release links can be repaired after Orca removes the old hash', () => {
+  const home = mkdtempSync(join(tmpdir(), 'release-discovery-'))
+  try {
+    const root = join(home, 'plugins/cyucelen.flow')
+    const old = join(root, 'a'.repeat(64), 'skills/orca-flow'), next = join(root, 'b'.repeat(64), 'skills/orca-flow')
+    const from = join(home, 'skill'); symlinkSync(old, from)
+    assert.deepEqual(ensureOwnLinks([{ from, to: next }], true, { repairOnly: true }), [`linked ${from}`])
+    assert.equal(readlinkSync(from), next)
+  } finally { rmSync(home, { recursive: true }) }
+})
+
+test('installed discovery updates our skill links but preserves user files and other plugin symlinks, including dangling ones', () => {
+  const home = mkdtempSync(join(tmpdir(), 'discovery-'))
+  try {
+    const old = join(home, 'old-plugin'), next = join(home, 'new-plugin'), other = join(home, 'other-plugin')
+    for (const dir of [old, next, other]) { mkdirSync(join(dir, 'skills/orca-flow'), { recursive: true }); writeFileSync(join(dir, 'orca-plugin.json'), JSON.stringify({ id: dir === other ? 'other' : 'flow', name: dir === other ? 'Other' : 'Orca Flow' })) }
+    const links = linksFor(old, home, join(home, 'claude-profile'))
+    ensureOwnLinks(links, true)
+    ensureOwnLinks(linksFor(next, home, join(home, 'claude-profile')), true)
+    assert.equal(readlinkSync(links[0].from), join(next, 'skills/orca-flow'))
+    assert.equal(readlinkSync(links[1].from), join(next, 'skills/orca-flow'))
+    rmSync(links[1].from)
+    symlinkSync(join(other, 'skills/orca-flow'), links[1].from)
+    ensureOwnLinks(links, true)
+    assert.equal(readlinkSync(links[1].from), join(other, 'skills/orca-flow'))
+    rmSync(links[1].from); symlinkSync(join(home, 'missing-user-skill'), links[1].from)
+    ensureOwnLinks(links, true, { repairOnly: true })
+    assert.equal(readlinkSync(links[1].from), join(home, 'missing-user-skill'))
+    rmSync(links[1].from); writeFileSync(links[1].from, 'user-owned')
+    ensureOwnLinks(links, true)
+    assert.equal(readFileSync(links[1].from, 'utf8'), 'user-owned')
+    const dev = linksFor(join(home, 'dev'), home, join(home, 'new-profile'))
+    ensureOwnLinks(dev, false)
+    assert.equal(existsSync(dev[0].from), false)
+    assert.equal(readlinkSync(links[0].from), join(old, 'skills/orca-flow'))
+  } finally { rmSync(home, { recursive: true }) }
+})
+
+test('new and existing coordinator folders bootstrap both providers without changing user instructions or foreign symlinks', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bootstrap-'))
+  try {
+    const fresh = scaffoldCoordinator(root, { name: 'fresh', look: null })
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      assert.match(readFileSync(join(fresh, file), 'utf8'), /Your role: coordinator/)
+      assert.match(readFileSync(join(fresh, file), 'utf8'), /roles\/coordinator.md/)
+    }
+    const old = join(root, 'existing'); mkdirSync(old)
+    writeFileSync(join(old, 'CLAUDE.md'), 'User project notes')
+    bootstrapCoordinator(old, '/installed/skill')
+    assert.equal(readFileSync(join(old, 'CLAUDE.md'), 'utf8'), 'User project notes')
+    assert.match(readFileSync(join(old, 'AGENTS.md'), 'utf8'), /\/installed\/skill\/SKILL.md/)
+    assert.deepEqual(bootstrapCoordinator(old, '/new/skill'), [])
+    rmSync(join(old, 'AGENTS.md')); symlinkSync('/missing/user-instructions', join(old, 'AGENTS.md'))
+    bootstrapCoordinator(old, '/new/skill')
+    assert.equal(readlinkSync(join(old, 'AGENTS.md')), '/missing/user-instructions')
+    ensureSeeds([{ from: join(old, 'AGENTS.md'), to: join(fresh, 'AGENTS.md') }])
+    assert.equal(readlinkSync(join(old, 'AGENTS.md')), '/missing/user-instructions')
+    assert.match(coordinatorPrompt('/new/skill'), /Your role: coordinator/)
+    assert.match(coordinatorPrompt('/new/skill'), /coordinator.json/)
+  } finally { rmSync(root, { recursive: true }) }
+})
 
 test('the hook runs the script through the skill link, only in an Orca pane', () => {
   const { path, entry } = stopHookFor('/h', '/h/.claude')
