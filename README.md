@@ -100,6 +100,8 @@ the host exposes supported chat focus/navigation for this control. Terminal targ
 runs can complete after verified launch, prompt delivery and identity binding. A failed/unknown
 launch keeps the source current; Retry reuses the recorded operation instead of creating another
 coordinator. See [handover behavior, host gaps and evidence](docs/coordinator-handover.md).
+The receiving agent waits passively for cutover in its first turn, then continues its briefing
+without another prompt. If the two-minute bootstrap window expires, automatic cutover is blocked.
 
 You can also ask a coordinator "what's next?" at any time; it names one agent that waits on you
 and offers to open its chat.

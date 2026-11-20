@@ -16,7 +16,7 @@ function fixture(provider: 'claude' | 'codex' = 'codex', withRun = false) {
   const unrelated: RunRoute = { id: 'run-lead', coordinator_handle: 'term-lead', legacy: 0 }
   let routes = withRun ? [original, unrelated] : [unrelated]
   const pendingAsk = { id: 'question-1', run: 'run-owned', status: 'pending', source: 'worker' }
-  const state: Handover = { version: 1, source: source.id, provider, workspaceId: row.id, dir: row.path!, phase: 'prepared', prompt: 'Your role: coordinator. Context delivered.', runs: withRun ? [{ ...original }] : [] }
+  const state: Handover = { version: 1, source: source.id, provider, workspaceId: row.id, dir: row.path!, phase: 'prepared', prompt: 'Your role: coordinator. Context delivered.', runs: withRun ? [{ ...original }] : [], bootstrap: { context: '/c/shop/context-1.json', deadline: Date.now() + 120_000 } }
   const calls: string[][] = [], saves: Handover[] = []
   const io: HandoverIo = {
     canComplete: requireCoordinatorNavigation,
@@ -72,6 +72,9 @@ test('quota exhausted source is recovered with stored transcript read, never res
   assert.match(prompt, /Your role: coordinator/)
   assert.match(prompt, /UNTRUSTED REFERENCE DATA/)
   assert.match(prompt, /quota exhausted/)
+  assert.match(prompt, /await-handover\.mjs/)
+  assert.match(prompt, /do not end the turn while it waits/)
+  assert.match(prompt, /without asking the user for another prompt/)
   assert.match(await error(() => readHandoverContext(f.source, async () => ({ orcaSessionId: 'other', entries: [1] }))), /unavailable/)
 })
 
@@ -164,6 +167,19 @@ test('a committed selection with an uncommitted journal recovers without relaunc
   assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
 })
 
+test('journal recovery cannot release an expired first-turn barrier after a slow ownership read', async () => {
+  const f = fixture(), save = f.io.save
+  f.io.save = (s) => { if (s.phase === 'complete') throw new Error('disk full'); save(s) }
+  await error(() => continueHandover(f.state, f.io))
+  const recovered = f.saves.filter((s) => s.phase !== 'complete').at(-1)!
+  f.io.save = save
+  const run = f.io.run
+  f.io.run = async (args) => { const result = await run(args); f.io.now = () => recovered.bootstrap!.deadline; return result }
+  assert.match(await error(() => continueHandover(recovered, f.io)), /bootstrap window expired/)
+  assert.equal(recovered.phase, 'delivered')
+  assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
+})
+
 for (const kind of ['normal', 'multiple', 'legacy', 'historical member']) test(`host limitation fails closed before launch for ${kind} owned runs, preserving pending asks`, async () => {
   const f = fixture('codex', true)
   if (kind === 'multiple') f.setRoutes([...f.routes(), { id: 'other', coordinator_handle: 'term-source' }])
@@ -219,6 +235,18 @@ test('failed reveal keeps original current and retry reuses the delivered coordi
   await continueHandover(f.state, f.io)
   assert.equal(f.state.phase, 'complete')
   assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
+})
+
+test('cutover cannot succeed after the receiver bootstrap window or on an older prompt without a barrier', async () => {
+  const f = fixture()
+  f.io.reveal = async () => { f.io.now = () => f.state.bootstrap!.deadline }
+  assert.match(await error(() => continueHandover(f.state, f.io)), /bootstrap window expired/)
+  assert.equal(f.sessions().current, f.source.id)
+  await error(() => continueHandover(f.state, f.io))
+  assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
+  const old = fixture(); delete old.state.bootstrap
+  assert.match(await error(() => continueHandover(old.state, old.io)), /predates/)
+  assert.equal(old.calls.length, 0)
 })
 
 test('ownership inventory follows all pages; session identity overrides a reused terminal', async () => {

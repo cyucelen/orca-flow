@@ -26,6 +26,12 @@ answered, deleted or readdressed by the plugin.
 - A changed current selection is preserved. New source/target runs discovered before completion
   block selection. Verified targets become coordinator members, including after later failure;
   they are not reclassified as workstream leads. Original source asks stay with their source.
+- The receiving first turn awaits the read-only `await-handover.mjs` barrier instead of ending
+  while registration is incomplete. It checks the exact context token, terminal identity, final
+  journal phase and current selection before continuing the briefing, without another user prompt.
+  The two-minute deadline is persisted before launch and never extended by Retry. Cutover is
+  refused within five seconds of expiry; older pending attempts without the barrier also fail
+  closed. Temporary file-read and retry errors cannot strand the first turn during this window.
 - Missing per-folder `AGENTS.md` and `CLAUDE.md` are seeded for new/existing coordinators, with a
   stable installed skill path. Existing instructions, overrides and other plugins' links stay
   untouched. Launch prompts supply the current skill path as a discovery backstop.
@@ -95,5 +101,20 @@ screenshots for both provider directions, progress, error/retry and the existing
 Preview artifacts and the detailed execution report are supplied separately to the lead.
 
 No real coordinator was handed over, resumed, closed or prompted. No production plugin or global
-configuration was installed/changed. Live provider startup and native run/mail ownership were not
-tested through disposable real agents; receipt/ownership scenarios use isolated fixtures.
+configuration was installed/changed. Follow-up live probes on 2026-11-20 used disposable folder
+workspaces and the user's default terminal surface for both providers. Claude returned its launch
+receipt in 1.4 seconds, before its first turn ended; after a deliberate 20-second registration delay,
+selection committed at 24.5 seconds and the receiver returned `BOOT_OK` without another prompt.
+Codex returned its receipt in 12.4 seconds, committed at 36.6 seconds after the same delay, and also
+returned `BOOT_OK`. Both receipts had `prompt.outcome: handed-to-terminal`; session identity and
+`terminal switch` were verified against the launched targets. These timings do not require waiting
+for a turn-completed event before registration or cutover.
+
+An initial Codex probe was blocked by its CLI update menu: after 60.5 seconds the host returned
+`ok: true` with a terminal outcome but `prompt.outcome: not-delivered`. The plugin correctly refused
+cutover. A separate disposable attempt skipped that one-time prompt with Escape; no installation,
+account setting or surface preference changed. Invalid-provider launch returned the actual
+`ok: false, error: {code: invalid_argument, message: ...}` envelope. Native run/mail transfer and
+structured navigation remain unverified and blocked, as described above. The live bootstrap
+fixtures explicitly prohibited routing/dispatch and used synthetic scope/context; they validate
+first-turn boot, not production project routing or provider-wide enforcement of instructions.

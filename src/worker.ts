@@ -1024,7 +1024,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         const context = { capturedAt: new Date().toISOString(), scope: { name: c.name, repos: c.repos, about: c.about, linearTeams: c.linearTeams }, source, workstreams: allRows.filter((r) => r.agents.some((a) => a.coordinator === key)), history }
         const contextPath = join(c.dir, `.orca-flow-handover-context-${Date.now()}.json`)
         writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n', { mode: 0o600 })
-        attempt = { version: 1, source: source.id, provider, workspaceId, dir: c.dir, phase: 'prepared', runs: [], prompt: handoverPrompt(skill, contextPath, context) }
+        attempt = { version: 1, source: source.id, provider, workspaceId, dir: c.dir, phase: 'prepared', runs: [], prompt: handoverPrompt(skill, contextPath, context), bootstrap: { context: contextPath, deadline: Date.now() + 120_000 } }
         saveHandover(attempt)
       }
       await continueHandover(attempt, {
