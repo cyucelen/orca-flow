@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applySettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, type FlowSettings, type SaveReply } from './settings.ts'
+import { applySettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
   assert.deepEqual(normalizeWriters([
@@ -13,6 +13,15 @@ test('writers: order kept, each provider once, unknown models and providers drop
     { provider: 'claude', model: 'haiku', enabled: false }
   ])
   for (const bad of [undefined, null, 'claude', [], [{ provider: 'x' }]]) assert.deepEqual(normalizeWriters(bad), DEFAULT_SETTINGS.writers)
+})
+
+test('writers: Antigravity offers the Gemini 4 models; an unknown one falls back to the default', () => {
+  assert.deepEqual(WRITER_MODELS.antigravity, ['gemini-3.8-flash-low', 'gemini-4-carbon-low', 'gemini-4-neon-low', 'gemini-4-hydrogen-low', 'gemini-4-argon-low'])
+  for (const model of WRITER_MODELS.antigravity) assert.deepEqual(normalizeWriters([{ provider: 'antigravity', model, enabled: true }])[0], { provider: 'antigravity', model, enabled: true })
+  for (const model of ['gemini-9-ultra', 'Gemini-4-Carbon-Low', 'agy-default', 7, undefined]) assert.deepEqual(normalizeWriters([{ provider: 'antigravity', model, enabled: true }])[0], { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: true })
+  const draft = toDraft({ ...DEFAULT_SETTINGS, writers: normalizeWriters([{ provider: 'antigravity', model: 'gemini-4-argon-low', enabled: true }]) })
+  assert.equal(draft.models.antigravity, 'gemini-4-argon-low')
+  assert.equal(fromDraft({ ...draft, models: { ...draft.models, antigravity: 'gemini-4-neon-low' } }).writers[0].model, 'gemini-4-neon-low')
 })
 
 test('draft round trip: dialog controls map back to the same settings', () => {

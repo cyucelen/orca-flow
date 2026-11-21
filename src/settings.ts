@@ -13,7 +13,7 @@ export type SettingsKey = keyof FlowSettings
 
 export const WRITER_PROVIDERS: readonly WriterProvider[] = ['claude', 'codex', 'antigravity']
 /** The models each CLI accepts by name, the default first. */
-export const WRITER_MODELS: Record<WriterProvider, readonly string[]> = { claude: ['haiku', 'sonnet'], codex: ['gpt-6-luna'], antigravity: ['gemini-3.8-flash-low'] }
+export const WRITER_MODELS: Record<WriterProvider, readonly string[]> = { claude: ['haiku', 'sonnet'], codex: ['gpt-6-luna'], antigravity: ['gemini-3.8-flash-low', 'gemini-4-carbon-low', 'gemini-4-neon-low', 'gemini-4-hydrogen-low', 'gemini-4-argon-low'] }
 /**
  * Writers Orca Flow can run. Antigravity runs in an isolated temporary workspace with a `tools: []`
  * custom agent, `inheritCustomizations: false`, `inheritMcp: false`, strict deny rules, and stdin
@@ -117,7 +117,7 @@ export type Draft = {
 }
 export type DraftKey = keyof Draft
 export const DEFAULT_FOLDERS = ['~/orca/coordinators']
-/** Antigravity has no model choice; the dialog shows the CLI's own. */
+/** What the dialog shows for a writer without a model choice. */
 export const AGY_DEFAULT_MODEL = 'agy-default'
 
 export function toDraft(s: FlowSettings): Draft {

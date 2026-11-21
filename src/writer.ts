@@ -3,12 +3,13 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_SETTINGS, type WriterSetting } from './settings.ts'
+import { DEFAULT_SETTINGS, WRITER_MODELS, type WriterSetting } from './settings.ts'
 
 // Verified against Codex 0.167.0 models_cache.json and the official GPT-6 Luna model page.
 export const LUNA_MODEL = 'gpt-6-luna'
-// Verified against Antigravity CLI 1.5.13 (`agy models`).
-export const ANTIGRAVITY_MODEL = 'gemini-3.8-flash-low'
+// Verified against Antigravity CLI 1.5.13 (`agy models`). The default; Settings may choose another
+// of WRITER_MODELS.antigravity.
+export const ANTIGRAVITY_MODEL = WRITER_MODELS.antigravity[0]
 export const WRITER_TIMEOUT_MS = 30_000
 const DEFAULT_WRITERS = DEFAULT_SETTINGS.writers
 export const PRIMARY_COOLDOWN_MS = 5 * 60_000
@@ -35,11 +36,11 @@ export class WriterError extends Error {
 /** Classify only at the process/provider boundary. Never retain raw output in an error/log. */
 export function providerFailure(provider: Provider, error: { code?: unknown; killed?: boolean } | null, output = ''): WriterError {
   const code = error?.code
-  const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\btimeout_error\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
+  const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\b(timeout_error|deadline[_ ]exceeded)\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
     : ['ENOENT', 'EACCES', 'ENOEXEC'].includes(String(code)) ? 'unavailable'
-    : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
-    : /\b(401|403|unauthorized|authentication[_ ]error|invalid[_ ]api[_ ]key)\b|not logged in|please (?:log|sign) in|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
-    : /model[^\n]{0,100}(?:not found|not available|not supported|not recognized|does not exist)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
+    : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota|resource[_ ]exhausted)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
+    : /\b(401|403|unauthorized|unauthenticated|authentication[_ ]error|invalid[_ ]api[_ ]key|invalid[_ ]grant)\b|not (?:logged|signed) in|please (?:log|sign) in|sign in with google|google sign[- ]?in|login required|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
+    : /(?:unknown|unsupported) model|model[^\n]{0,100}(?:not found|not available|not supported|not recognized|does not exist|invalid)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
     : ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH'].includes(String(code)) || /\b(500|502|503|504|529|overloaded_error)\b|service unavailable|connection (?:reset|refused)|error sending request|temporarily unavailable/i.test(output) ? 'transient'
     : 'unexpected'
   return new WriterError(provider, kind)
@@ -49,7 +50,8 @@ export function writerDiagnostic(error: unknown): string {
   return error instanceof WriterError ? error.message : 'writer failed unexpectedly; check the writer integration (existing card preserved)'
 }
 
-export type WriterRequest = { prompt: string; system: string; schema: object }
+/** `model` is the model chosen in Settings, for a writer whose CLI offers a choice (Antigravity). */
+export type WriterRequest = { prompt: string; system: string; schema: object; model?: string }
 export type Writer = (request: WriterRequest) => Promise<unknown>
 
 /** The CLI behind each writer name: Claude (Haiku, Sonnet), Codex (Luna), or Antigravity (Flash). */
@@ -57,13 +59,21 @@ const CLI: Record<Provider, WriterCli> = { haiku: 'claude', sonnet: 'claude', lu
 const LABEL: Record<Provider, string> = { haiku: 'Haiku', sonnet: 'Sonnet', luna: 'Codex Luna', flash: 'Antigravity Flash' }
 type Slot = { cli: WriterCli; name: Provider; write: Writer }
 
+/** A model Settings offers for Antigravity, or its default. */
+export function antigravityModel(model: unknown): string {
+  return WRITER_MODELS.antigravity.includes(model as string) ? (model as string) : ANTIGRAVITY_MODEL
+}
+
 /** The enabled writers of a `writers` setting, in order, that have an adapter. */
 export function writerChain(writers: readonly WriterSetting[], providers: Partial<Record<Provider, Writer>>): Slot[] {
   return writers.flatMap((w): Slot[] => {
     if (!w.enabled) return []
     const name: Provider | null = w.provider === 'claude' ? (w.model === 'sonnet' ? 'sonnet' : 'haiku') : w.provider === 'codex' ? 'luna' : w.provider === 'antigravity' ? 'flash' : null
-    const write = name ? providers[name] : undefined
-    return name && write ? [{ cli: CLI[name], name, write }] : []
+    const run = name ? providers[name] : undefined
+    if (!name || !run) return []
+    const model = name === 'flash' ? antigravityModel(w.model) : undefined
+    const write: Writer = model ? (request) => run({ ...request, model }) : run
+    return [{ cli: CLI[name], name, write }]
   })
 }
 
@@ -304,7 +314,7 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
         rmSync(dir, { recursive: true, force: true })
       }
     },
-    flash: async ({ prompt, system, schema }) => {
+    flash: async ({ prompt, system, schema, model }) => {
       const env = writerEnvironment()
       const dir = mkdtempSync(join(tmpdir(), 'orca-flow-writer-'))
       let conversationId: string | null = null
@@ -349,7 +359,7 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
             '--agent', ANTIGRAVITY_AGENT,
             '--settings', settings,
             '--disable-slash-commands',
-            '--model', ANTIGRAVITY_MODEL,
+            '--model', antigravityModel(model),
             '--input-format', 'stream-json',
             '--output-format', 'stream-json',
             '--print-timeout', `${Math.ceil(WRITER_TIMEOUT_MS / 1000)}s`

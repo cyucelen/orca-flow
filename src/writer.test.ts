@@ -70,11 +70,30 @@ test('known operational failures are classified without exposing command/output/
     [null, 'API Error: 429 rate_limit_error secret', 'quota'], [null, "You've hit your limit", 'quota'],
     [null, 'Not logged in token secret', 'auth'], [null, 'API Error: 401', 'auth'],
     [null, 'API Error: 529 overloaded_error', 'transient'], [null, 'model gpt-6-luna is not supported', 'unavailable'],
-    [null, 'unknown option --bad-flag', 'unexpected']
+    [null, 'unknown option --bad-flag', 'unexpected'],
+    [null, 'Error: invalid_request_error: messages: text content blocks must be non-empty', 'unexpected'],
+    [null, 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: must be positive"}}', 'unexpected'],
+    [null, 'stream disconnected before completion: error sending request', 'transient']
   ]
   for (const [error, output, kind] of cases) {
     const result = providerFailure('haiku', error, output)
     assert.equal(result.kind, kind)
+    assert.ok(!result.message.includes('secret'))
+  }
+})
+
+test('Google sign-in, quota, timeout and model errors are classified', () => {
+  const cases: [string, string][] = [
+    ['rpc error: code = DeadlineExceeded desc = DEADLINE_EXCEEDED secret', 'timeout'], ['deadline exceeded while waiting', 'timeout'],
+    ['429 RESOURCE_EXHAUSTED: secret', 'quota'], ['resource exhausted for project', 'quota'],
+    ['16 UNAUTHENTICATED: secret', 'auth'], ['oauth2: invalid_grant secret', 'auth'], ['token refresh failed: invalid grant', 'auth'],
+    ['You are not signed in.', 'auth'], ['Not logged in', 'auth'], ['Please sign in with Google to continue', 'auth'],
+    ['Google sign-in required', 'auth'], ['google signin expired', 'auth'], ['Login required', 'auth'],
+    ['Unknown model: gemini-9-ultra', 'unavailable'], ['unsupported model gemini-4-carbon-low', 'unavailable'], ['model "gemini-9" is invalid', 'unavailable']
+  ]
+  for (const [output, kind] of cases) {
+    const result = providerFailure('flash', { code: 1 }, output)
+    assert.equal(result.kind, kind, output)
     assert.ok(!result.message.includes('secret'))
   }
 })
@@ -445,4 +464,39 @@ test('Antigravity adapter classifies auth/quota/model errors, rejects tool steps
   assert.equal((await writer(request) as any).title, 'flash')
   assert.deepEqual(calls, ['haiku', 'flash'])
   assert.equal(writer.health().find((h) => h.provider === 'antigravity')?.lastSuccessAt, 5_000)
+})
+
+test('the Antigravity adapter runs the model chosen in Settings; an unknown one runs the default', async () => {
+  const cases: [string | undefined, string][] = [
+    ['gemini-4-carbon-low', 'gemini-4-carbon-low'], ['gemini-4-neon-low', 'gemini-4-neon-low'], ['gemini-4-hydrogen-low', 'gemini-4-hydrogen-low'],
+    ['gemini-4-argon-low', 'gemini-4-argon-low'], ['gemini-3.8-flash-low', ANTIGRAVITY_MODEL], ['gemini-9-ultra', ANTIGRAVITY_MODEL], ['--yolo', ANTIGRAVITY_MODEL], [undefined, ANTIGRAVITY_MODEL]
+  ]
+  for (const [chosen, ran] of cases) {
+    let args: string[] = []
+    const providers = cliProviders(async (command) => {
+      args = command.args
+      return { stdout: JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: JSON.stringify(card('Flash title')) } }), stderr: '', error: null }
+    })
+    const writer = createWriter({ ...summaryProviders(providers), writers: () => chainOf(['antigravity', chosen, true]) })
+    assert.deepEqual(await writer(request), card('Flash title'))
+    assert.equal(args[args.indexOf('--model') + 1], ran, String(chosen))
+    assert.equal(args.filter((a) => a === '--model').length, 1)
+    assert.equal(args[args.indexOf('--agent') + 1], 'orca-flow-card-writer')
+    assert.equal(JSON.parse(args[args.indexOf('--settings') + 1]).toolPermission, 'strict')
+  }
+  // A direct call (no Settings) and a forged request model both run a listed model only.
+  const seen: string[] = []
+  const providers = cliProviders(async (command) => {
+    seen.push(command.args[command.args.indexOf('--model') + 1])
+    return { stdout: JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: JSON.stringify(card()) } }), stderr: '', error: null }
+  })
+  await providers.flash(request)
+  await providers.flash({ ...request, model: 'gemini-4-neon-low' })
+  await providers.flash({ ...request, model: 'other-model' })
+  assert.deepEqual(seen, [ANTIGRAVITY_MODEL, 'gemini-4-neon-low', ANTIGRAVITY_MODEL])
+  // Other writers never receive a model.
+  const got: (string | undefined)[] = []
+  const writer = createWriter({ writers: () => chainOf(['claude', 'sonnet', true]), sonnet: async (r) => { got.push(r.model); return card() } })
+  await writer(request)
+  assert.deepEqual(got, [undefined])
 })

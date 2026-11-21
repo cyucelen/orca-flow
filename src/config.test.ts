@@ -83,6 +83,16 @@ test('writes are atomic: no temporary file is left beside config.json', () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('a saved Antigravity model is kept; an unknown one reads as the default', () => {
+  const dir = temp()
+  try {
+    writeSettings(withSettings({ writers: [{ provider: 'antigravity', model: 'gemini-4-hydrogen-low', enabled: true }] }), dir)
+    assert.equal(configuredWriters(dir)[0].model, 'gemini-4-hydrogen-low')
+    writeFileSync(configFile(dir), JSON.stringify({ writers: [{ provider: 'antigravity', model: 'gemini-9-ultra', enabled: true }] }))
+    assert.deepEqual(configuredWriters(dir)[0], { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: true })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('defaults agree with the capacity check and the stop hook', () => {
   assert.equal(DEFAULT_SETTINGS.marginGB, DEFAULT_CONFIG.marginGB)
   assert.equal(DEFAULT_SETTINGS.warnHeadroomGB, DEFAULT_CONFIG.warnHeadroomGB)
