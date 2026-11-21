@@ -1494,3 +1494,54 @@ test("a click on a coordinator brings its own session's tab to the front, and on
   await main.openAgent({ host, log: () => {} } as never, async (args) => void calls.push(args.join(' ')), { workspaceId: 'folder:bounti', terminal: 'term_c' })
   assert.deepEqual(calls, ['terminal switch --terminal term_c', 'workspace.open {"workspaceId":"folder:bounti"}'])
 })
+
+// ---------- a fresh start while Orca still attaches the new terminal ----------
+
+test('a terminal list refused while the launched terminal attaches is retried, then that exact terminal is bound with one launch', async () => {
+  const { launchOnce, bindLaunched } = await import('./coordinator-sessions.ts')
+  const ws = 'ws::/fixture/coordinators/ayn-odin'
+  const launched = { handle: 'term_302afe97', ptyId: `${ws}@@df35c87f`, tabId: 'b641499a', leafId: '56850008', worktreePath: '/fixture/coordinators/ayn-odin' }
+  const rows = main.fromPs([{ worktreeId: ws, path: '/fixture/coordinators/ayn-odin', liveTerminalCount: 1, agents: [
+    { paneKey: 'b641499a:56850008', orcaSessionId: 'cddbb1d9', agentType: 'claude', state: 'done', hasLivePty: true }
+  ] }], { cards: {}, summaries: {} }, new Map([['/fixture/coordinators/ayn-odin', ws]]))
+  // Orca as the race left it: the first list throws while the terminal attaches, the next lists it.
+  let lists = 0
+  const run = async (args: string[]) => {
+    assert.deepEqual(args, ['terminal', 'list'])
+    if (++lists === 1) throw Object.assign(new Error('Terminal surface ownership is unavailable'), { code: main.TERMINAL_ATTACHING })
+    return { terminals: [launched] }
+  }
+  const waits: number[] = []
+  const wait = async (ms: number) => { waits.push(ms) }
+  const pending = new Map()
+  let launches = 0
+  const { launch } = await launchOnce(pending, 'ayn-odin', ws, 'claude', async () => { launches++; return { terminalId: launched.ptyId } })
+  const found = await main.awaitLaunched(launch, { terminals: () => main.listTerminals(run, wait), row: async () => rows[0], wait })
+  assert.ok(found, 'the launched agent is found after the retry')
+  assert.equal(lists, 2)
+  assert.deepEqual(waits, [250], 'one short backoff, no fixed long sleep')
+  const sessions = bindLaunched({ version: 1, current: null, members: [] }, found!.row, found!.agent)
+  assert.equal(sessions.members.length, 1)
+  assert.equal(sessions.current, sessions.members[0].id)
+  assert.deepEqual(sessions.members[0].terminals, ['term_302afe97'], 'bound to the exact launched terminal')
+  // A second start while it is pending adopts that launch: still exactly one.
+  assert.equal((await launchOnce(pending, 'ayn-odin', ws, 'claude', async () => { launches++; return { terminalId: 'other' } })).adopted, true)
+  assert.equal(launches, 1)
+})
+
+test('the attaching retry is bounded and only for that code; anything else fails at once as before', async () => {
+  const waits: number[] = []
+  const wait = async (ms: number) => { waits.push(ms) }
+  let calls = 0
+  const stuck = async () => { calls++; throw Object.assign(new Error('still attaching'), { code: main.TERMINAL_ATTACHING }) }
+  await assert.rejects(main.listTerminals(stuck, wait), (e: unknown) => (e as { code?: string }).code === main.TERMINAL_ATTACHING)
+  assert.equal(waits.reduce((a, b) => a + b, 0), 5_000, 'gives up after about five seconds')
+  assert.deepEqual(waits.slice(0, 4), [250, 500, 1000, 1000])
+  assert.equal(calls, waits.length + 1)
+  // The code as Orca's message text (no code property) is the same race.
+  let texts = 0
+  assert.deepEqual(await main.listTerminals(async () => { if (++texts === 1) throw new Error('terminal_surface_ownership_unavailable'); return { terminals: [] } }, wait), [])
+  let other = 0
+  await assert.rejects(main.listTerminals(async () => { other++; throw Object.assign(new Error('boom'), { code: 'terminal_not_found' }) }, wait), /boom/)
+  assert.equal(other, 1, 'no retry for any other error')
+})
