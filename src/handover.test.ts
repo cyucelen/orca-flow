@@ -2,9 +2,10 @@ import { assert, test } from 'orca/testing'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { completeSelection, continueHandover, handoverPrompt, ownedRoutes, readHandover, readHandoverContext, requireCoordinatorNavigation, requireTransferableOwnership, runRoutes, saveHandover, type Handover, type HandoverIo, type RunRoute } from './handover.ts'
+import { ADOPTION_MS, classifyRun, completeSelection, continueHandover, handoverPrompt, ownedRoutes, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, runRoutes, saveHandover, transferPlan, type Handover, type HandoverIo, type RunRoute } from './handover.ts'
 import { memberFrom } from './coordinator-sessions.ts'
-import { OWNERSHIP_REFUSAL } from './view.ts'
+import { OWNERSHIP_REFUSAL, explainError } from './view.ts'
+import { coordinatorHandover } from './handover-providers.ts'
 import { assignCoordinators } from './coordinators.ts'
 import type { AgentInfo, CoordinatorSessions, WorkspaceRow } from './protocol.ts'
 
@@ -19,6 +20,9 @@ function fixture(provider: 'claude' | 'codex' = 'codex', withRun = false) {
   const pendingAsk = { id: 'question-1', run: 'run-owned', status: 'pending', source: 'worker' }
   const state: Handover = { version: 1, source: source.id, provider, workspaceId: row.id, dir: row.path!, phase: 'prepared', prompt: 'Your role: coordinator. Context delivered.', runs: withRun ? [{ ...original }] : [], bootstrap: { context: '/c/shop/context-1.json', deadline: Date.now() + 120_000 } }
   const calls: string[][] = [], saves: Handover[] = []
+  /** What each run's reads return: workers (worker-list --full), coordinator mail, pending gates, or a failing read. */
+  const runState: Record<string, { workers?: unknown[]; messages?: unknown[]; gates?: unknown[]; fail?: string; page?: unknown }> = {}
+  if (withRun) runState['run-owned'] = { workers: [{ dispatchId: 'ctx_open', workerState: 'ready' }, { dispatchId: 'ctx_done', workerState: 'succeeded' }], messages: [{ id: 'm1', handled: true }] }
   const io: HandoverIo = {
     canComplete: requireCoordinatorNavigation,
     reveal: async () => {},
@@ -31,10 +35,18 @@ function fixture(provider: 'claude' | 'codex' = 'codex', withRun = false) {
       calls.push(args)
       if (args[0] === 'agent' && args[1] === 'launch') return { operationId: 'launch-op', outcome: { kind: 'terminal', handle: 'term-target' }, prompt: { outcome: 'handed-to-terminal' } }
       if (args[1] === 'run-list') return { runs: routes.map((r) => ({ ...r })), nextCursor: null }
+      if (['worker-list', 'inbox', 'gate-list'].includes(args[1])) {
+        const id = args[1] === 'inbox' ? args[args.indexOf('--terminal') + 1].replace(/^run:/, '') : args[args.indexOf('--run') + 1]
+        const st = runState[id] ?? {}
+        if (st.fail === args[1]) throw new Error(`${args[1]} unavailable`)
+        if (args[1] === 'worker-list') return { workers: st.workers ?? [], page: st.page ?? { hasMore: false, nextCursor: null } }
+        if (args[1] === 'inbox') return { messages: st.messages ?? [] }
+        return { gates: st.gates ?? [], runId: id }
+      }
       throw new Error(`Unexpected mutation: ${args.join(' ')}`)
     }
   }
-  return { state, io, source, row, agent, calls, saves, pendingAsk, sessions: () => sessions, routes: () => routes, select: (id: string) => { sessions.current = id }, setRoutes: (next: RunRoute[]) => { routes = next } }
+  return { state, io, source, row, agent, calls, saves, pendingAsk, runState, sessions: () => sessions, routes: () => routes, select: (id: string) => { sessions.current = id }, setRoutes: (next: RunRoute[]) => { routes = next } }
 }
 const error = async (fn: () => Promise<unknown>): Promise<string> => { try { await fn(); return '' } catch (e) { return (e as Error).message } }
 
@@ -179,10 +191,14 @@ test('a selection changed during launch still registers the exact replacement as
   assert.equal(f.state.target?.orcaSession, 'target-session')
 })
 
-test('source acquires a run midflight: target stays a coordinator member, current and report routing remain at source', async () => {
+test('source acquires a live run midflight: target stays a coordinator member, current and report routing remain at source', async () => {
   const f = fixture(), bind = f.io.bind
-  f.io.bind = async (s) => { f.setRoutes([...f.routes(), { id: 'new-run', coordinator_handle: 'term-source' }]); return bind(s) }
-  assert.match(await error(() => continueHandover(f.state, f.io)), /cannot move a run.s worker reports/)
+  f.runState['new-run'] = { gates: [{ id: 'gate-1' }] }
+  f.io.bind = async (s) => { f.setRoutes([...f.routes(), { id: 'new-run', coordinator_handle: 'term-source', objective: 'Late work' }]); return bind(s) }
+  const refused = await error(() => continueHandover(f.state, f.io))
+  assert.ok(refused.startsWith(OWNERSHIP_REFUSAL), refused)
+  assert.match(refused, /not prepared to move/)
+  assert.match(refused, /new-run \(Late work\): pending gate gate-1/)
   assert.equal(f.sessions().current, f.source.id)
   assert.equal(f.sessions().members.length, 2)
   assert.equal(f.routes().at(-1)!.coordinator_handle, 'term-source')
@@ -217,20 +233,23 @@ test('journal recovery cannot release an expired first-turn barrier after a slow
   assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
 })
 
-for (const kind of ['normal', 'multiple', 'legacy', 'historical member']) test(`host limitation fails closed before launch for ${kind} owned runs, preserving pending asks`, async () => {
+for (const kind of ['normal', 'legacy', 'historical member']) test(`two live ${kind} runs fail closed before launch, naming both, preserving pending asks`, async () => {
   const f = fixture('codex', true)
-  if (kind === 'multiple') f.setRoutes([...f.routes(), { id: 'other', coordinator_handle: 'term-source' }])
-  if (kind === 'legacy') f.setRoutes([{ ...f.routes()[0], legacy: 1 }])
+  f.setRoutes([...f.routes().map((r) => ({ ...r, objective: 'Ship checkout', ...(kind === 'legacy' ? { legacy: 1 } : {}) })), { id: 'other', coordinator_handle: 'term-source', objective: 'Fix billing' }])
+  f.runState.other = { messages: [{ id: 'a', handled: false }, { id: 'b', handled: false }, { id: 'c', handled: true }], gates: [{ id: 'gate-9' }] }
   if (kind === 'historical member') f.select('different-member')
   const before = JSON.stringify({ routes: f.routes(), ask: f.pendingAsk, sessions: f.sessions() })
   let refused = ''
-  try { requireTransferableOwnership(f.routes(), f.sessions()) } catch (e) { refused = (e as Error).message }
+  try { transferPlan(await readOwnership(f.io.run, f.sessions())) } catch (e) { refused = (e as Error).message }
   assert.ok(refused.startsWith(OWNERSHIP_REFUSAL), refused)
-  assert.match(refused, kind === 'multiple' ? /owns 2 orchestration runs/ : /owns an orchestration run,/)
+  assert.match(refused, /owns 2 runs with live work/)
+  assert.match(refused, /• run-owned \(Ship checkout\): open dispatch ctx_open\n/, 'names the run, its objective and what keeps it live')
+  assert.match(refused, /• other \(Fix billing\): 2 unhandled messages in its coordinator mailbox; pending gate gate-9\n/)
   assert.match(refused, /Nothing was changed/)
   assert.match(refused, /stay in the current conversation/, 'a recovery the person can do today')
-  assert.match(refused, /this coordinator asleep/, 'the coordinator terminal is a live party that blocks retention')
-  assert.match(refused, /Orca update/, 'the update is named as the long-term fix only')
+  assert.match(refused, /settle all but one of these runs/)
+  assert.match(refused, /Settled runs stay with the current conversation and do not block/)
+  assert.deepEqual([explainError(refused).short, explainError(refused).tone], ['Handover blocked', 'warn'])
   assert.ok(await error(() => continueHandover(f.state, f.io)))
   assert.equal(JSON.stringify({ routes: f.routes(), ask: f.pendingAsk, sessions: f.sessions() }), before)
   assert.equal(f.calls.filter((a) => ['launch', 'run-use', 'reply', 'check'].includes(a[1])).length, 0)
@@ -394,4 +413,167 @@ test('an expired record committed before its last journal write is set aside wit
     assert.equal(f.sessions().current, f.state.target.id, 'selection unchanged')
     assert.equal(f.calls.filter((a) => ['launch', 'run-use', 'run-list'].includes(a[1]) || a[0] === 'terminal').length, 0, 'never told to close the live coordinator')
   } finally { f.done() }
+})
+
+/** A fake clock for the adoption wait: sleeping advances it and may run the target's run-use. */
+function clocked(f: ReturnType<typeof fixture>, onSleep: (elapsed: number) => void = () => {}) {
+  const start = Date.now(); let time = start
+  f.io.now = () => time
+  f.io.sleep = async (ms) => { time += ms; onSleep(time - start) }
+  return { elapsed: () => time - start }
+}
+/** What the target's own `orca orchestration run-use --id run-owned` does to run-list. */
+const targetRunsRunUse = (f: ReturnType<typeof fixture>) => f.setRoutes(f.routes().map((r) => r.id === 'run-owned' ? { ...r, coordinator_handle: 'term-target' } : r))
+
+test('settled-only owned runs no longer block: handover completes and nothing moves', async () => {
+  const f = fixture('claude')
+  f.setRoutes([...f.routes(), { id: 'run-done', coordinator_handle: 'term-source', objective: 'Old release' }, { id: 'run-quiet', coordinator_handle: 'term-source' }])
+  f.runState['run-done'] = { workers: [{ dispatchId: 'ctx_1', workerState: 'succeeded' }, { dispatchId: 'ctx_2', workerState: 'failed' }, { dispatchId: 'ctx_3', workerState: 'stopped' }], messages: [{ id: 'm', handled: true }] }
+  const plan = transferPlan(await readOwnership(f.io.run, f.sessions()))
+  assert.equal(plan.adopt, null)
+  assert.deepEqual(plan.settled.map((r) => r.id), ['run-done', 'run-quiet'])
+  const prompt = handoverPrompt('/skill', '/context.json', {}, plan)
+  assert.match(prompt, /SETTLED RUNS .*stay with the previous conversation: run-done \(objective "Old release"\); run-quiet\./)
+  assert.match(prompt, /run `orca orchestration run-use --id <id>` from this terminal/)
+  assert.match(prompt, /run-use releases the run this terminal currently holds/)
+  assert.ok(!/RUN TO TAKE OVER/.test(prompt))
+  const before = JSON.stringify(f.routes())
+  await continueHandover(f.state, f.io)
+  assert.equal(f.state.phase, 'complete')
+  assert.equal(f.sessions().current, f.state.target!.id)
+  assert.equal(JSON.stringify(f.routes()), before, 'settled runs stay bound to the source terminal')
+  assert.equal(f.calls.filter((a) => ['run-use', 'reply', 'check', 'worker-stop'].includes(a[1])).length, 0, 'the plugin moves nothing')
+  assert.ok(!f.saves.some((s) => s.phase === 'adopting'), 'no adoption step without a live run')
+})
+
+test('one live run: the target prompt carries run-use for it, and completion waits for the observed rebinding', async () => {
+  const f = fixture('claude', true)
+  const plan = transferPlan(await readOwnership(f.io.run, f.sessions()))
+  assert.equal(plan.adopt?.id, 'run-owned')
+  const prompt = handoverPrompt('/skill', '/context.json', {}, plan)
+  assert.match(prompt, /RUN TO TAKE OVER: run-owned has live work/)
+  assert.match(prompt, /Only after the barrier returns status ready.*\norca orchestration run-use --id run-owned\nthen run `orca orchestration run-current` and confirm it names run-owned/)
+  assert.match(prompt, /Never add --from or --takeover-legacy/)
+  assert.match(prompt, /do not run `orca-flow resume` in this first turn/)
+  let committedAt = -1
+  const clock = clocked(f, (elapsed) => { if (elapsed >= 6_000 && f.routes()[0].coordinator_handle === 'term-source') targetRunsRunUse(f) })
+  const commit = f.io.commit
+  f.io.commit = (source, target) => { committedAt = clock.elapsed(); commit(source, target) }
+  await continueHandover(f.state, f.io)
+  assert.equal(committedAt, 0, 'selection commits first: the barrier releases on it, so the target can run run-use')
+  const adopting = f.saves.find((s) => s.phase === 'adopting')!
+  assert.ok(adopting, 'an adopting phase is journaled after cutover, before complete')
+  assert.ok(adopting.adoption!.deadline >= Date.now() + ADOPTION_MS - 10_000, 'the adoption deadline is persisted')
+  assert.ok(f.saves.findIndex((s) => s.phase === 'adopting') < f.saves.findIndex((s) => s.phase === 'complete'))
+  assert.equal(f.state.phase, 'complete')
+  assert.equal(f.state.adopted, 'moved')
+  assert.ok(clock.elapsed() >= 6_000, 'not complete before run-list showed the run on the target terminal')
+  assert.equal(f.routes()[0].coordinator_handle, 'term-target')
+  assert.equal(f.calls.filter((a) => a[1] === 'run-use').length, 0, 'only the target terminal runs run-use; the plugin never does')
+  assert.equal(f.sessions().members.find((m) => m.id === f.source.id)?.orcaSession, 'source-session', 'the original stays a member')
+})
+
+test('run-use not observed in time: a warning with Retry, never complete; Retry completes once the run moved', async () => {
+  const f = fixture('claude', true)
+  const clock = clocked(f)
+  const message = await error(() => continueHandover(f.state, f.io))
+  assert.match(message, /^Claude is open; run run-owned still routes to the old conversation\./)
+  assert.match(message, /ask Claude to run `orca orchestration run-use --id run-owned` in its own terminal/)
+  assert.ok(clock.elapsed() >= ADOPTION_MS, 'bounded by the persisted deadline')
+  assert.equal(f.state.phase, 'adopting', 'never marked complete')
+  assert.equal(f.saves.at(-1)!.error, message, 'the warning is journaled for the menu')
+  assert.ok(!f.saves.some((s) => s.phase === 'complete'))
+  assert.deepEqual([explainError(message).short, explainError(message).tone], ['Run not moved', 'warn'])
+  const menu = coordinatorHandover({ key: 'shop', sessions: f.sessions(), handover: { provider: 'claude', phase: 'adopting', error: message } } as never, ['claude', 'codex'], false)
+  assert.deepEqual(menu.choices.map((c) => [c.label, c.retry]), [['Retry handover to Claude', true]])
+  assert.equal(f.sessions().members.length, 2, 'the original is still a member, never closed')
+  assert.equal(f.routes()[0].coordinator_handle, 'term-source')
+  // Retry after the deadline re-checks without relaunching; still not moved, still a warning.
+  const launches = f.calls.filter((a) => a[1] === 'launch').length
+  assert.match(await error(() => continueHandover(readBack(f), f.io)), /still routes to the old conversation/)
+  // The person asks Claude to run run-use; Retry then completes.
+  targetRunsRunUse(f)
+  const again = readBack(f)
+  await continueHandover(again, f.io)
+  assert.equal(again.phase, 'complete')
+  assert.equal(f.calls.filter((a) => a[1] === 'launch').length, launches, 'Retry never relaunches')
+  assert.equal(f.calls.filter((a) => a[1] === 'run-use').length, 0)
+})
+const readBack = (f: ReturnType<typeof fixture>): Handover => JSON.parse(JSON.stringify(f.saves.at(-1)))
+
+test('the call stops waiting before the panel gives up, and says the run is still moving', async () => {
+  const f = fixture('codex', true)
+  clocked(f)
+  f.io.waitUntil = (f.io.now!)() + 10_000
+  const message = await error(() => continueHandover(f.state, f.io))
+  assert.match(message, /^Codex is open; run run-owned still routes to the old conversation while Codex takes it over/)
+  assert.equal(explainError(message).short, 'Moving run…')
+  assert.equal(f.state.phase, 'adopting')
+  delete f.io.waitUntil
+  targetRunsRunUse(f)
+  await continueHandover(readBack(f), f.io)
+  assert.equal(f.saves.at(-1)!.phase, 'complete')
+})
+
+test('read errors and incomplete pages count as live: fail closed', async () => {
+  const f = fixture('claude', true)
+  const route = { id: 'run-x', coordinator_handle: 'term-source' }
+  for (const [fail, why] of [['worker-list', /worker-list unavailable/], ['inbox', /inbox unavailable/], ['gate-list', /gate-list unavailable/]] as const) {
+    f.runState['run-x'] = { fail }
+    const r = await classifyRun(route, f.io.run)
+    assert.equal(r.live, true, fail)
+    assert.match(r.why[0], /could not be read/); assert.match(r.why[0], why)
+  }
+  f.runState['run-x'] = { messages: Array.from({ length: 1000 }, (_, i) => ({ id: `m${i}`, handled: true })) }
+  assert.equal((await classifyRun(route, f.io.run)).live, true, 'a full mailbox page may hide unread mail')
+  f.runState['run-x'] = { page: { hasMore: true, nextCursor: null } }
+  assert.equal((await classifyRun(route, f.io.run)).live, true, 'more workers without a cursor')
+  f.runState['run-x'] = { messages: [{ id: 'm' }] }
+  assert.equal((await classifyRun(route, f.io.run)).live, true, 'a message without handled: true is unhandled')
+  f.runState['run-x'] = { workers: [{ dispatchId: 'ctx' }] }
+  assert.equal((await classifyRun(route, f.io.run)).live, true, 'a worker without a state is open')
+  // An unreadable second run beside a live one: refused, both named.
+  f.setRoutes([...f.routes(), { ...route }])
+  f.runState['run-x'] = { fail: 'gate-list' }
+  assert.match(await error(async () => transferPlan(await readOwnership(f.io.run, f.sessions()))), /• run-x: its state could not be read/)
+  // An unreadable inventory refuses outright.
+  assert.match(await error(() => readOwnership(async () => ({ runs: [], truncated: true }), f.sessions())), /incomplete/)
+})
+
+test('before cutover: a recorded run that moved away, or a target that already holds a run, refuses and keeps the source current', async () => {
+  const moved = fixture('claude', true), bind = moved.io.bind
+  moved.io.bind = async (s) => { moved.setRoutes(moved.routes().map((r) => r.id === 'run-owned' ? { ...r, coordinator_handle: 'term-elsewhere' } : r)); return bind(s) }
+  assert.match(await error(() => continueHandover(moved.state, moved.io)), /Run run-owned now belongs to another coordinator/)
+  assert.equal(moved.sessions().current, moved.source.id)
+  const held = fixture('claude', true), bind2 = held.io.bind
+  held.io.bind = async (s) => { held.setRoutes([...held.routes(), { id: 'run-target', coordinator_handle: 'term-target' }]); return bind2(s) }
+  assert.match(await error(() => continueHandover(held.state, held.io)), /already coordinates run run-target; taking run run-owned with run-use would release it/)
+  assert.equal(held.sessions().current, held.source.id)
+  assert.ok(!held.saves.some((s) => s.phase === 'adopting'))
+})
+
+test('a run Orca retires while the target takes it over completes: nothing can route to the old conversation', async () => {
+  const f = fixture('claude', true)
+  clocked(f, () => f.setRoutes(f.routes().filter((r) => r.id !== 'run-owned')))
+  await continueHandover(f.state, f.io)
+  assert.equal(f.state.phase, 'complete')
+  assert.equal(f.state.adopted, 'retired')
+})
+
+test('a cutover whose adopting journal write was lost resumes the adoption on Retry instead of setting it aside', async () => {
+  const f = fixture('claude', true), save = f.io.save
+  clocked(f)
+  f.io.save = (s) => { if (s.phase === 'adopting') throw new Error('disk full'); save(s) }
+  await error(() => continueHandover(f.state, f.io))
+  const recovered = readBack(f)
+  assert.equal(recovered.phase, 'delivered')
+  assert.equal(f.sessions().current, recovered.target!.id, 'the selection had committed')
+  f.io.save = save
+  f.io.now = () => recovered.bootstrap!.deadline + 1 // the first-turn window has passed since
+  const message = await error(() => continueHandover(recovered, f.io))
+  assert.match(message, /still routes to the old conversation/, 'reported, not set aside as done')
+  assert.equal(recovered.phase, 'adopting')
+  targetRunsRunUse(f)
+  await continueHandover(recovered, f.io)
+  assert.equal(recovered.phase, 'complete')
 })

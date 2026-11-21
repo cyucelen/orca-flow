@@ -3,7 +3,7 @@ import { askKey } from './coordinator-sessions.ts'
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { type UiState, adoptionWarning, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { openerToggle } from './panel/opener.ts'
@@ -422,11 +422,24 @@ test('raw host and provider errors read as plain words with a recovery; unknown 
   assert.match(locked.detail, /^Codex could not open its local database \(~\/\.codex\/state_5\.sqlite, migration 63\): another Codex process is using it\./)
   assert.match(locked.detail, /Close or restart the other Codex session .*then Retry\./)
 
-  const blocked = explainError(ownershipRefusal(3))
+  const live = [{ id: 'run_a', objective: 'Prepare checkouts', why: ['open dispatch ctx_1'] }, { id: 'run_b', why: ['3 unhandled messages in its coordinator mailbox', 'pending gate g_1'] }]
+  const named = ownershipRefusal(live)
+  const blocked = explainError(named)
   assert.deepEqual([blocked.short, blocked.tone], ['Handover blocked', 'warn'])
-  assert.equal(blocked.detail, ownershipRefusal(3))
+  assert.equal(blocked.detail, named)
+  assert.match(named, /^Handover is blocked: this coordinator still owns 2 runs with live work, and Orca can move only one live run/)
+  assert.match(named, /\n• run_a \(Prepare checkouts\): open dispatch ctx_1\n• run_b: 3 unhandled messages in its coordinator mailbox; pending gate g_1\n/)
+  assert.match(named, /settle all but one of these runs/)
+  const midflight = ownershipRefusal([live[1]], 'run_a')
+  assert.match(midflight, /owns a run with live work that this handover was not prepared to move \(it moves only run_a\)/)
+  assert.equal(explainError(midflight).short, 'Handover blocked')
   const legacy = explainError('Handover is unavailable while this coordinator owns 2 runs. This Orca host has no atomic coordinator transfer; report routing and pending asks were preserved. A host update is required.')
   assert.equal(legacy.detail, ownershipRefusal(2), 'the older wording is replaced by the one with a recovery')
+  assert.match(legacy.detail, /Choose Handover again to see which runs are live/)
+  const notMoved = explainError(adoptionWarning('Claude', 'run_a'))
+  assert.deepEqual([notMoved.short, notMoved.tone], ['Run not moved', 'warn'], 'honest and retryable, never "Handed over"')
+  assert.match(notMoved.detail, /^Claude is open; run run_a still routes to the old conversation\./)
+  assert.match(notMoved.detail, /`orca orchestration run-use --id run_a`/)
 
   const old = 'Exact resume started, but its new binding could not be verified. No fallback was selected; inspect Sessions before retrying.'
   assert.deepEqual(explainError(old, "Couldn't open"), { short: "Couldn't open", tone: 'bad', detail: old }, 'unknown and long: a short label, the full text')
