@@ -8,6 +8,7 @@
 //   orca-flow get [--worktree <sel>]          Print a card (default: current worktree)
 //   orca-flow resume                          Coordinator, after waking: take back the runs it coordinated
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
+//   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
 //
 // Data lives in ~/.orca-flow (ORCA_FLOW_DIR overrides): cards/<worktree>.json written by
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
@@ -365,6 +366,36 @@ function readCardsByWorktreeId() {
   return Object.fromEntries(readdirSync(CARDS).filter((f) => f.endsWith('.json')).map((f) => [f, readJson(join(CARDS, f), {})]))
 }
 
+// ---------- bots ----------
+
+// The sidebar's own grouping (src/bots.ts): `orca bot list` decides which bots exist, a
+// coordinator.json `bots` adopts one (by name or folder, any case), the rest are Personal.
+const { botDirectory, readBotFolders } = await import(new URL('../../../src/bots.ts', import.meta.url).href)
+const { readCoordinators } = await import(new URL('../../../src/coordinators.ts', import.meta.url).href)
+export { botDirectory }
+
+function bots(args = {}) {
+  const listed = orca(['bot', 'list']).bots ?? []
+  const repo = typeof args.repo === 'string' ? args.repo : null
+  return { repo, bots: botDirectory({ listed, folders: readBotFolders(), coordinators: readCoordinators(), repo }) }
+}
+
+/** The bots as text: one block per bot under its coordinator (or Personal), with its commands. */
+export function formatBots({ repo, bots }) {
+  if (!bots.length) return repo ? `No bots for ${repo}. Do the work yourself, or ask your coordinator.` : 'No bots on this computer.'
+  const out = [repo ? `Bots for ${repo}:` : 'Bots:']
+  let group
+  for (const b of bots) {
+    const g = b.coordinator ?? 'Personal (cross-project)'
+    if (g !== group) out.push('', `${g}:`)
+    group = g
+    out.push(`  ${b.name}${b.paused ? ' (paused)' : ''}${b.purpose ? `: ${b.purpose}` : ''}`)
+    out.push(`    delegate: ${b.delegate}`)
+    out.push(`    ask:      ${b.ask}`)
+  }
+  return out.join('\n')
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -393,8 +424,13 @@ async function main() {
     case 'resume':
       resume()
       break
+    case 'bots': {
+      const b = bots(args)
+      console.log(args.json ? JSON.stringify(b, null, 2) : formatBots(b))
+      break
+    }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }

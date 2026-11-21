@@ -1,7 +1,7 @@
 // node --test test/*.test.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { briefOf, decide, digest, formatQueue, normalizePriority, roleOf, runsToResume } from '../skills/orca-flow/scripts/orca-flow.mjs'
+import { botDirectory, briefOf, decide, digest, formatBots, formatQueue, normalizePriority, roleOf, runsToResume } from '../skills/orca-flow/scripts/orca-flow.mjs'
 
 test('priority accepts levels and words, refuses anything else', () => {
   assert.equal(normalizePriority('now'), 'P0')
@@ -114,4 +114,38 @@ test("the queue points to a lead's chat without its question, and shows a coordi
   assert.doesNotMatch(lead, /No budget|Allow it|Block it|options:/, "a lead's question and options are not printed for a coordinator to restate")
   const own = formatQueue({ scope: 'all', waiting: [ask('coordinator', 'home', 'Can I stop the idle dev server?')], working: [] })
   assert.match(own, /repo\/home: home\n   decision \(quick\): Can I stop the idle dev server\?\n   options: Allow it \| Block it/, "a coordinator's own ask is answered here")
+})
+
+test('bots: a project sees its coordinator\'s bots and the Personal ones, each with the exact send command', () => {
+  const listed = [
+    { id: 'q', name: 'super-agent-live-qa', specialty: 'Live **regression** sentinel for `super-core-01`.' },
+    { id: 'r', name: 'Replies you owe' },
+    { id: 't', name: 'tayfa-qa', paused: true },
+    { name: 'stray' }
+  ]
+  const folders = [{ folder: 'replies-you-owe', path: '/b/replies-you-owe', id: 'r', name: 'Replies you owe', avatar: null, soul: '# Replies you owe\n\nReminds you of replies you still owe.\n' }]
+  const coordinators = [
+    { key: 'super-agent-coordinator', repos: ['super-agent', 'super-agent-infra'], bots: ['SUPER-AGENT-LIVE-QA'] },
+    { key: 'tayfa', repos: ['tayfa'], bots: ['tayfa-qa'] },
+    { key: 'lean', repos: ['lean-lab'], bots: ['super-agent-live-qa'] }
+  ]
+  const forRepo = botDirectory({ listed, folders, coordinators, repo: 'Super-Agent' })
+  assert.deepEqual(forRepo.map((b) => [b.name, b.coordinator, b.crossProject]), [
+    ['super-agent-live-qa', 'super-agent-coordinator', false],
+    ['Replies you owe', null, true],
+    ['stray', null, true]
+  ], 'the first coordinator keeps a bot two list; another project\'s bot stays out')
+  assert.equal(forRepo[0].purpose, 'Live regression sentinel for super-core-01.')
+  assert.equal(forRepo[1].purpose, 'Reminds you of replies you still owe.', 'from SOUL.md, its folder found by id')
+  assert.equal(forRepo[0].delegate, 'orca orchestration send --to bot:super-agent-live-qa --chat new --type handoff --subject "<outcome>" --body "<spec>"')
+  assert.equal(forRepo[0].ask, 'orca orchestration send --to bot:super-agent-live-qa --chat new --type question --subject "<question>" --body "<details>"')
+  assert.match(forRepo[1].delegate, /--to 'bot:Replies you owe' --chat new --type handoff/, 'a name with spaces is quoted for the shell')
+  const all = botDirectory({ listed, folders, coordinators })
+  assert.deepEqual(all.map((b) => [b.name, b.coordinator, b.paused]), [['super-agent-live-qa', 'super-agent-coordinator', false], ['tayfa-qa', 'tayfa', true], ['Replies you owe', null, false], ['stray', null, false]])
+  const anyProject = botDirectory({ listed, folders, coordinators: [{ key: 'main', repos: [], bots: ['replies-you-owe'] }], repo: 'shop' })
+  assert.equal(anyProject.find((b) => b.name === 'Replies you owe').coordinator, 'main', 'matched by folder; a coordinator with no repos takes every project')
+  const text = formatBots({ repo: 'super-agent', bots: forRepo })
+  assert.match(text, /^Bots for super-agent:\n\nsuper-agent-coordinator:\n  super-agent-live-qa: Live regression sentinel/)
+  assert.match(text, /Personal \(cross-project\):\n  Replies you owe: Reminds you/)
+  assert.match(formatBots({ repo: 'shop', bots: [] }), /No bots for shop/)
 })

@@ -140,8 +140,10 @@ nothing fits. Disk turns amber under 25 GB and red under 10 GB.
 what it is for, and on the right whether it waits on you, works, is paused, or when it runs next.
 A click opens its Home chat's workspace. Bots sit under the coordinator whose `coordinator.json`
 lists them in `bots` (by name or folder name; ask the coordinator to adopt one), else under
-Personal. A bot chat that asks you shows in Up next like any agent; bot workspaces never show as
-ordinary rows.
+Personal. A bot chat shows in Up next only while Orca says it is stopped on you (a permission prompt or
+its question tool); an idle bot, waiting for its next message, never does. Bot workspaces never
+show as ordinary rows. Agents find a project's bots with `orca-flow bots --repo <repo>` and hand
+them work by mail.
 
 **PR number.** An open PR's number is colored by its CI checks: red when they failed, yellow while
 they run, green when they passed. A merged PR is purple; closed and draft PRs are grey.
@@ -169,6 +171,7 @@ orca-flow queue              # what is waiting on you, ranked
 orca-flow capacity [--repo]  # does another agent or a new worktree fit in memory?
 orca-flow set / get          # a worktree's card: priority, goal, what it unblocks
 orca-flow resume             # a woken coordinator takes back the runs it was coordinating
+orca-flow bots [--repo]      # a project's Orca bots, with the command that hands each one work
 ```
 
 (`orca-flow` here means `node <skill folder>/scripts/orca-flow.mjs`.)

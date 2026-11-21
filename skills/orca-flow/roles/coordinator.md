@@ -69,6 +69,7 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
      `orca orchestration ask` only for a new worktree, capacity or a conflict with another workstream.
      <one sentence: the outcome>
      <context, constraints, the first deliverable>
+     Bots for this project: <each from `orca-flow bots --repo <repo>`, with its purpose; omit when none>
      EOF
      ```
 3. **New workstream: start a lead.** Set the level, run the capacity gate, then:
@@ -84,8 +85,12 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    `orca orchestration ask` only for a new worktree, capacity or a conflict with another workstream.
    <one sentence: the outcome>
    <what you know: context, constraints, the first deliverable>
+   Bots for this project: <each from `orca-flow bots --repo <repo>`, with its purpose; omit when none>
    EOF
    ```
+
+   Name the project's bots in every lead's spec (`orca-flow bots --repo <repo>`), so the lead
+   hands QA and other specialist work to them.
 
    Then write its card from the receipt's `workspace` (`<repoId>::<path>`):
    `orca-flow set --worktree path:<path> --priority <level> --goal "..." --fits "..."`.

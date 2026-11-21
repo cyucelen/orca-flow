@@ -171,7 +171,7 @@ test('a bot row: its avatar, name and purpose on one line, a click opens its hom
 test('a bot row says what it does now: waiting on you, working, paused, else when it runs next', () => {
   const ui = { ...emptyUi(), now: NOW }
   const cell = (b: Bot) => { const h = botsSection(snapOf({ bots: [b] }), ui); return h.slice(h.indexOf('<span class="r">')) }
-  assert.match(cell(bot({ chats: [{ workspaceId: 'folder:qa', agent: agent('p', 'done', { summary: asking }) }, { workspaceId: 'folder:qa', agent: agent('q', 'working') }] })), /rstatus ask">Waiting on you/)
+  assert.match(cell(bot({ chats: [{ workspaceId: 'folder:qa', agent: agent('p', 'blocked') }, { workspaceId: 'folder:qa', agent: agent('q', 'working') }] })), /rstatus ask">Waiting on you/)
   assert.match(cell(bot({ chats: [{ workspaceId: 'folder:qa', agent: agent('q', 'working') }], paused: true })), />Working</)
   assert.match(cell(bot({ paused: true, nextRunAt: NOW + 60_000 })), />Paused</)
   assert.match(cell(bot({ nextRunAt: NOW + 12 * 60_000 })), /class="age" data-tip="Next run [^"]+">in 12m</)
@@ -205,13 +205,32 @@ test('no bots: one muted line; folded: the header and its count only; unknown: n
 
 // ---------- Up next ----------
 
-test('a bot chat that waits for you is an Up next item: the bot name, its group, the usual jump', () => {
-  const ask = agent('p-home', 'done', { summary: asking })
-  const s = snapOf({ coordinators: [coordinator('alpha')], bots: [bot({ coordinator: 'alpha', chats: [{ workspaceId: 'folder:qa', agent: ask }, { workspaceId: 'folder:qa', agent: agent('p-run', 'done') }] })] })
+test('an idle bot never enters Up next, even when its last reply ends in a question', () => {
+  // Its turn ended; the summarizer read the question as an ask. Orca says done: it waits for its next message.
+  const idle = agent('p-home', 'done', { summary: asking })
+  const s = snapOf({ coordinators: [coordinator('alpha')], bots: [bot({ coordinator: 'alpha', nextRunAt: NOW + 12 * 60_000, chats: [{ workspaceId: 'folder:qa', agent: idle }] })] })
+  const r = render(s, { ...emptyUi(), now: NOW })
+  assert.equal(r.attention, '', 'no Up next item')
+  assert.equal(askingRows(s).length, 0, 'nor in the status bar or jump-to-next')
+  assert.match(statusOf(s).text, /clear/)
+  noMatch(r.bots, /Waiting on you/, 'its row shows no waiting state')
+  assert.match(r.bots, />in 12m</, 'its next run instead')
+  assert.equal(botState(bot({ chats: [{ workspaceId: 'folder:qa', agent: idle }] }), NOW).face, 'done')
+  // A later ask from a working bot does not either.
+  const later = agent('p-run', 'working', { summary: summary({ glance: 'Need a token later', needs: { type: 'info', ask: 'Token?', options: [], blocking: false } }) })
+  assert.equal(render(snapOf({ bots: [bot({ chats: [{ workspaceId: 'folder:qa', agent: later }] })] }), { ...emptyUi(), now: NOW }).attention, '')
+})
+
+test('a bot chat stopped on a permission prompt is an Up next item: the bot name, its group, the usual jump', () => {
+  // Its summary's stale question never shows: the prompt is the ask.
+  const ask = agent('p-home', 'blocked', { summary: asking })
+  const s = snapOf({ coordinators: [coordinator('alpha')], bots: [bot({ coordinator: 'alpha', chats: [{ workspaceId: 'folder:qa', agent: ask }, { workspaceId: 'folder:qa', agent: agent('p-run', 'done', { summary: asking }) }] })] })
   const r = render(s, { ...emptyUi(), now: NOW })
   assert.match(r.attention, /Up next · 1/)
   assert.match(r.attention, /<span class="t strong">live-qa<\/span><span class="r">alpha · P2<\/span>/)
-  assert.match(r.attention, /<span class="kicker">Needs info from you<\/span><span>Which flows should I watch first\?<\/span>/)
+  assert.match(r.attention, /<span class="kicker">Needs your yes<\/span><span>Approve a permission prompt\.<\/span>/)
+  noMatch(r.attention, /Which flows/)
+  assert.match(r.bots, /rstatus ask">Waiting on you/)
   assert.match(r.attention, /<button class="jump" data-open="folder:qa">Jump to session<\/button>/)
   assert.equal(askingRows(s).length, 1, 'the status bar and jump-to-next read the same queue')
   assert.equal(askingRows(s)[0].id, 'folder:qa')
@@ -231,7 +250,7 @@ test('bot chats go through the same summarizer as agents', () => {
 test("a bot's workspace shows only in Bots: not in the tree, Idle, search or a second Up next item", () => {
   const ps: PsWorktree[] = [
     { identity: { key: 'wt2:local:a' }, displayName: 'shop-fix', repo: 'shop', path: '/w/shop-fix', branch: 'refs/heads/fix', liveTerminalCount: 1, agents: [{ paneKey: 'p-shop', state: 'working', agentType: 'claude', conversationName: 'Fix the cart' }] },
-    { displayName: 'super-agent-live-qa', repo: 'Bots', path: '/bots/live-qa', bot: 'super-agent-live-qa', botHome: true, agents: [{ paneKey: 'p-home', orcaSessionId: 's1', state: 'done', agentType: 'claude', conversationName: 'super-agent-live-qa', structuredHostOwned: true }] },
+    { displayName: 'super-agent-live-qa', repo: 'Bots', path: '/bots/live-qa', bot: 'super-agent-live-qa', botHome: true, agents: [{ paneKey: 'p-home', orcaSessionId: 's1', state: 'blocked', agentType: 'claude', conversationName: 'super-agent-live-qa', structuredHostOwned: true }] },
     { displayName: 'replies', repo: 'Bots', path: '/bots/replies-you-owe', bot: 'Replies you owe', agents: [] }
   ]
   const all = fromPs(ps, { cards: {}, summaries: { 'p-home': { ...asking, orcaSession: 's1', providerSession: { provider: 'claude', id: 'x' } } } }, new Map([['/bots/live-qa', 'folder:qa'], ['/bots/replies-you-owe', 'folder:r']]))

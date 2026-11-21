@@ -132,6 +132,21 @@ shows none, `run-create --objective "<goal>"` first. Then `orca orchestration ta
 flags it needs. **P0 preempts:** if a P0 is queued, propose pausing
 the lowest-priority idle agent as a yes-or-no ask (`Needs your yes`); never stop one without the user's yes.
 
+## Bots
+
+Orca bots are always-on specialists the user set up (live QA, checks, releases, reviews). Before
+doing recurring or specialist work yourself, see which bots your project has:
+
+```sh
+orca-flow bots --repo <repo>   # its coordinator's bots, then Personal ones (cross-project)
+```
+
+- **Hand it the work** (it takes over and reports in its own chat):
+  `orca orchestration send --to bot:<name> --chat new --type handoff --subject "<outcome>" --body "<spec>"`.
+- **Ask it something** (it answers you by mail): the same with `--type question`.
+
+Each listed bot comes with its exact command. A paused bot does not run: do the work yourself.
+
 ## Workstream cards
 
 Each worktree has one card that answers the user's four switch questions. The coordinator writes

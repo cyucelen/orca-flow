@@ -153,3 +153,56 @@ export function buildBots(input: {
   })
   return { bots, duplicates }
 }
+
+// ---------- for agents: which bots a project has, and how to hand them work ----------
+
+/** A bot as `orca-flow bots` lists it to an agent. */
+export type BotEntry = {
+  name: string
+  /** The coordinator that adopted it, or null for Personal. */
+  coordinator: string | null
+  /** A Personal bot: no coordinator adopted it, so it serves every project. */
+  crossProject: boolean
+  purpose: string
+  paused: boolean
+  /** The exact commands that hand it work (it takes over) or ask it something (it answers by mail). */
+  delegate: string
+  ask: string
+}
+
+/** A shell word: as is when it is safe, else in single quotes. */
+const shellWord = (s: string) => (/^[A-Za-z0-9._:@/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`)
+
+/** The send commands for a bot, as `orca orchestration send --help` documents `--to bot:<name>`. */
+export function botCommands(name: string): { delegate: string; ask: string } {
+  const to = `--to ${shellWord(`bot:${name}`)} --chat new`
+  return {
+    delegate: `orca orchestration send ${to} --type handoff --subject "<outcome>" --body "<spec>"`,
+    ask: `orca orchestration send ${to} --type question --subject "<question>" --body "<details>"`
+  }
+}
+
+/**
+ * Pure: the bots an agent may hand work to, adopted bots first in coordinator order, then Personal
+ * ones. With `repo`, only the bots of the coordinators that own it (`repos` names it, or is empty:
+ * such a coordinator takes every project) and the Personal bots, which serve every project. Grouped
+ * as the Bots section groups them (groupBots); `orca bot list` decides which bots exist.
+ */
+export function botDirectory(input: { listed: ListedBot[]; folders: BotFolder[]; coordinators: { key: string; repos?: string[]; bots?: string[] }[]; repo?: string | null }): BotEntry[] {
+  const listed = input.listed.filter((b): b is ListedBot & { name: string } => typeof b.name === 'string' && b.name.length > 0)
+  const withFolder = listed.map((b) => ({ ...b, folder: folderOf({ id: b.id, name: b.name }, input.folders) }))
+  const { owner } = groupBots(withFolder.map((b) => ({ name: b.name, folder: b.folder?.folder ?? null })), input.coordinators)
+  const owns = (c: { repos?: string[] }) => !input.repo || !(c.repos ?? []).length || (c.repos ?? []).some((r) => same(r, input.repo))
+  const rank = (b: { name: string }) => {
+    const key = owner.get(b.name)
+    const i = input.coordinators.findIndex((c) => c.key === key)
+    return i < 0 ? input.coordinators.length : i
+  }
+  return withFolder
+    .filter((b) => { const key = owner.get(b.name); const c = input.coordinators.find((x) => x.key === key); return !c || owns(c) })
+    .sort((x, y) => rank(x) - rank(y))
+    .map((b) => {
+      const key = owner.get(b.name) ?? null
+      return { name: b.name, coordinator: key, crossProject: key === null, purpose: purposeOf(b.specialty, b.folder?.soul ?? ''), paused: b.paused === true, ...botCommands(b.name) }
+    })
+}

@@ -830,17 +830,31 @@ export function askingRows(snap: SnapLike): WorkspaceRow[] {
 type SnapLike = Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'bots'>
 
 /**
- * A row for each chat of each bot, standing for that chat in the queue: named after the bot, opening
- * the chat's workspace. Bot workspaces are not among the ordinary rows (the Bots section shows them),
- * so this is how a bot that asks reaches Up next, the status bar and jump-to-next.
+ * A bot chat needs you only while Orca says its turn is stopped on you: a permission prompt
+ * (blocked) or its pending question tool (waiting). A bot whose turn ended is idle, waiting for its
+ * next message or run, even when its last reply ends in a question: nothing to do there.
+ */
+export const botNeedsYou = (a: AgentInfo) => a.state === 'blocked' || a.state === 'waiting'
+
+/** The summarizer's ask never counts for a bot chat (see botNeedsYou): only Orca's own state does. */
+const withoutSummaryAsk = (a: AgentInfo): AgentInfo =>
+  a.summary ? { ...a, summary: { ...a.summary, needs: { type: 'none', ask: '', options: [] }, glance: undefined, reply: undefined, status: undefined } } : a
+
+/**
+ * A row for each bot chat that needs you (botNeedsYou), standing for that chat in the queue: named
+ * after the bot, opening the chat's workspace. Bot workspaces are not among the ordinary rows (the
+ * Bots section shows them), so this is how such a chat reaches Up next, the status bar and jump-to-next.
  */
 export function botChatRows(snap: Pick<Partial<Snapshot>, 'bots'>): WorkspaceRow[] {
-  return (snap.bots ?? []).flatMap((b) => b.chats.map(({ agent: a, workspaceId }): WorkspaceRow => ({
-    id: workspaceId, name: b.name, branch: null, repo: 'Bots', path: null, main: false, agents: [a], state: a.state,
-    priority: a.summary?.priority ?? null, card: null, parentId: null, liveTerminals: a.live === false ? 0 : 1, pinned: false, unread: false,
-    active: false, workspaceStatus: null, lastActivityAt: a.summary?.updatedAt ?? null, createdAt: 0, pr: null, bot: b.name,
-    queueKey: askKey({ id: workspaceId } as WorkspaceRow, a)
-  })))
+  return (snap.bots ?? []).flatMap((b) => b.chats.filter((c) => botNeedsYou(c.agent)).map(({ agent, workspaceId }): WorkspaceRow => {
+    const a = withoutSummaryAsk(agent)
+    return {
+      id: workspaceId, name: b.name, branch: null, repo: 'Bots', path: null, main: false, agents: [a], state: a.state,
+      priority: a.summary?.priority ?? null, card: null, parentId: null, liveTerminals: a.live === false ? 0 : 1, pinned: false, unread: false,
+      active: false, workspaceStatus: null, lastActivityAt: a.summary?.updatedAt ?? null, createdAt: 0, pr: null, bot: b.name,
+      queueKey: askKey({ id: workspaceId } as WorkspaceRow, a)
+    }
+  }))
 }
 
 /**
@@ -849,7 +863,7 @@ export function botChatRows(snap: Pick<Partial<Snapshot>, 'bots'>): WorkspaceRow
  */
 export function upNextOrder(snap: SnapLike): Placed[] {
   const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
-  const working = [...snap.rows, ...botChatRows(snap)].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const working = [...snap.rows].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
   const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
@@ -1283,7 +1297,7 @@ export function botCharacter(b: Pick<Bot, 'avatar' | 'name'>, face: Face, ask: A
 
 /** What a bot does now, as its row shows it: the chat that asks first, then one that works, then paused, then its next run. */
 export function botState(b: Bot, now: number): { face: Face; ask?: AskKind; text: string; tip: string; tone: '' | 'ask' } {
-  const asking = b.chats.find((c) => asksYou(c.agent))
+  const asking = b.chats.find((c) => botNeedsYou(c.agent))
   if (asking) { const ask = askKindOf(asking.agent); return { face: 'asks', ask, text: 'Waiting on you', tip: ASK_TIP[ask], tone: 'ask' } }
   if (b.chats.some((c) => c.agent.state === 'working')) return { face: 'working', text: 'Working', tip: 'Working', tone: '' }
   if (b.paused) return { face: 'idle', text: 'Paused', tip: 'Paused', tone: '' }

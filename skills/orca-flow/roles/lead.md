@@ -36,6 +36,9 @@ one line, and end your turn.
    feedback), use the status line `**Idle**`, not Working or Done. When work runs on but you will
    need something from the user later, ask now with `**Working · needs <thing> later**`.
 
+**QA, live checks, a release or a review your project has a bot for?** Hand it to that bot (see
+"Bots" in [SKILL.md](../SKILL.md)) instead of a worker.
+
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.
 
