@@ -19,7 +19,7 @@ import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, read
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
-import { associateSession, chooseSession, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
+import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -46,7 +46,7 @@ const DATA_DIR = join(homedir(), '.orca-flow')
 /** Most urgent first: what needs the person outranks what is running. */
 const URGENCY: AgentState[] = ['blocked', 'waiting', 'working', 'done']
 
-type PsAgent = {
+export type PsAgent = {
   paneKey?: string
   /** The pane that started this agent (a lead's or coordinator's), when Orca knows it. */
   parentPaneKey?: string | null
@@ -402,7 +402,8 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
     c.active = row.active
     // Its session counts only while a terminal is open with an agent in it.
     c.session = row.liveTerminals > 0 ? session : null
-    const memberPanes = new Set(c.sessions ? c.sessions.members.flatMap((m) => { const a = memberAgent(m, [row]); return a ? [a.paneKey] : [] }) : session ? [session.paneKey] : [])
+    // Every row of a member's conversation, so a pane left from before a restart is no duplicate row.
+    const memberPanes = new Set((c.sessions ? c.sessions.members.flatMap((m) => memberRows(m, [row])) : session ? conversationRows(row.agents, session) : []).map((a) => a.paneKey))
     return folderRows({ ...row, agents: row.agents.filter((a) => !memberPanes.has(a.paneKey)) }, null, c.key)
   })
 }
@@ -1207,7 +1208,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         const verifiedLineage = await loadLineage(run, Date.now(), true)
         if (verifiedLineage.dispatchOf?.has(a.paneKey) || verifiedLineage.dispatcherOf.has(a.paneKey)) throw new Error('This exact agent has dispatch provenance and remains a workstream lead or worker.')
         sessions = associateSession(sessions, row, a)
-        const member = sessions.members.find((m) => memberAgent(m, [row]) === a)!
+        const member = memberOf(sessions, row, a)!
         if (a.terminal) {
           const shown = await run(['terminal', 'show', '--terminal', a.terminal])
           if (shown?.terminal?.worktreePath !== c.dir) throw new Error('The exact terminal no longer belongs to this coordinator workspace.')

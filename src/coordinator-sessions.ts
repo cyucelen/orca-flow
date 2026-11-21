@@ -13,20 +13,53 @@ export function validSessions(value: unknown): CoordinatorSessions | undefined {
   return s
 }
 
-export function memberAgent(m: CoordinatorMember, rows: WorkspaceRow[]): AgentInfo | null {
-  const matches = rows.filter((r) => r.id === m.workspaceId).flatMap((r) => r.agents).filter((a) =>
+/**
+ * Every agent row of the member's exact conversation in its workspace. Orca can list one
+ * conversation more than once: after a restart, power loss or resume in a new pane it keeps the old
+ * pane's row (no live PTY, a "listed, clearable" activity) beside the pane the conversation runs in
+ * now. All of them are this member: none is a separate coordinator, lead or workstream row.
+ */
+export function memberRows(m: CoordinatorMember, rows: WorkspaceRow[]): AgentInfo[] {
+  return rows.filter((r) => r.id === m.workspaceId).flatMap((r) => r.agents).filter((a) =>
     m.orcaSession ? a.orcaSession === m.orcaSession && a.agentType === m.agentType : a.paneKey === m.paneKey && a.agentType === m.agentType && (!a.orcaSession))
-  return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * The row that stands for one conversation's rows: its only row, else its only live one (a live PTY
+ * or an owned structured chat). They are the same conversation, so this is identity, not ranking.
+ * Several live rows, or several with none live, resolve to nothing: no pane, order, age, title or
+ * focus tie-break. The caller then treats it as unavailable (Sleeping) or asks for a choice.
+ */
+export function conversationRow<A extends { live?: boolean }>(rows: A[]): A | null {
+  if (rows.length === 1) return rows[0]
+  const live = rows.filter((a) => a.live === true)
+  return live.length === 1 ? live[0] : null
+}
+
+export function memberAgent(m: CoordinatorMember, rows: WorkspaceRow[]): AgentInfo | null {
+  return conversationRow(memberRows(m, rows))
+}
+
+type Root = { paneKey: string; parentPane: string | null; orcaSession?: string | null; agentType?: string | null; live?: boolean }
+
+/** The rows among `agents` of `a`'s exact conversation (same Orca conversation id and agent); just `a` when it has no id. */
+export function conversationRows<A extends Root>(agents: A[], a: A): A[] {
+  return a.orcaSession ? agents.filter((x) => x.orcaSession === a.orcaSession && x.agentType === a.agentType) : [a]
 }
 
 export function memberFrom(row: WorkspaceRow, a: AgentInfo): CoordinatorMember {
   return { id: sessionKey(row.id, a.orcaSession, a.paneKey), workspaceId: row.id, workspacePath: row.path, bindings: a.terminal ? [{ terminal: a.terminal, paneKey: a.paneKey, orcaSession: a.orcaSession }] : [], orcaSession: a.orcaSession, agentType: a.agentType, title: a.title, paneKey: a.paneKey, terminals: a.terminal ? [a.terminal] : [], lastAgent: a }
 }
 
-/** A migration is allowed only for a single undispatched root. No ranking or first-root tie break. */
-export function unambiguousSession<A extends { paneKey: string; parentPane: string | null }>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
+/**
+ * A migration is allowed only for a single undispatched root conversation. No ranking or first-root
+ * tie break. Rows of one conversation (a stale pane beside its resumed one) count once and resolve
+ * as conversationRow does; two conversations stay ambiguous whichever of them is live.
+ */
+export function unambiguousSession<A extends Root>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
   const roots = agents.filter((a) => !a.parentPane && !dispatched(a.paneKey))
-  return roots.length === 1 ? roots[0] : null
+  const one = roots.length ? conversationRows(roots, roots[0]) : []
+  return roots.length && roots.every((a) => one.includes(a)) ? conversationRow(roots) : null
 }
 
 export function reconcileSessions(s: CoordinatorSessions, rows: WorkspaceRow[]): CoordinatorSessions {
@@ -41,9 +74,14 @@ export function associateSession(s: CoordinatorSessions, row: WorkspaceRow, a: A
   if (a.dispatch !== null || a.parentPane) throw new Error('This agent has dispatch or parent provenance. Associate an independent coordinator session instead.')
   if (!a.paneKey || !a.orcaSession) throw new Error('Orca has not exposed a stable conversation identity for this session yet. Association is unavailable until it does.')
   const member = memberFrom(row, a)
-  if (s.members.some((m) => memberAgent(m, [row]) === a)) return reconcileSessions(s, [row])
+  // Any row of an existing member's conversation (a stale pane included) is that member, never a second one with the same id.
+  if (s.members.some((m) => m.id === member.id || memberRows(m, [row]).includes(a))) return reconcileSessions(s, [row])
   return { ...s, members: [...s.members, member] }
 }
+
+/** The member a row of `row` belongs to: whichever of its conversation's rows it is. */
+export const memberOf = (s: CoordinatorSessions, row: WorkspaceRow, a: AgentInfo): CoordinatorMember | undefined =>
+  s.members.find((m) => memberRows(m, [row]).includes(a))
 
 export function selectCurrent(s: CoordinatorSessions, id: string): CoordinatorSessions {
   if (!s.members.some((m) => m.id === id)) throw new Error('This session is not associated with the coordinator.')
@@ -75,7 +113,7 @@ export function chooseSession(s: CoordinatorSessions, row: WorkspaceRow, choice:
   if (row.id !== choice.workspaceId || !a?.orcaSession || !a.terminal || a.live !== true) throw new Error('That conversation is no longer available. Choose another session.')
   if (a.parentPane || a.dispatch !== null) throw new Error('That conversation belongs to a task and cannot be the main session.')
   const associated = associateSession(s, row, a)
-  return selectCurrent(associated, associated.members.find((m) => memberAgent(m, [row]) === a)!.id)
+  return selectCurrent(associated, memberOf(associated, row, a)!.id)
 }
 
 export function currentRecipient(c: Coordinator, rows: WorkspaceRow[]): { member: CoordinatorMember; agent: AgentInfo; recipient: DeliveryRecipient } {
@@ -392,18 +430,15 @@ export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[],
   } else if (launching) return { kind: 'adopt', agent: typeof launching === 'object' ? launching.agent : current?.agentType ?? null }
   if (current) {
     if (current.resumeSessionId && current.agentType) return { kind: 'resume', member: current }
-    if (!live && memberMatches(current, rows) > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
+    // Dead rows of the same conversation (panes from before a restart) are one closed conversation;
+    // only several live panes of it are ambiguous.
+    if (!live && memberRows(current, rows).filter((a) => a.live === true).length > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
     if (liveChoices > 0) return { kind: 'choose', reason: 'The main conversation is closed and cannot be resumed. Choose an open conversation or start a new one.' }
     return { kind: 'fresh', agent: current.agentType }
   }
   if (s?.members.length) return { kind: 'choose', reason: 'No main conversation is selected among its previous ones. Choose one in Sessions or start a new conversation.' }
   if (liveChoices > 0) return { kind: 'choose', reason: 'Its open conversations are not associated yet. Choose one in Sessions or start a new conversation.' }
   return { kind: 'fresh', agent: null }
-}
-
-function memberMatches(m: CoordinatorMember, rows: WorkspaceRow[]): number {
-  return rows.filter((r) => r.id === m.workspaceId).flatMap((r) => r.agents).filter((a) =>
-    m.orcaSession ? a.orcaSession === m.orcaSession && a.agentType === m.agentType : a.paneKey === m.paneKey && a.agentType === m.agentType && !a.orcaSession).length
 }
 
 export type WakeIo = ResumeIo & {

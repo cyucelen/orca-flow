@@ -10,7 +10,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Coordinator, CoordinatorSessions, LinearSent, Look, WorkspaceRow } from './protocol.ts'
 
-import { memberAgent, terminalPane, unambiguousSession, validSessions } from './coordinator-sessions.ts'
+import { conversationRows, memberRows, terminalPane, unambiguousSession, validSessions } from './coordinator-sessions.ts'
 import { bootstrapCoordinator } from './coordinator-bootstrap.ts'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
@@ -105,7 +105,7 @@ const SETTLED = new Set(['succeeded', 'failed', 'abandoned', 'cancelled', 'cance
  * Legacy migration candidate only: a single independent, undispatched root. Multiple roots
  * require explicit association; their provider, focus, age, title and child count do not decide.
  */
-export function coordinatorSession<A extends { paneKey: string; parentPane: string | null }>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
+export function coordinatorSession<A extends { paneKey: string; parentPane: string | null; orcaSession?: string | null; agentType?: string | null; live?: boolean }>(agents: A[], dispatched: (pane: string) => boolean = () => false): A | null {
   return unambiguousSession(agents, dispatched)
 }
 
@@ -115,7 +115,9 @@ export function assignCoordinators(rows: WorkspaceRow[], coordinators: Coordinat
   const coordinatorByPane = new Map<string, string>()
   const folderOf = new Map<string, string>()
   for (const c of coordinators) for (const row of rows) if (row.path === c.dir) {
-    const members = c.sessions ? c.sessions.members.map((m) => memberAgent(m, [row])).filter(Boolean) : [coordinatorSession(row.agents, (pane) => lineage.dispatchOf?.has(pane) ?? false)]
+    // Every row of a member's conversation is the coordinator, a stale pane from before a restart included.
+    const legacy = c.sessions ? null : coordinatorSession(row.agents, (pane) => lineage.dispatchOf?.has(pane) ?? false)
+    const members = c.sessions ? c.sessions.members.flatMap((m) => memberRows(m, [row])) : legacy ? conversationRows(row.agents, legacy) : []
     for (const a of row.agents) members.includes(a) ? coordinatorByPane.set(a.paneKey, c.key) : folderOf.set(a.paneKey, c.key)
   }
   const coordinatorByTerminal = new Map([...lineage.paneOf].filter(([, pane]) => coordinatorByPane.has(pane)).map(([handle, pane]) => [handle, coordinatorByPane.get(pane)!]))
