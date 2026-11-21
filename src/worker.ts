@@ -149,6 +149,15 @@ function stateOf(a: PsAgent, quiet: (pane: string) => boolean): { state: AgentSt
   return idleWatcher ? { state: 'done', workingMode: null } : { state: a.state as AgentState, workingMode: a.workingMode ?? null }
 }
 
+/**
+ * Orca's own prompt text: its dispatch preamble and the coordinator/lead start prompts. Codex names
+ * its thread after the first prompt and Orca forwards that as conversationName, so it is not a title.
+ */
+const ORCA_PROMPT = /^\s*(?:You are working inside Orca\b|You are a dispatched worker\b|Your role: (?:coordinator|lead)\b)/i
+
+/** A title candidate: shows no ids, hashes or paths, and is not Orca's prompt text. */
+const titleOk = (t: string | null | undefined): t is string => !!t && showable(t) && !ORCA_PROMPT.test(t)
+
 function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): AgentInfo | null {
   if (!URGENCY.includes(a.state as AgentState)) return null
   const { state, workingMode } = stateOf(a, quiet)
@@ -165,8 +174,9 @@ function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): Ag
     terminal: null,
     question: questionOf(a),
     state,
-    // Orca names a worker's conversation after its task id (worker-task_…); skip names that are ids.
-    title: [summary?.title, a.conversationName, a.taskTitle, a.displayName].find((t) => showable(t ?? undefined)) || a.agentType || 'Agent',
+    // Orca names a worker's conversation after its task id (worker-task_…) and Codex after its first
+    // prompt (Orca's preamble); skip names that are ids or Orca's prompt text.
+    title: [summary?.title, a.conversationName, a.taskTitle, a.displayName].find(titleOk) || a.agentType || 'Agent',
     task: a.taskTitle ?? a.displayName ?? null,
     agentType: a.agentType ?? null,
     live: a.hasLivePty === true || a.structuredHostOwned === true,

@@ -969,6 +969,25 @@ test('a worker named after its task id shows its task title instead', () => {
   assert.equal(row.agents[0].title, 'Review PR #1770')
 })
 
+test('a Codex worker named after Orca\'s dispatch preamble shows its task title, summary or agent type instead', () => {
+  const preamble = 'You are working inside Orca, a multi-agent IDE. You are a dispatched worker. Your coordinator\'s terminal handle is: term_c00bb817'
+  const title = (agent: NonNullable<main.PsWorktree['agents']>[number], summaries = {}) =>
+    main.fromPs([{ identity: { key: 'w' }, displayName: 'retention', repo: 'web-app', agents: [agent] }], { cards: {}, summaries })[0].agents[0].title
+  const working = { paneKey: 'p', state: 'working', agentType: 'codex', conversationName: preamble, taskTitle: 'Delete the 51 local recordings' }
+  // Mid first turn, no summary yet: the task title, not the preamble.
+  assert.equal(title(working), 'Delete the 51 local recordings')
+  // A summary title still wins; a summary that echoes the preamble does not.
+  assert.equal(title(working, { p: { title: 'Local recordings deleted', providerSession: { provider: 'codex', id: 's' } } as never }), 'Local recordings deleted')
+  assert.equal(title(working, { p: { title: 'You are a dispatched worker.', providerSession: { provider: 'codex', id: 's' } } as never }), 'Delete the 51 local recordings')
+  // Done, writer unavailable, nothing else to show: the agent type (the view then names the worktree).
+  assert.equal(title({ paneKey: 'p', state: 'done', agentType: 'codex', conversationName: preamble }), 'codex')
+  // Lead and coordinator start prompts are Orca's text too.
+  assert.equal(title({ ...working, conversationName: 'Your role: lead. Load the orca-flow skill and follow roles/lead.md.' }), 'Delete the 51 local recordings')
+  assert.equal(title({ ...working, conversationName: 'Your role: coordinator. You own project routing' }), 'Delete the 51 local recordings')
+  // A name the user gave, even one that mentions Orca or roles, is kept.
+  assert.equal(title({ ...working, conversationName: 'Explain your role in Orca dispatch' }), 'Explain your role in Orca dispatch')
+})
+
 test('focus moves at once from the workspace.changed event, by terminal or by name and branch', () => {
   const rows = main.fromPs([
     { identity: { key: 'a' }, displayName: 'checkout', repo: 'shop', branch: 'refs/heads/checkout', isActive: true, agents: [{ paneKey: 'pa', state: 'working' }] },
