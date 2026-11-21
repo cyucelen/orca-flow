@@ -486,6 +486,16 @@ button.item.coord { padding: 5px 6px; }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-pressed="true"] { background: var(--bg); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
 .lsec > .group { margin-top: 2px; }
+/* Bots: between Up next and Linear, the same pinned section; one line per bot under its group. */
+.bsec { max-height: 30vh; }
+.bgroup { font-size: 11px; color: var(--faint); padding: 6px 0 1px; }
+.bgroup:first-child { padding-top: 2px; }
+.brow .t { display: flex; align-items: baseline; gap: 6px; }
+.brow .bname { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.brow .bpurpose { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+.brow .rstatus.ask { color: var(--ask); }
+.brow[disabled] { cursor: default; }
+.bempty { font-size: 12px; }
 .lsec .fold { margin-top: 2px; }
 /* Every Linear row is one fixed height and its right side one fixed line, so nothing shown on hover
    (the Send pill) or by state (a lead, starting) can make a row taller and shift what is below. */

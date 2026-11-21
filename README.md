@@ -136,6 +136,13 @@ square. The face and the badge at the bottom right show what Orca reports:
 amber when only another agent would fit (not a new worktree with its dev servers), and red when
 nothing fits. Disk turns amber under 25 GB and red under 10 GB.
 
+**Bots.** Between Up next and Linear, one line per Orca bot (`orca bot list`): its avatar, name,
+what it is for, and on the right whether it waits on you, works, is paused, or when it runs next.
+A click opens its Home chat's workspace. Bots sit under the coordinator whose `coordinator.json`
+lists them in `bots` (by name or folder name; ask the coordinator to adopt one), else under
+Personal. A bot chat that asks you shows in Up next like any agent; bot workspaces never show as
+ordinary rows.
+
 **PR number.** An open PR's number is colored by its CI checks: red when they failed, yellow while
 they run, green when they passed. A merged PR is purple; closed and draft PRs are grey.
 

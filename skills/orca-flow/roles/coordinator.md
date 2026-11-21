@@ -162,6 +162,8 @@ Then show item 2. One decision at a time; never dump the whole queue unless aske
 - An alias or project fact goes in the project notes of `~/orca/coordinators/CLAUDE.md`.
 - What you are for, or which projects are yours: update `repos` and `about` in your own
   `coordinator.json`. New coordinators start with no scope and learn it this way.
+- When the user gives you an Orca bot: add the bot's name (as `orca bot list` shows it) to `bots`
+  in your own `coordinator.json`. The panel's Bots section then shows it under you.
 
 ## Worktree cleanup
 

@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
@@ -31,6 +31,7 @@ const searchOpen = $('search-open')
 const copenEl = $('copen')
 const updateEl = $('update-slot')
 const linearEl = $('linear')
+const botsEl = $('bots')
 const toastEl = $('toast')
 
 const openedAt = Date.now()
@@ -46,7 +47,7 @@ function paint(): void {
 }
 
 /** The redrawn sections; keyboard focus inside them is kept across a redraw by its logical key. */
-const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, linearEl, footerEl, updateEl]
+const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, botsEl, linearEl, footerEl, updateEl]
 let restoringFocus = false
 function focusKey(): string | null {
   const el = document.activeElement
@@ -78,7 +79,7 @@ function paintRows(): void {
     return
   }
   ui.now = Date.now()
-  const { cockpit, copen, main, attention, linear: linearHtml, footer } = render(snap, ui, linear)
+  const { cockpit, copen, main, attention, bots, linear: linearHtml, footer } = render(snap, ui, linear)
   cockpitEl.innerHTML = cockpit
   copenEl.innerHTML = copen
   copenEl.hidden = !copen // an empty slot would still take a gap in the column
@@ -86,7 +87,11 @@ function paintRows(): void {
   // What asks you, pinned under the tree, so the tree never moves when an ask comes or goes.
   attentionEl.innerHTML = attention
   attentionEl.hidden = !attention
-  // Linear, pinned under Up next: its own scroll area while open, one header row while folded.
+  // Bots, between Up next and Linear: one line per bot, folded to its header like Linear.
+  botsEl.innerHTML = bots
+  botsEl.hidden = !bots
+  botsEl.classList.toggle('folded', ui.botsFolded)
+  // Linear, pinned under Bots: its own scroll area while open, one header row while folded.
   linearEl.innerHTML = linearHtml
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
@@ -132,6 +137,11 @@ orca.storage.get(LINEAR_UI_KEY).then((stored) => {
 }).catch(() => null)
 readLinear()
 setInterval(readLinear, 60_000)
+// The Bots section's fold comes back from storage, like Linear's.
+orca.storage.get(BOTS_UI_KEY).then((stored) => {
+  ui.botsFolded = (stored as { folded?: unknown } | null)?.folded === true
+  draw()
+}).catch(() => null)
 document.addEventListener('visibilitychange', () => readLinear())
 const saveLinearUi = () =>
   void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter, display: ui.linearDisplay, groupFolds: [...ui.linearGroupFolds] }).catch(() => null)
@@ -153,6 +163,13 @@ document.addEventListener('click', (event) => {
   const upd = (event.target as Element).closest<HTMLElement>('[data-update]')
   if (upd) {
     void updateClick()
+    return
+  }
+  // The Bots section's header folds it; the fold is kept in storage.
+  if ((event.target as Element).closest('[data-bfold]')) {
+    ui.botsFolded = !ui.botsFolded
+    void orca.storage.set(BOTS_UI_KEY, { folded: ui.botsFolded }).catch(() => null)
+    draw()
     return
   }
   // The Linear section: fold, filter, display options, groups, the folds at its end, and a row's send menu.

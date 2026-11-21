@@ -6,7 +6,7 @@ import { askKey } from './coordinator-sessions.ts'
 // Layout (agreed in the mockup): a one-row cockpit; Up next as collapsible briefings, the first
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
-import type { AgentInfo, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
+import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
 import { mixedProviders, providerBadge, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
@@ -41,12 +41,14 @@ export type UiState = {
   /** Its display options (grouping, order, states shown, projects), and the groups folded ("<group by>:<key>"). */
   linearDisplay: Display
   linearGroupFolds: Set<string>
+  /** The Bots section folded to its header (kept in plugin storage under BOTS_UI_KEY). */
+  botsFolded: boolean
 }
 
 export const emptyUi = (): UiState => ({
   opened: new Set(), closed: new Set(), folded: new Set(), unfolded: new Set(), query: '', now: Date.now(),
   cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map(), colors: new Map(),
-  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set()
+  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set(), botsFolded: false
 })
 
 // ---------- small helpers ----------
@@ -65,7 +67,7 @@ export function ago(ms: number | null, now: number): string {
 // ---------- characters ----------
 
 export type Face = 'working' | 'monitoring' | 'asks' | 'done' | 'failed' | 'idle' | 'queued'
-export type Shape = 'solo' | 'lead' | 'worker' | LookShape
+export type Shape = 'solo' | 'lead' | 'worker' | 'bot' | LookShape
 
 const PALETTE = ['#5b8def', '#e0a04a', '#4cb782', '#b07cf0', '#e06c8a', '#4fbfc8', '#c9b458', '#7c8cff', '#e07b4f', '#8fbf5a']
 /** A stable color per project name. */
@@ -88,6 +90,9 @@ export function character(color: string, shape: Shape, face: Face, size = 16, ba
   const body =
     shape === 'lead'
       ? `<rect x="${s * 0.06}" y="${s * 0.14}" width="${s * 0.88}" height="${s * 0.8}" rx="${s * 0.2}" ${paint}/>${queued ? '' : `<path d="M${s * 0.3} ${s * 0.16} l${s * 0.1} -${s * 0.12} l${s * 0.1} ${s * 0.1} l${s * 0.1} -${s * 0.1} l${s * 0.1} ${s * 0.12}" fill="${color}"/>`}`
+      : shape === 'bot'
+        // An Orca bot: a rounded head with an antenna.
+        ? `<rect x="${s * 0.08}" y="${s * 0.26}" width="${s * 0.84}" height="${s * 0.68}" rx="${s * 0.22}" ${paint}/>${queued ? '' : `<path d="M${s / 2} ${s * 0.27} V${s * 0.1}" stroke="${color}" stroke-width="${s * 0.08}" stroke-linecap="round"/><circle cx="${s / 2}" cy="${s * 0.09}" r="${s * 0.08}" fill="${color}"/>`}`
       : shape === 'worker'
         ? `<circle cx="${s / 2}" cy="${s * 0.55}" r="${s * 0.38}" ${paint}/>`
         : shape === 'pentagon'
@@ -808,7 +813,7 @@ export function updateButton(state: UpdateState | undefined): string {
  * coordinator whose own session asks (coordinators live outside the worktree rows). The tree's
  * badges, Up next, the status bar and jump-to-next all read this one list.
  */
-export function askingRows(snap: Pick<Snapshot, 'rows' | 'coordinators'>): WorkspaceRow[] {
+export function askingRows(snap: SnapLike): WorkspaceRow[] {
   const own = snap.coordinators.flatMap((c) => {
     const sources = c.members ? c.members.map((m) => ({ a: m.agent ?? m.lastAgent, id: m.id, workspaceId: m.workspaceId, historical: m.id !== c.sessions?.current || !m.agent })) : c.session ? [{ a: c.session, id: undefined, workspaceId: c.workspaceId, historical: false }] : []
     return sources.filter((m) => m.a && asksYou(m.a)).map((m): WorkspaceRow => ({
@@ -818,25 +823,51 @@ export function askingRows(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Works
       lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id, historical: m.historical
     }))
   })
-  return waitingQueue([...snap.rows, ...own])
+  return waitingQueue([...snap.rows, ...own, ...botChatRows(snap)])
+}
+
+/** What the queue reads: the rows, the coordinators and, when known, the bots. */
+type SnapLike = Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'bots'>
+
+/**
+ * A row for each chat of each bot, standing for that chat in the queue: named after the bot, opening
+ * the chat's workspace. Bot workspaces are not among the ordinary rows (the Bots section shows them),
+ * so this is how a bot that asks reaches Up next, the status bar and jump-to-next.
+ */
+export function botChatRows(snap: Pick<Partial<Snapshot>, 'bots'>): WorkspaceRow[] {
+  return (snap.bots ?? []).flatMap((b) => b.chats.map(({ agent: a, workspaceId }): WorkspaceRow => ({
+    id: workspaceId, name: b.name, branch: null, repo: 'Bots', path: null, main: false, agents: [a], state: a.state,
+    priority: a.summary?.priority ?? null, card: null, parentId: null, liveTerminals: a.live === false ? 0 : 1, pinned: false, unread: false,
+    active: false, workspaceStatus: null, lastActivityAt: a.summary?.updatedAt ?? null, createdAt: 0, pr: null, bot: b.name,
+    queueKey: askKey({ id: workspaceId } as WorkspaceRow, a)
+  })))
 }
 
 /**
  * Up next's order: every ask that stops work, most urgent first, then the asks needed only later
  * (laterAsk), from finished turns and from working agents alike.
  */
-export function upNextOrder(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Placed[] {
+export function upNextOrder(snap: SnapLike): Placed[] {
   const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
-  const working = [...snap.rows].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const working = [...snap.rows, ...botChatRows(snap)].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
   const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
 
-function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, mixed: boolean): string {
+function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, mixed: boolean, bots: Bot[] = []): string {
   if (placed.length === 0) return ''
   const items = placed.map((p, i) => {
     const key = askKey(p.row, p.a)
     const open = (i === 0 && !ui.closed.has(key)) || ui.opened.has(key)
+    // A bot's chat wears the bot's avatar, its name and its group; it opens the chat's workspace.
+    const bot = p.row.bot ? bots.find((b) => b.name === p.row.bot) : undefined
+    if (bot) {
+      const kind = askKindOf(p.a)
+      const head = `<button class="item" data-brief="${esc(key)}" aria-expanded="${open}">${tipped(botCharacter(bot, 'asks', kind), ASK_TIP[kind], ASK_TONE[kind])}<span class="t${open ? ' strong' : ''}">${esc(bot.name)}</span><span class="r">${esc(botGroupName(bot, coordinators))}${p.row.priority ? ` · ${p.row.priority}` : ''}</span></button>`
+      if (!open) return head
+      const about = aboutOf(p)
+      return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button></div></div>`
+    }
     // A coordinator's own ask wears its character and opens like its row in the tree.
     const c = p.row.coordinator ? coordinators.find((x) => x.key === p.row.coordinator) : undefined
     const who = c
@@ -1192,7 +1223,7 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
  * pinned below it, and the pinned footer. Up next sits at the bottom so the tree never moves when an
  * ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
  */
-export function render(given: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; linear: string; footer: string } {
+export function render(given: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
   // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
   // Its label opens the issue in Linear when the data gives its page.
   const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)).map((r) => (r.linearIssue ? { ...r, linearLink: issueLink(r.linearIssue, linear) } : r)) } : given
@@ -1210,7 +1241,7 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
       found.length
         ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}${providerBadge(r.agents[0], mixed)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
         : '<div class="empty">No matching workspaces</div>'
-    }</div>`, attention: '', linear: '', footer: '' }
+    }</div>`, attention: '', bots: '', linear: '', footer: '' }
   }
 
   // Sleep and remove are in the rows' menus.
@@ -1223,10 +1254,76 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
     cockpit: cockpit(snap, ui),
     copen,
     main: `<div class="tree"><div class="label">Coordinators</div>${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
-    attention: upNext(asking, all, snap.coordinators, ui, mixed),
+    attention: upNext(asking, all, snap.coordinators, ui, mixed, snap.bots ?? []),
+    bots: botsSection(snap, ui),
     linear: linearSection(snap, ui, linear),
     footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : ''
   }
+}
+
+// ---------- Bots ----------
+
+/** Where the panel keeps the Bots section's fold (plugin storage). */
+export const BOTS_UI_KEY = 'bots-ui'
+/** The group of bots no coordinator adopted. */
+export const PERSONAL = 'Personal'
+
+/** The name of a bot's group: the coordinator that adopted it, else Personal. */
+export const botGroupName = (b: Bot, coordinators: Coordinator[]) =>
+  (b.coordinator && coordinators.find((c) => c.key === b.coordinator)?.name) || PERSONAL
+
+/**
+ * A bot's avatar. Orca draws its own mascots (bot.json `avatar`, like "mascot:B1") from art the panel
+ * cannot load, so a bot wears a character of its own shape (a head with an antenna), colored by its
+ * avatar so it keeps one color, with the face of what it does now.
+ */
+export function botCharacter(b: Pick<Bot, 'avatar' | 'name'>, face: Face, ask: AskKind = 'question', size = 20): string {
+  return character(colorOf(b.avatar ?? b.name), 'bot', face, size, face !== 'done', ask)
+}
+
+/** What a bot does now, as its row shows it: the chat that asks first, then one that works, then paused, then its next run. */
+export function botState(b: Bot, now: number): { face: Face; ask?: AskKind; text: string; tip: string; tone: '' | 'ask' } {
+  const asking = b.chats.find((c) => asksYou(c.agent))
+  if (asking) { const ask = askKindOf(asking.agent); return { face: 'asks', ask, text: 'Waiting on you', tip: ASK_TIP[ask], tone: 'ask' } }
+  if (b.chats.some((c) => c.agent.state === 'working')) return { face: 'working', text: 'Working', tip: 'Working', tone: '' }
+  if (b.paused) return { face: 'idle', text: 'Paused', tip: 'Paused', tone: '' }
+  if (b.nextRunAt && b.nextRunAt > now) return { face: 'done', text: `in ${until(b.nextRunAt, now)}`, tip: `Next run ${new Date(b.nextRunAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`, tone: '' }
+  return { face: 'done', text: '', tip: 'Bot', tone: '' }
+}
+
+/** How long until `at`, like ago(): "12m", "3h", "2d". */
+export function until(at: number, now: number): string {
+  const m = Math.max(1, Math.round((at - now) / 60_000))
+  return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
+}
+
+/** One bot on one line: its avatar, name and purpose; on the right what it does now. A click opens its Home chat's workspace. */
+function botRow(b: Bot, ui: UiState): string {
+  const st = botState(b, ui.now)
+  const who = tipped(botCharacter(b, st.face, st.ask), st.tip, st.tone)
+  const right = st.text ? (st.face === 'done' ? `<span class="age" data-tip="${esc(st.tip)}">${esc(st.text)}</span>` : `<span class="rstatus${st.tone ? ` ${st.tone}` : ''}">${esc(st.text)}</span>`) : ''
+  const open = b.workspaceId ? `data-open="${esc(b.workspaceId)}"` : 'disabled data-tip="Its Home chat is not open in Orca"'
+  return `<button class="item brow" ${open} data-bot="${esc(b.id)}">${who}<span class="t"><span class="bname">${esc(b.name)}</span>${b.purpose ? `<span class="bpurpose">${esc(b.purpose)}</span>` : ''}</span><span class="r">${right}</span></button>`
+}
+
+/**
+ * The Bots section, between Up next and Linear: a header with the count that folds it, then one line
+ * per bot, grouped under the coordinator that adopted it (in the Coordinators section's order) and
+ * then Personal. Empty while Orca has not said which bots there are.
+ */
+export function botsSection(snap: Snapshot, ui: UiState): string {
+  const bots = snap.bots
+  if (!bots) return ''
+  const folded = ui.botsFolded
+  const head = `<div class="sechead"><button class="label lfold" data-bfold aria-expanded="${!folded}">${ICON.chev}<span>Bots</span><span class="fc">${bots.length}</span></button></div>`
+  if (folded) return head
+  if (!bots.length) return `${head}<div class="empty bempty">No bots yet. Ask a coordinator to adopt one, or create one in Orca.</div>`
+  const order = coordinatorOrder(snap).filter((c) => bots.some((b) => b.coordinator === c.key))
+  const groups = [
+    ...order.map((c) => ({ name: c.name, bots: bots.filter((b) => b.coordinator === c.key) })),
+    { name: PERSONAL, bots: bots.filter((b) => !b.coordinator || !snap.coordinators.some((c) => c.key === b.coordinator)) }
+  ].filter((g) => g.bots.length)
+  return `${head}<div class="group">${groups.map((g) => `<div class="bgroup">${esc(g.name)}</div>${g.bots.map((b) => botRow(b, ui)).join('')}`).join('')}</div>`
 }
 
 // ---------- Linear ----------

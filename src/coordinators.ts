@@ -43,11 +43,13 @@ export function readCoordinators(root = COORDINATOR_HOME): CoordinatorInfo[] {
   const out: CoordinatorInfo[] = []
   for (const name of readdirSync(root).sort()) {
     const dir = join(root, name)
-    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown; sessions?: unknown }>(join(dir, COORDINATOR_FILE))
+    const c = readJson<{ name?: string; repos?: string[]; about?: string; look?: Look; linearTeams?: unknown; bots?: unknown; sessions?: unknown }>(join(dir, COORDINATOR_FILE))
     const linearTeams = Array.isArray(c?.linearTeams) ? c.linearTeams.filter((t): t is string => typeof t === 'string') : []
+    // The Orca bots it adopted, by name (src/bots.ts groups them under it).
+    const bots = Array.isArray(c?.bots) ? c.bots.filter((b): b is string => typeof b === 'string' && b.trim().length > 0) : []
     if (!c?.name) continue
     const sessions = validSessions(c.sessions)
-    out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams,
+    out.push({ key: c.name, name: c.name, repos: c.repos ?? [], about: c.about ?? '', dir, workspaceId: null, look: c.look ?? null, linearTeams, bots,
       ...(c.sessions !== undefined ? { sessions: sessions ?? { version: 1, current: null, members: [] }, ...(!sessions ? { sessionNotice: 'Invalid session configuration. Repair coordinator.json before associating a session.' } : {}) } : {}) })
   }
   return out

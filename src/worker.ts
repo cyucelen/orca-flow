@@ -21,7 +21,7 @@ import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder,
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
@@ -36,6 +36,7 @@ import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type I
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 import { backgroundReader } from './background.ts'
 import { conversationOpener, ORCA_PROMPT, type Opener } from './transcripts.ts'
+import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -94,6 +95,9 @@ export type PsWorktree = {
   /** The Linear issue linked with `--linear-issue`: its identifier. */
   linkedLinearIssue?: string | null
   agents?: PsAgent[]
+  /** Set on an Orca bot's workspace: the bot's name (`botHome` on its home folder). */
+  bot?: string | null
+  botHome?: boolean
 }
 
 function shortBranch(branch: string | null | undefined): string | null {
@@ -238,7 +242,8 @@ export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summ
         lastActivityAt: w.lastActivityAt ?? null,
         createdAt: w.sortOrder ?? 0,
         pr: w.linkedPR?.number && w.linkedPR.url ? { number: w.linkedPR.number, url: w.linkedPR.url, state: w.linkedPR.state ?? '', title: w.linkedPR.title ?? '', checks: checksOf(w.linkedPR) } : null,
-        linearIssue: linkedIssueOf(w.linkedLinearIssue)
+        linearIssue: linkedIssueOf(w.linkedLinearIssue),
+        ...(w.bot ? { bot: w.bot } : {})
       }
     })
 }
@@ -499,9 +504,11 @@ let allRows: WorkspaceRow[] = []
  * Never read persisted lastAgent history as live inventory. A contradictory pane is unavailable,
  * not an invitation to choose the first member, current recipient, or provider.
  */
-export function summaryAgents(snap: Pick<Snapshot, 'rows' | 'coordinators'>): { agent: AgentInfo; worktreeId?: string }[] {
+export function summaryAgents(snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'bots'>): { agent: AgentInfo; worktreeId?: string }[] {
   const candidates = [
     ...snap.rows.flatMap((r) => r.agents.map((agent) => ({ agent, worktreeId: r.id }))),
+    // A bot's chats are summarized like any agent's, so a bot that asks reaches Up next the same way.
+    ...(snap.bots ?? []).flatMap((b) => b.chats.map(({ agent, workspaceId }) => ({ agent, worktreeId: workspaceId }))),
     ...(snap.coordinators ?? []).flatMap((c) => c.members !== undefined
       ? c.members.flatMap((m) => m.agent && m.agent.orcaSession === m.orcaSession && m.agent.agentType === m.agentType
         ? [{ agent: m.agent, worktreeId: m.workspaceId }] : [])
@@ -520,7 +527,7 @@ export function summaryAgents(snap: Pick<Snapshot, 'rows' | 'coordinators'>): { 
 }
 
 /** With `idle`, only panes whose own turn is not running. */
-export function livePanes(snap: Pick<Snapshot, 'rows' | 'coordinators'>, idle = false): string[] {
+export function livePanes(snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'bots'>, idle = false): string[] {
   return summaryAgents(snap).filter(({ agent }) => !idle || agent.state === 'done' || agent.state === 'waiting').map(({ agent }) => agent.paneKey)
 }
 
@@ -553,16 +560,56 @@ function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string
     .finally(() => (lineageLoading = false))
 }
 
+/**
+ * What Orca said about bots at the last read: `orca bot list` (null until it answered once) and
+ * `orca automations list`. Both are slow-ish CLI calls, so they are read in the background at most
+ * once a minute and a snapshot never waits on them; a failed read keeps the last good one.
+ */
+let botData: { listed: ListedBot[] | null; automations: BotAutomation[] } = { listed: null, automations: [] }
+let botDataAt = 0
+let botDataLoading = false
+/** The last duplicate adoptions logged, so each is logged once, not at every snapshot. */
+let botDuplicatesLogged = ''
+
+function refreshBotData(orca: OrcaWorkerApi, onLoaded: () => void): void {
+  if (botDataLoading || Date.now() - botDataAt < 60_000) return
+  botDataLoading = true
+  const run = orcaRunner(ORCA_BIN)
+  Promise.all([
+    run(['bot', 'list'], { timeoutMs: 10_000 }).then((r) => (Array.isArray(r?.bots) ? (r.bots as ListedBot[]) : null)).catch((e: Error) => { orca.log(`orca bot list failed: ${e.message}`); return undefined }),
+    run(['automations', 'list'], { timeoutMs: 10_000 }).then((r) => (Array.isArray(r?.automations) ? (r.automations as BotAutomation[]) : [])).catch(() => undefined)
+  ])
+    .then(([listed, automations]) => {
+      const next = { listed: listed === undefined ? botData.listed : listed, automations: automations ?? botData.automations }
+      const changed = JSON.stringify(next) !== JSON.stringify(botData)
+      botData = next
+      botDataAt = Date.now()
+      if (changed) onLoaded()
+    })
+    .finally(() => (botDataLoading = false))
+}
+
+/** Pure: the snapshot's bots from the bot workspaces and what Orca said; logs a bot two coordinators adopted. */
+export function botsOf(botRows: WorkspaceRow[], coordinators: Coordinator[], data: { listed: ListedBot[] | null; automations: BotAutomation[] }, log: (line: string) => void = () => {}, folders = readBotFolders(), now = Date.now()): Bot[] | null {
+  if (data.listed === null && botRows.length === 0) return null
+  const { bots, duplicates } = buildBots({ listed: data.listed, folders, automations: data.automations, botRows, coordinators, now })
+  const said = duplicates.map((d) => `bot ${d.bot} is listed by ${[d.kept, ...d.also].join(', ')}; it shows under ${d.kept}`).join('\n')
+  if (said && said !== botDuplicatesLogged) log(said)
+  botDuplicatesLogged = said
+  return bots
+}
+
 export async function snapshot(
   orca: OrcaWorkerApi,
   ps: () => Promise<PsWorktree[]> = runPs,
   onLineage: () => void = () => {}
 ): Promise<Snapshot> {
   const onDisk = readCoordinators()
-  const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
+  const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
   try {
     refreshLineage(orca, onLineage, allRows.flatMap((r) => r.agents.map((a) => a.paneKey)))
     refreshMemory(allRows, onLineage)
+    refreshBotData(orca, onLineage)
     const worktrees = await ps()
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
     const idByPath = new Map<string, string>()
@@ -612,11 +659,14 @@ export async function snapshot(
       const currentAgent = current ? memberAgent(current, all) : null
       coordinators[i].routing = !lineageAt ? 'Run routing unverified.' : !routes.length ? 'No verified run route. Selecting current does not claim a run.' : routes.some((r) => r.terminal !== currentAgent?.terminal) ? 'Some runs still route to a previous member. Pending asks keep their source; changing current does not rebind runs.' : 'Existing runs route to the current terminal.'
     }
-    const rows = foldCoordinatorFolders(all, coordinators, onDisk.map((c) => c.dir))
-    return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0 }
+    // A bot's workspaces show in the Bots section only: not in the tree, Idle or search.
+    const botRows = all.filter((r) => isBotRow(r))
+    const rows = foldCoordinatorFolders(all.filter((r) => !isBotRow(r)), coordinators, onDisk.map((c) => c.dir))
+    const bots = botsOf(botRows, coordinators, botData, (line) => orca.log(line))
+    return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, bots }
   } catch (e) {
     orca.log(`orca worktree ps failed, using workspace.list: ${(e as Error).message}`)
-    return { rows: await fromApi(orca), source: 'api', capacity: null, coordinators }
+    return { rows: (await fromApi(orca)).filter((r) => !isBotRow(r)), source: 'api', capacity: null, coordinators }
   }
 }
 

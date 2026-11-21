@@ -120,6 +120,37 @@ export type WorkspaceRow = {
   linearIssue?: string | null
   /** Where its Linear label opens, when the Linear data knows (see issueLink); null or absent: plain text. */
   linearLink?: { url: string; title: string | null } | null
+  /**
+   * Set on an Orca bot's workspace (`bot` in `orca worktree ps`: the bot's name) and on the Up next
+   * row of a bot chat that asks: such rows show in the Bots section, never as ordinary rows.
+   */
+  bot?: string | null
+}
+
+/** A chat of an Orca bot: its agent, and the workspace a click on it opens. */
+export type BotChat = { workspaceId: string; agent: AgentInfo }
+
+/**
+ * One of the user's Orca bots (`orca bot list`), with what its row shows: its avatar (bot.json
+ * `avatar`, like "mascot:B1"), one line on what it is for, the coordinator that adopted it
+ * (coordinator.json `bots`; null: Personal), its chats, and its next automation run.
+ */
+export type Bot = {
+  id: string
+  name: string
+  /** Its folder under ~/.orca/bots, when found. */
+  folder: string | null
+  avatar: string | null
+  /** One line, markdown stripped; '' when nothing says. */
+  purpose: string
+  paused: boolean
+  /** The key of the coordinator that lists it in `bots`, or null for Personal. */
+  coordinator: string | null
+  /** Its home workspace in Orca (where its Home chat runs): what a click on its row opens. */
+  workspaceId: string | null
+  chats: BotChat[]
+  /** The soonest enabled automation run of this bot (ms), or null. */
+  nextRunAt: number | null
 }
 
 export type Capacity = {
@@ -199,6 +230,8 @@ export type Coordinator = {
   active?: boolean
   /** Linear team keys it owns (coordinator.json `linearTeams`): their issues suggest it when sent. */
   linearTeams?: string[]
+  /** Orca bots it adopted (coordinator.json `bots`, bot names): the Bots section groups them under it. */
+  bots?: string[]
 }
 
 export type LookShape = 'pentagon' | 'hex' | 'shield'
@@ -235,6 +268,8 @@ export type Snapshot = {
    * workspace is focused, so only that worktree's lead is marked.
    */
   focusedPanes?: string[] | null
+  /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
+  bots?: Bot[] | null
 }
 
 /** What the opened cockpit shows; loaded on demand because Orca's memory report is slow. */
