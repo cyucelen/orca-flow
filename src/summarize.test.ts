@@ -2,7 +2,7 @@
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentSummary } from './protocol.ts'
-import { digest, frameAsk, shortAsk, withFrame } from './summarize.ts'
+import { digest, frameAsk, roleOf, shortAsk, withFrame } from './summarize.ts'
 
 const line = (type: string, content: unknown, cwd?: string) => JSON.stringify({ type, cwd, timestamp: '2026-11-18T12:00:00Z', message: { content } })
 /** A session whose first prompt names its role and whose latest turn ends with `message`. */
@@ -102,4 +102,24 @@ test('the short form of an ask is its question, at most ten words', () => {
   assert.equal(shortAsk('make 1 topic = 1 lesson. Which documents get this rule?'), 'Which documents get this rule?')
   assert.equal(shortAsk('turn on developer mode on the phone and then plug it into the mac again please'), 'Turn on developer mode on the phone and then plug…')
   assert.equal(shortAsk(''), '')
+})
+
+test('a lead the user recorded (orca-flow role lead) is a lead on the card; worker, chat and coordinator stay otherwise', () => {
+  const at = (first: string, cwd?: string) => [
+    JSON.stringify({ type: 'user', sessionId: 's-1', cwd, timestamp: '2026-11-20T14:52:00Z', message: { content: first } }),
+    JSON.stringify({ type: 'assistant', sessionId: 's-1', timestamp: '2026-11-21T21:27:00Z', message: { content: [{ type: 'text', text: 'Done.' }] } })
+  ]
+  const recorded = (session: string) => (session === 's-1' ? 'lead' : null)
+  const nobody = () => null
+  // The provider-costs shape: dispatched as a worker, then steered by the user as its lead.
+  const preamble = 'You are working inside Orca. You are a dispatched worker.\nYour task ID is: task_275091af6331\n=== TASK ===\nDesign the cost page.'
+  assert.equal(digest(at(preamble), '/h/orca/coordinators', recorded)!.role, 'lead')
+  assert.equal(digest(at(preamble), '/h/orca/coordinators', nobody)!.role, 'worker')
+  assert.equal(digest(at('fix the bug'), '/h/orca/coordinators', recorded)!.role, 'lead', 'a chat the user made a lead')
+  assert.equal(digest(at('fix the bug'), '/h/orca/coordinators', nobody)!.role, 'solo')
+  assert.equal(digest(at('hello', '/h/orca/coordinators/bounti'), '/h/orca/coordinators', recorded)!.role, 'coordinator', 'the folder decides')
+  assert.equal(digest(at('Your role: lead. Ship it.'), '/h/orca/coordinators', nobody)!.role, 'lead', 'the role line still works alone')
+  assert.equal(roleOf(preamble, [], null, '/h/orca/coordinators', 'lead'), 'lead')
+  assert.equal(roleOf(preamble, [], null, '/h/orca/coordinators', null), 'worker')
+  assert.equal(roleOf('hi', [], '/h/orca/coordinators/x', '/h/orca/coordinators', 'lead'), 'coordinator')
 })

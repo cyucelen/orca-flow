@@ -3,7 +3,7 @@ import { assert, test } from 'orca/testing'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureOwnStopHook, ensureStopHook, promptHookFor, stopHookFor } from './install.ts'
+import { ensureOwnStopHook, ensureStopHook, promptHookFor, sessionHookFor, stopHookFor } from './install.ts'
 import { claudeDiscoveryDir, ensureOwnLinks, ensureSeeds, linksFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
 import { scaffoldCoordinator } from './coordinators.ts'
@@ -152,7 +152,7 @@ test('a settings.json that is a link stays a link; a development folder writes n
   const dev = stopHookFor(home, join(home, 'dev-profile'))
   assert.equal(ensureOwnStopHook(dev, false).length, 1)
   assert.equal(existsSync(dev.path), false)
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the UserPromptSubmit hook in ${hook.path}`], 'the installed copy adds the prompt hook next to the Stop hook')
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`], 'the installed copy adds the prompt and session hooks next to the Stop hook')
   assert.deepEqual(ensureOwnStopHook(hook, true), [])
   assert.ok(lstatSync(hook.path).isSymbolicLink())
   rmSync(home, { recursive: true })
@@ -173,12 +173,39 @@ test('both hooks go in once, next to Orca\'s own hooks, each updated in place', 
   const orcaPrompt = { hooks: [{ type: 'command', command: '/orca/agent-hooks/prompt.sh' }] }
   const old = { type: 'command', command: 'node "/old/skills/orca-flow/scripts/prompt-check.mjs"', timeout: 5 }
   writeFileSync(hook.path, JSON.stringify({ model: 'opus', hooks: { Stop: [orcaStop], UserPromptSubmit: [orcaPrompt, { hooks: [old] }, { hooks: [old] }] } }))
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `updated the UserPromptSubmit hook in ${hook.path}`])
-  assert.deepEqual(read(hook.path), { model: 'opus', hooks: { Stop: [orcaStop, hook.entry], UserPromptSubmit: [orcaPrompt, prompt.entry] } })
+  const session = sessionHookFor(home, join(home, '.claude'))
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `updated the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`])
+  assert.deepEqual(read(hook.path), { model: 'opus', hooks: { Stop: [orcaStop, hook.entry], UserPromptSubmit: [orcaPrompt, prompt.entry], SessionStart: [session.entry] } })
   assert.deepEqual(ensureOwnStopHook(hook, true), [], 'a second run changes nothing')
   assert.equal(readFileSync(hook.path, 'utf8'), `${JSON.stringify(read(hook.path), null, 2)}\n`)
   writeFileSync(hook.path, '{"hooks":{"UserPromptSubmit":{}}}')
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`])
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`, `added the SessionStart hook in ${hook.path}`])
+  rmSync(home, { recursive: true })
+})
+
+test('the SessionStart hook runs the lead bootstrap through the skill link, only in an Orca pane, on every source', () => {
+  const { path, event, entry } = sessionHookFor('/h', '/h/.claude')
+  assert.deepEqual([path, event], ['/h/.claude/settings.json', 'SessionStart'])
+  assert.deepEqual(entry, {
+    hooks: [{ type: 'command', command: 'if [ -n "${ORCA_AGENT_PANE-}" ]; then node "/h/.claude/skills/orca-flow/scripts/session-start.mjs"; fi', timeout: 10 }]
+  })
+})
+
+test('the SessionStart hook goes in once, next to Orca\'s and the user\'s own, updated in place; not from a development folder', () => {
+  const { home, hook } = profile()
+  const session = sessionHookFor(home, join(home, '.claude'))
+  const orcaStart = { hooks: [{ type: 'command', command: '/orca/agent-hooks/session-start.sh' }] }
+  const userStart = { matcher: 'startup', hooks: [{ type: 'command', command: 'echo hi' }] }
+  const old = { type: 'command', command: 'node "/old/skills/orca-flow/scripts/session-start.mjs"', timeout: 5 }
+  writeFileSync(hook.path, JSON.stringify({ hooks: { SessionStart: [orcaStart, userStart, { hooks: [old] }, { hooks: [old] }] } }))
+  const dev = sessionHookFor(home, join(home, 'dev-profile'))
+  assert.match(ensureOwnStopHook({ ...dev, event: 'Stop' }, false)[0], /SessionStart/, 'a development folder names it and leaves it')
+  assert.equal(existsSync(dev.path), false)
+  assert.ok(ensureOwnStopHook(hook, true).includes(`updated the SessionStart hook in ${hook.path}`))
+  assert.deepEqual(read(hook.path).hooks.SessionStart, [orcaStart, userStart, session.entry])
+  assert.deepEqual(ensureOwnStopHook(hook, true), [], 'a second run changes nothing')
+  assert.deepEqual(ensureStopHook(session), [], 'nor does the hook alone')
+  // It is not gated by the messageFormat opt-in: the installer writes it whatever config.json says.
   rmSync(home, { recursive: true })
 })
 

@@ -71,7 +71,7 @@ The installed copy sets up these files outside its own folder:
 | `~/.agents/skills/orca-flow` | The Codex USER skill link, shared across Orca Codex accounts. Account selection changes `CODEX_HOME`, not this user skill directory. |
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
 | `~/orca/coordinators/<name>/AGENTS.md` and `CLAUDE.md` | Missing local instructions are seeded for new and existing coordinator folders. Launch prompts also explicitly supply the coordinator role and skill path. |
-| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent. Both run only in Orca's agent panes and do nothing until you opt in. Your other settings and hooks stay as they are. |
+| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. All three run only in Orca's agent panes. Your other settings and hooks stay as they are. |
 
 A real file or another source's symlink is left alone, including a dangling link whose ownership
 cannot be verified. Only our installed release links are repointed. A `settings.json` that is not
@@ -172,9 +172,17 @@ orca-flow capacity [--repo]  # does another agent or a new worktree fit in memor
 orca-flow set / get          # a worktree's card: priority, goal, what it unblocks
 orca-flow resume             # a woken coordinator takes back the runs it was coordinating
 orca-flow bots [--repo]      # a project's Orca bots, with the command that hands each one work
+orca-flow role lead|clear    # record (or clear) that you made this Claude session a lead
 ```
 
 (`orca-flow` here means `node <skill folder>/scripts/orca-flow.mjs`.)
+
+A lead keeps its role across Claude resume and compaction. A lead started with `Your role: lead`
+in its first prompt is known by that line. A session you make a lead yourself (a worker you keep
+steering, a chat you started) records it with `orca-flow role lead` when you tell it to; the record
+lives in `~/.orca-flow/roles.json`, keyed by the Claude session id. The SessionStart hook then gives
+the lead instructions back on every resume and compaction, and the sidebar shows it as a lead.
+Claude only: Codex and Antigravity have no such hook here.
 
 ## Settings
 
@@ -368,7 +376,7 @@ orca plugin uninstall cyucelen.flow
 ```
 
 Then remove what it set up outside its folder, if you no longer want it: the `orca-flow` link in
-your Claude profile's `skills` folder, the hooks that run `stop-check.mjs` and `prompt-check.mjs`
+your Claude profile's `skills` folder, the hooks that run `stop-check.mjs`, `prompt-check.mjs` and `session-start.mjs`
 in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
 
 ## Limitations

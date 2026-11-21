@@ -13,6 +13,7 @@ export { claudeConfigDir } from './writer.ts'
 import { cliProviders, createWriter, WriterError, writerDiagnostic, type Provider, type Writer } from './writer.ts'
 import { configuredWriters } from './config.ts'
 import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
+import { flowDir, recordedRole } from '../skills/orca-flow/scripts/roles.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
 const AGENTS = join(DATA_DIR, 'agents')
@@ -23,7 +24,7 @@ const AGENTS = join(DATA_DIR, 'agents')
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 8
+export const SUMMARIZER_VERSION = 9
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -93,13 +94,16 @@ export function briefOf(text: string): string {
 type Role = 'lead' | 'worker' | 'coordinator' | 'solo'
 type Event = { final?: boolean; kind: 'user' | 'assistant' | 'tool'; text: string; raw?: string; at?: string; reports?: boolean }
 
-/** Decided from facts, not by the model: a lead's first prompt names its role; an agent Orca
+/** Decided from facts, not by the model: a lead's first prompt names its role, or the user made the
+ * session a lead and it recorded that (`recorded`, from `orca-flow role lead`; never in a
+ * coordinator folder, which stays its coordinator); an agent Orca
  * dispatched carries Orca's worker preamble (or, outside a coordinator folder, its Dispatch id);
  * any other session in one of the user's coordinator folders is that coordinator (a lead or worker
  * the coordinator started in a tab of its folder is not); any other agent that started workers
  * coordinates them. */
-export function roleOf(firstPrompt: string, events: Event[], cwd: string | null = null, home = COORDINATOR_HOME): Role {
+export function roleOf(firstPrompt: string, events: Event[], cwd: string | null = null, home = COORDINATOR_HOME, recorded: string | null = null): Role {
   if (/your role: lead\b/i.test(firstPrompt)) return 'lead'
+  if (recorded === 'lead' && !(cwd && isCoordinatorHome(cwd, home))) return 'lead'
   if (/You are a dispatched worker\.|Your task ID is: task_/.test(firstPrompt)) return 'worker'
   if (cwd && isCoordinatorHome(cwd, home)) return 'coordinator'
   if (/dispatch[ _-]?id|worker_done/i.test(firstPrompt)) return 'worker'
@@ -118,15 +122,20 @@ const SENDS_DONE = /^(?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration send\b.*--ty
  */
 export type Digest = { role: Role; firstPrompt: string; context: string; turn: string; lastAssistant: string; lastMessage: string; turnAt: string | null; reported: boolean }
 
+/** The role recorded for a Claude session in the orca-flow data folder (roles.mjs). */
+const recordedInStore = (session: string) => recordedRole(flowDir(), session)
+
 /** Condense a Claude Code or Codex transcript into what the summarizer needs. */
-export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null {
+export function digest(lines: string[], home = COORDINATOR_HOME, recorded: (session: string) => string | null = recordedInStore): Digest | null {
   const events: Event[] = []
   let cwd: string | null = null
+  let session: string | null = null
   let endedAt: string | null = null
   for (const d of normalizedRecords(lines)) {
     if (d.type === 'system' && d.subtype === 'turn_duration') endedAt = d.timestamp ?? endedAt
     if (d.isSidechain) continue
     if (!cwd && typeof d.cwd === 'string') cwd = d.cwd
+    if (!session && typeof d.sessionId === 'string') session = d.sessionId
     const content = d.message?.content
     if (d.type === 'user') {
       if (Array.isArray(content) && content.some((c: any) => c.type === 'tool_result')) continue
@@ -158,7 +167,7 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
     .filter((e) => e !== lastAssistant)
     .map((e) => (e.kind === 'user' ? `USER: ${clip(e.text, 1500)}` : e.kind === 'assistant' ? `AGENT: ${clip(e.text, 800)}` : `  → ${e.text}`))
     .join('\n')
-  const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home)
+  const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home, session ? recorded(session) : null)
   return {
     role,
     firstPrompt: clip(prompts[0].text, 1500),

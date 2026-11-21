@@ -33,6 +33,9 @@ and stay free for the next request.
 - The user started this chat themselves (no Task or Dispatch id): do the work yourself; if it needs
   more than one agent, act as a lead **without a coordinator** (see the end of
   [roles/lead.md](roles/lead.md)).
+- The user tells you to be (or keep being) the lead of this workstream: run `orca-flow role lead`
+  so the role survives resume and compaction (`orca-flow role clear` undoes it). Never record it on
+  your own guess.
 
 Everything below applies to every role. Load the `orchestration` skill for command details
 (`orca skills get orchestration`): this skill decides *what* to do, that one says *how*.

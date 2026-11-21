@@ -6,14 +6,17 @@
 // agent's next prompt.
 // The plugin installs it in the Claude profile's settings.json. It does nothing unless all hold:
 // the agent runs in an Orca pane (ORCA_AGENT_PANE), the user opted in with "messageFormat" in
-// ~/.orca-flow/config.json ("all", or a list of folders), and the agent is a coordinator or a lead.
+// ~/.orca-flow/config.json ("all", or a list of folders), and the agent is a coordinator or a lead
+// (by its role line, or recorded with `orca-flow role lead`: roles.mjs).
 // Each miss is logged to ~/.orca-flow/format-misses.jsonl with its tier; reminders wait in
 // ~/.orca-flow/reminders/<session>.json. Any error: exit 0, silently.
 //
 // Environment for tests: HOME moves ~ (and ~/orca/coordinators), ORCA_FLOW_DIR moves ~/.orca-flow.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
+import { recordedRole } from './roles.mjs'
 
 const LEAD = /your role: lead\b/i
 /** After a miss the agent rewrites only the frame: the user already read the detail above it. */
@@ -39,6 +42,14 @@ export function optedIn(setting, cwd, home = homedir()) {
 const textOf = (content) =>
   typeof content === 'string' ? content : Array.isArray(content) ? content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n') : ''
 
+/** A user prompt's text from one transcript record; null for anything else (tool results, sidechains). */
+function promptOf(d) {
+  if (d?.type !== 'user' || d.isSidechain) return null
+  const content = d.message?.content
+  if (Array.isArray(content) && content.some((c) => c?.type === 'tool_result')) return null
+  return textOf(content).trim() || null
+}
+
 /** The first user prompt and the last assistant text of the latest turn, from transcript lines. */
 export function readTranscript(lines) {
   let first = null
@@ -54,8 +65,7 @@ export function readTranscript(lines) {
     if (d.isSidechain) continue
     const content = d.message?.content
     if (d.type === 'user') {
-      if (Array.isArray(content) && content.some((c) => c?.type === 'tool_result')) continue
-      const text = textOf(content).trim()
+      const text = promptOf(d)
       if (!text) continue
       if (first === null) first = text
       last = null // a new turn starts
@@ -73,8 +83,50 @@ export function readTranscript(lines) {
 }
 
 /**
+ * The first user prompt of a transcript, read only as far as it (a long session's file is large).
+ * The same prompt readTranscript calls first; '' when there is none or the file cannot be read.
+ */
+export function firstPromptOf(path) {
+  let fd
+  try {
+    fd = openSync(path, 'r')
+    const buffer = Buffer.alloc(1 << 16)
+    // A chunk can end inside a multi-byte character: the decoder keeps it for the next one.
+    const decoder = new StringDecoder('utf8')
+    let pending = ''
+    for (let n; (n = readSync(fd, buffer, 0, buffer.length, null)) > 0;) {
+      const lines = (pending + decoder.write(buffer.subarray(0, n))).split('\n')
+      pending = lines.pop()
+      for (const line of lines) {
+        let d
+        try { d = JSON.parse(line) } catch { continue }
+        const text = promptOf(d)
+        if (text) return text
+      }
+    }
+    try { return promptOf(JSON.parse(pending + decoder.end())) ?? '' } catch { return '' }
+  } catch {
+    return ''
+  } finally {
+    if (fd !== undefined) try { closeSync(fd) } catch {}
+  }
+}
+
+/**
+ * An Orca role from facts, the same for every hook: a coordinator by its folder (whatever else
+ * holds); a lead by "Your role: lead" in its first prompt or by a lead record for its session
+ * (`orca-flow role lead`); else null (a worker, a chat the user started). `first` is called only
+ * when the record does not decide.
+ */
+export function hookRole({ cwd, home, data, session, first }) {
+  if (within(cwd, join(home, 'orca', 'coordinators'))) return 'coordinator'
+  if (recordedRole(data, session) === 'lead') return 'lead'
+  return LEAD.test(first()) ? 'lead' : null
+}
+
+/**
  * The gates both hooks share: an Orca pane, the user's opt-in for this folder, and a coordinator
- * (by its folder) or a lead (by its first prompt). Null when any fails.
+ * (by its folder) or a lead (by its first prompt or its record: hookRole). Null when any fails.
  */
 export function gate(input, { env = process.env, home = homedir() } = {}) {
   const pane = env.ORCA_AGENT_PANE
@@ -92,7 +144,7 @@ export function gate(input, { env = process.env, home = homedir() } = {}) {
     }
     return transcript
   }
-  const role = within(cwd, join(home, 'orca', 'coordinators')) ? 'coordinator' : LEAD.test(lines().first) ? 'lead' : null
+  const role = hookRole({ cwd, home, data, session: input.session_id, first: () => lines().first })
   return role ? { pane, data, cwd, role, lines } : null
 }
 
@@ -102,8 +154,10 @@ export function reminderFile(data, session) {
   return key && key !== '.' && key !== '..' ? join(data, 'reminders', `${key}.json`) : null
 }
 
-/** The spec as the agent reached a script, through the skill link, not where the link points. */
-export const specOf = (script) => join(dirname(dirname(resolve(script))), 'messages.md')
+/** The skill folder as the agent reached a script, through the skill link, not where the link points. */
+export const skillOf = (script) => dirname(dirname(resolve(script)))
+/** The spec as the agent reached a script, through the skill link. */
+export const specOf = (script) => join(skillOf(script), 'messages.md')
 
 /**
  * Decides the hook's answer: null to let the agent stop quietly with nothing to log; else the log

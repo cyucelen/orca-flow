@@ -9,10 +9,11 @@
 //   orca-flow resume                          Coordinator, after waking: take back the runs it coordinated
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
 //   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
+//   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
 //
 // Data lives in ~/.orca-flow (ORCA_FLOW_DIR overrides): cards/<worktree>.json written by
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
-// limits. The Orca plugin reads both folders. No dependencies.
+// limits, roles.json for leads the user named (roles.mjs). The Orca plugin reads both folders. No dependencies.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -396,6 +397,32 @@ export function formatBots({ repo, bots }) {
   return out.join('\n')
 }
 
+// ---------- role ----------
+
+const { clearRole, currentSession, recordLead } = await import('./roles.mjs')
+
+/**
+ * `role lead` records that the user made this Claude session the lead of its workstream, so the
+ * SessionStart hook gives the role back on every resume and compaction, and the Stop hook and the
+ * sidebar treat it as a lead. `role clear` removes the record. The session is Claude Code's
+ * (roles.mjs currentSession); a coordinator folder is always its coordinator, never recorded.
+ */
+export function role(args, { env = process.env, cwd = process.cwd(), home = homedir() } = {}) {
+  const [, what] = args._
+  if (what !== 'lead' && what !== 'clear') throw new Error('usage: orca-flow role lead|clear')
+  const coordinators = join(home, 'orca', 'coordinators')
+  if (what === 'lead' && (cwd === coordinators || cwd.startsWith(`${coordinators}/`))) {
+    throw new Error(`${cwd} is a coordinator folder: the session here is its coordinator, not a lead; nothing recorded`)
+  }
+  const session = currentSession({ env, cwd, home })
+  if (!session) throw new Error('no Claude Code session found (CLAUDE_CODE_SESSION_ID is not set): role records work in Claude Code only')
+  if (what === 'lead') {
+    recordLead(DIR, session.id, { by: 'user', cwd })
+    return `Recorded session ${session.id} as the lead of this workstream (from ${session.from}). The lead instructions come back on every resume and compaction; \`orca-flow role clear\` removes it.`
+  }
+  return clearRole(DIR, session.id) ? `Cleared the lead record of session ${session.id}.` : `Session ${session.id} had no role record.`
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -424,13 +451,16 @@ async function main() {
     case 'resume':
       resume()
       break
+    case 'role':
+      console.log(role(args))
+      break
     case 'bots': {
       const b = bots(args)
       console.log(args.json ? JSON.stringify(b, null, 2) : formatBots(b))
       break
     }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }

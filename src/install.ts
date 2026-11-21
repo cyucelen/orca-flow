@@ -5,6 +5,8 @@
 // profile's settings.json gets one Stop hook that checks coordinators' and leads' messages against
 // the message frame (skills/orca-flow/scripts/stop-check.mjs) and one UserPromptSubmit hook that
 // passes its quiet reminders to the agent (prompt-check.mjs); both do nothing until the user opts in.
+// A SessionStart hook (session-start.mjs) gives a lead its role instructions back when its session
+// resumes or compacts; it needs no opt-in and gives everyone else nothing.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -136,8 +138,10 @@ export function ensureOwnLinks(links: Link[], installed: boolean, options: { rep
 export const STOP_HOOK_MARK = 'skills/orca-flow/scripts/stop-check.mjs'
 /** Finds our UserPromptSubmit hook, which gives the agent the Stop hook's quiet reminders. */
 export const PROMPT_HOOK_MARK = 'skills/orca-flow/scripts/prompt-check.mjs'
+/** Finds our SessionStart hook, which gives a lead its role back after a resume or a compaction. */
+export const SESSION_HOOK_MARK = 'skills/orca-flow/scripts/session-start.mjs'
 
-export type HookEvent = 'Stop' | 'UserPromptSubmit'
+export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart'
 export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { hooks: { type: 'command'; command: string; timeout: number }[] } }
 
 /** One of our hook entries: it runs the script through the skill link, only in an Orca agent pane. */
@@ -159,6 +163,14 @@ export function stopHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(hom
 /** The profile's settings.json and our UserPromptSubmit hook entry. */
 export function promptHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
   return hookFor(claudeDir, 'UserPromptSubmit', PROMPT_HOOK_MARK)
+}
+
+/**
+ * The profile's settings.json and our SessionStart hook entry. No matcher: it runs on every source
+ * and the script decides (resume and compact, startup only for a recorded lead).
+ */
+export function sessionHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
+  return hookFor(claudeDir, 'SessionStart', SESSION_HOOK_MARK)
 }
 
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -233,10 +245,10 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
 
 /**
  * Like ensureOwnLinks: only the installed copy writes our hooks, never a development folder. With
- * the Stop hook goes its UserPromptSubmit partner, in the same settings.json.
+ * the Stop hook go its UserPromptSubmit partner and the SessionStart hook, in the same settings.json.
  */
 export function ensureOwnStopHook(hook: StopHook, installed: boolean): string[] {
-  if (!installed) return [`left the Stop and UserPromptSubmit hooks in ${hook.path} to the installed copy: this is a development folder`]
+  if (!installed) return [`left the Stop, UserPromptSubmit and SessionStart hooks in ${hook.path} to the installed copy: this is a development folder`]
   const claudeDir = join(hook.path, '..')
-  return [...ensureStopHook(hook), ...ensureStopHook(promptHookFor(undefined, claudeDir))]
+  return [...ensureStopHook(hook), ...ensureStopHook(promptHookFor(undefined, claudeDir)), ...ensureStopHook(sessionHookFor(undefined, claudeDir))]
 }

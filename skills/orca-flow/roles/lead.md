@@ -7,6 +7,9 @@ available.
 
 Write every message to the user in the frame of [messages.md](../messages.md).
 
+**Made a lead by the user** (no `Your role: lead` line in your first prompt): run `orca-flow role
+lead` once, so this role comes back after every resume and compaction.
+
 **Started in a coordinator's folder** (`~/orca/coordinators/<name>`, for work that changes no
 code): never edit files there, and never create a branch or a PR there. As soon as the work needs
 a code change, ask your coordinator for a worktree with `orca orchestration ask`, tell the user in
