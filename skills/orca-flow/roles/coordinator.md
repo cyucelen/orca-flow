@@ -17,10 +17,15 @@ Run the read-only `await-handover.mjs` command supplied by that prompt, awaiting
 in the same first turn. While it waits, do not write files, change scope, mutate Orca state, claim
 runs, answer asks or dispatch work. On `ready`,
 continue immediately with the transferred context and your Briefing; no extra user prompt is needed.
+When `ready` carries `adopt`, first run its `next` command (`orca orchestration run-use --id <run>`)
+yourself, then `orca orchestration run-current` to confirm: that moves the one run with live work
+to you, with its unread mail. Settled runs in the context stay with the old conversation; take one
+later with `run-use` only after reading your mail, because it releases the run you hold.
 On refusal or expiry, report that and end the turn without coordinating. The sidebar verifies delivery and
 ownership before changing current; a new tab alone proves neither. After completion, use the
-transferred project scope, goals and workstreams. On hosts without atomic run transfer, Handover
-is refused when a coordinator member owns a run; leave those report routes and questions alone.
+transferred project scope, goals and workstreams. Orca moves only one run per terminal, so
+Handover is refused when two or more owned runs still have live work (an open dispatch, unhandled
+mail or a pending gate); leave those report routes and questions alone.
 
 You are long-lived and may restart; your state lives in Orca and `~/.orca-flow`, never only in
 your context. On the first turn, and when you wake from sleep (the sidebar closes your session to
