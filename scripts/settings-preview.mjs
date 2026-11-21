@@ -30,7 +30,7 @@ const snapshot = {
 const settings = {
   version: '0.2.64', error: null,
   settings: {
-    writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', enabled: false }],
+    writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }],
     messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false
   },
   writers: [

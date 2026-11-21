@@ -76,10 +76,10 @@ test('a broken file is reported and never overwritten', () => {
 test('writes are atomic: no temporary file is left beside config.json', () => {
   const dir = temp()
   try {
-    writeSettings(withSettings({ writers: [{ provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'claude', model: 'sonnet', enabled: true }, { provider: 'antigravity', enabled: false }] }), dir)
+    writeSettings(withSettings({ writers: [{ provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'claude', model: 'sonnet', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }] }), dir)
     assert.deepEqual(readdirSync(dir), ['config.json'])
-    assert.deepEqual(fileOf(dir).writers, [{ provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'claude', model: 'sonnet', enabled: true }, { provider: 'antigravity', enabled: false }])
-    assert.deepEqual(configuredWriters(dir).map((w) => `${w.provider}:${w.model ?? ''}`), ['codex:gpt-6-luna', 'claude:sonnet', 'antigravity:'])
+    assert.deepEqual(fileOf(dir).writers, [{ provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'claude', model: 'sonnet', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }])
+    assert.deepEqual(configuredWriters(dir).map((w) => `${w.provider}:${w.model ?? ''}`), ['codex:gpt-6-luna', 'claude:sonnet', 'antigravity:gemini-3.8-flash-low'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
