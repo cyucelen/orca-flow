@@ -1,4 +1,5 @@
-// Read-only first-turn barrier. No Orca commands, mailbox reads, writes, or work dispatch.
+// Read-only first-turn barrier. No Orca commands, mailbox reads, writes, or work dispatch. When it
+// returns ready with `adopt`, the caller itself runs the `next` run-use command (never this script).
 import { readFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,9 +8,12 @@ export function handoverGate(record, coordinator, context, caller, now) {
   if (!record || record.bootstrap?.context !== context) return { status: 'refused', reason: 'The handover attempt changed or has no bootstrap barrier.' }
   const target = record.target
   const mine = !!caller && target?.terminals?.includes(caller)
-  if (record.phase === 'complete') {
+  // `adopting`: the selection committed to this terminal and the sidebar now waits for THIS turn to
+  // run `orca orchestration run-use` for the one live run, so the barrier must release here.
+  if (record.phase === 'complete' || record.phase === 'adopting') {
+    const adopt = record.phase === 'adopting' ? record.runs?.[0]?.id : undefined
     return mine && coordinator?.sessions?.current === target.id
-      ? { status: 'ready', provider: record.provider, member: target.id }
+      ? { status: 'ready', provider: record.provider, member: target.id, ...(adopt ? { adopt, next: `orca orchestration run-use --id ${adopt}` } : {}) }
       : { status: 'refused', reason: 'This conversation is not the selected handover target.' }
   }
   if (!Number.isFinite(record.bootstrap.deadline) || now >= record.bootstrap.deadline) return { status: 'expired', reason: 'Cutover did not complete within the bootstrap window; keep the original current.' }

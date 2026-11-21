@@ -63,3 +63,11 @@ test('a transient coordinator file read during selection cannot strand the first
   assert.equal(result.status, 'ready')
   assert.equal(time, 250)
 })
+
+test('an adopting attempt releases the barrier to the target with the one run-use to run', () => {
+  const f = fixture(); f.record.phase = 'adopting'; f.record.runs = [{ id: 'run_live' }]; f.coordinator.sessions.current = 'target'
+  assert.deepEqual(handoverGate(f.record, f.coordinator, '/fixture/context-1', 'term-target', 0), { status: 'ready', provider: 'codex', member: 'target', adopt: 'run_live', next: 'orca orchestration run-use --id run_live' })
+  assert.equal(handoverGate(f.record, f.coordinator, '/fixture/context-1', 'term-other', 0).status, 'refused', 'never another terminal')
+  f.coordinator.sessions.current = 'source'
+  assert.equal(handoverGate(f.record, f.coordinator, '/fixture/context-1', 'term-target', 0).status, 'refused', 'only once the selection committed')
+})

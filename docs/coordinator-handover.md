@@ -1,10 +1,12 @@
 # Coordinator handover: supported subset and host gaps
 
-This change is **not a complete implementation of active-run coordinator handover**. The installed
-Orca 1.4.265 host does not expose the ownership transaction required by the request. The menu fails
-closed for coordinators with owned runs, including historical members, instead of treating a new
-tab as success. Leads' and unrelated runs remain unchanged; no pending question is consumed,
-answered, deleted or readdressed by the plugin.
+Handover moves a coordinator to a new Claude or Codex conversation in the same workspace. It
+supports the subset the host can move safely. A coordinator member (current or historical) may own
+**settled runs plus at most one run with live work**. That one run moves through Orca's own
+`orchestration run-use`, which the new conversation runs itself. Two or more live runs are still
+refused, and the refusal names each one. The installed Orca 1.4.263 host, and upstream through
+1.4.269, have no multi-run coordinator transfer. Leads' and unrelated runs remain unchanged; no
+pending question is consumed, answered, deleted or readdressed by the plugin.
 
 ## Supported behavior
 
@@ -30,9 +32,55 @@ answered, deleted or readdressed by the plugin.
   ID, target and error. A retry uses `--retry-launch` only for the same recorded launch. Missing
   replay identity after an ambiguous launch blocks automatic relaunch. A successfully delivered
   target is adopted without launching again. The record survives worker restarts.
-- A changed current selection is preserved. New source/target runs discovered before completion
-  block selection. Verified targets become coordinator members, including after later failure;
-  they are not reclassified as workstream leads. Original source asks stay with their source.
+- A changed current selection is preserved. Before cutover, ownership is read again: a run that
+  became live and is not the recorded one, a recorded run that moved to a non-member, or a target
+  that already holds another run (run-use would release it) blocks selection. Verified targets
+  become coordinator members, including after later failure; they are not reclassified as workstream
+  leads. Original source asks stay with their source.
+- Owned runs are classified before launch (`handover.ts classifyRun`). A run is **live** if it
+  has a dispatch whose `worker-list --full` `workerState` is not succeeded/failed/stopped/abandoned/
+  cancelled, an unhandled message in its coordinator mailbox (`inbox --terminal run:<id>`,
+  `handled` not true), or a pending gate (`gate-list --run <id> --status pending`). Otherwise it is
+  **settled**. Any read error, a worker page with `hasMore` but no cursor, a repeated cursor, or a
+  full inbox page (`inbox` has no cursor; 1000 rows counts as incomplete) counts as live. The run
+  inventory itself is read page by page; an incomplete inventory refuses outright.
+- **Settled runs** never block Handover and nothing moves: they stay bound to the old handle (nothing
+  is pending, so nothing is lost). The context file (`runs`) and the target's prompt list them with
+  the switch command `orca orchestration run-use --id <id>`. They also warn that run-use releases
+  the run the terminal currently holds.
+- **One live run** is recorded in the Handover record (`runs`). The target's prompt tells its first
+  turn to run `orca orchestration run-use --id <run>` itself, after `await-handover.mjs` returns
+  ready, then `run-current` to confirm and `orchestration check` for the moved mail. The prompt also
+  tells it never to add `--from`/`--takeover-legacy` and to skip `orca-flow resume` in that first
+  turn, because resume could take a different run and release this one.
+- **Two or more live runs** are refused before launch (`OWNERSHIP_REFUSAL` prefix, shown as
+  "Handover blocked"). The refusal lists each run's id and objective, and what keeps it live: open
+  dispatch ids, the unhandled-mail count, pending gate ids. It says how to recover: settle all but
+  one, then choose Handover again.
+
+### Completion ordering with one live run
+
+1. Launch, delivery, exact binding, registration, reveal and the ownership re-checks are unchanged.
+   The source stays current throughout.
+2. The adoption deadline (`adoption.deadline`, 60 s) is persisted, then the selection commits to the
+   target and the record moves to phase `adopting`. The commit has to come first because the
+   target may only run a mutating command (run-use) after its barrier returns ready, and the barrier
+   requires the committed selection. So the barrier releases on `adopting` as well as `complete`;
+   its result carries `adopt` and the exact `next` command. Every other barrier rule (exact context
+   token, caller terminal, current selection, two-minute local cap) is unchanged. The bootstrap
+   window governs cutover only; once `adopting` is journaled, it no longer applies.
+3. The plugin polls `run-list` (every page) until the run's `coordinator_handle` equals the
+   target's launch handle. Only then is the record `complete` (`adopted: moved`). A run that Orca
+   retired meanwhile also completes (`adopted: retired`): nothing can route to the old conversation.
+4. If the deadline passes without that observation, the record stays `adopting` with a warn status:
+   "Claude is open; run <id> still routes to the old conversation". The panel shows "Run not moved"
+   with Retry, never "Handed over". The recovery is to ask the new conversation to run
+   `orca orchestration run-use --id <id>`, then Retry. Retry never relaunches or re-commits; it reads
+   `run-list` again. The original stays a member, open and untouched; the plugin never closes it.
+   When the panel's 150-second request limit is reached first, the call stops at 140 seconds with
+   "Moving run…" (warn), and Retry continues the same wait until the persisted deadline.
+5. If the commit lands but the `adopting` journal write is lost and the bootstrap window then passes,
+   Retry resumes the adoption and reports it. It does not set the attempt aside as done.
 - The receiving first turn awaits the read-only `await-handover.mjs` barrier instead of ending
   while registration is incomplete. It checks the exact context token, terminal identity, final
   journal phase and current selection before continuing the briefing, without another user prompt.
@@ -46,38 +94,50 @@ answered, deleted or readdressed by the plugin.
 The development preview only serves the real panel bundle with synthetic data and a fake bridge.
 It does not load another plugin worker, install links, alter account settings or touch coordinators.
 
-## Why run transfer is blocked
+## Host boundary: one run per terminal via run-use
 
-Read-only discovery on 2026-11-20 used `orca agent launch --help`, `agent read --help`,
-`orchestration run-use --help`, `run-list --help`, generated plugin API types, and installed host
-implementation under `/Applications/Orca.app/Contents/Resources/app.asar.unpacked/out`.
-Installed build: `1.4.265-3534932c2d0ee3305df97c9689ea23efa207abdd-arm64`.
+Evidence (installed `/Applications/Orca.app/Contents/Resources/app.asar.unpacked/out`,
+`main/chunks/orcad-retained-source-*.js`; upstream `src/main/runtime/orchestration/db/runs/run-binding.ts`
+in github.com/stablyai/orca). First read on 2026-11-20 with 1.4.265, then rechecked on 2026-11-21
+against the installed 1.4.263 host and upstream through 1.4.269:
 
-Evidence in `main/chunks/orcad-retained-source-CIgRydIS.js`:
+- `orchestration run-use --id R`, run BY the terminal that will coordinate, is the host's
+  transfer. In one `BEGIN IMMEDIATE` transaction it moves the old handle's unread direct mail into
+  the run mailbox and sets coordinator handle/pane/session to the caller. It also bumps
+  `consumer_generation`, fences unacknowledged deliveries and re-arms unread run mail for the new
+  coordinator. The host's own guidance says to read mail first, then have a terminal that
+  coordinates no other run use `run-use`, since it unbinds any others the terminal holds.
+- `bindRun` calls `unbindOtherRunsForCoordinator` first, so one terminal can take over only ONE
+  run. `run-create` does not unbind, which is how one terminal ends up holding several. There is
+  no multi-run transfer through 1.4.269.
+- The public request accepts `id`, `from` and `takeoverLegacy`, with no expected-owner or
+  expected-generation guard. The plugin therefore re-reads ownership right before cutover, and
+  refuses if the recorded run moved to a non-member or the target already holds a run. A change
+  between that read and the target's own run-use is a host gap that the plugin cannot close.
+- A plugin process never runs run-use for another terminal: no `--from` impersonation, no
+  `--takeover-legacy`, no database edits. Only the target terminal runs it, in its own first turn.
+- The public run projection carries no internal session/pane identity. The plugin never edits
+  Orca's databases.
 
-- The `orchestration.runUse` handler calls `bindRun`, which calls
-  `unbindOtherRunsForCoordinator` before binding the named run. A terminal cannot keep several
-  existing coordinator routes through repeated `run-use` calls.
-- The public request accepts `id`, `from`, and `takeoverLegacy`; it has no expected-source
-  identity/generation or expected-target-runs guard. A read/check followed by `run-use` is not an
-  atomic handover and can unbind a concurrently acquired unrelated target run.
-- Legacy takeover requires attestation from the live target coordinator terminal and preserves
-  workers through native mailbox migration. A plugin process cannot impersonate that terminal.
-- The public run projection removes internal session/pane identity. The plugin cannot reconstruct
-  stronger ownership authority from that projection, and never edits Orca's databases.
+The case that motivated this: the firstview coordinator (Codex) owned three runs. Read-only, on
+2026-11-21: `run_fa86f5358d7c` had an open dispatch (`ctx_1a6c433738fb`; a second open one,
+`ctx_80f862596c8f`, settled during the session) and all 18 coordinator messages handled. That
+makes it live. `run_de7215df7d10` had no open dispatch, 12/12 messages handled and no pending gates,
+but retained worker terminals, so Orca does not retire it. `run_929d4363280a` had no open dispatch,
+107/107 messages handled, no pending gates, and its coordinator terminal is dead. The classifier
+reads them as one live and two settled, so Handover now proceeds and moves only `run_fa86f5358d7c`.
 
 The generated plugin `agent.launch` API returns only `terminalId` and always describes a CLI
 terminal. Handover therefore uses the supported CLI launch receipt, respecting the user's surface
 choice. The public focus route is `terminal switch --terminal <handle>`; `chat` offers rename,
 not focus. A structured target is preserved and registered but the original stays current with an
-explicit error. The core tests cover structured receipt handling; **live structured navigation
-and run transfer are unsupported, not verified successes**.
+explicit error. The core tests cover structured receipt handling; **live structured navigation is
+unsupported, not a verified success**.
 
-The host follow-up needs an idempotent handover transaction with expected source/target session
-identities and ownership generation, atomic transfer of every specified run without unbinding
-unrelated runs, preserved dispatch/lead parentage, durable pending-ask/report routing, and a
-readable transfer receipt. It also needs a supported structured-chat reveal/focus route. Only then
-can the plugin replace these refusal boundaries with completed handover.
+The host follow-up still needed for full coordinator transfer: an idempotent handover transaction
+with expected source/target identities and ownership generation, atomic transfer of every
+specified run (not one per terminal) without unbinding unrelated runs, and a readable transfer
+receipt. A supported structured-chat reveal/focus route is also needed.
 
 ## Discovery sources
 
@@ -98,7 +158,12 @@ No Codex hook enforcement or account-credential migration is claimed.
 Run `scripts/dev.sh check`: generated API types, TypeScript, plugin tests and script tests. The
 handover tests exercise both provider directions, quota-exhausted stored context, verified delivery,
 launch refusal, unknown replies, restart/retry without duplicate launch, selection races, late run
-acquisition, owned-run refusal, pending-ask preservation, session registration and hierarchy.
+acquisition, pending-ask preservation, session registration and hierarchy. They also cover:
+settled-only runs (allowed, nothing moved); one live run (run-use in the prompt, completion only
+after the rebinding is observed); adoption not observed (warn and Retry, no completion, Retry
+completes after the move); two live runs (refusal names both); read errors and incomplete pages
+(fail closed); a recorded run moving away; a target already holding a run; and the lost `adopting`
+journal write.
 Installation tests cover selected/explicit/default Claude profiles, Codex USER roots, installed
 release repair, foreign/dangling links, existing instructions and development-copy isolation.
 
@@ -121,7 +186,20 @@ An initial Codex probe was blocked by its CLI update menu: after 60.5 seconds th
 `ok: true` with a terminal outcome but `prompt.outcome: not-delivered`. The plugin correctly refused
 cutover. A separate disposable attempt skipped that one-time prompt with Escape; no installation,
 account setting or surface preference changed. Invalid-provider launch returned the actual
-`ok: false, error: {code: invalid_argument, message: ...}` envelope. Native run/mail transfer and
-structured navigation remain unverified and blocked, as described above. The live bootstrap
+`ok: false, error: {code: invalid_argument, message: ...}` envelope. Structured navigation remains
+unverified and blocked, as described above. The live bootstrap
 fixtures explicitly prohibited routing/dispatch and used synthetic scope/context; they validate
 first-turn boot, not production project routing or provider-wide enforcement of instructions.
+
+Host probe of run-use on 2026-11-21 (Orca 1.4.263). It used only disposable resources: three new
+shell terminals in this plugin's own worktree. A folder workspace was not used, because the CLI can
+add one but has no command to remove it. Terminal A ran `run-create`, giving `run_359fb5504871`
+(`coordinator_handle` A, `consumer_generation` 1). Terminal C sent `probe-1` to `run:<id>`, which
+stayed unhandled. Terminal B ran `run-use --id run_359fb5504871`, and `run-current` named the run.
+`run-list` then showed `coordinator_handle` B with `consumer_generation` 2, and A's `run-current`
+returned null. C sent `probe-2`. B's `check --peek` returned both `probe-1` (unread before the move)
+and `probe-2`; A's returned nothing. B then handled both messages, and the three terminals were
+closed. The run stays listed until Orca's retention retires it, because there is no delete command.
+The plugin's own `classifyRun` read the disposable run as live (2 unhandled messages) before
+cleanup. The full plugin Handover with a live run (launch, then the target's own run-use) was not
+run live; the tests cover it.

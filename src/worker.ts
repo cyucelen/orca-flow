@@ -29,7 +29,7 @@ import { normalizeSettings, WRITER_PROVIDERS, type WriterStatus } from './settin
 import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
-import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, requireCoordinatorNavigation, requireTransferableOwnership, runRoutes, saveHandover, type Handover } from './handover.ts'
+import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
 import { readHandoverProviders } from './handover-providers.ts'
 import { coordinatorProviders, firstProvider, readInstalledProviders } from './coordinator-providers.ts'
 import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type InstalledPlugin, type UpdateCheck, type UpdateState } from './update.ts'
@@ -1183,6 +1183,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   const busy = (): WakeOutcome => ({ ok: false, kind: 'busy', error: 'A session change is already in progress.' })
 
   orca.panels.handle('sidebar.handover', ({ key, provider, retry }) => exclusive(changing, key, async (): Promise<{ ok: boolean; error?: string }> => {
+    const started = Date.now()
     try {
       if (!['claude', 'codex'].includes(provider) || !dir) throw new Error('Unsupported handover provider or missing coordinator skill.')
       await refresh()
@@ -1204,18 +1205,21 @@ export default function activate(orca: OrcaWorkerApi): void {
         if (!available?.includes(provider)) throw new Error(`${provider === 'codex' ? 'Codex' : 'Claude'} is not currently available for handover. Check the agent installation and Orca Settings → Agents.`)
         const workspaceId = await workspaceFor(c.dir)
         if (!workspaceId) throw new Error('The coordinator workspace is unavailable.')
-        requireTransferableOwnership(await runRoutes(run), c.sessions)
+        // At most one live run moves (by the target's own run-use); settled runs stay. Refuses otherwise.
+        const plan = transferPlan(await readOwnership(run, c.sessions))
         const history = await readHandoverContext(source, run)
         const skill = join(dir, 'skills/orca-flow')
         bootstrapCoordinator(c.dir)
-        const context = { capturedAt: new Date().toISOString(), scope: { name: c.name, repos: c.repos, about: c.about, linearTeams: c.linearTeams }, source, workstreams: allRows.filter((r) => r.agents.some((a) => a.coordinator === key)), history }
+        const runs = { takeOver: plan.adopt, settledStayWithSource: plan.settled, switchCommand: 'orca orchestration run-use --id <id>', switchWarning: 'run-use releases the run this terminal currently holds: one run per terminal.' }
+        const context = { capturedAt: new Date().toISOString(), scope: { name: c.name, repos: c.repos, about: c.about, linearTeams: c.linearTeams }, source, runs, workstreams: allRows.filter((r) => r.agents.some((a) => a.coordinator === key)), history }
         const contextPath = join(c.dir, `.orca-flow-handover-context-${Date.now()}.json`)
         writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n', { mode: 0o600 })
-        attempt = { version: 1, source: source.id, provider, workspaceId, dir: c.dir, phase: 'prepared', runs: [], prompt: handoverPrompt(skill, contextPath, context), bootstrap: { context: contextPath, deadline: Date.now() + 120_000 } }
+        attempt = { version: 1, source: source.id, provider, workspaceId, dir: c.dir, phase: 'prepared', runs: plan.adopt ? [plan.adopt] : [], prompt: handoverPrompt(skill, contextPath, context, plan), bootstrap: { context: contextPath, deadline: Date.now() + 120_000 } }
         saveHandover(attempt)
       }
       await continueHandover(attempt, {
-        run, save: (s) => { saveHandover(s); refreshSoon() },
+        // The panel gives this request 150 seconds; stop waiting for run-use before it gives up.
+        run, save: (s) => { saveHandover(s); refreshSoon() }, waitUntil: started + 140_000,
         current: () => readCoordinators().find((x) => x.key === key)?.sessions ?? { version: 1, current: null, members: [] },
         register: (target) => { updateCoordinatorSessions(c.dir, (disk) => {
           if (!disk) throw new Error('Coordinator sessions disappeared during handover.')

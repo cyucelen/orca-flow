@@ -325,20 +325,34 @@ export const busy = (text: string) => `<span class="rstatus pending"><span class
  */
 export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' | 'warn'; detail?: string }
 
-/** Starts every refusal of handover.ts requireTransferableOwnership; the panel shows it as "Handover blocked". */
+/** Starts every ownership refusal of handover.ts (transferPlan, requirePlannedOwnership); the panel shows it as "Handover blocked". */
 export const OWNERSHIP_REFUSAL = 'Handover is blocked: this coordinator still owns'
 
+/** A run with live work, as a refusal names it: what keeps it live, in plain words. */
+export type LiveRun = { id: string; objective?: string; why: string[] }
+
 /**
- * The refusal in plain words, with what the person can do today. The recovery is what this guard
- * reads: run-list stops listing a Run only when Orca retires it, and Orca's hourly retention retires
- * a settled Run (no open task or dispatch, worker terminals released, no activity for 24 hours) only
- * while none of its parties, the coordinator's terminal among them, is live.
+ * The refusal in plain words, with what the person can do today. Orca's only transfer, run-use, is
+ * run by the new conversation itself and binds one run per terminal: one live run moves, settled runs
+ * (no open dispatch, no unhandled coordinator mail, no pending gate) stay and never block. A number
+ * is the older count-only wording, kept for messages recorded before runs were named.
  */
-export function ownershipRefusal(runs: number): string {
-  return `${OWNERSHIP_REFUSAL} ${runs === 1 ? 'an orchestration run' : `${runs} orchestration runs`}, and this Orca version cannot move a run's worker reports and pending questions to another conversation safely. Nothing was changed.\n` +
+export function ownershipRefusal(live: LiveRun[] | number, planned: string | null = null): string {
+  if (typeof live === 'number') return `${OWNERSHIP_REFUSAL} ${live === 1 ? 'an orchestration run' : `${live} orchestration runs`} with live work, and Orca can move only one live run to another conversation. Nothing was changed.\n` +
     'To keep working now, stay in the current conversation.\n' +
-    `To unblock Handover, let ${runs === 1 ? 'that run' : 'those runs'} settle: workers done and their terminals closed, no new activity for a day, and this coordinator asleep. Orca then retires settled runs within the hour and Handover becomes available.\n` +
-    'An Orca update with coordinator transfer will remove this limit.'
+    'Choose Handover again to see which runs are live and what keeps each one live. Settled runs no longer block Handover.'
+  const list = live.map((r) => `• ${r.id}${r.objective ? ` (${r.objective.replace(/\s+/g, ' ').slice(0, 80)})` : ''}: ${r.why.join('; ') || 'live'}`).join('\n')
+  const midflight = planned !== null || live.length === 1
+  return `${OWNERSHIP_REFUSAL} ${live.length === 1 ? 'a run' : `${live.length} runs`} with live work${midflight ? ` that this handover was not prepared to move${planned ? ` (it moves only ${planned})` : ''}` : ''}, and Orca can move only one live run to a new conversation (run-use binds one run per terminal). Nothing was changed.\n` +
+    `${list}\n` +
+    'To keep working now, stay in the current conversation.\n' +
+    `To unblock Handover, settle ${midflight ? 'the runs listed' : 'all but one of these runs'} in the current conversation: let open dispatches finish (or stop them), handle the mail in each coordinator mailbox (orca orchestration check), and resolve pending gates. Settled runs stay with the current conversation and do not block. Then choose Handover again.`
+}
+
+/** Shown, with Retry, when the target is current but its run-use for `run` was not seen in time. */
+export function adoptionWarning(provider: string, run: string): string {
+  return `${provider} is open; run ${run} still routes to the old conversation. Its workers' reports and questions still go there, and the old conversation stays open with it.\n` +
+    `To finish, ask ${provider} to run \`orca orchestration run-use --id ${run}\` in its own terminal (it releases any other run that terminal holds), then Retry handover. Never run it from another terminal.`
 }
 
 /** A raw host, provider or guard message as the sidebar shows it: a short row label, the full text. */
@@ -373,6 +387,8 @@ function knownError(text: string): ErrorView | null {
   const owned = text.match(/^Handover is unavailable while this coordinator owns (a run|(\d+) runs)/)
   if (owned) return { short: 'Handover blocked', tone: 'warn', detail: ownershipRefusal(owned[2] ? Number(owned[2]) : 1) }
   if (text.startsWith(OWNERSHIP_REFUSAL)) return { short: 'Handover blocked', tone: 'warn', detail: text }
+  // The target is current but its run-use was not seen (handover.ts adopt): honest, with Retry.
+  if (/^(Claude|Codex) is open; run \S+ still routes to the old conversation/.test(text)) return { short: / while (Claude|Codex) takes it over/.test(text) ? 'Moving run…' : 'Run not moved', tone: 'warn', detail: text }
   // An attempt whose first-turn window passed (handover.ts settleExpired): set aside, or kept with what to close.
   if (/ran out of time before it finished, so it can never complete/.test(text)) return { short: /set aside as/.test(text) ? 'Handover set aside' : 'Handover expired', tone: 'warn', detail: text }
   if (/^The handover bootstrap window expired|predates the first-turn bootstrap barrier/.test(text)) return {
