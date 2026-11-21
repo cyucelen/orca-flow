@@ -2,11 +2,12 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, projectDot, render, updateButton, wakeView, type WakeMenu } from '../view.ts'
+import { busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
 import { externalLink } from './links.ts'
+import { findByKey, stableKey } from './stable.ts'
 import { canRemove } from '../rank.ts'
 import { sessionChoices } from '../coordinator-sessions.ts'
 import { providerBadge, providerOf } from '../providers.ts'
@@ -37,8 +38,26 @@ const openedAt = Date.now()
 const LINEAGE_WAIT_MS = 8000
 
 function paint(): void {
+  const focused = focusKey()
   paintRows()
   keepAnimationPhase()
+  restoreFocus(focused)
+  followTip()
+}
+
+/** The redrawn sections; keyboard focus inside them is kept across a redraw by its logical key. */
+const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, linearEl, footerEl, updateEl]
+let restoringFocus = false
+function focusKey(): string | null {
+  const el = document.activeElement
+  return el instanceof HTMLElement && painted().some((p) => p !== el && p.contains(el)) ? stableKey(el) : null
+}
+function restoreFocus(key: string | null): void {
+  if (!key || (document.activeElement && document.activeElement !== document.body && document.activeElement.isConnected)) return
+  const el = findByKey(document, 'button,a[href],input,[tabindex]', key)
+  if (!el) return
+  restoringFocus = true
+  try { el.focus({ preventScroll: true }) } finally { restoringFocus = false }
 }
 
 /**
@@ -157,7 +176,7 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
   if (d.handover) {
@@ -169,6 +188,7 @@ document.addEventListener('click', (event) => {
     }
     return
   }
+  if (d.status) { if (opener.shouldOpen(`status:${d.status}`)) showStatus(d.status); return }
   if (d.sessions) { if (opener.shouldOpen(`sessions:${d.sessions}`)) showSessionPicker(d.sessions); return }
   if (d.history && d.member) { void showHistory(d.history, d.member, d.historyTerminal, d.historySession); return }
   // One action at a time; opening, folding and briefs still work while one runs.
@@ -179,7 +199,7 @@ document.addEventListener('click', (event) => {
     return
   }
   if (ui.notice && !ui.notice.ok) ui.notice = null // an error stays until the next click
-  for (const [k, st] of ui.status) if (st.tone === 'bad') ui.status.delete(k)
+  for (const [k, st] of ui.status) if (st.tone === 'bad' || st.tone === 'warn') { ui.status.delete(k); statusMenus.delete(k) }
   if (d.act) ui.confirming = d.act
   if ('no' in d) ui.confirming = null
   if (d.yes) { void runAction(d.yes); return }
@@ -321,23 +341,22 @@ document.addEventListener('keydown', (e) => {
   openNth(n)
 })
 
-// ---------- tooltips (cockpit gauges, character status) ----------
+// ---------- tooltips (cockpit gauges, character status, row errors) ----------
 // One floating element for every [data-tip], in its tone: shown after a short hover, at once on keyboard
-// focus, placed below the target (above when there is no room) and kept inside the panel.
+// focus, placed below the target (above when there is no room) and kept inside the panel. A redraw
+// replaces the target's node; the tooltip follows its logical element (stableKey), so it neither
+// flashes nor restarts its delay while the pointer or focus stays on the same thing.
 const tip = document.createElement('div')
 tip.className = 'tip'
 tip.setAttribute('role', 'tooltip')
 document.body.append(tip)
 let tipTarget: HTMLElement | null = null
+/** The logical element the tooltip shows for, or waits to show for. */
+let tipKey: string | null = null
 let tipTimer: ReturnType<typeof setTimeout> | undefined
+const tipShown = () => tip.classList.contains('on')
 
-function showTip(target: HTMLElement): void {
-  const text = target.dataset.tip
-  if (!text) return
-  tipTarget = target
-  // A command in the update button's tip wraps at its spaces, never at its dashes.
-  tip.textContent = 'update' in target.dataset ? text.replace(/-/g, '\u2011') : text
-  tip.className = `tip on ${target.dataset.tone ?? ''}`
+function placeTip(target: HTMLElement): void {
   const r = target.getBoundingClientRect()
   const t = tip.getBoundingClientRect()
   const below = r.bottom + 6 + t.height <= window.innerHeight
@@ -347,20 +366,46 @@ function showTip(target: HTMLElement): void {
   tip.style.left = `${left}px`
 }
 
+function showTip(target: HTMLElement): void {
+  const text = target.dataset.tip
+  if (!text) { hideTip(); return }
+  clearTimeout(tipTimer)
+  tipTarget = target
+  tipKey = stableKey(target)
+  // A command in the update button's tip wraps at its spaces, never at its dashes.
+  const shown = 'update' in target.dataset ? text.replace(/-/g, '\u2011') : text
+  if (tip.textContent !== shown) tip.textContent = shown
+  const cls = `tip on ${target.dataset.tone ?? ''}`
+  if (tip.className !== cls) tip.className = cls
+  placeTip(target)
+}
+
 function hideTip(): void {
   clearTimeout(tipTimer)
   tipTarget = null
+  tipKey = null
   tip.className = 'tip'
+}
+
+/** After a redraw: the tooltip moves to its target's new node, with its new text, or closes when it is gone. */
+function followTip(): void {
+  if (!tipKey || tipTarget?.isConnected) return
+  const el = findByKey(document, '[data-tip]', tipKey)
+  if (!el) hideTip()
+  else if (tipShown()) showTip(el)
 }
 
 document.addEventListener('pointerover', (e) => {
   const target = (e.target as Element).closest<HTMLElement>('[data-tip]')
-  if (target === tipTarget) return
+  if (!target) { if (tipKey) hideTip(); return }
+  const key = stableKey(target)
+  if (key === tipKey) { if (tipShown()) tipTarget = target; return }
   hideTip()
-  if (target) tipTimer = setTimeout(() => showTip(target), 350)
+  tipKey = key
+  // Found again by key when it fires: a redraw may have replaced the node meanwhile.
+  tipTimer = setTimeout(() => { const el = findByKey(document, '[data-tip]', key); if (el) showTip(el); else hideTip() }, 350)
 })
 document.addEventListener('pointerleave', hideTip)
-
 // A memory tile and its legend pill light up together; the sliver of small consumers with all their pills.
 let lit = ''
 document.addEventListener('pointerover', (e) => {
@@ -374,10 +419,16 @@ document.addEventListener('pointerover', (e) => {
   for (const x of document.querySelectorAll(`[data-use="${q(use)}"],[data-in="${q(use)}"]${within ? `,[data-use="${q(within)}"]` : ''}`)) x.classList.add('lit')
 })
 document.addEventListener('focusin', (e) => {
+  if (restoringFocus) return // a redraw put focus back where it was; followTip keeps the tooltip
   const target = (e.target as Element).closest<HTMLElement>('[data-tip]')
   target ? showTip(target) : hideTip()
 })
-document.addEventListener('scroll', hideTip, true)
+// A scroll moves the target under a fixed tooltip: keep it with its target while that is in view.
+document.addEventListener('scroll', () => {
+  if (!tipShown() || !tipTarget?.isConnected) return
+  const r = tipTarget.getBoundingClientRect()
+  r.bottom < 0 || r.top > window.innerHeight ? hideTip() : placeTip(tipTarget)
+}, true)
 document.addEventListener('pointerdown', hideTip)
 
 // ---------- New coordinator modal ----------
@@ -532,9 +583,12 @@ async function wake(key: string, provider?: string): Promise<void> {
     showFirstProviderPicker(key, r.providers ?? [], r.error)
     return
   }
-  const { row, menu } = wakeView(r)
+  const { row, menu } = wakeDisplay(r)
   if (row) ui.status.set(target, row)
   else ui.status.delete(target)
+  // A click on the row's error opens this same menu again, with its reason and ways on.
+  if (row && menu) statusMenus.set(target, menu)
+  else statusMenus.delete(target)
   draw()
   if (menu) showSessionPicker(key, menu)
   if (r.ok) setTimeout(() => { if (ui.status.get(target)?.tone === 'ok') { ui.status.delete(target); draw() } }, 1800)
@@ -545,6 +599,7 @@ async function wake(key: string, provider?: string): Promise<void> {
  * verb while it runs, a short confirmation that fades, or the reason in red until the next click.
  */
 async function inline(target: string, pending: string, done: string, call: () => Promise<unknown>, showResult: () => boolean = () => true): Promise<void> {
+  statusMenus.delete(target)
   ui.status.set(target, { text: pending, tone: 'pending' })
   draw()
   let ok = true
@@ -558,9 +613,35 @@ async function inline(target: string, pending: string, done: string, call: () =>
     reason = (e as Error).message
   }
   if (!showResult()) return
-  ui.status.set(target, ok ? { text: done, tone: 'ok' } : { text: reason, tone: 'bad' })
+  ui.status.set(target, ok ? { text: done, tone: 'ok' } : failedStatus(reason, FAILED[pending] ?? 'Failed'))
   draw()
   if (ok) setTimeout(() => { if (ui.status.get(target)?.tone === 'ok') { ui.status.delete(target); draw() } }, 1800)
+}
+
+/** The short row label of a failed inline action, by its running verb; the reason is its detail. */
+const FAILED: Record<string, string> = {
+  'Handing over…': 'Handover failed', 'Starting…': "Couldn't start", 'Switching…': "Couldn't switch", 'Sleeping…': "Couldn't sleep",
+  'Saving…': "Couldn't save", 'Removing…': "Couldn't remove", 'Restarting…': "Couldn't restart", 'Shuffling…': "Couldn't shuffle",
+  'Deleting…': "Couldn't delete", 'Opening…': "Couldn't open"
+}
+
+/** The wake menu behind a coordinator row's error (wakeDisplay), keyed like ui.status. */
+const statusMenus = new Map<string, WakeMenu>()
+
+/** The menu header of a failed or stopped row status: its label, and the full reason under it. */
+const statusHeader = (st: RowStatus): MenuItem => ({ header: `${esc(st.text)}<div class="mh-reason">${esc(st.detail ?? st.text)}</div>` })
+
+/**
+ * A click on a coordinator row's error icon: the full reason with the ways on. A coordinator click's
+ * failure reopens its wake menu (Retry, Show terminal, Start new); any other failure opens the
+ * coordinator's menu (Handover, Sessions, Start new) under the reason.
+ */
+function showStatus(target: string): void {
+  const key = target.slice(target.indexOf(':') + 1)
+  const need = statusMenus.get(target)
+  if (need && ui.status.get(target)) { showSessionPicker(key, need, `status:${target}`); return }
+  const anchor = document.querySelector<HTMLElement>(`[data-status="${CSS.escape(target)}"]`)?.getBoundingClientRect()
+  openMenu(coordinatorMenu(key), 12, 12, `status:${target}`, anchor, 'session-menu')
 }
 
 const LEVELS: [Priority, string][] = [['P0', 'now'], ['P1', 'today'], ['P2', 'soon'], ['P3', 'someday']]
@@ -631,8 +712,8 @@ function handoverItems(c: Coordinator, compact: boolean): MenuItem[] {
   }))
   const items: MenuItem[] = compact && actions.length ? [{ handover: actions, note }]
     : actions.length ? actions.map(a => ({ ...a, iconHtml: `<span class="provider" aria-hidden="true">${PROVIDER_LOGOS[a.provider]}</span>` }))
-    : [{ header: note === 'Unavailable' ? 'Handover unavailable' : 'Handing over…', tip }]
-  if (compact && c.handover?.error) items.push({ header: 'Handover incomplete', tip: c.handover.error })
+    : [{ header: `${note === 'Unavailable' ? 'Handover unavailable' : 'Handing over…'}${tip ? `<div class="mh-reason">${esc(explainError(tip).detail)}</div>` : ''}` }]
+  if (compact && c.handover?.error) items.push({ header: `Handover incomplete<div class="mh-reason">${esc(explainError(c.handover.error).detail)}</div>` })
   return items
 }
 
@@ -642,7 +723,9 @@ function coordinatorMenu(key: string): MenuItem[] {
   const VERBS = { look: ['Shuffling…', 'New look'], restart: ['Restarting…', 'Fresh session'], end: ['Sleeping…', 'Asleep'], delete: ['Deleting…', 'Deleted'] } as const
   const run = (action: 'look' | 'restart' | 'end' | 'delete', _label: string) =>
     inline(`coordinator:${key}`, VERBS[action][0], VERBS[action][1], () => orca.plugin.request('sidebar.coordinatorAction', { key, action }, { timeoutMs: 90_000 }))
+  const st = ui.status.get(`coordinator:${key}`)
   const items: MenuItem[] = [
+    ...(st && (st.tone === 'bad' || st.tone === 'warn') ? [statusHeader(st), 'separator' as const] : []),
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
     ...handoverItems(c, true),
     'separator',
@@ -650,13 +733,14 @@ function coordinatorMenu(key: string): MenuItem[] {
       if (await confirmAction('restart-coordinator', `Start ${c.name} fresh?`, 'A separate member starts and becomes current. Previous conversations and their pending asks remain available as read-only history.', 'Start fresh', 'restart', 'warn')) await run('restart', 'Fresh session')
     } }
   ]
-  if (c.members?.length) items.splice(1, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
-  if (c.session) items.splice(1, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
+  const at = items.findIndex((it) => typeof it === 'object' && 'label' in it && it.label === 'New look') + 1
+  if (c.members?.length) items.splice(at, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
+  if (c.session) items.splice(at, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
   // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
   const teams = linear?.connectedTeams ?? []
   if (teams.length) {
     const own = c.linearTeams ?? []
-    items.splice(1, 0, {
+    items.splice(at, 0, {
       chips: 'Linear teams', iconHtml: LINEAR_MARK,
       options: teams.map((t) => ({
         label: t,
@@ -678,6 +762,9 @@ function markTarget(): void {
   if (menuTarget) document.querySelector(`[data-menu="${CSS.escape(menuTarget)}"]`)?.classList.add('menu-open')
   document.querySelectorAll<HTMLElement>('.session-trigger').forEach((el) => {
     el.setAttribute('aria-expanded', String(menuTarget === `handover:${el.dataset.handover}`))
+  })
+  document.querySelectorAll<HTMLElement>('[data-status]').forEach((el) => {
+    el.setAttribute('aria-expanded', String(menuTarget === `status:${el.dataset.status}`))
   })
 }
 
@@ -779,8 +866,9 @@ document.addEventListener('contextmenu', (e) => {
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-handover],[data-sessions]') : null
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-handover],[data-sessions],[data-status]') : null
   if (!el) return null
+  if (el.dataset.status) return `status:${el.dataset.status}`
   if (el.dataset.handover) return `handover:${el.dataset.handover}`
   if (el.dataset.sessions) return `sessions:${el.dataset.sessions}`
   return 'ldisplay' in el.dataset ? 'display' : `linear:${el.dataset.lsend}`
@@ -838,9 +926,9 @@ async function sendIssue(issue: LinearIssue, c: Coordinator): Promise<void> {
     if (r.ok) {
       ui.status.delete(target)
       showToast(c, issue.id, r.warnings ?? [], r.recipient)
-    } else ui.status.set(target, { text: r.error ?? 'Could not send', tone: 'bad' })
+    } else ui.status.set(target, failedStatus(r.error ?? 'Could not send', "Couldn't send"))
   } catch (e) {
-    ui.status.set(target, { text: (e as Error).message, tone: 'bad' })
+    ui.status.set(target, failedStatus((e as Error).message, "Couldn't send"))
   }
   draw()
 }
@@ -930,7 +1018,7 @@ function showFirstProviderPicker(key: string, providers: CoordinatorProvider[], 
   openMenu(items, 12, 12, `providers:${key}`, anchor?.getBoundingClientRect(), 'first-provider-menu')
 }
 
-function showSessionPicker(key: string, need?: WakeMenu): void {
+function showSessionPicker(key: string, need?: WakeMenu, menuKey = `sessions:${key}`): void {
   const c = snap?.coordinators.find((c) => c.key === key)
   if (!c || !snap) return
   const anchor = document.querySelector<HTMLElement>(`[data-menu="coordinator:${CSS.escape(key)}"] .coord-name`)
@@ -956,7 +1044,7 @@ function showSessionPicker(key: string, need?: WakeMenu): void {
     { label: 'Start new conversation', icon: 'plus', run: () => inline(target, 'Starting…', 'Started', () => orca.plugin.request('sidebar.coordinatorSessions', { key, action: 'fresh', ...(need.agent ? { agent: need.agent } : {}) }, { timeoutMs: 90_000 })) }
   ] : picks.length ? picks : [{ header: 'No open conversations' }]
   if (!need && menuTarget === `sessions:${key}`) { closeMenu(); return }
-  openMenu(items, 12, 12, `sessions:${key}`, anchor?.getBoundingClientRect(), 'session-menu')
+  openMenu(items, 12, 12, menuKey, anchor?.getBoundingClientRect(), 'session-menu')
 }
 
 /** Read-only history is separate from choosing the main conversation. */

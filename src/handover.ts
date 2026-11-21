@@ -2,6 +2,7 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { associateSession, memberFrom, readMemberHistory, selectCurrent } from './coordinator-sessions.ts'
 import { coordinatorPrompt } from './coordinator-bootstrap.ts'
+import { ownershipRefusal } from './view.ts'
 import type { AgentInfo, CoordinatorMember, CoordinatorSessions, WorkspaceRow } from './protocol.ts'
 
 export const HANDOVER_FILE = '.orca-flow-handover.json'
@@ -63,11 +64,12 @@ export function ownedRoutes(routes: RunRoute[], source: CoordinatorMember): RunR
 
 /** run-use is not a handover transaction: no expected owner and it unbinds other target runs.
  * The installed host cannot guarantee preservation of active report routes and pending asks.
- * Refuse BEFORE launch; never fake a takeover with --from or database writes.
+ * Refuse BEFORE launch; never fake a takeover with --from or database writes. The refusal text
+ * (view.ts ownershipRefusal) names the recovery that clears this guard.
  */
 export function requireTransferableOwnership(routes: RunRoute[], sessions: CoordinatorSessions): void {
   const owned = routes.filter((r) => sessions.members.some((m) => ownedRoutes([r], m).length))
-  if (owned.length) throw new Error(`Handover is unavailable while this coordinator owns ${owned.length === 1 ? 'a run' : `${owned.length} runs`}. This Orca host has no atomic coordinator transfer; report routing and pending asks were preserved. A host update is required.`)
+  if (owned.length) throw new Error(ownershipRefusal(owned.length))
 }
 
 export async function readHandoverContext(source: CoordinatorMember, run: Run): Promise<unknown> {

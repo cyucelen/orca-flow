@@ -3,7 +3,7 @@ import { askKey } from './coordinator-sessions.ts'
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { type UiState, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { openerToggle } from './panel/opener.ts'
@@ -398,11 +398,61 @@ test('sleeping every finished session is offered only when memory is tight, and 
   assert.match(render(at('full'), ui).copen, /data-act="closeall" data-tip="Sleep 2 finished sessions"><svg[\s\S]*?<\/svg>Sleep all</, 'memory not known yet')
 })
 
-test('the full coordinator error is available on hover and keyboard focus in a narrow panel', () => {
+test('a coordinator error is a compact icon whose full text is its tooltip, accessible name and menu', () => {
   const ui = emptyUi()
-  ui.status.set('coordinator:alpha', { tone: 'bad', text: 'Missing <source> transcript. Handover stopped before launch.' })
+  ui.status.set('coordinator:alpha', failedStatus('Missing <source> transcript. Handover stopped before launch.', 'Handover failed'))
   const { main } = render(snap, ui)
-  assert.match(main, /class="rstatus bad" tabindex="0" data-tone="danger" data-tip="Missing &lt;source&gt; transcript\. Handover stopped before launch\."/)
+  const icon = main.match(/<button class="rstatus bad status-icon"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? ''
+  assert.ok(icon, 'an icon button, not a clipped sentence')
+  assert.match(icon, /data-status="coordinator:alpha" aria-haspopup="menu"/, 'a click opens the reason with its actions')
+  assert.match(icon, /aria-label="Handover failed: Missing &lt;source&gt; transcript\. Handover stopped before launch\."/)
+  assert.match(icon, /data-tone="danger" data-tip="Handover failed\nMissing &lt;source&gt; transcript\. Handover stopped before launch\."/)
+  noMatch(icon.replace(/<button[^>]*>/, ''), /Missing|Handover failed/, 'no text on the row itself')
+})
+
+test('raw host and provider errors read as plain words with a recovery; unknown ones keep their full text', () => {
+  const surface = explainError('terminal_surface_ownership_unavailable')
+  assert.deepEqual([surface.short, surface.tone], ['Still starting', 'warn'], 'the agent usually started: not a red failure')
+  assert.match(surface.detail, /opening the coordinator adopts a conversation that already started/)
+  assert.match(surface.detail, /\(Orca: terminal_surface_ownership_unavailable\)/, 'the host code stays findable')
+
+  const codex = 'Codex said: “ERROR: failed to initialize sqlite local db at /Users/someone/.codex/state_5.sqlite: failed to initialize state runtime at /Users/someone/.codex: failed to migrate state DB at /Users/someone/.codex/state_5.sqlite: while executing migration 63: error returned from database: (code: 5) database is locked”'
+  const locked = explainError(codex, "Couldn't open")
+  assert.deepEqual([locked.short, locked.tone], ['Codex database locked', 'bad'])
+  assert.match(locked.detail, /^Codex could not open its local database \(~\/\.codex\/state_5\.sqlite, migration 63\): another Codex process is using it\./)
+  assert.match(locked.detail, /Close or restart the other Codex session .*then Retry\./)
+
+  const blocked = explainError(ownershipRefusal(3))
+  assert.deepEqual([blocked.short, blocked.tone], ['Handover blocked', 'warn'])
+  assert.equal(blocked.detail, ownershipRefusal(3))
+  const legacy = explainError('Handover is unavailable while this coordinator owns 2 runs. This Orca host has no atomic coordinator transfer; report routing and pending asks were preserved. A host update is required.')
+  assert.equal(legacy.detail, ownershipRefusal(2), 'the older wording is replaced by the one with a recovery')
+
+  const old = 'Exact resume started, but its new binding could not be verified. No fallback was selected; inspect Sessions before retrying.'
+  assert.deepEqual(explainError(old, "Couldn't open"), { short: "Couldn't open", tone: 'bad', detail: old }, 'unknown and long: a short label, the full text')
+  assert.deepEqual(explainError('PR not merged'), { short: 'PR not merged', tone: 'bad', detail: 'PR not merged' }, 'short enough to read on the row')
+})
+
+test('a coordinator click that Orca could not confirm yet shows Still starting with Retry, never a red failure', () => {
+  const failed = wakeDisplay({ ok: false, kind: 'failed', error: 'terminal_surface_ownership_unavailable' })
+  assert.deepEqual(failed.row && [failed.row.text, failed.row.tone], ['Still starting', 'warn'])
+  assert.equal(failed.menu?.header, 'Still starting')
+  assert.equal(failed.menu?.retry, true, 'Retry opens the coordinator again, which adopts the started terminal')
+  const codex = wakeDisplay({ ok: false, kind: 'restore-failed', retryable: true, agent: 'codex', error: 'The previous conversation could not be restored: Codex said: “database is locked” at ~/.codex/state_5.sqlite' })
+  assert.equal(codex.row, null, 'a restore that failed stays a neutral Sleeping row')
+  assert.equal(codex.menu?.header, "Couldn't restore the last conversation")
+  assert.match(codex.menu?.reason ?? '', /Close or restart the other Codex session/)
+  assert.equal(codex.menu?.retry, true)
+  const plain = wakeDisplay({ ok: false, kind: 'failed', retryable: true, error: 'The exact session could not be opened.' })
+  assert.deepEqual(plain.row, { text: "Couldn't open", tone: 'bad', detail: 'The exact session could not be opened.' })
+  assert.equal(plain.menu?.reason, 'The exact session could not be opened.')
+})
+
+test('a long error inside a row button stays a short label; the reason joins the button name and the tooltip', () => {
+  const ui = emptyUi()
+  ui.status.set('agent:p-dup', failedStatus('Orca refused to remove the worktree because a terminal is still attached.', "Couldn't remove"))
+  const { main } = render(snap, ui)
+  assert.match(main, /<span class="rstatus bad" data-tone="danger" data-tip="Couldn&#39;t remove\nOrca refused[^"]*">Couldn&#39;t remove<span class="sr-only">: Orca refused/)
 })
 
 test('coordinators show no team characters on the right', () => {
@@ -527,7 +577,7 @@ test('actions show their progress inline on the row, not in a toast', () => {
   assert.match(main, /data-menu="agent:p-dup"[^>]*>[\s\S]*?class="rstatus pending"><span class="refreshing"><\/span>Sleeping…/)
   assert.match(main, /data-menu="coordinator:alpha"[\s\S]*?class="rstatus pending"><span class="refreshing"><\/span>Waking…/)
   ui.status.set('agent:p-dup', { text: 'PR not merged', tone: 'bad' })
-  assert.match(render(snap, ui).main, /class="rstatus bad">PR not merged/)
+  assert.match(render(snap, ui).main, /class="rstatus bad" data-tone="danger" data-tip="PR not merged">PR not merged</)
 })
 
 test('a coordinator shows its own state: available while only its workers work', () => {

@@ -313,8 +313,83 @@ const size = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${m
 /** Something in progress, inline: a small spinner and a verb. The one inline loading style. */
 export const busy = (text: string) => `<span class="rstatus pending"><span class="refreshing"></span>${esc(text)}</span>`
 
-/** A row's inline status: running, done, or failed (red is only for what actually failed). */
-export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' }
+/**
+ * A row's inline status: running, done, failed (red is only for what actually failed), or `warn`
+ * when the step stopped without failing (refused by a guard, or not confirmed yet). `text` is a short
+ * label; `detail` is the full readable reason with its recovery, reachable by hover, focus and click.
+ */
+export type RowStatus = { text: string; tone: 'pending' | 'ok' | 'bad' | 'warn'; detail?: string }
+
+/** Starts every refusal of handover.ts requireTransferableOwnership; the panel shows it as "Handover blocked". */
+export const OWNERSHIP_REFUSAL = 'Handover is blocked: this coordinator still owns'
+
+/**
+ * The refusal in plain words, with what the person can do today. The recovery is what this guard
+ * reads: run-list stops listing a Run only when Orca retires it, and Orca's hourly retention retires
+ * a settled Run (no open task or dispatch, worker terminals released, no activity for 24 hours) only
+ * while none of its parties, the coordinator's terminal among them, is live.
+ */
+export function ownershipRefusal(runs: number): string {
+  return `${OWNERSHIP_REFUSAL} ${runs === 1 ? 'an orchestration run' : `${runs} orchestration runs`}, and this Orca version cannot move a run's worker reports and pending questions to another conversation safely. Nothing was changed.\n` +
+    'To keep working now, stay in the current conversation.\n' +
+    `To unblock Handover, let ${runs === 1 ? 'that run' : 'those runs'} settle: workers done and their terminals closed, no new activity for a day, and this coordinator asleep. Orca then retires settled runs within the hour and Handover becomes available.\n` +
+    'An Orca update with coordinator transfer will remove this limit.'
+}
+
+/** A raw host, provider or guard message as the sidebar shows it: a short row label, the full text. */
+export type ErrorView = { short: string; detail: string; tone: 'bad' | 'warn' }
+
+/**
+ * Known messages in plain words with what to do next; anything else keeps its full text as the
+ * detail, under `fallback` on the row when it is too long to read there. Display only: it never
+ * changes what happened.
+ */
+export function explainError(raw: string, fallback = 'Failed'): ErrorView {
+  const text = raw.trim()
+  return knownError(text) ?? { short: text.length <= 24 && !text.includes('\n') ? text : fallback, tone: 'bad', detail: text }
+}
+
+function knownError(text: string): ErrorView | null {
+  // Orca's terminal list refuses while a new terminal is still being attached to its pane: the agent
+  // usually did start. Opening the coordinator again adopts a pending launch instead of launching twice.
+  if (/terminal_surface_ownership_unavailable/.test(text)) return {
+    short: 'Still starting', tone: 'warn',
+    detail: 'Orca was still attaching a new terminal when Orca Flow checked it, so this step could not be confirmed. An agent that already started keeps running.\nTry again in a few seconds: opening the coordinator adopts a conversation that already started instead of launching another, and Retry handover reuses its launch.\n(Orca: terminal_surface_ownership_unavailable)'
+  }
+  // Codex keeps its state in one SQLite file; a second Codex process migrating or holding it locks out the resume.
+  if (/database is locked/i.test(text) && /codex|state_\d+\.sqlite/i.test(text)) {
+    const db = text.match(/(\/[^\s:]*?\.codex\/state_\d+\.sqlite)/)?.[1]?.replace(/^\/Users\/[^/]+/, '~') ?? '~/.codex/state_*.sqlite'
+    const migration = text.match(/migration (\d+)/)?.[1]
+    return {
+      short: 'Codex database locked', tone: 'bad',
+      detail: `Codex could not open its local database (${db}${migration ? `, migration ${migration}` : ''}): another Codex process is using it. Nothing was resumed and the conversation is kept.\nClose or restart the other Codex session (or wait until it has finished starting), then Retry.`
+    }
+  }
+  const owned = text.match(/^Handover is unavailable while this coordinator owns (a run|(\d+) runs)/)
+  if (owned) return { short: 'Handover blocked', tone: 'warn', detail: ownershipRefusal(owned[2] ? Number(owned[2]) : 1) }
+  if (text.startsWith(OWNERSHIP_REFUSAL)) return { short: 'Handover blocked', tone: 'warn', detail: text }
+  return null
+}
+
+/** A failed row status from a raw reason: a short label that fits, the full readable reason behind it. */
+export function failedStatus(raw: string, fallback = 'Failed'): RowStatus {
+  const v = explainError(raw, fallback)
+  return { text: v.short, tone: v.tone, detail: v.detail }
+}
+
+/**
+ * What the panel shows for a coordinator click (wakeView), with known reasons in plain words: a start
+ * Orca could not confirm yet is "Still starting" with Retry, not a red failure.
+ */
+export function wakeDisplay(r: WakeOutcome): { row: RowStatus | null; menu: WakeMenu | null } {
+  const { row, menu } = wakeView(r)
+  if (!menu?.reason) return { row, menu }
+  const known = knownError(menu.reason.trim())
+  const detail = known?.detail ?? menu.reason
+  const next = { ...menu, reason: detail, ...(known?.tone === 'warn' ? { header: known.short, retry: true } : {}) }
+  if (!row || row.tone !== 'bad') return { row, menu: next }
+  return { row: known ? { text: known.short, tone: known.tone, detail } : { ...row, detail }, menu: next }
+}
 
 /**
  * The Sessions menu a coordinator click opens when it needs the person: a short header, the full
@@ -339,14 +414,28 @@ export function wakeView(r: WakeOutcome): { row: RowStatus | null; menu: WakeMen
 }
 
 /** A row's inline status, shown where its time or count normally sits; null when it has none. */
-function rowStatus(ui: UiState, key: string): string | null {
+function rowStatus(ui: UiState, key: string, own = false): string | null {
   const st = ui.status.get(key)
   if (!st) return null
   if (st.tone === 'pending') return busy(st.text)
-  const detail = st.tone === 'bad' && key.startsWith('coordinator:')
-    ? ` tabindex="0" data-tone="danger" data-tip="${esc(st.text)}"` : ''
-  return `<span class="rstatus ${st.tone}"${detail}>${esc(st.text)}</span>`
+  if (st.tone === 'ok') return `<span class="rstatus ok">${esc(st.text)}</span>`
+  // A failure never puts a clipped sentence on a row. `own`: the status sits in no other control (a
+  // coordinator's row), so it is a compact icon button of its own: hover and keyboard focus show the
+  // label and full reason as its tooltip, its accessible name carries both, and a click opens the
+  // reason with the ways on. Inside a row button it stays a short label whose reason joins that
+  // button's name and shows on hover.
+  const detail = st.detail ?? st.text
+  const full = detail === st.text ? st.text : `${st.text}\n${detail}`
+  const tone = `data-tone="${st.tone === 'bad' ? 'danger' : 'warn'}" data-tip="${esc(full)}"`
+  if (own) return `<button class="rstatus ${st.tone} status-icon" data-status="${esc(key)}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(full.replace('\n', ': '))}" ${tone}>${STATUS_ICON[st.tone]}</button>`
+  return `<span class="rstatus ${st.tone}" ${tone}>${esc(st.text)}${detail === st.text ? '' : `<span class="sr-only">: ${esc(detail)}</span>`}</span>`
 }
+
+/** A failed row's mark: a circled exclamation; a stopped one (refused, not confirmed yet): a triangle. */
+const STATUS_ICON = {
+  bad: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v3.75"/><circle cx="8" cy="11.1" r=".55" fill="currentColor" stroke="none"/></svg>',
+  warn: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8 2.25 14.25 13.25H1.75Z"/><path d="M8 6.5v3"/><circle cx="8" cy="11.35" r=".55" fill="currentColor" stroke="none"/></svg>'
+} as const
 
 type ActOpts = { ask?: boolean; tip?: string; cls?: string; icon?: string; aria?: string }
 
@@ -957,7 +1046,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 

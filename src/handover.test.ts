@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { completeSelection, continueHandover, handoverPrompt, ownedRoutes, readHandover, readHandoverContext, requireCoordinatorNavigation, requireTransferableOwnership, runRoutes, saveHandover, type Handover, type HandoverIo, type RunRoute } from './handover.ts'
 import { memberFrom } from './coordinator-sessions.ts'
+import { OWNERSHIP_REFUSAL } from './view.ts'
 import { assignCoordinators } from './coordinators.ts'
 import type { AgentInfo, CoordinatorSessions, WorkspaceRow } from './protocol.ts'
 
@@ -181,7 +182,7 @@ test('a selection changed during launch still registers the exact replacement as
 test('source acquires a run midflight: target stays a coordinator member, current and report routing remain at source', async () => {
   const f = fixture(), bind = f.io.bind
   f.io.bind = async (s) => { f.setRoutes([...f.routes(), { id: 'new-run', coordinator_handle: 'term-source' }]); return bind(s) }
-  assert.match(await error(() => continueHandover(f.state, f.io)), /atomic coordinator transfer/)
+  assert.match(await error(() => continueHandover(f.state, f.io)), /cannot move a run.s worker reports/)
   assert.equal(f.sessions().current, f.source.id)
   assert.equal(f.sessions().members.length, 2)
   assert.equal(f.routes().at(-1)!.coordinator_handle, 'term-source')
@@ -222,9 +223,14 @@ for (const kind of ['normal', 'multiple', 'legacy', 'historical member']) test(`
   if (kind === 'legacy') f.setRoutes([{ ...f.routes()[0], legacy: 1 }])
   if (kind === 'historical member') f.select('different-member')
   const before = JSON.stringify({ routes: f.routes(), ask: f.pendingAsk, sessions: f.sessions() })
-  let refused = false
-  try { requireTransferableOwnership(f.routes(), f.sessions()) } catch { refused = true }
-  assert.ok(refused)
+  let refused = ''
+  try { requireTransferableOwnership(f.routes(), f.sessions()) } catch (e) { refused = (e as Error).message }
+  assert.ok(refused.startsWith(OWNERSHIP_REFUSAL), refused)
+  assert.match(refused, kind === 'multiple' ? /owns 2 orchestration runs/ : /owns an orchestration run,/)
+  assert.match(refused, /Nothing was changed/)
+  assert.match(refused, /stay in the current conversation/, 'a recovery the person can do today')
+  assert.match(refused, /this coordinator asleep/, 'the coordinator terminal is a live party that blocks retention')
+  assert.match(refused, /Orca update/, 'the update is named as the long-term fix only')
   assert.ok(await error(() => continueHandover(f.state, f.io)))
   assert.equal(JSON.stringify({ routes: f.routes(), ask: f.pendingAsk, sessions: f.sessions() }), before)
   assert.equal(f.calls.filter((a) => ['launch', 'run-use', 'reply', 'check'].includes(a[1])).length, 0)

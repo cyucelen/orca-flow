@@ -227,7 +227,8 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .jump:hover { background: color-mix(in srgb, var(--ink) 14%, transparent); }
 
 /* coordinators */
-.tree { display: grid; gap: 10px; }
+/* One column that may shrink below its content, so a long row status can never widen the tree. */
+.tree { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .tree > .label { padding-bottom: 0; margin-bottom: -4px; }
 .coord .name { font-weight: 500; }
 .coord .sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -450,6 +451,16 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.pending .refreshing { margin-left: 0; }
 .rstatus.ok { color: #5fbf8a; }
 .rstatus.bad { color: var(--danger); }
+/* A failure or a stop: one line clipped with an ellipsis (text-overflow needs a block, not a flex box);
+   the full reason is its tooltip, its accessible name, and on a coordinator the menu its click opens. */
+.rstatus:is(.bad, .warn) { display: inline-block; min-width: 0; max-width: min(150px, 100%); vertical-align: middle; }
+.rstatus.warn { color: var(--warn); }
+/* A coordinator row's failure: a compact icon button; its tooltip and menu hold the whole reason. */
+.rstatus.status-icon { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; max-width: none; margin: -2px 0; border-radius: 6px; }
+.rstatus.status-icon svg { display: block; }
+.rstatus.status-icon:hover, .rstatus.status-icon[aria-expanded="true"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+.rstatus.status-icon:focus-visible { outline: 2px solid color-mix(in srgb, var(--ask) 70%, transparent); outline-offset: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .rstatus.sleeping { color: var(--faint); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
 
@@ -551,7 +562,7 @@ button.item.coord { padding: 5px 6px; }
 .ctx.session-menu{width:max-content;min-width:190px;max-width:min(340px,calc(100vw - 12px));max-height:65vh;overflow:auto}
 .session-menu .mi .ml{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-menu .provider{margin:0;width:14px;height:14px}
-.session-menu .mh-reason{margin-top:3px;max-width:320px;color:var(--ink);font-size:11.5px;line-height:1.4;white-space:normal;overflow-wrap:anywhere;user-select:text}
+.ctx .mh-reason{margin-top:3px;max-width:min(320px,calc(100vw - 40px));color:var(--ink);font-size:11.5px;line-height:1.4;white-space:pre-line;overflow-wrap:anywhere;user-select:text}
 .session-history-choice{display:block;width:100%;text-align:left;margin:8px 0}
 .sessions-dialog{color:var(--ink,#dedee4);background:var(--bg,#19191c);border:1px solid #42424b;border-radius:10px;padding:18px;width:min(540px,90vw);max-height:85vh;overflow:auto}
 .sessions-dialog::backdrop{background:#0008}.sessions-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}.sessions-dialog button,.sessions-dialog select{font:inherit;color:inherit;background:#25252c;border:1px solid #45454e;border-radius:5px;padding:5px 8px;cursor:pointer}.sessions-dialog button:disabled{opacity:.5;cursor:default}
