@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { discoverTranscript, readTranscript, sourceCurrent } from './transcripts.ts'
@@ -373,4 +373,78 @@ test('integrated non-current Codex member publishes fallback summary without cha
     assert.equal(currentRecipient(c, rows).agent.paneKey, 'pane')
     assert.equal(summaryAgents(snapshot).length, 2, 'current selection does not govern summary eligibility')
   } finally { f.dispose() }
+})
+
+test('Antigravity terminal transcripts discover via deterministic brain path, verify identity authority, normalize steps, and restore sidebar titles', async () => {
+  const f = fixture()
+  try {
+    const agyHome = join(f.dir, 'agy-home')
+    const nativeId = '11111111-2222-3333-4444-555555555555'
+    const logs = join(agyHome, 'brain', nativeId, '.system_generated', 'logs')
+    const compact = join(logs, 'transcript.jsonl')
+    const transcript = join(logs, 'transcript_full.jsonl')
+    mkdirSync(logs, { recursive: true })
+    writeFileSync(compact, line({ step_index: 0, type: 'USER_INPUT', status: 'DONE', created_at: at(2), truncated_fields: ['content'], content: '<USER_REQUEST>\nYou are a dispatched worker.' }))
+    writeFileSync(transcript, [
+      { step_index: 0, type: 'USER_INPUT', status: 'DONE', created_at: at(1), content: '<CONTEXT_SUMMARY>\nCompacted history\n</CONTEXT_SUMMARY>' },
+      { step_index: 1, type: 'USER_INPUT', status: 'DONE', created_at: at(2), content: '<USER_REQUEST>\nYou are a dispatched worker.\nYour task ID is: task_a096a50992e8\n=== TASK ===\nFast-forward clean main checkouts.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>time</ADDITIONAL_METADATA>' },
+      { step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(4), thinking: 'Private reasoning', content: '', tool_calls: [{ name: 'run_command', args: { CommandLine: JSON.stringify('orca orchestration send --type worker_done --body done') } }] },
+      { step_index: 3, type: 'GENERIC', status: 'DONE', created_at: at(5), content: 'Private tool output' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: at(8), thinking: 'Private final reasoning', content: 'Fast-forwarded main cleanly.', tool_calls: [] }
+    ].map(line).join('\n'))
+    const db = new (process.getBuiltinModule!('node:sqlite').DatabaseSync)(f.files.identities)
+    db.exec(`INSERT INTO identities VALUES ('orca-agy', 'antigravity', 1);
+      INSERT INTO provider_links VALUES ('local', '', 'antigravity', '${nativeId}', '', 'orca-agy');`)
+    db.close()
+    writeFileSync(f.files.json, line({ entries: { 'agy-pane': { paneKey: 'agy-pane', payload: { agentType: 'antigravity' }, providerSession: { key: 'conversation_id', id: nativeId } } } }))
+    const files = { ...f.files, antigravityHome: agyHome }
+    const identity = { orcaSession: 'orca-agy', provider: 'antigravity', sessionId: nativeId }
+    const found = discoverTranscript('agy-pane', files, identity)
+    assert.equal(found.path, transcript)
+    if (!found.path) throw Error('missing Antigravity transcript')
+    assert.equal(sourceCurrent(found.source!), true)
+    assert.equal(lastTurnEnd(found.path, undefined, found.source), Date.parse(at(8)))
+    const d = digest(readTranscript(found.path, found.source))!
+    assert.equal(d.firstPrompt, 'Fast-forward clean main checkouts.')
+    assert.equal(d.role, 'worker')
+    assert.equal(d.reported, true)
+    assert.equal(d.lastMessage, 'Fast-forwarded main cleanly.')
+    assert.ok(!JSON.stringify(d).includes('Private'))
+    assert.ok(!JSON.stringify(d).includes('Compacted history'))
+    // Path traversal IDs fail closed.
+    writeFileSync(f.files.json, line({ entries: { 'bad-pane': { paneKey: 'bad-pane', payload: { agentType: 'antigravity' }, providerSession: { id: '../escape' } } } }))
+    assert.equal(discoverTranscript('bad-pane', files, { provider: 'antigravity' }).path, null)
+    // Restores the hook and publishes a verified card so a settled worker does not fall back to the branch name "main".
+    writeFileSync(f.files.json, line({ entries: { 'agy-pane': { paneKey: 'agy-pane', payload: { agentType: 'antigravity' }, providerSession: { key: 'conversation_id', id: nativeId } } } }))
+    assert.equal(await summarizePane({ pane: 'agy-pane', transcript: found.path, transcriptSource: found.source, dir: f.dir, writer: async () => ({ ...card, title: 'Main checkout maintenance' }) }), 'written')
+    const saved = JSON.parse(readFileSync(join(f.dir, 'agy-pane.json'), 'utf8'))
+    assert.equal(summaryMatches(saved, identity), true)
+    assert.equal(summaryMatches({ ...saved, providerSession: undefined }, identity), false, 'Antigravity cards require a verified binding')
+    const rows = fromPs([{ identity: { key: 'wt-main' }, displayName: 'main', branch: 'refs/heads/main', agents: [{ paneKey: 'agy-pane', state: 'done', agentType: 'antigravity', orcaSessionId: 'orca-agy', conversationName: 'worker-task_a096a50992e8' }] }], { cards: {}, summaries: { 'agy-pane': saved } })
+    assert.equal(rows[0].agents[0].title, 'Main checkout maintenance')
+  } finally { f.dispose() }
+})
+
+test('structured Antigravity ACP chats resolve via agent/nativeId handles in the journal', () => {
+  const f = fixture(), db = journal(f)
+  try {
+    db.prepare('INSERT INTO agent_session_records VALUES (?, ?)').run('orca-agy-chat', line({
+      sessionId: 'orca-agy-chat',
+      provider: 'antigravity',
+      location: { executionHostId: 'local' },
+      providerHandleChain: [{ handle: { transport: 'acp', agent: 'antigravity', nativeId: 'native-agy-chat' } }]
+    }))
+    db.prepare('INSERT INTO journal_chat_state VALUES (?, ?)').run('orca-agy-chat', 'agy-epoch')
+    db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 1, 1, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ itemId: 'i-1', observedAt: Date.parse(at(1)), body: { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'Summarize Antigravity chat.' }] } }))
+    db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 2, 2, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ itemId: 'i-2', observedAt: Date.parse(at(4)), body: { kind: 'message', role: 'assistant', blocks: [{ type: 'text', text: 'Summary ready.' }], completedAt: Date.parse(at(4)) } }))
+    db.prepare('INSERT INTO journal_items VALUES (?, ?, 0, 1, 0, 3, 3, 0, ?)').run('orca-agy-chat', 'agy-epoch', line({ itemId: 'i-3', observedAt: Date.parse(at(5)), body: { kind: 'turn', completedAt: Date.parse(at(5)), state: 'completed' } }))
+    const identity = { orcaSession: 'orca-agy-chat', provider: 'antigravity', sessionId: 'native-agy-chat' }
+    const found = discoverTranscript('agy-chat-pane', f.files, identity)
+    assert.equal(found.path, f.files.journal)
+    if (!found.path) throw Error('missing Antigravity journal')
+    const d = digest(readTranscript(found.path, found.source))!
+    assert.equal(d.firstPrompt, 'Summarize Antigravity chat.')
+    assert.equal(d.lastMessage, 'Summary ready.')
+    assert.equal(lastTurnEnd(found.path, undefined, found.source), Date.parse(at(5)))
+  } finally { db.close(); f.dispose() }
 })

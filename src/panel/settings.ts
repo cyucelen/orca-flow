@@ -33,7 +33,7 @@ const MODEL_LABEL: Record<string, string> = { haiku: 'Claude Haiku', sonnet: 'Cl
 type PageId = 'summaries' | 'format' | 'capacity' | 'advanced' | 'about'
 const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: string }[] = [
   { id: 'summaries', label: 'Titles & Summaries', tint: '#0a84ff', keys: ['writers', 'enabled', 'models'],
-    tip: 'After each agent turn, one request writes the title, summary and ask on its Orca Flow card. Only Orca Flow’s sidebar cards change: Orca names its own tabs and chats, and Antigravity sessions get no card.' },
+    tip: 'After each agent turn, one request writes the title, summary and ask on its Orca Flow card. Only Orca Flow’s sidebar cards change: Orca names its own tabs and chats.' },
   { id: 'format', label: 'Message Check', tint: '#30b158', keys: ['format', 'folders'],
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
   { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],

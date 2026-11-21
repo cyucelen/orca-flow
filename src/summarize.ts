@@ -104,7 +104,7 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
   if (cwd && isCoordinatorHome(cwd, home)) return 'coordinator'
   if (/dispatch[ _-]?id|worker_done/i.test(firstPrompt)) return 'worker'
   // Only a command that runs it, not one that merely mentions it (in a heredoc, a grep, a test).
-  const runs = /^Bash: (?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration worker-start\b/
+  const runs = /^(?:Bash|exec_command|functions\.exec_command|run_command): (?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration worker-start\b/
   if (events.some((e) => e.kind === 'tool' && runs.test(e.text))) return 'coordinator'
   return 'solo'
 }
@@ -138,9 +138,9 @@ export function digest(lines: string[], home = COORDINATOR_HOME): Digest | null 
       for (const c of content) {
         if (c.type === 'text' && c.text.trim()) events.push({ kind: 'assistant', text: c.text.trim(), at: d.timestamp, final: !d.codex || !d.channel || d.channel === 'final' })
         if (c.type === 'tool_use') {
-          const detail = c.input?.command ?? c.input?.cmd ?? c.input?.file_path ?? c.input?.description ?? ''
+          const detail = c.input?.command ?? c.input?.cmd ?? c.input?.CommandLine ?? c.input?.file_path ?? c.input?.Path ?? c.input?.description ?? ''
           // Judged on the whole command: the shown one is clipped.
-          const reports = ['Bash', 'exec_command', 'functions.exec_command'].includes(c.name) && SENDS_DONE.test(String(c.input?.command ?? c.input?.cmd ?? '').replace(/\s+/g, ' '))
+          const reports = ['Bash', 'exec_command', 'functions.exec_command', 'run_command'].includes(c.name) && SENDS_DONE.test(String(c.input?.command ?? c.input?.cmd ?? c.input?.CommandLine ?? '').replace(/\s+/g, ' '))
           events.push({ kind: 'tool', text: `${c.name}${detail ? `: ${clip(String(detail).replace(/\s+/g, ' '), 140)}` : ''}`, at: d.timestamp, reports })
         }
       }
@@ -507,13 +507,12 @@ export function turnSummarizer(opts: {
 
 type Card = { pane?: string; transcript?: string; transcriptSource?: TranscriptSource; orcaSession?: string; providerSession?: { provider: string; id: string }; worktreeId?: string; summarizer?: number; updatedAt?: number }
 
-/** An unbound legacy Claude card can stay visible; a Codex card needs a verified binding. */
+/** An unbound legacy Claude card can stay visible; Codex and Antigravity cards need a verified binding. */
 export function summaryMatches(card: Card, identity: TranscriptIdentity): boolean {
-  if (identity.provider === 'antigravity') return false // No Antigravity transcript adapter.
   if (identity.orcaSession && card.orcaSession && card.orcaSession !== identity.orcaSession) return false
   if (identity.provider && card.providerSession && card.providerSession.provider !== identity.provider) return false
   if (identity.sessionId && card.providerSession?.id !== identity.sessionId) return false
-  if (identity.provider === 'codex' && (!card.providerSession || (identity.orcaSession && card.orcaSession !== identity.orcaSession))) return false
+  if ((identity.provider === 'codex' || identity.provider === 'antigravity') && (!card.providerSession || (identity.orcaSession && card.orcaSession !== identity.orcaSession))) return false
   return true
 }
 
