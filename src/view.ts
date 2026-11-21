@@ -1104,7 +1104,11 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
   const live = placed.filter((p) => p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
-  const awake = (c: Coordinator) => Boolean(c.session) || teamOf(c.key).length > 0
+  // Grouped by the coordinator row's own status, the one its label shows: a live session (the
+  // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
+  // are. Each group keeps the snapshot's order, so a refresh never reshuffles rows; a coordinator
+  // moves only when it wakes, starts or sleeps. Its whole team moves with it.
+  const awake = (c: Coordinator) => Boolean(c.session)
   const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
   return [...snap.coordinators.filter(awake), you, ...snap.coordinators.filter((c) => !awake(c))].flatMap((c) => {
     const mine = teamOf(c.key).sort(byStart)
@@ -1139,7 +1143,7 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   })
 }
 
-/** The coordinators in the order the tree shows them (awake first, then sleeping): the send menu lists them so. */
+/** The coordinators in the order the tree shows them (with a live session first, then Sleeping and Not started): the send menu lists them so. */
 export function coordinatorOrder(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Coordinator[] {
   return treeBlocks(snap).flatMap(({ c }) => ('you' in c ? [] : [c]))
 }
@@ -1153,8 +1157,9 @@ export const FOLDED_KEY = 'folded'
 export type ChatTarget = { key: string } & ({ coordinator: string } | { workspaceId: string; terminal?: string })
 
 /**
- * The chats Option+1..9 open, in the order the tree shows them: each coordinator, then its leads
- * with their workers, then the chats you started, then sleeping coordinators. A folded group's team
+ * The chats Option+1..9 open, in the order the tree shows them: each coordinator with a live
+ * session, then its leads with their workers, then the chats you started, then Sleeping and Not
+ * started coordinators, each with its team. A folded group's team
  * is hidden, so it takes no numbers. The panel's key handler and the worker's commands both read this.
  */
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {

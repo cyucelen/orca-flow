@@ -84,7 +84,7 @@ test('closing the first and opening another follows the person', () => {
 test('coordinators: a single-project coordinator is its project; multi-repo groups label projects softly', () => {
   const { main } = render(snap, emptyUi())
   const tree = main.slice(main.indexOf('class="tree"'))
-  const first = tree.indexOf('<section class="coordinator">')
+  const first = tree.lastIndexOf('<section class="coordinator">', tree.indexOf('data-menu="coordinator:alpha"'))
   const alpha = tree.slice(first, tree.indexOf('<section class="coordinator">', first + 1))
   assert.match(alpha, /alpha/)
   assert.match(alpha, /class="item indent"/, 'the worker nests under its coordinator')
@@ -1125,8 +1125,11 @@ test('update button: hidden with nothing to update, then what the update needs o
 /** The tree's chat rows (coordinators and agents), top to bottom, by the data-menu key chatTargets uses. */
 const treeChats = (main: string) => [...main.slice(main.indexOf('class="tree"')).matchAll(/data-menu="((?:coordinator|agent):[^"]+)"/g)].map((m) => m[1])
 
+/** The fixture with alpha and main awake: each has a live session of its own. */
+const awakeSnap: Snapshot = { ...snap, coordinators: snap.coordinators.map((c) => ({ ...c, session: agent(`p-own-${c.key}`, c.key, 'done') })) }
+
 test('chat numbers follow the tree: each coordinator, its leads with their workers, your chats, then sleeping coordinators', () => {
-  const sleepy = { ...snap, coordinators: [...snap.coordinators, { key: 'zzz', name: 'zzz', repos: [], workspaceId: 'ws-z' }] }
+  const sleepy = { ...awakeSnap, coordinators: [...awakeSnap.coordinators, { key: 'zzz', name: 'zzz', repos: [], workspaceId: 'ws-z' }] }
   const targets = chatTargets(sleepy)
   assert.deepEqual(targets.map((t) => t.key), [
     'coordinator:alpha', 'agent:p-coord', 'agent:p-dup', // alpha, its lead and the worker nested under it
@@ -1145,7 +1148,7 @@ test('chat numbers follow the tree: each coordinator, its leads with their worke
 })
 
 test("a folded group's team gives its numbers to the rows below; a terminal goes along", () => {
-  const withTerm = { ...snap, rows: snap.rows.map((r) => (r.id === 'pricing' ? { ...r, agents: [{ ...r.agents[0], terminal: 'term-p' }] } : r)) }
+  const withTerm = { ...awakeSnap, rows: snap.rows.map((r) => (r.id === 'pricing' ? { ...r, agents: [{ ...r.agents[0], terminal: 'term-p' }] } : r)) }
   const ui = emptyUi()
   ui.folded.add('alpha')
   const targets = chatTargets(withTerm, ui.folded)
@@ -1293,8 +1296,29 @@ test("the tree shows a worktree's Linear issue on the right of its lead's row, b
 })
 
 test('coordinators in tree order: awake ones first, then sleeping', () => {
-  const s: Snapshot = { ...snap, coordinators: [{ key: 'zz', name: 'zz', repos: [], workspaceId: null }, ...snap.coordinators] }
+  const s: Snapshot = { ...awakeSnap, coordinators: [{ key: 'zz', name: 'zz', repos: [], workspaceId: null }, ...awakeSnap.coordinators] }
   assert.deepEqual(coordinatorOrder(s).map((c) => c.key), ['alpha', 'main', 'zz'])
+})
+
+test('a coordinator sorts by its own row status: a Sleeping one with a live team goes below You, its team with it', () => {
+  // alpha shows Sleeping (no session of its own) while its lead and worker run; main is awake.
+  const s: Snapshot = { ...snap, coordinators: [snap.coordinators[0], { ...snap.coordinators[1], session: agent('p-own-main', 'main', 'done') }, { key: 'new', name: 'new', repos: [], workspaceId: null, sessions: { version: 1, current: null, members: [] } }] }
+  assert.deepEqual(coordinatorOrder(s).map((c) => c.key), ['main', 'alpha', 'new'], 'awake, then Sleeping and Not started in their saved order')
+  assert.deepEqual(chatTargets(s).map((t) => t.key), [
+    'coordinator:main', 'agent:p-hook',
+    'agent:p-cleanup', 'agent:p-pricing', // You
+    'coordinator:alpha', 'agent:p-coord', 'agent:p-dup', // asleep, below You, with its whole team and parentage
+    'coordinator:new'
+  ])
+  const { main } = render(s, emptyUi())
+  const at = (k: string) => main.indexOf(`data-menu="coordinator:${k}"`)
+  assert.ok(at('main') < main.indexOf('chats you started') && main.indexOf('chats you started') < at('alpha') && at('alpha') < at('new'))
+  assert.match(main.slice(at('alpha'), at('new')), /data-menu="agent:p-coord"[^>]*data-depth="0"[\s\S]*data-menu="agent:p-dup"[^>]*data-depth="1"/, 'lead and worker keep their depth')
+  assert.match(main.slice(at('alpha'), at('new')), /Sleeping/)
+  // A refresh with the same states keeps the same order; waking alpha moves it up, nothing else.
+  assert.deepEqual(coordinatorOrder({ ...s, rows: [...s.rows].reverse() }).map((c) => c.key), ['main', 'alpha', 'new'])
+  const woke = { ...s, coordinators: s.coordinators.map((c) => c.key === 'alpha' ? { ...c, session: agent('p-own-alpha', 'alpha', 'working') } : c) }
+  assert.deepEqual(coordinatorOrder(woke).map((c) => c.key), ['alpha', 'main', 'new'], 'each group keeps the saved order')
 })
 
 test('a worktree created without --linear-issue is linked by its branch: the section shows its lead, the tree its ID', () => {
@@ -1456,4 +1480,35 @@ test('Up next and search show no Linear label, so they have nothing to open', ()
   assert.match(attention, /Up next · 1/)
   noMatch(attention, /idchip/)
   noMatch(render(s, { ...emptyUi(), query: 'day view' }, linear).main, /idchip/)
+})
+
+test('a coordinator Orca lists twice (stale pane beside its live pane) sorts with the awake ones', async () => {
+  const { fromPs, foldCoordinatorFolders } = await import('./worker.ts')
+  const { assignCoordinators } = await import('./coordinators.ts')
+  const DIR = '/fixture/coordinators/flow', WS = 'ws::flow', MAIN = 'main-conversation'
+  const rows = fromPs([
+    { worktreeId: WS, path: DIR, displayName: 'flow', repo: 'flow', liveTerminalCount: 1, agents: [
+      { paneKey: 'stale:pane', orcaSessionId: MAIN, agentType: 'codex', state: 'done', conversationName: 'Old pane' },
+      { paneKey: 'live:pane', orcaSessionId: MAIN, agentType: 'codex', state: 'working', hasLivePty: true, conversationName: 'Flow' }
+    ] },
+    { worktreeId: 'wt::mine', path: '/fixture/mine', displayName: 'mine', repo: 'shop', liveTerminalCount: 1, agents: [
+      { paneKey: 'mine:1', orcaSessionId: 'mine', agentType: 'claude', state: 'working', hasLivePty: true, conversationName: 'My chat' }
+    ] }
+  ], { cards: {}, summaries: {} }, new Map([[DIR, WS]]))
+  const id = JSON.stringify([WS, 'session', MAIN])
+  const sessions = { version: 1 as const, current: id, members: [{ id, workspaceId: WS, workspacePath: DIR, orcaSession: MAIN, agentType: 'codex', title: 'Flow', paneKey: 'live:pane',
+    bindings: [{ terminal: 'term_stale', paneKey: 'stale:pane', orcaSession: MAIN }, { terminal: 'term_live', paneKey: 'live:pane', orcaSession: MAIN }], terminals: ['term_stale', 'term_live'] }] }
+  const asleep = { key: 'asleep', name: 'asleep', repos: [], workspaceId: null, dir: '/fixture/coordinators/asleep', about: '', sessions: { version: 1 as const, current: null, members: [] } }
+  const flow = { key: 'flow', name: 'flow', repos: [], workspaceId: null, dir: DIR, about: '', sessions }
+  const lineage = { paneOf: new Map([['term_live', 'live:pane']]), dispatcherOf: new Map<string, string>(), dispatchOf: new Map<string, 'open' | 'settled'>() }
+  const all = assignCoordinators(rows, [asleep, flow], lineage)
+  const coordinators = [{ ...asleep }, { ...flow }] as Snapshot['coordinators']
+  const visible = foldCoordinatorFolders(all, coordinators, [asleep.dir, DIR])
+  assert.equal(coordinators[1].session?.paneKey, 'live:pane', 'reconciled to the live pane')
+  const s: Snapshot = { rows: visible, coordinators, source: 'cli', capacity: null }
+  assert.deepEqual(coordinatorOrder(s).map((c) => c.key), ['flow', 'asleep'], 'listed after a sleeping one, shown above it')
+  const { main } = render(s, emptyUi())
+  const flowRow = main.slice(main.indexOf('data-menu="coordinator:flow"'), main.indexOf('</section>', main.indexOf('data-menu="coordinator:flow"')))
+  assert.ok(main.indexOf('data-menu="coordinator:flow"') < main.indexOf('data-menu="coordinator:asleep"'), 'shown above the sleeping one')
+  noMatch(flowRow, /Sleeping|Not started/, 'its row shows its live status')
 })
