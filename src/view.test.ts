@@ -433,6 +433,16 @@ test('raw host and provider errors read as plain words with a recovery; unknown 
   assert.deepEqual(explainError('PR not merged'), { short: 'PR not merged', tone: 'bad', detail: 'PR not merged' }, 'short enough to read on the row')
 })
 
+test('an expired handover record reads as expired with how to clear it, not as a raw guard message', () => {
+  const raw = explainError('The handover bootstrap window expired. The target may have ended its turn; automatic cutover is blocked and the saved selection is preserved.')
+  assert.deepEqual([raw.short, raw.tone], ['Handover expired', 'warn'])
+  assert.match(raw.detail, /Retry handover to clear it/)
+  assert.equal(explainError('This pending handover predates the first-turn bootstrap barrier and cannot complete automatically. Its target and original selection were preserved.').short, 'Handover expired')
+  const aside = 'The handover to Codex ran out of time before it finished, so it can never complete. It was set aside as .orca-flow-handover-expired-1.json. Nothing was transferred and the original conversation stays current. Choose Handover again to start a new attempt.'
+  assert.deepEqual(explainError(aside), { short: 'Handover set aside', tone: 'warn', detail: aside })
+  assert.equal(explainError('The handover to Codex ran out of time before it finished, so it can never complete. Its new conversation (terminal t) is still open but never became the coordinator; nothing was transferred. Close that terminal, then Retry handover to set this attempt aside.').short, 'Handover expired')
+})
+
 test('a coordinator click that Orca could not confirm yet shows Still starting with Retry, never a red failure', () => {
   const failed = wakeDisplay({ ok: false, kind: 'failed', error: 'terminal_surface_ownership_unavailable' })
   assert.deepEqual(failed.row && [failed.row.text, failed.row.tone], ['Still starting', 'warn'])

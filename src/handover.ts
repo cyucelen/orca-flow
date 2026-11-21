@@ -113,6 +113,8 @@ export type HandoverIo = {
   bind(s: Handover): Promise<{ row: WorkspaceRow; agent: AgentInfo }>
   commit(source: string, target: CoordinatorMember): void
   now?: () => number
+  /** Moves an expired record aside (default: retireHandover, a rename in the coordinator folder). */
+  retire?(s: Handover, name: string): void
 }
 
 /** Current public coordinator navigation accepts terminal handles, not structured chat IDs. */
@@ -128,9 +130,59 @@ export function requireBootstrapWindow(s: Handover, now = Date.now()): void {
   // Leave five seconds for the synchronous selection + journal writes before the receiver exits.
   if (now >= s.bootstrap.deadline - 5_000) throw new Error('The handover bootstrap window expired. The target may have ended its turn; automatic cutover is blocked and the saved selection is preserved.')
 }
+/** Whether an attempt's first-turn window has passed (or it never had one): it can never complete. */
+export function bootstrapExpired(s: Handover, now = Date.now()): boolean {
+  try { requireBootstrapWindow(s, now); return false } catch { return true }
+}
+
+/** An expired attempt was moved aside; its message is final and the record must not be written back. */
+class HandoverSetAside extends Error {}
+
+const providerName = (p: HandoverProvider) => p === 'codex' ? 'Codex' : 'Claude'
+
+/** Moves the record aside as `name` (kept for inspection), so the next handover can start. */
+export function retireHandover(s: Handover, name: string): void {
+  saveHandover(s)
+  renameSync(join(s.dir, HANDOVER_FILE), join(s.dir, name))
+}
+
+/**
+ * An attempt whose window passed (a restart, a power loss, a target that ended its turn) can never
+ * commit: every cutover re-checks the window. Retry settles it instead of failing closed forever:
+ * when its target terminal is gone it is moved aside; while that terminal is still open it stays,
+ * with what to close. Never launches, adopts, changes the selection or reads ownership.
+ */
+async function settleExpired(s: Handover, io: HandoverIo): Promise<never> {
+  const who = providerName(s.provider)
+  const head = `The handover to ${who} ran out of time before it finished, so it can never complete.`
+  // Committed before the journal's last write: the target is already current (maybe the live
+  // coordinator). Nothing is pending, so only the record goes; the selection stays as it is.
+  const switched = !!s.target && io.current().current === s.target.id
+  if (!switched && s.launch?.kind === 'structured') throw new Error(`${head} Its new chat cannot be checked from here. Close that chat if it is still open, then remove ${join(s.dir, HANDOVER_FILE)} to set this attempt aside. The original conversation stays current.`)
+  const handle = s.launch?.handle ?? null
+  if (handle && !switched) {
+    let terminals: unknown
+    try { terminals = (await io.run(['terminal', 'list']))?.terminals } catch { terminals = null }
+    if (!Array.isArray(terminals)) throw new Error(`${head} Orca Flow could not check whether its new conversation is still open, so it was kept. Retry handover in a moment.`)
+    if (terminals.some((t: { handle?: unknown; connected?: unknown }) => t?.handle === handle && t.connected !== false)) throw new Error(`${head} Its new conversation (terminal ${handle}) is still open but never became the coordinator; nothing was transferred. Close that terminal, then Retry handover to set this attempt aside.`)
+  }
+  const name = `.orca-flow-handover-expired-${Date.now()}.json`
+  s.error = `${head} It was set aside as ${name}. ${switched ? 'The main conversation had already switched to the new one and stays current; nothing else changed.' : 'Nothing was transferred and the original conversation stays current.'}${!s.launch && s.phase === 'launching' ? ' Orca never reported which conversation this attempt started; if one is open in the coordinator folder, it never became the coordinator and can be closed.' : ''} Choose Handover again to start a new attempt.`
+  ;(io.retire ?? retireHandover)(s, name)
+  throw new HandoverSetAside(s.error)
+}
+
 /** Resume a durable attempt; never turn an ambiguous launch into a new launch. */
 export async function continueHandover(s: Handover, io: HandoverIo): Promise<void> {
   if (s.phase === 'complete') return
+  if (bootstrapExpired(s, io.now?.() ?? Date.now())) {
+    try { await settleExpired(s, io) } catch (e) {
+      if (e instanceof HandoverSetAside) throw e
+      s.error = (e as Error).message
+      io.save(s)
+      throw e
+    }
+  }
   const persist = () => io.save(s)
   try {
     // A crash between the session CAS and the final journal write is recoverable without launch.

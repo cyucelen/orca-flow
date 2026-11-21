@@ -368,6 +368,12 @@ function knownError(text: string): ErrorView | null {
   const owned = text.match(/^Handover is unavailable while this coordinator owns (a run|(\d+) runs)/)
   if (owned) return { short: 'Handover blocked', tone: 'warn', detail: ownershipRefusal(owned[2] ? Number(owned[2]) : 1) }
   if (text.startsWith(OWNERSHIP_REFUSAL)) return { short: 'Handover blocked', tone: 'warn', detail: text }
+  // An attempt whose first-turn window passed (handover.ts settleExpired): set aside, or kept with what to close.
+  if (/ran out of time before it finished, so it can never complete/.test(text)) return { short: /set aside as/.test(text) ? 'Handover set aside' : 'Handover expired', tone: 'warn', detail: text }
+  if (/^The handover bootstrap window expired|predates the first-turn bootstrap barrier/.test(text)) return {
+    short: 'Handover expired', tone: 'warn',
+    detail: 'This handover ran out of time before it finished (its two-minute start window passed, for example across a restart or power loss), so it can never complete. Nothing more will be transferred and the current selection is kept.\nRetry handover to clear it: Retry sets it aside when its new conversation is closed, or names the terminal to close first.'
+  }
   return null
 }
 

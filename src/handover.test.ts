@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { completeSelection, continueHandover, handoverPrompt, ownedRoutes, readHandover, readHandoverContext, requireCoordinatorNavigation, requireTransferableOwnership, runRoutes, saveHandover, type Handover, type HandoverIo, type RunRoute } from './handover.ts'
@@ -286,9 +286,14 @@ test('cutover cannot succeed after the receiver bootstrap window or on an older 
   assert.equal(f.sessions().current, f.source.id)
   await error(() => continueHandover(f.state, f.io))
   assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 1)
+  // An older prompt without a barrier can never complete either; never launched, it is set aside on Retry.
   const old = fixture(); delete old.state.bootstrap
-  assert.match(await error(() => continueHandover(old.state, old.io)), /predates/)
-  assert.equal(old.calls.length, 0)
+  const retired: string[] = []
+  old.io.retire = (s, name) => { retired.push(name); assert.equal(s.phase, 'prepared', 'never marked complete') }
+  assert.match(await error(() => continueHandover(old.state, old.io)), /can never complete\. It was set aside as \.orca-flow-handover-expired-\d+\.json\. Nothing was transferred/)
+  assert.equal(retired.length, 1)
+  assert.equal(old.calls.length, 0, 'no launch, no ownership read')
+  assert.equal(old.sessions().current, old.source.id)
 })
 
 test('ownership inventory follows all pages; session identity overrides a reused terminal', async () => {
@@ -311,4 +316,82 @@ test('durable handover records round-trip and malformed state is preserved', () 
     assert.ok(refused)
     assert.equal(readFileSync(join(dir, '.orca-flow-handover.json'), 'utf8'), '{bad')
   } finally { rmSync(dir, { recursive: true }) }
+})
+
+/** A handover record left behind by a restart or power loss, in the coordinator folder on disk. */
+function staleRecord(phase: Handover['phase'], targetLive: boolean) {
+  const f = fixture()
+  const dir = mkdtempSync(join(tmpdir(), 'handover-stale-'))
+  f.state.dir = dir
+  f.state.phase = phase
+  f.state.operationId = 'launch-op'
+  if (phase !== 'prepared') f.state.launch = { kind: 'terminal', handle: 'term-target' }
+  f.state.bootstrap = { context: join(dir, 'context-1.json'), deadline: Date.now() - 60 * 60_000 } // the window passed while the machine was off
+  f.state.error = 'The handover bootstrap window expired. The target may have ended its turn; automatic cutover is blocked and the saved selection is preserved.'
+  saveHandover(f.state)
+  f.io.save = saveHandover
+  const run = f.io.run
+  f.io.run = async (args, options) => {
+    f.calls.push(args)
+    if (args[0] === 'terminal' && args[1] === 'list') return { terminals: targetLive ? [{ handle: 'term-target', connected: true }] : [{ handle: 'term-other', connected: true }] }
+    return run(args, options)
+  }
+  return { ...f, dir, done: () => rmSync(dir, { recursive: true }) }
+}
+
+for (const phase of ['launching', 'delivered'] as const) test(`an expired ${phase} record whose target is gone is set aside on Retry, so the next handover can start`, async () => {
+  const f = staleRecord(phase, false)
+  try {
+    const before = JSON.stringify(f.sessions())
+    // Before: Retry failed closed on the expired window every time and the record blocked every later handover.
+    const message = await error(() => continueHandover(readHandover(f.dir)!, f.io))
+    assert.match(message, /ran out of time before it finished, so it can never complete/)
+    assert.match(message, /Nothing was transferred/)
+    assert.match(message, /Choose Handover again/)
+    assert.equal(readHandover(f.dir), null, 'no record blocks the next handover')
+    const kept = readdirSync(f.dir).filter((n) => n.startsWith('.orca-flow-handover-expired-'))
+    assert.equal(kept.length, 1, 'the attempt is kept for inspection, not deleted')
+    const archived = JSON.parse(readFileSync(join(f.dir, kept[0]), 'utf8'))
+    assert.equal(archived.phase, phase, 'never reported complete')
+    assert.equal(archived.error, message)
+    assert.equal(JSON.stringify(f.sessions()), before, 'the selection and members are untouched; nothing adopted')
+    assert.equal(f.calls.filter((a) => ['launch', 'run-use', 'run-list'].includes(a[1])).length, 0, 'no launch, no ownership change')
+  } finally { f.done() }
+})
+
+test('an expired record whose target terminal is still open stays, with the exact manual recovery', async () => {
+  const f = staleRecord('delivered', true)
+  try {
+    const message = await error(() => continueHandover(readHandover(f.dir)!, f.io))
+    assert.match(message, /new conversation \(terminal term-target\) is still open but never became the coordinator/)
+    assert.match(message, /Close that terminal, then Retry handover to set this attempt aside\./)
+    const kept = readHandover(f.dir)!
+    assert.equal(kept.phase, 'delivered')
+    assert.equal(kept.error, message, 'the menu shows the recovery')
+    assert.equal(f.sessions().current, f.source.id)
+    assert.equal(f.calls.filter((a) => a[1] === 'launch').length, 0)
+  } finally { f.done() }
+})
+
+test('an expired record is never set aside when liveness cannot be read', async () => {
+  const f = staleRecord('launching', false)
+  try {
+    f.io.run = async (args) => { f.calls.push(args); throw new Error('Orca is not running') }
+    assert.match(await error(() => continueHandover(readHandover(f.dir)!, f.io)), /could not check whether its new conversation is still open/)
+    assert.ok(readHandover(f.dir), 'kept until liveness is known')
+  } finally { f.done() }
+})
+
+test('an expired record committed before its last journal write is set aside without touching the live coordinator', async () => {
+  const f = staleRecord('delivered', true)
+  try {
+    f.state.target = memberFrom(f.row, f.agent)
+    saveHandover(f.state)
+    f.select(f.state.target.id) // the selection switched before the power loss; its terminal runs the coordinator now
+    const message = await error(() => continueHandover(readHandover(f.dir)!, f.io))
+    assert.match(message, /The main conversation had already switched to the new one and stays current/)
+    assert.equal(readHandover(f.dir), null)
+    assert.equal(f.sessions().current, f.state.target.id, 'selection unchanged')
+    assert.equal(f.calls.filter((a) => ['launch', 'run-use', 'run-list'].includes(a[1]) || a[0] === 'terminal').length, 0, 'never told to close the live coordinator')
+  } finally { f.done() }
 })
