@@ -1,8 +1,8 @@
 import { assert, test } from 'orca/testing'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { cliProviders, codexHomeFromAccounts, createWriter, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
+import { ANTIGRAVITY_MODEL, cliProviders, codexHomeFromAccounts, createWriter, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
 import { SUMMARY_SCHEMA, summarizePane, summaryProviders, turnSummarizer, validateSummary } from './summarize.ts'
 import { configuredWriters } from './config.ts'
 import type { WriterSetting } from './settings.ts'
@@ -359,4 +359,90 @@ test('the Claude adapter passes the configured model to claude -p --model', asyn
     assert.equal(args[args.indexOf('--model') + 1], model)
     assert.equal(args[args.indexOf('--tools') + 1], '')
   }
+})
+
+test('Antigravity adapter isolates tools via a temporary custom agent, strict settings, stdin stream-json, and cleans up session files', async () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), 'orca-agy-home-'))
+  const oldHome = process.env.HOME
+  process.env.HOME = fakeHome
+  const cid = '12345678-1234-4234-8234-123456789abc'
+  let workDir = ''
+  try {
+    const providers = cliProviders(async (command) => {
+      workDir = command.cwd
+      assert.equal(command.args[command.args.indexOf('--agent') + 1], 'orca-flow-card-writer')
+      assert.equal(command.args[command.args.indexOf('--model') + 1], ANTIGRAVITY_MODEL)
+      assert.equal(command.args[command.args.indexOf('--input-format') + 1], 'stream-json')
+      assert.equal(command.args[command.args.indexOf('--output-format') + 1], 'stream-json')
+      assert.ok(command.args.includes('--disable-slash-commands'))
+      assert.ok(!command.args.some((a) => a.includes(request.prompt)), 'prompt stays on stdin, never argv')
+      assert.deepEqual(JSON.parse(command.input.trim()), { event: 'user', message: { content: request.prompt } })
+      const settings = JSON.parse(command.args[command.args.indexOf('--settings') + 1])
+      assert.equal(settings.agentMode, '')
+      assert.equal(settings.toolPermission, 'strict')
+      assert.equal(settings.allowNonWorkspaceAccess, false)
+      assert.equal(settings.modelProvider, '')
+      assert.ok(settings.permissions.deny.includes('command(*)'))
+      assert.ok(settings.permissions.deny.includes('read_file(*)'))
+      assert.ok(settings.permissions.deny.includes('mcp(*)'))
+      const agentMd = readFileSync(join(command.cwd, '.agents', 'agents', 'orca-flow-card-writer', 'agent.md'), 'utf8')
+      assert.match(agentMd, /^tools: \[\]$/m)
+      assert.match(agentMd, /^inheritCustomizations: false$/m)
+      assert.match(agentMd, /^inheritMcp: false$/m)
+      assert.match(agentMd, /^excludeDefaultComponents: true$/m)
+      assert.match(agentMd, /^commandExecutionPolicy: off$/m)
+      // Simulate agy persisting the headless conversation under HOME.
+      const brain = join(fakeHome, '.gemini', 'antigravity-cli', 'brain', cid)
+      const convs = join(fakeHome, '.gemini', 'antigravity-cli', 'conversations')
+      mkdirSync(brain, { recursive: true })
+      mkdirSync(convs, { recursive: true })
+      writeFileSync(join(brain, 'state.json'), '{}')
+      writeFileSync(join(convs, `${cid}.db`), 'db')
+      const stream = [
+        JSON.stringify({ event: 'init', conversation_id: cid, init: { model: ANTIGRAVITY_MODEL } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: cid, status: 'SUCCESS', response: `\`\`\`json\n${JSON.stringify(card('Flash title'))}\n\`\`\`\n` } })
+      ].join('\n')
+      return { stdout: stream, stderr: '', error: null }
+    })
+    assert.deepEqual(await providers.flash(request), card('Flash title'))
+    assert.equal(existsSync(workDir), false, 'temporary workspace removed')
+    assert.equal(existsSync(join(fakeHome, '.gemini', 'antigravity-cli', 'brain', cid)), false, 'ephemeral brain removed')
+    assert.equal(existsSync(join(fakeHome, '.gemini', 'antigravity-cli', 'conversations', `${cid}.db`)), false, 'ephemeral db removed')
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    rmSync(fakeHome, { recursive: true, force: true })
+  }
+})
+
+test('Antigravity adapter classifies auth/quota/model errors, rejects tool steps, and participates in writer chains and health', async () => {
+  const cases: [string, string, { code?: unknown; killed?: boolean } | null, string][] = [
+    ['', 'You are not logged into Antigravity.', { code: 1 }, 'auth'],
+    [JSON.stringify({ event: 'result', result: { status: 'ERROR', error: '429 quota exceeded' } }), '', { code: 1 }, 'quota'],
+    [JSON.stringify({ event: 'result', result: { status: 'ERROR', error: 'model gemini-3.8-flash-low is not recognized as a known model' } }), '', { code: 1 }, 'unavailable'],
+    ['', '', { killed: true }, 'timeout'],
+    [
+      [
+        JSON.stringify({ event: 'step_update', step_update: { step_type: 'tool', tool_name: 'run_command' } }),
+        JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: JSON.stringify(card()) } })
+      ].join('\n'),
+      '',
+      null,
+      'invalid-output'
+    ]
+  ]
+  for (const [stdout, stderr, error, kind] of cases) {
+    const providers = cliProviders(async () => ({ stdout, stderr, error }))
+    await assert.rejects(providers.flash(request), (e) => e instanceof WriterError && e.kind === kind)
+  }
+  const calls: string[] = []
+  let now = 5_000
+  const writer = createWriter({
+    now: () => now,
+    writers: () => chainOf(['claude', 'haiku', true], ['antigravity', ANTIGRAVITY_MODEL, true]),
+    haiku: named('haiku', calls, () => new WriterError('haiku', 'quota')),
+    flash: named('flash', calls)
+  })
+  assert.equal((await writer(request) as any).title, 'flash')
+  assert.deepEqual(calls, ['haiku', 'flash'])
+  assert.equal(writer.health().find((h) => h.provider === 'antigravity')?.lastSuccessAt, 5_000)
 })

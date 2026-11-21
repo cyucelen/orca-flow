@@ -13,19 +13,20 @@ export type SettingsKey = keyof FlowSettings
 
 export const WRITER_PROVIDERS: readonly WriterProvider[] = ['claude', 'codex', 'antigravity']
 /** The models each CLI accepts by name, the default first. */
-export const WRITER_MODELS: Record<WriterProvider, readonly string[]> = { claude: ['haiku', 'sonnet'], codex: ['gpt-6-luna'], antigravity: [] }
+export const WRITER_MODELS: Record<WriterProvider, readonly string[]> = { claude: ['haiku', 'sonnet'], codex: ['gpt-6-luna'], antigravity: ['gemini-3.8-flash-low'] }
 /**
- * Writers Orca Flow can run. Antigravity's CLI has a one-shot JSON mode, but its docs give no way to
- * run it with tools off, so a conversation excerpt could drive tool use: its row stays "Not available yet".
+ * Writers Orca Flow can run. Antigravity runs in an isolated temporary workspace with a `tools: []`
+ * custom agent, `inheritCustomizations: false`, `inheritMcp: false`, strict deny rules, and stdin
+ * `stream-json` input.
  */
-export const WRITABLE: readonly WriterProvider[] = ['claude', 'codex']
+export const WRITABLE: readonly WriterProvider[] = ['claude', 'codex', 'antigravity']
 
 /** Today's behaviour: Haiku, then GPT-6 Luna through Codex. Must match DEFAULT_CONFIG in src/capacity.ts. */
 export const DEFAULT_SETTINGS: FlowSettings = {
   writers: [
     { provider: 'claude', model: 'haiku', enabled: true },
     { provider: 'codex', model: 'gpt-6-luna', enabled: true },
-    { provider: 'antigravity', enabled: false }
+    { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }
   ],
   messageFormat: 'off',
   marginGB: 2,

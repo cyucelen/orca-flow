@@ -25,10 +25,10 @@ const PROVIDERS: Record<WriterProvider, { name: string; logo: string; tip: strin
     models: [{ id: 'haiku', label: 'Haiku' }, { id: 'sonnet', label: 'Sonnet' }] },
   codex: { name: 'Codex', logo: PROVIDER_LOGOS.codex, tip: 'Codex CLI with Orca’s selected Codex account. GPT-6 Luna is fast and light on usage.',
     models: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna' }] },
-  antigravity: { name: 'Antigravity', logo: PROVIDER_LOGOS.antigravity, tip: 'Not available yet: the Antigravity CLI can’t run with its tools turned off, so Orca Flow doesn’t send it conversation text.',
-    models: [{ id: 'agy-default', label: 'Default' }] }
+  antigravity: { name: 'Antigravity', logo: PROVIDER_LOGOS.antigravity, tip: 'Antigravity CLI with your existing Google sign-in. Runs in an isolated no-tools workspace; Gemini 3.8 Flash is fast and light on usage.',
+    models: [{ id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash' }] }
 }
-const MODEL_LABEL: Record<string, string> = { haiku: 'Claude Haiku', sonnet: 'Claude Sonnet', 'gpt-6-luna': 'GPT-6 Luna', 'agy-default': 'Antigravity' }
+const MODEL_LABEL: Record<string, string> = { haiku: 'Claude Haiku', sonnet: 'Claude Sonnet', 'gpt-6-luna': 'GPT-6 Luna', 'gemini-3.8-flash-low': 'Gemini 3.8 Flash', 'agy-default': 'Antigravity' }
 
 type PageId = 'summaries' | 'format' | 'capacity' | 'advanced' | 'about'
 const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: string }[] = [

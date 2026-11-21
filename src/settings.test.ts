@@ -9,15 +9,14 @@ test('writers: order kept, each provider once, unknown models and providers drop
     { provider: 'antigravity', enabled: true }
   ]), [
     { provider: 'codex', model: 'gpt-6-luna', enabled: true },
-    // Orca Flow cannot run Antigravity yet: it stays off whatever the file says.
-    { provider: 'antigravity', enabled: false },
+    { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: true },
     { provider: 'claude', model: 'haiku', enabled: false }
   ])
   for (const bad of [undefined, null, 'claude', [], [{ provider: 'x' }]]) assert.deepEqual(normalizeWriters(bad), DEFAULT_SETTINGS.writers)
 })
 
 test('draft round trip: dialog controls map back to the same settings', () => {
-  const settings = { ...DEFAULT_SETTINGS, writers: [{ provider: 'codex' as const, model: 'gpt-6-luna', enabled: true }, { provider: 'claude' as const, model: 'sonnet', enabled: false }, { provider: 'antigravity' as const, enabled: false }], messageFormat: ['~/x'], marginGB: 3 }
+  const settings = { ...DEFAULT_SETTINGS, writers: [{ provider: 'codex' as const, model: 'gpt-6-luna', enabled: true }, { provider: 'claude' as const, model: 'sonnet', enabled: false }, { provider: 'antigravity' as const, model: 'gemini-3.8-flash-low', enabled: true }], messageFormat: ['~/x'], marginGB: 3 }
   assert.deepEqual(fromDraft(toDraft(settings)), settings)
   assert.deepEqual(fromDraft(DEFAULT_DRAFT), DEFAULT_SETTINGS)
   assert.deepEqual(DEFAULT_DRAFT.folders, ['~/orca/coordinators'])
@@ -37,7 +36,7 @@ test('status comes from what the writer last saw, then from the install list', (
   assert.equal(statusView(s({ installed: true }), 'claude', now).text, 'Installed')
   assert.deepEqual(statusView(s({ installed: false }), 'codex', now), { tone: 'bad', text: 'Not installed', sub: 'Orca doesn’t see the Codex CLI', usable: false })
   assert.equal(statusView(undefined, 'claude', now).text, 'Not used yet')
-  assert.deepEqual(statusView(s({ installed: true }), 'antigravity', now), { tone: 'idle', text: 'Not available yet', sub: 'Orca Flow can’t write cards with the Antigravity CLI yet', usable: false })
+  assert.deepEqual(statusView(s({ installed: true }), 'antigravity', now), { tone: 'ok', text: 'Installed', sub: 'No cards from it since Orca Flow started', usable: true })
 })
 
 // ---------- instant save ----------
