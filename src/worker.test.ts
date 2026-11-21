@@ -988,6 +988,39 @@ test('a Codex worker named after Orca\'s dispatch preamble shows its task title,
   assert.equal(title({ ...working, conversationName: 'Explain your role in Orca dispatch' }), 'Explain your role in Orca dispatch')
 })
 
+test('an agent Orca opened shows its task title, not the name the provider made from Orca\'s preamble', () => {
+  const asked: string[] = []
+  const title = (agent: NonNullable<main.PsWorktree['agents']>[number], opener: 'orca' | 'user' | null, summaries = {}) =>
+    main.fromPs([{ identity: { key: 'w' }, displayName: 'daily-retention-observability', repo: 'web-app', agents: [agent] }], { cards: {}, summaries }, undefined, undefined,
+      (a) => { asked.push(a.paneKey ?? ''); return opener })[0].agents[0].title
+  const task = 'Add Daily retention observability and track the testing CronJob'
+  const lead = { paneKey: 'p', state: 'working', agentType: 'codex', orcaSessionId: 'o', conversationName: 'Generate concise task title', taskTitle: task, displayName: task }
+  // Mid first turn, no summary yet.
+  assert.equal(title(lead, 'orca'), task)
+  assert.equal(title({ ...lead, conversationName: 'Check Orca coordinator messages' }, 'orca'), task)
+  // With no taskTitle, Orca's displayName for it.
+  assert.equal(title({ ...lead, taskTitle: null }, 'orca'), task)
+  // A matching summary's title still wins, without reading who opened it.
+  asked.length = 0
+  const summary = { p: { title: 'Daily retention alerts', role: 'lead', orcaSession: 'o', providerSession: { provider: 'codex', id: 's' } } }
+  assert.equal(title(lead, 'orca', summary), 'Daily retention alerts')
+  assert.deepEqual(asked, [])
+  // After the first turn, summarizer unavailable: still the task title.
+  assert.equal(title({ ...lead, state: 'done', conversationName: 'Check Orca coordinator messages' }, 'orca'), task)
+  // The user opened it, or nobody knows: the conversation keeps its own name.
+  assert.equal(title(lead, 'user'), 'Generate concise task title')
+  assert.equal(title(lead, null), 'Generate concise task title')
+  // No transcript, but a summary (with no usable title) says Orca dispatched it as a lead or worker.
+  const untitled = (role: string) => ({ p: { title: 'worker-task_77145d6691b3', role, orcaSession: 'o', providerSession: { provider: 'codex', id: 's' } } })
+  assert.equal(title(lead, null, untitled('worker')), task)
+  assert.equal(title(lead, null, untitled('solo')), 'Generate concise task title')
+  // Nothing to decide (no task, or the names agree): who opened it is not read.
+  asked.length = 0
+  assert.equal(title({ paneKey: 'p', state: 'working', agentType: 'codex', conversationName: 'Provider Costs Analytics' }, 'orca'), 'Provider Costs Analytics')
+  assert.equal(title({ ...lead, conversationName: task }, 'orca'), task)
+  assert.deepEqual(asked, [])
+})
+
 test('focus moves at once from the workspace.changed event, by terminal or by name and branch', () => {
   const rows = main.fromPs([
     { identity: { key: 'a' }, displayName: 'checkout', repo: 'shop', branch: 'refs/heads/checkout', isActive: true, agents: [{ paneKey: 'pa', state: 'working' }] },

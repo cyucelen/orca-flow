@@ -2,7 +2,7 @@ import { assert, test } from 'orca/testing'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discoverTranscript, readTranscript, sourceCurrent } from './transcripts.ts'
+import { conversationOpener, discoverTranscript, normalizedRecords, openerIn, readTranscript, sourceCurrent } from './transcripts.ts'
 import { currentSummaryJobs, digest, lastTurnEnd, summarizePane, summaryMatches, summaryProviders, turnSummarizer } from './summarize.ts'
 import { createWriter, WriterError } from './writer.ts'
 import { foldCoordinatorFolders, fromPs, summaryAgents } from './worker.ts'
@@ -447,4 +447,52 @@ test('structured Antigravity ACP chats resolve via agent/nativeId handles in the
     assert.equal(d.lastMessage, 'Summary ready.')
     assert.equal(lastTurnEnd(found.path, undefined, found.source), Date.parse(at(5)))
   } finally { db.close(); f.dispose() }
+})
+
+test('who opened a conversation comes from its first prompt: Orca\'s preamble or start prompt, or the user', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flow-opener-'))
+  try {
+    const write = (name: string, records: unknown[]) => { const path = join(dir, name); writeFileSync(path, records.map(line).join('\n') + '\n'); return path }
+    const preamble = 'You are working inside Orca, a multi-agent IDE. You are a dispatched worker.\nYour task ID is: task_synthetic\n=== TASK ===\nAdd retention alerts.'
+    const codex = (prompt: string) => [
+      { type: 'session_meta', payload: { id: 'native-one', cwd: '/synthetic/project' } },
+      message('user', '# AGENTS.md instructions for /synthetic\nBoilerplate', 1),
+      message('user', '<environment_context>machine context</environment_context>', 2),
+      message('user', prompt, 3),
+      message('assistant', 'Working.', 4, 'final')
+    ]
+    // Codex rollouts: Orca's preamble (with or without its brief), a lead start prompt, or the user's own prompt.
+    assert.equal(conversationOpener({ path: write('codex-orca.jsonl', codex(preamble)) }), 'orca')
+    assert.equal(conversationOpener({ path: write('codex-dispatch.jsonl', rollout()) }), 'orca')
+    assert.equal(conversationOpener({ path: write('codex-lead.jsonl', codex('Your role: lead. Load the orca-flow skill and follow roles/lead.md.')) }), 'orca')
+    assert.equal(conversationOpener({ path: write('codex-user.jsonl', codex('Explain your role in Orca dispatch')) }), 'user')
+    // Claude Code: Orca pastes its dispatch after its lead line; the user\'s pasted brief is the user\'s.
+    const claude = (prompt: unknown) => [
+      { type: 'user', isMeta: true, message: { content: 'Caveat: local command output' } },
+      { type: 'user', message: { content: '<command-name>/model</command-name>' } },
+      { type: 'user', message: { content: prompt } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'You are working inside Orca' }] } }
+    ]
+    const pasted = `Please carry out this task from my Orca coordinator by following the brief I pasted below. \n\n<pasted_content id="a38a">\n${preamble}\n</pasted_content id="a38a">`
+    assert.equal(conversationOpener({ path: write('claude-orca.jsonl', claude(pasted)) }), 'orca')
+    assert.equal(conversationOpener({ path: write('claude-blocks.jsonl', claude([{ type: 'text', text: preamble }])) }), 'orca')
+    assert.equal(conversationOpener({ path: write('claude-user.jsonl', claude(`Read this:\n<pasted_content id="b1">\n${preamble}\n</pasted_content id="b1">`)) }), 'user')
+    assert.equal(conversationOpener({ path: write('claude-plain.jsonl', claude('Fix checkout')) }), 'user')
+    // No prompt yet: unknown, and not cached; once the prompt lands it is read and then kept.
+    const later = write('codex-later.jsonl', codex(preamble).slice(0, 3))
+    assert.equal(conversationOpener({ path: later }), null)
+    writeFileSync(later, codex(preamble).map(line).join('\n'))
+    assert.equal(conversationOpener({ path: later }), 'orca')
+    writeFileSync(later, codex('Explain your role in Orca dispatch').map(line).join('\n'))
+    assert.equal(conversationOpener({ path: later }), 'orca', 'the first prompt never changes, so the answer is cached')
+    assert.equal(conversationOpener({ path: write('empty.jsonl', []) }), null)
+    assert.equal(conversationOpener({ path: join(dir, 'missing.jsonl') }), null)
+    assert.equal(conversationOpener({ path: null, why: 'none' }), null)
+    // Only the head is read: a prompt cut off at the limit is not a prompt yet.
+    const big = write('codex-big.jsonl', [{ type: 'session_meta', payload: { id: 'native-one', base_instructions: 'x'.repeat(5000) } }, ...codex(preamble).slice(1)])
+    assert.equal(conversationOpener({ path: big }, 4096), null)
+    assert.equal(conversationOpener({ path: big }), 'orca')
+    // Orchestration notices and dispatch echoes without a brief are not the first prompt.
+    assert.equal(openerIn(normalizedRecords([message('user', 'You have 1 orchestration message. Run `orca orchestration check`.', 1), message('user', 'Fix checkout', 2)].map(line))), 'user')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

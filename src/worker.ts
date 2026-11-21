@@ -35,10 +35,15 @@ import { coordinatorProviders, firstProvider, readInstalledProviders } from './c
 import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type InstalledPlugin, type UpdateCheck, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 import { backgroundReader } from './background.ts'
+import { conversationOpener, ORCA_PROMPT, type Opener } from './transcripts.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
 const quietPane = (pane: string) => background.quiet(findTranscript(pane).path)
+/** Who opened the agent's conversation, from its transcript's first prompt (see `titleOf`). */
+const openedBy = (a: PsAgent): Opener | null => a.paneKey
+  ? conversationOpener(findTranscript(a.paneKey, undefined, { orcaSession: a.orcaSessionId, provider: a.agentType }))
+  : null
 
 const ORCA_BIN = ['/Applications/Orca.app/Contents/Resources/bin/orca'].find(existsSync) ?? 'orca'
 const DATA_DIR = join(homedir(), '.orca-flow')
@@ -149,16 +154,28 @@ function stateOf(a: PsAgent, quiet: (pane: string) => boolean): { state: AgentSt
   return idleWatcher ? { state: 'done', workingMode: null } : { state: a.state as AgentState, workingMode: a.workingMode ?? null }
 }
 
-/**
- * Orca's own prompt text: its dispatch preamble and the coordinator/lead start prompts. Codex names
- * its thread after the first prompt and Orca forwards that as conversationName, so it is not a title.
- */
-const ORCA_PROMPT = /^\s*(?:You are working inside Orca\b|You are a dispatched worker\b|Your role: (?:coordinator|lead)\b)/i
-
-/** A title candidate: shows no ids, hashes or paths, and is not Orca's prompt text. */
+/** A title candidate: shows no ids, hashes or paths, and is not Orca's prompt text (ORCA_PROMPT). */
 const titleOk = (t: string | null | undefined): t is string => !!t && showable(t) && !ORCA_PROMPT.test(t)
 
-function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): AgentInfo | null {
+/**
+ * The summary's title, then for a conversation Orca opened (its first prompt is Orca's dispatch
+ * preamble or a lead/coordinator start prompt) the task title: the provider names a conversation from
+ * its first prompt, and from Orca's preamble it makes generic names ("Generate concise task title").
+ * A conversation the user opened keeps its own name even when later handed a task. Skip ids
+ * (worker-task_…) and Orca's raw prompt text. Who opened it is read only when the names differ; with
+ * no transcript, a summary's lead or worker role says Orca did.
+ */
+function titleOf(a: PsAgent, summary: AgentSummary | null, opened: (a: PsAgent) => Opener | null): string {
+  if (titleOk(summary?.title)) return summary.title
+  const task = [a.taskTitle, a.displayName].find(titleOk)
+  if (task && titleOk(a.conversationName) && a.conversationName !== task) {
+    const opener = opened(a) ?? (summary?.role === 'lead' || summary?.role === 'worker' ? 'orca' : null)
+    if (opener === 'orca') return task
+  }
+  return [a.conversationName, a.taskTitle, a.displayName].find(titleOk) || a.agentType || 'Agent'
+}
+
+function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean, opened: (a: PsAgent) => Opener | null): AgentInfo | null {
   if (!URGENCY.includes(a.state as AgentState)) return null
   const { state, workingMode } = stateOf(a, quiet)
   const saved = (a.paneKey && store.summaries[fileKey(a.paneKey)]) || null
@@ -174,9 +191,7 @@ function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean): Ag
     terminal: null,
     question: questionOf(a),
     state,
-    // Orca names a worker's conversation after its task id (worker-task_…) and Codex after its first
-    // prompt (Orca's preamble); skip names that are ids or Orca's prompt text.
-    title: [summary?.title, a.conversationName, a.taskTitle, a.displayName].find(titleOk) || a.agentType || 'Agent',
+    title: titleOf(a, summary, opened),
     task: a.taskTitle ?? a.displayName ?? null,
     agentType: a.agentType ?? null,
     live: a.hasLivePty === true || a.structuredHostOwned === true,
@@ -191,13 +206,16 @@ const highest = (levels: (Priority | undefined)[]) =>
 const workspaceId = (w: PsWorktree, idByPath: Map<string, string>) =>
   w.identity?.key ? `identity:${w.identity.key}` : (w.path && idByPath.get(w.path)) || null
 
-/** `quiet(pane)`: the pane's only running background work is an artifact watch (see `stateOf`). */
-export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summaries: {} }, idByPath = new Map<string, string>(), quiet: (pane: string) => boolean = () => false): WorkspaceRow[] {
+/**
+ * `quiet(pane)`: the pane's only running background work is an artifact watch (see `stateOf`).
+ * `opened(agent)`: who opened the agent's conversation, Orca or the user, or null if unknown (see `titleOf`).
+ */
+export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summaries: {} }, idByPath = new Map<string, string>(), quiet: (pane: string) => boolean = () => false, opened: (a: PsAgent) => Opener | null = () => null): WorkspaceRow[] {
   const idOf = new Map(worktrees.map((w) => [w.worktreeId, workspaceId(w, idByPath)]))
   return worktrees
     .filter((w) => !w.isArchived && workspaceId(w, idByPath))
     .map((w) => {
-      const agents = (w.agents ?? []).map((a) => toAgent(a, store, quiet)).filter((a): a is AgentInfo => a !== null)
+      const agents = (w.agents ?? []).map((a) => toAgent(a, store, quiet, opened)).filter((a): a is AgentInfo => a !== null)
       const state = URGENCY.find((s) => agents.some((a) => a.state === s)) ?? null
       const card = w.identity?.key ? (store.cards[fileKey(w.identity.key)] ?? null) : null
       return {
@@ -553,7 +571,7 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane), onDisk, lineage, owners)
+    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners)
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
     const remembered = rememberOwners(all, owners)
     if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }

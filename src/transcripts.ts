@@ -1,6 +1,6 @@
 // Read-only adapters for Orca's exact pane bindings and structured chat journal.
 // No account search, cwd matching, newest-file selection, or provider session mutation.
-import { existsSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -291,4 +291,73 @@ export function readTranscript(path: string, source?: TranscriptSource): string[
     }
     return out.map((r) => JSON.stringify(r))
   } finally { db.close() }
+}
+
+/**
+ * Orca's own prompt text: its dispatch preamble and the coordinator/lead start prompts. Codex names
+ * its thread after the first prompt and Orca forwards that as conversationName, so it is not a title.
+ */
+export const ORCA_PROMPT = /^\s*(?:You are working inside Orca\b|You are a dispatched worker\b|Your role: (?:coordinator|lead)\b)/i
+/** The line Orca puts before a dispatch it pastes into a terminal agent (Claude Code shows it as a paste). */
+const ORCA_LEAD_LINE = 'Please carry out this task from my Orca coordinator by following the brief I pasted below.'
+
+/** Orca's prompt text, as Orca itself recognizes a dispatch: its lead line and paste tag, then its preamble. */
+export function orcaPrompt(raw: string): boolean {
+  let t = raw.trimStart()
+  if (t.startsWith(ORCA_LEAD_LINE)) t = t.slice(ORCA_LEAD_LINE.length).trimStart()
+  const paste = /^<pasted_content\b[^>]{0,64}>/.exec(t)
+  if (paste) t = t.slice(paste[0].length)
+  return ORCA_PROMPT.test(t)
+}
+
+export type Opener = 'orca' | 'user'
+
+/**
+ * Who opened a conversation, from its first conversational user prompt in normalized records: Orca
+ * (its dispatch preamble or a lead/coordinator start prompt) or the user. Null until there is one.
+ */
+export function openerIn(records: any[]): Opener | null {
+  for (const d of records) {
+    if (d?.type !== 'user' || d.isSidechain || d.isMeta) continue
+    const content = d.message?.content
+    if (Array.isArray(content) && content.some((c: any) => c?.type === 'tool_result')) continue
+    const raw = (typeof content === 'string' ? content : text(content)).trim()
+    if (!raw) continue
+    if (orcaPrompt(raw)) return 'orca'
+    // Provider envelopes and Claude's slash-command records come before the first real prompt.
+    if (!conversationalPrompt(raw) || /^<(?:command-|local-command-)/.test(raw)) continue
+    return 'user'
+  }
+  return null
+}
+
+/** The complete lines in a file's first `max` bytes. */
+function headLines(path: string, max: number): string[] {
+  const size = statSync(path).size
+  const bytes = new Uint8Array(Math.min(size, max))
+  const fd = openSync(path, 'r')
+  try { readSync(fd, bytes, 0, bytes.length, 0) } finally { closeSync(fd) }
+  const lines = new TextDecoder().decode(bytes).split('\n')
+  return size > max ? lines.slice(0, -1) : lines
+}
+
+const openers = new Map<string, Opener>()
+
+/**
+ * Who opened the conversation behind a found transcript, read from the head of the file (or the
+ * structured chat's items). A conversation's first prompt never changes, so a decided answer is cached
+ * per transcript and provider session; "no prompt yet" is not, and is read again next time.
+ */
+export function conversationOpener(found: FoundTranscript, max = 1024 * 1024): Opener | null {
+  if (!found.path) return null
+  const s = found.source
+  const key = [s?.kind ?? 'jsonl', found.path, s?.orcaSession ?? '', s?.providerSession?.provider ?? '', s?.providerSession?.id ?? '', s?.epoch ?? ''].join('\0')
+  const cached = openers.get(key)
+  if (cached) return cached
+  let opener: Opener | null
+  try {
+    opener = openerIn(normalizedRecords(s?.kind === 'journal' ? readTranscript(found.path, s) : headLines(found.path, max)))
+  } catch { return null }
+  if (opener) openers.set(key, opener)
+  return opener
 }
