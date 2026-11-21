@@ -392,7 +392,8 @@ in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordina
 
 ```sh
 scripts/dev.sh check   # types, tsc, plugin tests and orca-flow tests
-scripts/dev.sh load    # load this folder into Orca as local.flow and (re)start its worker
+scripts/dev.sh load    # swap to this folder as local.flow (the installed copy goes off; back on if it fails)
+scripts/dev.sh off     # unload local.flow and run the installed cyucelen.flow again
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
 node scripts/settings-preview.mjs                       # the Settings dialog in a browser, with fixture data
 node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots-v2 --tips   # every page, dark and light, 360 px and wide, plus tooltips
@@ -408,7 +409,10 @@ model rejection behavior against a local synthetic server (no real model/MCP cal
 ORCA_FLOW_CODEX_VERIFY=1 node --test test/writer-cli.test.mjs
 ```
 
-Uninstall `cyucelen.flow` first so two copies don't run. `src/worker.ts` is the plugin's worker;
+Only one copy can run: both bind Alt+1..9, and Orca errors both when they run together. `load`
+and `off` swap between them, so `cyucelen.flow` stays installed and its skill links and hooks keep
+working. Never run `orca plugin types .` in this folder: a `.orca/` left there makes Orca drop
+`local.flow` to pending; `check` type-checks a temporary copy instead. `src/worker.ts` is the plugin's worker;
 `src/view.ts` renders the panel as HTML, which `src/panel/app.ts` draws and wires up. Orca
 transpiles TypeScript when it loads, so there is no build step. See Orca's
 [plugin authoring guide](https://github.com/stablyai/orca/blob/main/docs/reference/plugin-authoring.md).
