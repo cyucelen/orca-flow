@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { addType, applyPreset, BUILT_IN_PRESETS, findType, MAX_TYPES, removeType, SUGGESTED_TYPES, updateType, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, supportedEfforts, modelProblem, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
+import { addType, applyPreset, resetRouting, BUILT_IN_PRESETS, findType, MAX_TYPES, removeType, SUGGESTED_TYPES, updateType, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, supportedEfforts, modelProblem, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
 
 const CODEX = [
   { id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] as const },
@@ -378,18 +378,26 @@ test('types: normalize drops bad ones, trims, caps, keeps ids, and round-trips t
   assert.equal(JSON.stringify(normalizeRouting(s)), JSON.stringify(s), 'fixed key order')
 })
 
-test('types and presets: saved with the preset, applied with it, compared by matchingPreset', () => {
+test('types and presets: a saved preset carries its types; a built-in keeps the user types; matchingPreset', () => {
   const s = typed()
-  assert.equal(matchingPreset(s), null, 'Balanced rows plus types: no built-in matches')
+  assert.equal(matchingPreset(s)?.id, 'balanced', 'a built-in matches on roles and rows, whatever the types')
+  assert.equal(matchingPreset(applyPreset(s, 'economy'))?.id, 'economy')
   const saved = savePreset(s, 'With types')
   assert.deepEqual(saved.presets[0].types, s.types)
-  assert.equal(matchingPreset(saved)?.id, 'saved:with-types')
-  assert.equal(matchingPreset(removeType(saved, 'images')), null, 'a removed type is Custom')
-  assert.equal(matchingPreset(updateType(saved, 'images', { description: 'other' })), null, 'an edited type is Custom')
-  // applying a built-in sets its (empty) types; applying the saved preset brings them back
-  const plain = applyPreset(saved, 'balanced')
-  assert.deepEqual([plain.types, matchingPreset(plain)?.id], [[], 'balanced'])
-  assert.deepEqual(applyPreset(plain, 'saved:with-types').types, s.types)
+  assert.equal(matchingPreset(saved)?.id, 'saved:with-types', 'saved wins over the built-in with the same rows')
+  // a saved preset matches only with its types too; then the built-in with those rows shows
+  assert.equal(matchingPreset(removeType(saved, 'images'))?.id, 'balanced', 'a removed type: not the saved one')
+  assert.equal(matchingPreset(updateType(saved, 'images', { description: 'other' }))?.id, 'balanced', 'an edited type: not the saved one')
+  const custom = withRow('hard', { model: { agent: 'claude', model: 'opus', effort: 'max' }, fallback: null }, { types: s.types })
+  assert.equal(matchingPreset(custom), null, 'edited rows are Custom, types or not')
+  // a built-in sets roles and rows only and keeps the user's types; a saved preset applies its own
+  const eco = applyPreset({ ...saved, lead: { agent: 'claude', model: 'opus' } }, 'economy')
+  assert.deepEqual([eco.lead, eco.workers, eco.types, eco.presets], [null, BUILT_IN_PRESETS[1].workers, s.types, saved.presets])
+  const plainSaved = savePreset(S(), 'No types')
+  const noTypes = applyPreset({ ...plainSaved, types: s.types }, 'saved:no-types')
+  assert.deepEqual([noTypes.types, matchingPreset(noTypes)?.id], [[], 'saved:no-types'])
+  assert.deepEqual(applyPreset(noTypes, 'saved:no-types').types, [])
+  assert.deepEqual(applyPreset(applyPreset(saved, 'best'), 'saved:with-types').types, s.types)
   for (const p of BUILT_IN_PRESETS) assert.deepEqual(p.types, [])
   // an older saved preset without types reads as none
   const old = normalizeRouting({ presets: [{ name: 'Old', workers: DEFAULT_ROUTING.workers }] })
@@ -453,4 +461,13 @@ test('typed task escalation: the first retry runs on the fallback, then refused;
   assert.equal(bad(worker({ type: 'images', attempt: 1 }, sameFb, ALL3)), 'No stronger model for Images: ask the user before trying again.')
   const gone = bad(worker({ type: 'images', attempt: 1 }, s, { agents: ['codex'], models: { codex: CODEX } }))
   assert.equal(gone, 'No stronger model for Images: ask the user before trying again.')
+})
+
+test('resetRouting: Balanced roles and rows; types and saved presets stay', () => {
+  const s = savePreset(applyPreset(typed(), 'best'), 'Mine')
+  const edited = { ...s, coordinator: { agent: 'claude', model: 'opus' }, lead: { agent: 'codex' } }
+  const reset = resetRouting(edited)
+  assert.deepEqual(reset, { ...DEFAULT_ROUTING, types: s.types, presets: s.presets })
+  assert.equal(matchingPreset(reset)?.id, 'balanced')
+  assert.deepEqual(resetRouting(S()), DEFAULT_ROUTING)
 })

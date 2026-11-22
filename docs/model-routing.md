@@ -20,13 +20,15 @@ runs on the row for its difficulty: simple, normal or hard. Difficulty measures 
 task needs; types let you send other kinds of work, such as browser or image work, to a model you
 prefer for it.
 
-**Preset.** One pop-up sets the coordinator, the lead, all three worker rows and your task types at
-once. Your saved presets stay as they were.
+**Preset.** One pop-up sets the coordinator, the lead and all three worker rows at once; a saved
+preset sets your task types too. Your saved presets stay as they were.
 
 - **Balanced, Economy, Best quality:** built-in starting points. They are fixed; edit a row and the
-  pop-up shows Custom. They have no task types: applying one removes your current types, and while
-  you have types no built-in matches.
-- **Saved presets:** use Save as… to keep the current setup, types included, under a name (up to 10). The same name
+  pop-up shows Custom. They leave your task types alone: applying one keeps them, and a built-in
+  shows as selected when the roles and rows match, whatever your types. Reset goes back to Balanced
+  and also keeps your types and saved presets.
+- **Saved presets:** use Save as… to keep the current setup, types included, under a name (up to 10).
+  Applying one brings its types back; it shows as selected only while your types equal its types. The same name
   replaces that preset. A built-in's name is refused. A saved preset can be deleted; a built-in one
   cannot.
 - **Custom:** shown while nothing matches a preset.

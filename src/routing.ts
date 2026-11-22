@@ -335,23 +335,32 @@ export function presetsOf(s: RoutingSettings): Preset[] {
 }
 
 /**
- * The preset whose coordinator, lead, workers and types equal these settings; null means "Custom".
- * Built-ins have no types, so with any type set only a saved preset can match.
+ * The preset these settings equal; null means "Custom". A built-in has no types and never touches
+ * them, so it matches on coordinator, lead and workers whatever the types; a saved preset matches
+ * only when its types are equal too.
  * A saved preset wins over a built-in with the same setup (the last saved match if several).
  */
 export function matchingPreset(s: RoutingSettings): Preset | null {
   const n = normalizeRouting(s)
-  const equal = (p: Preset) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers) && same(p.types, n.types)
-  const saved = [...clone(n.presets)].reverse().find(equal)
-  return saved ?? clone(BUILT_IN_PRESETS).find(equal) ?? null
+  const rows = (p: Preset) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers)
+  const saved = [...clone(n.presets)].reverse().find((p) => rows(p) && same(p.types, n.types))
+  return saved ?? clone(BUILT_IN_PRESETS).find(rows) ?? null
 }
 
-/** The settings with a preset's coordinator, lead, workers and types (none for a built-in); the saved presets stay. */
+/**
+ * The settings with a preset's coordinator, lead and workers; a saved preset brings its types too,
+ * a built-in keeps the user's types. The saved presets stay.
+ */
 export function applyPreset(s: RoutingSettings, id: string): RoutingSettings {
   const n = normalizeRouting(s)
   const p = presetsOf(n).find((x) => x.id === id)
   if (!p) throw new Error(`No preset ${id}.`)
-  return { ...n, coordinator: p.coordinator, lead: p.lead, workers: p.workers, types: p.types }
+  return { ...n, coordinator: p.coordinator, lead: p.lead, workers: p.workers, types: p.builtIn ? n.types : p.types }
+}
+
+/** Settings → Models' Reset: Balanced's coordinator, lead and workers; the types and saved presets stay. */
+export function resetRouting(s: RoutingSettings): RoutingSettings {
+  return applyPreset(s, BALANCED.id)
 }
 
 /**
