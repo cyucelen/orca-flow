@@ -129,5 +129,5 @@ test('precedence from stored settings: override > role > auto', () => {
   const routing = normalizeSettings({ routing: { lead: { agent: 'claude', model: 'opus' }, candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }] } }).routing
   assert.deepEqual((route(routing, { role: 'lead' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'opus' })
   assert.deepEqual((route(routing, { role: 'lead', model: 'sonnet' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'sonnet' })
-  assert.deepEqual((route(routing, { role: 'worker', taskClass: 'trivial' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku', effort: 'low' })
+  assert.deepEqual((route(routing, { role: 'worker', taskClass: 'trivial' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku' }, 'Orca takes no effort for Haiku')
 })

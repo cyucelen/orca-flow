@@ -31,7 +31,7 @@ test('unavailable rows say why; addable leaves out what is already a candidate',
 
 test('example routing shows what route() picks now for each task class', () => {
   const ex = examples(structuredClone(DEFAULT_ROUTING), avail)
-  assert.deepEqual(ex.map((e) => e.text), ['Claude Haiku · low', 'Claude Sonnet · medium', 'Claude Opus · high'])
+  assert.deepEqual(ex.map((e) => e.text), ['Claude Haiku', 'Claude Sonnet · medium', 'Claude Opus · high'])
   assert.ok(ex.every((e) => e.ok && e.tip.length > 0))
   const none = examples({ ...structuredClone(DEFAULT_ROUTING), candidates: [] }, avail)
   assert.ok(none.every((e) => !e.ok && e.text === 'No model available'))
