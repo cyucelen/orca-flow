@@ -214,8 +214,8 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
   yet" (see [Card writer](#card-writer)).
 - **Models:** a preset (Balanced, Economy, Best quality, your saved ones or Custom), the model and
   effort for coordinators and leads, a model, effort and fallback per worker task kind
-  ([Model routing](docs/model-routing.md)). Task types are kept with them (in `config.json` until
-  the page shows them).
+  ([Model routing](docs/model-routing.md)). The page also lists your task types: add, edit and
+  remove them, with suggestions.
 - **Message Check:** Off, All agents (every coordinator and lead) or Some folders, with the folder
   list ([Message format](#message-format)).
 - **Capacity:** the memory always kept free and the extra room under memory pressure

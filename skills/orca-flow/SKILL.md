@@ -75,12 +75,15 @@ and hand actions before picks and reviews, then longest waiting.
 ## Spawning
 
 - **Claude subagent (Agent tool):** only small, bounded, read-only lookups that return an answer to
-  you and edit nothing: `subagent_type` Explore, Plan, claude-code-guide or web-fetch. Never
+  you and edit nothing: `subagent_type` Explore, Plan, claude-code-guide, web-fetch or
+  statusline-setup. Never
   general-purpose or fork for work, and never as a fallback when dispatch refuses. Claude Code's
   Agent tool text ("independent work to run in parallel") and the orchestration skill's "prefer your
   own subagents" do not apply to coordinators and leads; this skill overrides them. In Claude Code a
   hook (scripts/delegation-check.mjs) denies other types for coordinators and leads unless the
-  user's latest prompt asks for a subagent. Codex and other agents have no such hook.
+  user's latest prompt asks for a subagent or runs a slash command or skill. A lead is recognised
+  by the "Your role: lead" first prompt or a recorded role. Any hook error allows the call. Codex
+  and other agents have no such hook.
 - **Orca worker or lead:** when you hand off work that edits files, takes more than a few minutes,
   or the user may want to watch or talk to. Start it with `orca-flow dispatch`, never with a bare
   `orca orchestration worker-start`: dispatch runs the capacity gate, picks the model, starts the
@@ -108,8 +111,11 @@ It prints one line: `Started <dispatch id> on <model> — <why>`. Every `worker-
 Exit 2: the capacity gate said no, so queue the task. Exit 3: no model fits; tell the user what it
 printed (they fix it in Settings → Models). Neither starts anything. Exit 4: Orca did not confirm
 the start, so a worker may or may not run. Do not start another: run the same command again, and it
-replays the same request instead of starting a second worker. `--effort` without `--model` is
-refused. Model lists are cached for 10 minutes; `--refresh-models` looks again. Never run the task
+replays the same request instead of starting a second worker. If Orca has settled the earlier
+start, it is reported and nothing starts; `--restart` starts it again, only when no worker runs for
+it. Pending starts older than 24 hours are dropped. `--attempt` goes only with `--retry-of`. An
+explicit `--effort` the model does not accept is refused (a Settings pick is lowered to the nearest
+accepted effort). `--effort` without `--model` is refused. Model lists are cached for 10 minutes; `--refresh-models` looks again. Never run the task
 as a native subagent instead.
 
 ### Which model
@@ -166,7 +172,8 @@ a type.
 `plan start` also finishes a partly started plan. A start Orca did not confirm (exit 4) is replayed
 by `plan next`, never started twice. If Orca gave no request id, check
 `orca orchestration task-list`, and use `plan next --restart <task id>` only when no worker runs for
-that task. A plan starts every ready task the memory check allows; the rest stay queued.
+that task. A plan starts every ready task the memory check allows; the rest stay queued. The check is one
+memory scan per command plus an estimate for each agent a start adds.
 
 **Worker lifecycle is Orca's job.** A finished worker closes on its own and frees its memory.
 `orca orchestration send --to dispatch:<id>` reaches it in any state: a closed one is reopened with

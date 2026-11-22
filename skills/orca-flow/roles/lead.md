@@ -143,8 +143,9 @@ turn; otherwise send them to the worker that owns those files.
 - A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
   worker is running on those files.
 - A demonstrated failure the worker cannot fix (it reported `--outcome failed`, or the fix you
-  sent did not work): rerun it one tier up with
-  `orca-flow dispatch --role worker --retry-of <its dispatch id> --worktree current`. Never
+  sent did not work): rerun it with
+  `orca-flow dispatch --role worker --retry-of <its dispatch id> --worktree current`. A difficulty
+  task moves up one row until hard; a typed task tries its fallback once. Never
   escalate before a failure. A task that already ran on the hard row is refused; then ask the user.
 
 **A worker's question:** answer it with `orca orchestration reply --id <message_id>` when it follows

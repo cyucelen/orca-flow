@@ -20,17 +20,17 @@ runs on the row for its difficulty: simple, normal or hard. Difficulty measures 
 task needs; types let you send other kinds of work, such as browser or image work, to a model you
 prefer for it.
 
-**Preset.** One pop-up sets the coordinator, the lead and all three worker rows at once; a saved
+**Preset.** One pill sets the coordinator, the lead and all three worker rows at once; a saved
 preset sets your task types too. Your saved presets stay as they were.
 
-- **Balanced, Economy, Best quality:** built-in starting points. They are fixed; edit a row and the
-  pop-up shows Custom. They leave your task types alone: applying one keeps them, and a built-in
+- **Balanced, Economy, Best quality:** built-in starting points. They are fixed; edit a row and
+  Custom is selected. They leave your task types alone: applying one keeps them, and a built-in
   shows as selected when the roles and rows match, whatever your types. Reset goes back to Balanced
   and also keeps your types and saved presets.
-- **Saved presets:** use Save as… to keep the current setup, types included, under a name (up to 10).
+- **Saved presets:** use + Save current to keep the current setup, types included, under a name (up to 10).
   Applying one brings its types back; it shows as selected only while your types equal its types. The same name
-  replaces that preset. A built-in's name is refused. A saved preset can be deleted; a built-in one
-  cannot.
+  replaces that preset. A built-in's name is refused. A selected saved preset has a remove control; a
+  built-in one has none.
 - **Custom:** shown while nothing matches a preset.
 
 The built-ins, all on Claude. Each row is the model and effort, then the fallback:
@@ -45,16 +45,16 @@ All three leave the coordinator and the lead on the provider default. Haiku has 
 Orca takes none for it.
 
 **Coordinator and lead.** A model and an effort each, or Provider default. Provider default passes no
-model, which is how Orca Flow started them before routing existed. Each pop-up lists the agents Orca
+model, which is how Orca Flow started them before routing existed. Each picker lists the agents Orca
 has installed.
 
 **Task types.** Up to 12 types of your own, each with a name, a description (up to 120 characters)
 and a row: a model, an effort and one fallback. The description tells the agent that splits the
 work when a task is of that type. Suggestions to start from (names only; no model comes with them):
-Browser checks, Images, Docs & copy, Research, Code review. A type's id is a slug of its first name
-(`browser-checks`) and stays the same when you rename it. A difficulty's name (simple, normal, hard)
-cannot be a type's name. Until the Models page shows types, they are kept in
-`~/.orca-flow/config.json` under `routing.types`:
+Browser checks, Images, Docs & copy, Research, Code review. The page lists your types: add one
+(with + Add task type, or from a suggestion), edit or remove it. A type's id is a slug of its first
+name (`browser-checks`) and stays the same when you rename it. A difficulty's name (simple, normal,
+hard) cannot be a type's name. They are kept in `~/.orca-flow/config.json` under `routing.types`:
 
 ```json
 { "routing": { "types": [
@@ -76,7 +76,8 @@ just to use a type.
 Each kind has a row: a model, an effort and one fallback. A model shown dimmed is not available on
 this machine; its tooltip says why and whether a fallback will be used.
 
-A plan starts every ready task that the memory check allows; the rest stay queued.
+A plan starts every ready task that the memory check allows; the rest stay queued. The check is one
+memory scan per `plan start` or `plan next` command, plus an estimate for each agent it starts.
 
 After a failure, the nth retry of an untyped task runs n rows up, never past hard; a retry of a task
 that already ran on the hard row is refused and the agent asks you. A typed task never moves into
@@ -114,8 +115,11 @@ Then the model:
   It never falls back to a provider default or a premium model on its own.
 - **A coordinator or lead pick whose model is unavailable:** that agent's default model starts, and
   the reason says so. If the agent itself is not installed, it is refused.
-- **Effort:** passed only where the provider reports it and Orca accepts it at launch. If the effort
-  asked for is not accepted, the nearest lower one is used. `--effort` without `--model` is refused:
+- **A coordinator pick for another provider:** the coordinator launches on its own provider's default
+  model, and the reason records the mismatch. Every coordinator launch is logged to `routes.jsonl`.
+- **Effort:** passed only where the provider reports it and Orca accepts it at launch. A Settings
+  pick the model does not accept is shown, and used, as the nearest lower accepted effort. An
+  explicit `--effort` that is not accepted is refused. `--effort` without `--model` is refused:
   an effort needs a model to apply to. Orca 1.4.263 takes no effort for the
   `haiku` alias, so a Haiku start carries none.
 
@@ -133,7 +137,11 @@ What Orca Flow can verify on this machine, with no API call:
 - **Agents:** `orca agent installed --json`.
 - **Claude models:** Claude Code's own `list_models` request, sent to a local `claude` process. It
   lists models, display names and efforts without a model turn.
-- **Codex models:** `codex debug models`.
+- **Codex models:** `codex debug models`, run with the selected Codex account's `CODEX_HOME`.
+
+The plugin runs `codex` and `claude` as an interactive login shell finds them (the same binaries
+Orca's terminals use), then a login shell, then fixed paths. The card writers resolve them the same
+way.
 
 Orca has no model listing API for plugins, so these are the sources. If Claude's list cannot be
 read, the aliases (`haiku`, `sonnet`, `opus`, `fable`) and full `claude-*` ids are accepted without
@@ -162,13 +170,17 @@ orca-flow route --role worker --type browser --explain
 **Start a worker.** Runs the capacity gate, routes, then `orca orchestration worker-start` with the
 routed flags. Exit 2: capacity said no (queue it). Exit 3: no model fits. Neither starts anything.
 Exit 4: Orca did not confirm the start, so the outcome is unknown. `--dry-run` prints the command
-and starts nothing.
+and starts nothing. `--attempt` is accepted only with `--retry-of`.
 
-Model lists are cached for 10 minutes in `~/.orca-flow/models-cache.json`. Add `--refresh-models` to
-look again.
+The CLI caches model lists for 10 minutes in `~/.orca-flow/models-cache.json`, per Codex account.
+Add `--refresh-models` to look again.
 
 After exit 4, run the same dispatch again. It replays Orca's request (`--retry-request <id>`, which
-you can also pass yourself), so a worker is never started twice.
+you can also pass yourself), so a worker is never started twice. If Orca gave no request id, the same
+command asks Orca first. If the earlier start is running or has settled, it is reported (its outcome
+and dispatch id), its record is dropped and nothing starts. If Orca still does not know it, the
+command exits 4 until you check `orca orchestration task-list` and add `--restart`, which starts it
+again on your word that no worker runs for it. Pending starts older than 24 hours are dropped.
 
 ```sh
 orca-flow dispatch --role worker --kind normal --worktree current \
@@ -237,12 +249,15 @@ denies the call only when all of these hold:
 - it is a coordinator or a lead;
 - the subagent type is not read-only. Always allowed: `Explore`, `Plan`, `claude-code-guide`,
   `web-fetch`, `statusline-setup`;
+- your latest prompt is not a slash command or skill (such as `/review`), which starts the subagents
+  it needs;
 - your latest prompt does not ask for a subagent (it names a "subagent", "sub-agent", "Agent tool" or
   "native agent" outside a negation like "no subagents").
 
-So if you ask for a subagent, you get one. The denial tells the agent to start a worker instead, and
+A lead is recognised by the "Your role: lead" first prompt or a recorded role. If you ask for a
+subagent, you get one. The denial tells the agent to start a worker instead, and
 to queue the task or tell you if capacity or routing refuses. Workers, chats you started yourself and
-every other tool are not touched. If the hook errors, the call is allowed.
+every other tool are not touched. Any hook error allows the call.
 
 The hook is on by default. Turn it off in `~/.orca-flow/config.json`:
 
@@ -264,10 +279,10 @@ call's description.
 ## Where decisions show
 
 - **One line from dispatch:** `Started <dispatch id> on <model> — <why>`.
-- **`~/.orca-flow/routes.jsonl`:** one line per routed start, with the choice, the source, the reason,
+- **`~/.orca-flow/routes.jsonl`:** one line per routed start (coordinator launches too), with the choice, the source, the reason,
   the type (its id, or null), the kind, the risk and the attempt. `--retry-of` reads it too.
-- **The sidebar:** a worker's row shows the model its dispatch was routed to in its tooltip, from
-  `routes.jsonl`.
+- **The sidebar:** a row's tooltip shows the reason logged in `routes.jsonl` for its dispatch (older
+  lines without one get a rebuilt label).
 
 ## Limits
 
