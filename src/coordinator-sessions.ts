@@ -250,7 +250,7 @@ export class ResumeRefusedError extends Error {
 export class ResumeRunningError extends Error {
   readonly launch: Launch
   constructor(launch: Launch) {
-    super('The conversation is still resuming in its terminal, which is shown. Click the coordinator again once it is ready; that adopts this same terminal and resumes nothing again.')
+    super(`The conversation is still resuming in its terminal, which is shown. Click ${launch.member ? 'the coordinator' : 'it'} again once it is ready; that adopts this same terminal and resumes nothing again.`)
     this.launch = launch
   }
 }
@@ -361,6 +361,37 @@ export function markRefused(s: CoordinatorSessions, id: string, reason: string):
 }
 
 /**
+ * Resumes one exact provider conversation by its id and returns the agent of the exact terminal the
+ * resume returned: a coordinator's member (`member`, its id) or a closed conversation in its folder.
+ * `adopt`: a resume of this same conversation still running from an earlier click, bound now instead
+ * of resumed again. Throws ResumeRefusedError (nothing runs), ResumeRunningError (still starting,
+ * remember its Launch) or ResumeUnverifiedError (the terminal runs something else).
+ */
+export async function resumeExact(target: { workspaceId: string; agent: string; sessionId: string; member?: string }, io: ResumeIo, adopt?: Launch): Promise<Extract<ResumeBinding, { status: 'bound' }>> {
+  const { workspaceId, agent, sessionId, member } = target
+  const name = providerName(agent)
+  let terminalId: string
+  let started: boolean | undefined
+  if (adopt && adopt.member === member && adopt.sessionId === sessionId && adopt.workspaceId === workspaceId) terminalId = adopt.terminalId
+  else {
+    const saved = io.saved ? await io.saved(agent, sessionId, workspaceId).catch(() => null) : null
+    if (saved === false) throw new ResumeRefusedError(`${name} saved no conversation ${sessionId}: the previous session ended before its first message, so there is nothing to resume. Nothing was launched; start a new conversation.`, true)
+    ;({ terminalId, started } = await io.resume({ workspaceId, agent, sessionId }))
+  }
+  const b = await io.binding(terminalId, sessionId)
+  if (b.status === 'exited') {
+    const missing = conversationMissing(b.detail)
+    const reused = started === false ? ' Orca handed back the terminal of an earlier attempt, where it had already exited; nothing new was launched.' : ''
+    const said = b.detail ? `${name} said: “${b.detail}”` : `${name} exited before the conversation resumed.`
+    throw new ResumeRefusedError(`${said}${reused}${missing ? ' That conversation cannot be resumed; start a new one.' : ''}`, missing, b.terminal)
+  }
+  if (b.status === 'running') throw new ResumeRunningError({ workspaceId, terminalId, agent, ...(member ? { member } : {}), sessionId })
+  if (b.workspaceId !== workspaceId || b.agent.agentType !== agent || !b.agent.terminal || !b.agent.orcaSession) throw new ResumeUnverifiedError(`The resumed terminal now runs ${b.agent.agentType ?? 'another agent'} in another conversation, not ${member ? `this member's ${name} one` : `the ${name} conversation it resumed`}. No fallback was selected; inspect it before retrying.`)
+  if (agent === 'antigravity' && (!b.agent.live || b.resumeSessionId !== sessionId)) throw new ResumeUnverifiedError('Orca could not confirm the original Antigravity conversation in the resumed terminal. Check its sign-in and conversation before selecting it.')
+  return b
+}
+
+/**
  * Resume is an explicit current-member action. Provider ids and Orca ids stay distinct. `adopt`: a
  * resume of this member still running from an earlier click, bound now instead of resuming again.
  */
@@ -368,26 +399,8 @@ export async function resumeExactMember(s: CoordinatorSessions, id: string, io: 
   const m = s.members.find((m) => m.id === id)
   if (!m || s.current !== id) throw new Error('Only the explicitly current member can be resumed. History stays read-only.')
   if (!m.resumeSessionId || !m.agentType) throw new Error('No verified provider resume id was recorded. Orca conversation ids cannot be used as resume ids; nothing was launched.')
-  const name = providerName(m.agentType)
   if (resumeRefused(m)) throw new ResumeRefusedError(m.resumeRefused!.reason, true)
-  let terminalId: string
-  let started: boolean | undefined
-  if (adopt?.member === id && adopt.sessionId === m.resumeSessionId && adopt.workspaceId === m.workspaceId) terminalId = adopt.terminalId
-  else {
-    const saved = io.saved ? await io.saved(m.agentType, m.resumeSessionId, m.workspaceId).catch(() => null) : null
-    if (saved === false) throw new ResumeRefusedError(`${name} saved no conversation ${m.resumeSessionId}: the previous session ended before its first message, so there is nothing to resume. Nothing was launched; start a new conversation.`, true)
-    ;({ terminalId, started } = await io.resume({ workspaceId: m.workspaceId, agent: m.agentType, sessionId: m.resumeSessionId }))
-  }
-  const b = await io.binding(terminalId, m.resumeSessionId)
-  if (b.status === 'exited') {
-    const missing = conversationMissing(b.detail)
-    const reused = started === false ? ' Orca handed back the terminal of an earlier attempt, where it had already exited; nothing new was launched.' : ''
-    const said = b.detail ? `${name} said: “${b.detail}”` : `${name} exited before the conversation resumed.`
-    throw new ResumeRefusedError(`${said}${reused}${missing ? ' That conversation cannot be resumed; start a new one.' : ''}`, missing, b.terminal)
-  }
-  if (b.status === 'running') throw new ResumeRunningError({ workspaceId: m.workspaceId, terminalId, agent: m.agentType, member: id, sessionId: m.resumeSessionId })
-  if (b.workspaceId !== m.workspaceId || b.agent.agentType !== m.agentType || !b.agent.terminal || !b.agent.orcaSession) throw new ResumeUnverifiedError(`The resumed terminal now runs ${b.agent.agentType ?? 'another agent'} in another conversation, not this member's ${name} one. No fallback was selected; inspect it before retrying.`)
-  if (m.agentType === 'antigravity' && (!b.agent.live || b.resumeSessionId !== m.resumeSessionId)) throw new ResumeUnverifiedError('Orca could not confirm the original Antigravity conversation in the resumed terminal. Check its sign-in and conversation before selecting it.')
+  const b = await resumeExact({ workspaceId: m.workspaceId, agent: m.agentType, sessionId: m.resumeSessionId, member: id }, io, adopt)
   const a = b.agent
   const fresh = b.resumeSessionId && b.resumeSessionId !== a.orcaSession ? b.resumeSessionId : m.resumeSessionId
   return { ...s, members: s.members.map((member) => {

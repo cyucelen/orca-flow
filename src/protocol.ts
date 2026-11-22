@@ -116,6 +116,11 @@ export type WorkspaceRow = {
   coordinatorMember?: string
   historical?: boolean
   folderOf?: string
+  /**
+   * Set on a folder row that stands for a closed conversation (Asleep): its exact provider session id,
+   * read from the summary bound to that conversation; absent when none is verified (no resume).
+   */
+  resumeId?: string
   /** The Linear issue Orca linked to the worktree (`--linear-issue`), as its identifier (BOU-4179). */
   linearIssue?: string | null
   /** Where its Linear label opens, when the Linear data knows (see issueLink); null or absent: plain text. */
@@ -382,7 +387,10 @@ declare module 'orca' {
     /** Memory, heaviest sessions, finished sessions and merged worktrees, for the opened cockpit. */
     'sidebar.cockpit': { output: CockpitStats }
     /** Ends agent sessions by pane; the worker looks up their terminals at that moment. Transcripts stay resumable. */
-    'sidebar.closeSessions': { input: { panes: string[] }; output: { closed: number } }
+    /** `reason`: why nothing was closed (`closed` 0), shown in place of a success. */
+    'sidebar.closeSessions': { input: { panes: string[] }; output: { closed: number; reason?: string } }
+    /** Resumes a closed folder conversation (an Asleep row) by its exact provider id; `starting`: it still starts, shown. */
+    'sidebar.resumeConversation': { input: { workspaceId: string; pane: string }; output: { ok: boolean; error?: string; starting?: boolean } }
     /** Removes a worktree after re-checking that it is clean and its PR merged. */
     'sidebar.removeWorktree': { input: { workspaceId: string; force?: boolean }; output: { removed: boolean; reason?: string; branch?: string; dirty?: string[] } }
     /** Creates its folder, instructions and empty membership; first click chooses/starts a provider. */

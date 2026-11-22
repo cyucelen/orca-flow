@@ -19,8 +19,8 @@ import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, read
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
-import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, ResumeRunningError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
-import { askingRows, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, showable, type ChatTarget } from './view.ts'
+import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
+import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
@@ -485,17 +485,87 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
  * Pure: a row for each agent in a coordinator's folder other than its session (a lead or worker the
  * coordinator started in a tab there), so it shows under the coordinator like a worktree's lead and
  * its ask reaches Up next. No branch or PR: the folder is no worktree, and it is never removed.
+ *
+ * The folder's open terminals belong to whichever conversations run there, so each row is open only
+ * when Orca says its own pane is (`live`). A closed conversation is one row however many panes Orca
+ * kept of it (closedRows), and none while the same conversation runs in another pane here.
  */
 export function folderRows(row: WorkspaceRow, session: AgentInfo | null, coordinator: string): WorkspaceRow[] {
-  return row.agents.filter((a) => a !== session).map((a) => ({
-    ...row,
+  const agents = row.agents.filter((a) => a !== session)
+  const base = { ...row, branch: null, pr: null, folderOf: coordinator }
+  const open = agents.filter((a) => a.live !== false).map((a) => ({
+    ...base,
     agents: [a],
     state: a.state,
     priority: row.card?.priority ?? a.summary?.priority ?? null,
-    branch: null,
-    pr: null,
-    folderOf: coordinator
+    liveTerminals: 1
   }))
+  return [...open, ...closedRows(base, row.agents, agents.filter((a) => a.live === false))]
+}
+
+/**
+ * Pure: one row per closed conversation (its Orca conversation id and agent; a pane without one is
+ * its own), standing for its newest pane, with `resumeId` only when exactly one provider id is bound
+ * to it (resumeIdOf). Nothing for a conversation that still runs in another pane among `all`.
+ */
+function closedRows(base: WorkspaceRow, all: AgentInfo[], closed: AgentInfo[]): WorkspaceRow[] {
+  const groups = new Map<string, AgentInfo[]>()
+  for (const a of closed) {
+    if (conversationRows(all, a).some((x) => x.live !== false)) continue
+    const key = a.orcaSession ? JSON.stringify([a.orcaSession, a.agentType]) : JSON.stringify([a.paneKey])
+    groups.set(key, [...(groups.get(key) ?? []), a])
+  }
+  return [...groups.values()].map((panes) => {
+    // Its newest summary carries the latest title; this picks what the row shows, never the resume id.
+    const a = panes.reduce((x, y) => ((y.summary?.updatedAt ?? 0) > (x.summary?.updatedAt ?? 0) ? y : x))
+    const resumeId = resumeIdOf(panes)
+    return { ...base, agents: [a], state: a.state, priority: base.card?.priority ?? a.summary?.priority ?? null, liveTerminals: 0, ...(resumeId ? { resumeId } : {}) }
+  })
+}
+
+/**
+ * Pure: the provider id to resume a closed conversation by, from the summaries of its panes: each
+ * must be bound to the pane's own Orca conversation and agent (its orcaSession and providerSession,
+ * as the summarizer read them from that conversation's transcript). Several different ids, or none,
+ * give nothing: never the newest, the only file or Orca's own conversation id.
+ */
+export function resumeIdOf(panes: AgentInfo[]): string | undefined {
+  const ids = new Set(panes.flatMap((a) => {
+    const s = a.summary
+    return a.orcaSession && a.agentType && s?.orcaSession === a.orcaSession && s.providerSession?.provider === a.agentType && s.providerSession.id
+      ? [s.providerSession.id] : []
+  }))
+  const [id] = ids
+  return ids.size === 1 && id !== panes[0].orcaSession ? id : undefined
+}
+
+/**
+ * Resumes a closed conversation of a coordinator's folder (its Asleep row, found again in `rows`) by
+ * its exact provider id, and shows the exact terminal the resume returned. It reads and writes no
+ * coordinator membership, current member or run routing, and closes or switches no other session.
+ * `pending`, per conversation: the terminal a click resumed it in; while that terminal lives, a click
+ * adopts it and resumes nothing again.
+ */
+export async function resumeFolderConversation(rows: WorkspaceRow[], target: { workspaceId: string; pane: string }, io: ResumeIo & { open: (workspaceId: string, terminal: string) => Promise<boolean>; terminals: () => Promise<TerminalRecord[]> }, pending: Map<string, Launch>): Promise<{ ok: boolean; error?: string; starting?: boolean }> {
+  const row = rows.find((r) => r.id === target.workspaceId && r.folderOf && r.agents[0]?.paneKey === target.pane)
+  const a = row?.agents[0]
+  if (!row || !a) return { ok: false, error: 'That conversation is no longer in this coordinator folder. Nothing was launched.' }
+  if (!asleep(row)) return a.terminal && await io.open(row.id, a.terminal) ? { ok: true } : { ok: false, error: 'This conversation is open again; nothing was launched.' }
+  if (!row.resumeId || !a.agentType) return { ok: false, error: `${NO_RESUME_ID}. Nothing was launched.` }
+  const key = askKey(row, a)
+  const known = pending.get(key)
+  if (known && (known.sessionId !== row.resumeId || !launchedTerminal(await io.terminals(), known.terminalId))) pending.delete(key)
+  let bound: Awaited<ReturnType<typeof resumeExact>>
+  try { bound = await resumeExact({ workspaceId: row.id, agent: a.agentType, sessionId: row.resumeId }, io, pending.get(key)) }
+  catch (e) {
+    if (e instanceof ResumeRunningError) { pending.set(key, e.launch); return { ok: true, starting: true, error: e.message } }
+    pending.delete(key)
+    if (e instanceof ResumeRefusedError || e instanceof ResumeUnverifiedError) return { ok: false, error: e.message }
+    return { ok: false, error: `The conversation could not be resumed: ${(e as Error).message}` }
+  }
+  const terminal = bound.agent.terminal!
+  pending.set(key, { workspaceId: row.id, terminalId: terminal, agent: a.agentType, sessionId: row.resumeId })
+  return await io.open(row.id, terminal) ? { ok: true } : { ok: false, error: 'The conversation resumed, but its terminal could not be shown.' }
 }
 
 /** Every row of the last snapshot, coordinator workspaces included (the panel's rows leave them out). */
@@ -1409,6 +1479,18 @@ export default function activate(orca: OrcaWorkerApi): void {
     return opened
   }
   orca.panels.handle('sidebar.open', (input) => openChat(input))
+
+  // An Asleep row of a coordinator's folder: one resume at a time per conversation, adopted, never repeated.
+  const folderResumes = new Map<string, Launch>()
+  const resumingFolder = new Set<string>()
+  orca.panels.handle('sidebar.resumeConversation', ({ workspaceId, pane }) => exclusive(resumingFolder, JSON.stringify([workspaceId, pane]), async () => {
+    try {
+      const { rows } = await refresh()
+      const outcome = await resumeFolderConversation(rows, { workspaceId, pane }, { ...resumeIo, open: async (w, terminal) => (await openChat({ workspaceId: w, terminal })).opened, terminals: terminalsNow }, folderResumes)
+      refreshSoon()
+      return outcome
+    } catch (e) { return { ok: false, error: (e as Error).message } }
+  }, () => ({ ok: false, error: 'This conversation is already being resumed.' })))
 
   // Option+1..9 (contributes.keybindings): open the nth chat of the tree, as a click on its row does.
   // The panel stores its folded groups, so the numbers skip what it hides, as its own key handler does.

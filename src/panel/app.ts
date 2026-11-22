@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { asleep, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
@@ -231,7 +231,7 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
   if (d.handover) {
@@ -263,6 +263,7 @@ document.addEventListener('click', (event) => {
     void orca.plugin.request('sidebar.open', d.terminal ? { workspaceId: d.open, terminal: d.terminal } : { workspaceId: d.open })
     return
   }
+  if (d.resume && d.workspace) { void resumeAsleep(d.workspace, d.resume); return }
   if (d.coordinator) {
     if (toastEl.contains(el)) hideToast()
     void wake(d.coordinator)
@@ -314,11 +315,11 @@ async function runAction(key: string): Promise<void> {
     if (key === 'closeall' && snap) {
       // Every finished session (a lead waiting on its workers, or not yet reported, is not one).
       const panes = finishedAgents(snap.rows).map((a) => a.paneKey)
-      const { closed } = await orca.plugin.request('sidebar.closeSessions', { panes })
-      ui.notice = { key, text: `${closed} asleep`, ok: closed > 0 }
+      const { closed, reason } = await orca.plugin.request('sidebar.closeSessions', { panes })
+      ui.notice = { key, text: closed ? `${closed} asleep` : reason ?? 'Nothing was put to sleep', ok: closed > 0 }
     } else if (key.startsWith('close:')) {
-      const { closed } = await orca.plugin.request('sidebar.closeSessions', { panes: [key.slice(6)] })
-      ui.notice = { key, text: closed ? 'Asleep' : 'Could not sleep it', ok: closed > 0 }
+      const { closed, reason } = await orca.plugin.request('sidebar.closeSessions', { panes: [key.slice(6)] })
+      ui.notice = { key, text: closed ? 'Asleep' : reason ?? 'Could not sleep it', ok: closed > 0 }
     } else if (key.startsWith('remove:')) {
       const r = await orca.plugin.request('sidebar.removeWorktree', { workspaceId: key.slice(7) })
       ui.notice = { key, text: r.removed ? 'Removed' : `Kept: ${r.reason ?? 'refused'}`, ok: r.removed }
@@ -673,6 +674,24 @@ async function inline(target: string, pending: string, done: string, call: () =>
   if (ok) setTimeout(() => { if (ui.status.get(target)?.tone === 'ok') { ui.status.delete(target); draw() } }, 1800)
 }
 
+/**
+ * A click on an Asleep row: resumes its exact conversation (the worker finds it again and checks its
+ * id), with the progress and the real outcome on the row. Still starting is said, not called done.
+ */
+async function resumeAsleep(workspaceId: string, pane: string): Promise<void> {
+  const target = `agent:${pane}`
+  if (ui.status.get(target)?.tone === 'pending') return
+  let starting = ''
+  await inline(target, 'Opening…', 'Opened', async () => {
+    const r = await orca.plugin.request('sidebar.resumeConversation', { workspaceId, pane }, { timeoutMs: 90_000 })
+    if (r.starting) starting = r.error ?? 'The conversation is still resuming in its terminal, which is shown.'
+    return r
+  }, () => !starting)
+  if (!starting) return
+  ui.status.set(target, { text: 'Still starting', tone: 'warn', detail: starting })
+  draw()
+}
+
 /** The short row label of a failed inline action, by its running verb; the reason is its detail. */
 const FAILED: Record<string, string> = {
   'Handing over…': 'Handover failed', 'Starting…': "Couldn't start", 'Switching…': "Couldn't switch", 'Sleeping…': "Couldn't sleep",
@@ -715,8 +734,9 @@ function agentMenu(row: WorkspaceRow, a: AgentInfo): MenuItem[] {
     }
   ]
   if (row.pr) items.push({ label: `Open PR #${row.pr.number}`, icon: 'pr', run: () => void orca.shell?.openExternal(row.pr!.url) })
-  // Sleep is reversible (the chat is kept), so it neither looks destructive nor asks first.
-  items.push({ label: 'Sleep', icon: 'moon', run: () => inline(target, 'Sleeping…', 'Asleep', () => orca.plugin.request('sidebar.closeSessions', { panes: [a.paneKey] })) }, 'separator')
+  // Sleep is reversible (the chat is kept), so it neither looks destructive nor asks first. An Asleep
+  // conversation has no terminal to close: no Sleep that cannot work.
+  if (!asleep(row)) items.push({ label: 'Sleep', icon: 'moon', run: () => inline(target, 'Sleeping…', 'Asleep', () => orca.plugin.request('sidebar.closeSessions', { panes: [a.paneKey] })) }, 'separator')
   // Hidden while any agent in the worktree is mid-turn: removing it would end that agent too.
   if (canRemove(row)) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
   return items

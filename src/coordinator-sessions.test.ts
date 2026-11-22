@@ -1,9 +1,11 @@
 import { assert, test } from 'orca/testing'
 import { associateSession, askKey, resumeExactMember, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions, conversationMissing, conversationSaved, markRefused, parseProcs, programRuns, providerMessage, ResumeRefusedError, type ResumeBinding } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
-import { foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, summaryAgents } from './worker.ts'
-import { askingRows, emptyUi, render, wakeView } from './view.ts'
-import type { Coordinator, CoordinatorSessions } from './protocol.ts'
+import { foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, resumeFolderConversation, summaryAgents } from './worker.ts'
+import { askingRows, asleep, chatTargets, emptyUi, finishedAgents, NO_RESUME_ID, render, wakeView } from './view.ts'
+import { closeSessions } from './cockpit.ts'
+import type { AgentSummary, Coordinator, CoordinatorSessions } from './protocol.ts'
+import { readFileSync } from 'node:fs'
 import { coordinatorHandover } from './handover-providers.ts'
 import { firstProvider } from './coordinator-providers.ts'
 
@@ -1306,4 +1308,150 @@ test('terminal launch supplies the Flow coordinator role and fails before host l
   assert.match(calls[0].prompt, /coordinator.json/)
   assert.match(calls[0].prompt, /AGENTS.md/)
   assert.match(calls[0].prompt, /owned projects and scope/)
+})
+
+// ---------- a closed conversation in a coordinator folder (the ayn-odin case) ----------
+
+const ODIN = '/fixture/ayn-odin'
+const ODIN_SESSION = 'claude_5f9da3ea_eeec_43cd_8611_f4407d0e1e70'
+const ODIN_RESUME = '00d58375-fc90-4f61-b38f-29d88d744688'
+
+/** A summary card as the summarizer writes it; `bound` adds the conversation it was read from. */
+function card(title: string, updatedAt: number, bound?: { orcaSession: string; id: string }): AgentSummary {
+  return { title, goal: '', since: '', needs: { type: 'none', ask: '', options: [] }, effort: 'quick', priority: 'P2', role: 'solo', updatedAt, ...(bound ? { orcaSession: bound.orcaSession, providerSession: { provider: 'claude', id: bound.id } } : {}) }
+}
+
+/**
+ * The folder as `orca worktree ps` showed it: five live terminals, a live member (the current PS2
+ * conversation), and two panes Orca kept of one closed conversation (no live PTY). Only the newer
+ * pane's summary is bound to that conversation's provider id.
+ */
+function odin(summaries: Record<string, AgentSummary> = {
+  'stand_1': card('Odin 3 stand', 2, { orcaSession: ODIN_SESSION, id: ODIN_RESUME }),
+  'setup_1': card('Ayn Odin 3 setup', 1)
+}) {
+  const rows = fromPs([{ worktreeId: `r::${ODIN}`, path: ODIN, displayName: 'ayn-odin', repo: 'ayn-odin', liveTerminalCount: 5, agents: [
+    { paneKey: 'setup:1', agentType: 'claude', orcaSessionId: ODIN_SESSION, state: 'done', conversationName: 'CocoonFE on AYN Odin' },
+    { paneKey: 'stand:1', agentType: 'claude', orcaSessionId: ODIN_SESSION, state: 'done', conversationName: 'CocoonFE on AYN Odin' },
+    { paneKey: 'ps2:1', agentType: 'claude', orcaSessionId: 'cddbb1d9-5661-4c2d-a9a2-36bab55ad856', state: 'done', conversationName: 'PS2 games on AYN Odin 3', hasLivePty: true }
+  ] }], { cards: {}, summaries }, new Map([[ODIN, 'folder:ayn-odin']]))
+  const ps2 = rows[0].agents.find((a) => a.paneKey === 'ps2:1')!
+  ps2.terminal = 'term-ps2'
+  const member = memberFrom(rows[0], ps2)
+  const sessions: CoordinatorSessions = { version: 1, current: member.id, members: [member] }
+  const c = { key: 'ayn-odin', name: 'ayn-odin', repos: [], workspaceId: null, dir: ODIN, about: '', sessions }
+  const lineage = { paneOf: new Map([['term-ps2', 'ps2:1']]), dispatcherOf: new Map<string, string>() }
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(assignCoordinators(rows, [c], lineage), coordinators, [ODIN])
+  return { visible, coordinators, sessions }
+}
+
+/** A resume host that records every call; the resumed conversation binds in a new pane of the folder. */
+function resumeHost(binding: (terminalId: string) => ResumeBinding = (terminalId) => ({ status: 'bound', workspaceId: 'folder:ayn-odin', agent: { paneKey: 'resumed:1', workingMode: null, coordinator: 'ayn-odin', leadPane: null, parentPane: null, orcaSession: ODIN_SESSION, dispatch: null, terminal: terminalId === 'pty-new' ? 'term-new' : terminalId, question: null, state: 'done', title: 'Odin 3 stand', agentType: 'claude', live: true, summary: null } })) {
+  const calls = { resume: [] as unknown[], binding: [] as string[], open: [] as [string, string][] }
+  const io = {
+    resume: async (input: { workspaceId: string; agent: string; sessionId: string }) => { calls.resume.push(input); return { terminalId: 'pty-new' } },
+    binding: async (terminalId: string) => { calls.binding.push(terminalId); return binding(terminalId) },
+    saved: async () => true,
+    open: async (workspaceId: string, terminal: string) => { calls.open.push([workspaceId, terminal]); return true },
+    terminals: async () => [{ handle: 'term-new', ptyId: 'pty-new', tabId: 'resumed', leafId: '1' }]
+  }
+  return { io, calls }
+}
+
+test('a closed folder conversation is one Asleep row with the exact resume id; the live member stays current', () => {
+  const { visible, coordinators, sessions } = odin()
+  assert.equal(coordinators[0].session?.paneKey, 'ps2:1')
+  assert.equal(coordinators[0].sessions?.current, sessions.current)
+  assert.equal(visible.length, 1, 'both panes of the closed conversation make one row; the member makes none')
+  const [row] = visible
+  assert.deepEqual([row.agents[0].paneKey, row.agents[0].title, row.liveTerminals, row.resumeId, asleep(row)], ['stand:1', 'Odin 3 stand', 0, ODIN_RESUME, true])
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+  assert.equal(html.match(/data-menu="agent:/g)?.length, 1)
+  assert.match(html, /data-resume="stand:1" data-workspace="folder:ayn-odin"/)
+  assert.match(html, /class="item finished[^"]*"/, 'dimmed')
+  assert.match(html, /<span class="rstatus sleeping">Asleep<\/span>/)
+  assert.ok(!html.includes('Exact session unavailable'))
+  assert.ok(!html.includes('data-open="folder:ayn-odin"'), 'the click resumes, it does not just open the folder')
+})
+
+test('an Asleep row offers no Sleep: not in Sleep all, not among the chat shortcuts, not in its menu', () => {
+  const { visible, coordinators } = odin()
+  assert.deepEqual(finishedAgents(visible), [])
+  assert.deepEqual(chatTargets({ rows: visible, coordinators }).map((t) => t.key), ['coordinator:ayn-odin'])
+  const app = readFileSync(new URL('./panel/app.ts', import.meta.url).pathname, 'utf8')
+  assert.match(app, /if \(!asleep\(row\)\) items\.push\(\{ label: 'Sleep'/)
+  // The live member's own folder row would have been finished and sleepable; a live folder agent still is.
+  const live = foldCoordinatorFolders(fromPs([{ worktreeId: `r::${ODIN}`, path: ODIN, displayName: 'ayn-odin', repo: 'ayn-odin', liveTerminalCount: 5, agents: [
+    { paneKey: 'other:1', agentType: 'claude', orcaSessionId: 'other', state: 'done', conversationName: 'Finished', hasLivePty: true }
+  ] }], { cards: {}, summaries: {} }, new Map([[ODIN, 'folder:ayn-odin']])), [{ key: 'ayn-odin', name: 'ayn-odin', repos: [], workspaceId: null, sessions: { version: 1, current: null, members: [] } }], [ODIN])
+  assert.deepEqual([live[0].liveTerminals, asleep(live[0]), finishedAgents(live).map((a) => a.paneKey)], [1, false, ['other:1']])
+})
+
+test('a click on the Asleep row resumes that exact conversation, shows its terminal and changes no membership', async () => {
+  const { visible, coordinators, sessions } = odin()
+  const before = JSON.stringify(coordinators[0].sessions)
+  const { io, calls } = resumeHost()
+  const pending = new Map<string, Launch>()
+  const outcome = await resumeFolderConversation(visible, { workspaceId: 'folder:ayn-odin', pane: 'stand:1' }, io, pending)
+  assert.deepEqual(outcome, { ok: true })
+  assert.deepEqual(calls.resume, [{ workspaceId: 'folder:ayn-odin', agent: 'claude', sessionId: ODIN_RESUME }])
+  assert.deepEqual(calls.open, [['folder:ayn-odin', 'term-new']])
+  assert.equal(JSON.stringify(coordinators[0].sessions), before)
+  assert.equal(coordinators[0].sessions?.current, sessions.current)
+  // A second click while that terminal lives adopts it: nothing is resumed again.
+  assert.deepEqual(await resumeFolderConversation(visible, { workspaceId: 'folder:ayn-odin', pane: 'stand:1' }, io, pending), { ok: true })
+  assert.equal(calls.resume.length, 1)
+  assert.deepEqual(calls.binding, ['pty-new', 'term-new'])
+})
+
+test('a resume still starting or refused says so; nothing claims success', async () => {
+  const { visible } = odin()
+  const running = resumeHost(() => ({ status: 'running', terminal: 'term-new' }))
+  const pending = new Map<string, Launch>()
+  const starting = await resumeFolderConversation(visible, { workspaceId: 'folder:ayn-odin', pane: 'stand:1' }, running.io, pending)
+  assert.deepEqual([starting.ok, starting.starting, running.calls.open.length], [true, true, 0])
+  assert.match(starting.error!, /still resuming/)
+  const refused = resumeHost(() => ({ status: 'exited', detail: `No conversation found with session ID: ${ODIN_RESUME}` }))
+  const out = await resumeFolderConversation(visible, { workspaceId: 'folder:ayn-odin', pane: 'stand:1' }, refused.io, new Map())
+  assert.equal(out.ok, false)
+  assert.match(out.error!, /cannot be resumed/)
+})
+
+test('a closed folder conversation with no verified id is disabled with the reason and launches nothing', async () => {
+  for (const summaries of [
+    // No summary bound to the conversation.
+    { 'stand_1': card('Odin 3 stand', 2), 'setup_1': card('Ayn Odin 3 setup', 1) },
+    // Two panes bound to different provider ids: never the newest.
+    { 'stand_1': card('Odin 3 stand', 2, { orcaSession: ODIN_SESSION, id: ODIN_RESUME }), 'setup_1': card('Ayn Odin 3 setup', 1, { orcaSession: ODIN_SESSION, id: 'another-id' }) },
+    // A summary of another Orca conversation in that pane proves nothing.
+    { 'stand_1': card('Odin 3 stand', 2, { orcaSession: 'claude_other', id: ODIN_RESUME }) }
+  ] as Record<string, AgentSummary>[]) {
+    const { visible, coordinators } = odin(summaries)
+    assert.equal(visible.length, 1)
+    assert.equal(visible[0].resumeId, undefined)
+    const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+    assert.ok(html.includes(`disabled data-tip="${NO_RESUME_ID}"`))
+    assert.ok(!html.includes('data-resume='))
+    const { io, calls } = resumeHost()
+    const out = await resumeFolderConversation(visible, { workspaceId: 'folder:ayn-odin', pane: visible[0].agents[0].paneKey }, io, new Map())
+    assert.deepEqual([out.ok, calls.resume.length], [false, 0])
+    assert.ok(out.error!.startsWith(NO_RESUME_ID))
+  }
+})
+
+test('Sleep on a pane with no open terminal returns why, and closes nothing', async () => {
+  const closes: string[][] = []
+  const run = async (args: string[]) => {
+    if (args[1] === 'list') return { terminals: [{ handle: 'term-ps2', tabId: 'ps2', leafId: '1' }] }
+    closes.push(args)
+    return {}
+  }
+  assert.deepEqual(await closeSessions(run, ['stand:1']), { closed: 0, reason: 'Already asleep: this conversation has no open terminal' })
+  assert.deepEqual(closes, [])
+  assert.deepEqual(await closeSessions(run, ['ps2:1']), { closed: 1 })
+  const unreadable = await closeSessions(async () => { throw new Error('runtime unavailable') }, ['stand:1'])
+  assert.deepEqual(unreadable, { closed: 0, reason: 'Orca could not list its terminals: runtime unavailable' }, 'no list is no proof it is asleep')
+  const refused = await closeSessions(async (args) => { if (args[1] === 'list') return { terminals: [{ handle: 'term-ps2', tabId: 'ps2', leafId: '1' }] }; throw new Error('busy') }, ['ps2:1'])
+  assert.deepEqual(refused, { closed: 0, reason: 'Orca could not close its terminal: busy' })
 })

@@ -146,18 +146,23 @@ export async function loadCockpit(run: Run, rows: WorkspaceRow[]): Promise<Cockp
 
 /**
  * Ends sessions by pane. Terminals are looked up now, not taken from an older list, so a session
- * that finished a moment ago can be closed too.
+ * that finished a moment ago can be closed too. With nothing closed it says why: a pane with no open
+ * terminal is already asleep, which is no success; an unreadable list is no proof of that.
  */
-export async function closeSessions(run: Run, panes: string[]): Promise<{ closed: number }> {
-  const listed = await run(['terminal', 'list']).catch(() => ({ terminals: [] }))
+export async function closeSessions(run: Run, panes: string[]): Promise<{ closed: number; reason?: string }> {
+  let listed: any
+  try { listed = await run(['terminal', 'list']) }
+  catch (e) { return { closed: 0, reason: `Orca could not list its terminals: ${(e as Error).message}` } }
   const terminalOf = new Map<string, string>()
-  for (const t of listed.terminals ?? []) { const pane = terminalPane(t); if (pane) terminalOf.set(pane, t.handle) }
+  for (const t of listed?.terminals ?? []) { const pane = terminalPane(t); if (pane) terminalOf.set(pane, t.handle) }
   const terminals = panes.map((p) => terminalOf.get(p)).filter((t): t is string => Boolean(t))
+  if (!terminals.length) return { closed: 0, reason: panes.length === 1 ? 'Already asleep: this conversation has no open terminal' : 'Already asleep: none of these conversations has an open terminal' }
   let closed = 0
+  let failure = ''
   for (const terminal of terminals) {
-    if (await run(['terminal', 'close', '--terminal', terminal]).then(() => true, () => false)) closed++
+    if (await run(['terminal', 'close', '--terminal', terminal]).then(() => true, (e: Error) => { failure = e.message; return false })) closed++
   }
-  return { closed }
+  return closed ? { closed } : { closed, reason: `Orca could not close ${terminals.length === 1 ? 'its terminal' : 'their terminals'}${failure ? `: ${failure}` : ''}` }
 }
 
 /**

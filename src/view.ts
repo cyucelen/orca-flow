@@ -194,9 +194,9 @@ const ASK_BADGE: Record<AskKind, (rim: string, bx: number, by: number, br: numbe
 
 /** An agent's character with its status: what Orca shows, in at most two words. */
 function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size = 20, spinner = true): string {
-  const face = faceOf(a)
+  const face: Face = asleep(row) ? 'idle' : faceOf(a)
   const ask = askKindOf(a)
-  const tip = face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
+  const tip = asleep(row) ? 'Asleep' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
   return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask, spinner), tip, face === 'asks' ? ASK_TONE[ask] : '')
 }
 
@@ -228,6 +228,13 @@ export function shapeOf(a: AgentInfo, all: AgentInfo[]): Shape {
 }
 
 type Placed = { a: AgentInfo; row: WorkspaceRow }
+
+/**
+ * A closed conversation in a coordinator's folder (folderRows in worker.ts): no open terminal of its
+ * own, whatever else runs in the folder. It shows dimmed as Asleep, a click resumes it by its exact
+ * provider id (`resumeId`), and nothing offers to put it to sleep.
+ */
+export const asleep = (row: WorkspaceRow): boolean => Boolean(row.folderOf) && !row.historical && row.liveTerminals === 0
 
 function coordinatorName(key: string, coordinators: Coordinator[]): string {
   return key === 'you' ? 'You' : (coordinators.find((c) => c.key === key)?.name ?? key)
@@ -976,6 +983,7 @@ const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined
  * work is still in flight, or finished.
  */
 export function nodeOf(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): NodeState {
+  if (asleep(row)) return 'finished'
   const face = faceOf(a)
   return face === 'asks' ? 'asking' : face === 'working' ? 'working' : face === 'monitoring' ? 'monitoring' : inFlight(a, row, all) ? 'done' : 'finished'
 }
@@ -999,7 +1007,7 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
-  const right = status ?? (lead
+  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
     ? (own ? `${chip}${prBadge(p.row.pr)}` : '')
     : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
@@ -1028,9 +1036,16 @@ export const removable = ({ a, row }: Placed, all: AgentInfo[]) =>
 const reviewPr = ({ a, row }: Placed) =>
   askKindOf(a) === 'review' && row.pr && (row.pr.state === 'open' || row.pr.state === 'draft') ? `<button class="jump" data-pr="${esc(row.pr.url)}">Open PR</button>` : ''
 
-/** What a click on an agent opens: its workspace and, when its terminal is known, its own tab. */
+/** No saved conversation id: why an Asleep row cannot be clicked (resumeIdOf in worker.ts). */
+export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for it, so it cannot be resumed'
+
+/**
+ * What a click on an agent opens: its workspace and, when its terminal is known, its own tab. An
+ * Asleep row resumes its exact conversation, or is disabled with the reason when no id is verified.
+ */
 const openAttrs = (p: Placed) =>
-  !p.a.terminal && !p.row.historical && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && p.row.coordinatorMember && p.row.historical ? `data-history="${esc(p.row.coordinator)}" data-member="${esc(p.row.coordinatorMember)}"` : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
+  asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
+  : !p.a.terminal && !p.row.historical && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && p.row.coordinatorMember && p.row.historical ? `data-history="${esc(p.row.coordinator)}" data-member="${esc(p.row.coordinatorMember)}"` : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
 
 /** Finished sessions that still hold a terminal: what the footer lists and the cockpit counts. */
 const leadsOpenWork = (a: AgentInfo, all: AgentInfo[]) => all.some((b) => b.leadPane === a.paneKey && faceOf(b) !== 'done')
@@ -1051,11 +1066,11 @@ function inFlight(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): boolean {
 /** Finished sessions that still hold a terminal: what the footer lists and "Sleep all" puts to sleep. */
 export function finishedAgents(rows: WorkspaceRow[]): AgentInfo[] {
   const all = rows.flatMap((r) => r.agents)
-  return rows.filter((r) => r.liveTerminals > 0).flatMap((r) => r.agents.filter((a) => faceOf(a) === 'done' && !inFlight(a, r, all)))
+  return rows.filter((r) => r.liveTerminals > 0 && !asleep(r)).flatMap((r) => r.agents.filter((a) => faceOf(a) === 'done' && !inFlight(a, r, all)))
 }
 const finishedOf = (placed: Placed[]) => {
   const all = placed.map((p) => p.a)
-  return placed.filter((p) => faceOf(p.a) === 'done' && p.row.liveTerminals > 0 && !inFlight(p.a, p.row, all))
+  return placed.filter((p) => faceOf(p.a) === 'done' && p.row.liveTerminals > 0 && !asleep(p.row) && !inFlight(p.a, p.row, all))
 }
 
 /** Rows keep the order their workstreams started in; agent activity never moves them. */
@@ -1084,7 +1099,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
   const ask = asking ? askKindOf(asking) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
-  const done = (p: Placed) => faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all)
+  const done = (p: Placed) => asleep(p.row) || (faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all))
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
   // lead's branch color, lit together on hover and while one of them is current.
   const trunk = trunkX(face === 'idle')
@@ -1163,7 +1178,8 @@ function treeRails(lines: TreeBlock['lines'], index: number, trunk: number): str
 function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] {
   const all = snap.rows.flatMap((r) => r.agents)
   const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
-  const live = placed.filter((p) => p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
+  // A closed folder conversation shows once, as Asleep (folderRows): its click resumes it.
+  const live = placed.filter((p) => p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0 || asleep(p.row))
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
   // Grouped by the coordinator row's own status, the one its label shows: a live session (the
   // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
@@ -1226,7 +1242,8 @@ export type ChatTarget = { key: string } & ({ coordinator: string } | { workspac
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
   return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
     ...('you' in c ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
-    ...(folded.has(c.key) ? [] : lines.map(({ p }): ChatTarget => p.row.coordinator
+    // An Asleep row takes no number: a key press never resumes a closed conversation unseen.
+    ...(folded.has(c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p }): ChatTarget => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)
