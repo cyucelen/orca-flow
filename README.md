@@ -37,6 +37,11 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   status, Ask and Reply are read as written: Up next labels the ask with the message's own status
   line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later
   ("Working · needs 2 files later") comes after every ask that stops work.
+- **Model routing:** you pick the model, effort and one fallback for simple, normal and hard worker
+  tasks, plus one for coordinators and leads, with Balanced, Economy and Best quality presets to
+  start from. Each dispatch starts on the model for its task, says why, and refuses rather than
+  silently using another. Leads and coordinators hand implementation to Orca workers, not to native
+  subagents. [Details and limits](docs/model-routing.md)
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
   has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
   the PR), the project and the age. The branch shows only as the color of the row's tree lines.
@@ -78,7 +83,7 @@ The installed copy sets up these files outside its own folder:
 | `~/.agents/skills/orca-flow` | The Codex USER skill link, shared across Orca Codex accounts. Account selection changes `CODEX_HOME`, not this user skill directory. |
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
 | `~/orca/coordinators/<name>/AGENTS.md` and `CLAUDE.md` | Missing local instructions are seeded for new and existing coordinator folders. Launch prompts also explicitly supply the coordinator role and skill path. |
-| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. All three run only in Orca's agent panes. Your other settings and hooks stay as they are. |
+| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. One PreToolUse hook on the Agent tool denies a coordinator's or lead's native subagent so the work goes to an Orca worker; it is on by default ([Delegation](docs/model-routing.md#delegation)). All four run only in Orca's agent panes. Your other settings and hooks stay as they are. |
 
 A real file or another source's symlink is left alone, including a dangling link whose ownership
 cannot be verified. Only our installed release links are repointed. A `settings.json` that is not
@@ -204,6 +209,10 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
   Orca Flow started, whether `orca agent installed` lists its CLI. Nothing is tested from the
   dialog. "Writing now" names the writer the next card would use. Antigravity is "Not available
   yet" (see [Card writer](#card-writer)).
+- **Models:** a preset (Balanced, Economy, Best quality, your saved ones or Custom), the model and
+  effort for coordinators and leads, a model, effort and fallback per worker task kind, how many
+  workers run at once, and how often a failed task moves up a level
+  ([Model routing](docs/model-routing.md)).
 - **Message Check:** Off, All agents (every coordinator and lead) or Some folders, with the folder
   list ([Message format](#message-format)).
 - **Capacity:** the memory always kept free and the extra room under memory pressure
