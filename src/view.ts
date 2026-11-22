@@ -231,9 +231,10 @@ type Placed = { a: AgentInfo; row: WorkspaceRow }
 
 /**
  * A closed conversation in a coordinator's folder (folderRows in worker.ts): no open terminal of its
- * own, whatever else runs in the folder. The tree leaves it out like any sleeping lead; where it
- * still shows (search), a click resumes it by its exact provider id (`resumeId`), and nothing offers
- * to put it to sleep.
+ * own, whatever else runs in the folder. The tree, Up next and every count leave it out like any
+ * sleeping lead (the tree keeps it, drawn asleep, only while agents it leads are open); where it
+ * still shows, a click resumes it by its exact provider id (`resumeId`), and nothing offers to put
+ * it to sleep.
  */
 export const asleep = (row: WorkspaceRow): boolean => Boolean(row.folderOf) && !row.historical && row.liveTerminals === 0
 
@@ -764,7 +765,8 @@ function cockpitOpen(snap: Snapshot, ui: UiState): string {
   const memory = `<div class="cgroup mem"><span class="label">Memory${ui.statsLoading ? ' <span class="refreshing" aria-label="Refreshing"></span>' : ''}</span>${head}${map?.html ?? ''}${legend ? `<div class="legend">${legend}</div>` : ''}</div>`
   // What agents are doing right now, as small crowds.
   const doing = (['asks', 'working', 'monitoring'] as const).map((face) => {
-    const these = placedAll.filter((p) => faceOf(p.a) === face)
+    // A slept folder lead does nothing, whatever its last state said.
+    const these = placedAll.filter((p) => !asleep(p.row) && faceOf(p.a) === face)
     const word = { asks: 'asking', working: 'working', monitoring: 'monitoring' }[face]
     return these.length ? `<span class="tally${face === 'asks' ? ' ask' : ''}">${avatarStack(these, all, 4)}<span><b>${these.length}</b> ${word}</span></span>` : ''
   }).join('')
@@ -835,7 +837,9 @@ export function updateButton(state: UpdateState | undefined): string {
 /**
  * Everything asking you, most urgent first: the worktrees whose agents ask, plus a row for each
  * coordinator whose own session asks (coordinators live outside the worktree rows). The tree's
- * badges, Up next, the status bar and jump-to-next all read this one list.
+ * badges, Up next, the status bar and jump-to-next all read this one list. A slept folder lead
+ * (asleep) is in none of them, whatever ask its last summary or state claimed: like the tree, they
+ * leave it out.
  */
 export function askingRows(snap: SnapLike): WorkspaceRow[] {
   const own = snap.coordinators.flatMap((c) => {
@@ -847,7 +851,7 @@ export function askingRows(snap: SnapLike): WorkspaceRow[] {
       lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id, historical: m.historical
     }))
   })
-  return waitingQueue([...snap.rows, ...own, ...botChatRows(snap)])
+  return waitingQueue([...snap.rows.filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
 }
 
 /** What the queue reads: the rows, the coordinators and, when known, the bots. */
@@ -887,7 +891,7 @@ export function botChatRows(snap: Pick<Partial<Snapshot>, 'bots'>): WorkspaceRow
  */
 export function upNextOrder(snap: SnapLike): Placed[] {
   const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
-  const working = [...snap.rows].sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const working = snap.rows.filter((r) => !asleep(r)).sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
   const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
@@ -984,6 +988,7 @@ const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined
  * work is still in flight, or finished.
  */
 export function nodeOf(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): NodeState {
+  if (asleep(row)) return 'sleeping'
   const face = faceOf(a)
   return face === 'asks' ? 'asking' : face === 'working' ? 'working' : face === 'monitoring' ? 'monitoring' : inFlight(a, row, all) ? 'done' : 'finished'
 }
@@ -1007,7 +1012,7 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
-  const right = status ?? (lead
+  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
     ? (own ? `${chip}${prBadge(p.row.pr)}` : '')
     : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
@@ -1099,7 +1104,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
   const ask = asking ? askKindOf(asking) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
-  const done = (p: Placed) => faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all)
+  const done = (p: Placed) => asleep(p.row) || (faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all))
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
   // lead's branch color, lit together on hover and while one of them is current.
   const trunk = trunkX(face === 'idle')
@@ -1179,8 +1184,9 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   const all = snap.rows.flatMap((r) => r.agents)
   const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
   // A closed folder conversation (folderRows: live === false) leaves the tree like every sleeping
-  // lead, whatever state its last summary claimed. Unknown liveness is not asleep: it stays.
-  const live = placed.filter((p) => !asleep(p.row) && (p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0))
+  // lead, whatever state its last summary claimed, except while agents it leads are still open: it
+  // stays drawn asleep at the head of their lane until they finish. Unknown liveness is not asleep.
+  const live = placed.filter((p) => asleep(p.row) ? leadsOpenWork(p.a, all) : p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
   // Grouped by the coordinator row's own status, the one its label shows: a live session (the
   // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
@@ -1243,7 +1249,8 @@ export type ChatTarget = { key: string } & ({ coordinator: string } | { workspac
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
   return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
     ...('you' in c ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
-    ...(folded.has(c.key) ? [] : lines.map(({ p }): ChatTarget => p.row.coordinator
+    // A slept lead heading its open workers takes no number: a key press never resumes it unseen.
+    ...(folded.has(c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p }): ChatTarget => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)
@@ -1286,7 +1293,7 @@ export function render(given: Snapshot, ui: UiState, linear: LinearData | null =
     const found = snap.rows.filter((r) => [r.name, r.repo, r.branch, ...r.agents.map((a) => a.title)].some((f) => f?.toLowerCase().includes(q)))
     return { cockpit: cockpit(snap, ui), copen, main: `<div class="group found">${
       found.length
-        ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}${providerBadge(r.agents[0], mixed)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
+        ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${asleep(r) ? tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Asleep') : character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}${providerBadge(r.agents[0], mixed)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
         : '<div class="empty">No matching workspaces</div>'
     }</div>`, attention: '', bots: '', linear: '', footer: '' }
   }
