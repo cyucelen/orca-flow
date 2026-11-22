@@ -107,10 +107,21 @@ export function roleOf(firstPrompt: string, events: Event[], cwd: string | null 
   if (/You are a dispatched worker\.|Your task ID is: task_/.test(firstPrompt)) return 'worker'
   if (cwd && isCoordinatorHome(cwd, home)) return 'coordinator'
   if (/dispatch[ _-]?id|worker_done/i.test(firstPrompt)) return 'worker'
-  // Only a command that runs it, not one that merely mentions it (in a heredoc, a grep, a test).
-  const runs = /^(?:Bash|exec_command|functions\.exec_command|run_command): (?:.*(?:&&|;)\s*)?(?:\S*\/)?orca orchestration worker-start\b/
-  if (events.some((e) => e.kind === 'tool' && runs.test(e.text))) return 'coordinator'
+  if (events.some((e) => e.kind === 'tool' && runsWorkers(e.text))) return 'coordinator'
   return 'solo'
+}
+
+/** A starting command, one segment of a shell command line (split on `&&` and `;`): `orca orchestration
+ * worker-start`, or the orca-flow script's `dispatch`, `plan start` or `plan next`, run as `orca-flow`
+ * or as `node <path>/orca-flow.mjs` (the path may be quoted). Read-only forms (route, plan check,
+ * plan status) are not starts. */
+const STARTS_WORKERS = /^\s*(?:(?:\S*\/)?orca orchestration worker-start\b|(?:\S*\/)?orca-flow (?:dispatch\b|plan\s+(?:start|next)\b)|node\s+(?:"[^"\n]*orca-flow\.mjs"|'[^'\n]*orca-flow\.mjs'|\S*orca-flow\.mjs)\s+(?:dispatch\b|plan\s+(?:start|next)\b))/
+
+/** Only a command that runs it, not one that merely mentions it (in a heredoc body, a grep, a cat): the
+ * check reads the command's first line, so a heredoc body (its later lines) never counts. */
+function runsWorkers(text: string): boolean {
+  const line = /^(?:Bash|exec_command|functions\.exec_command|run_command): ([^\n]*)/.exec(text)
+  return !!line && line[1].split(/&&|;/).some((segment) => STARTS_WORKERS.test(segment))
 }
 
 /** A command that sends worker_done, not one that merely mentions it (in a heredoc, a grep, a test). */
