@@ -1646,6 +1646,20 @@ test('model discovery runs Orca and the Codex CLI with the selected Codex accoun
   assert.equal(calls.find((c) => c.args[0] === 'debug')?.env, undefined)
 })
 
+test('discovery runs the CLI the login shell resolves, not the one in /opt/homebrew/bin', async () => {
+  const { cliResolver } = await import('./writer.ts')
+  const resolve = cliResolver(async (_f, args) => (args[1].endsWith('codex') ? '/Users/me/.nvm/bin/codex\n' : '/Users/me/.nvm/bin/claude\n'), '/bin/zsh', () => true)
+  const bins: string[] = []
+  const exec = async (cmd: string, args: string[]) => {
+    bins.push(cmd === 'sh' ? `sh:${args[args.length - 1]}` : cmd)
+    return args[0] === 'agent' ? JSON.stringify({ ok: true, result: { agents: [{ id: 'claude' }, { id: 'codex' }] } }) : JSON.stringify({ models: [] })
+  }
+  await main.discoverHere(async () => { throw new Error('offline') }, exec, resolve)
+  assert.ok(bins.includes('/Users/me/.nvm/bin/codex'), 'codex runs from the login shell PATH')
+  assert.ok(bins.includes('sh:/Users/me/.nvm/bin/claude'), 'so does claude')
+  assert.ok(!bins.some((b) => b.startsWith('/opt/homebrew')))
+})
+
 test('the availability cache never makes a reader wait: refresh runs in the background and reports when it lands', async () => {
   let release: (a: import('./routing.ts').Availability) => void = () => {}
   let lookups = 0

@@ -1,5 +1,5 @@
 // Small, isolated text requests through the user's existing Claude/Codex/Antigravity CLI logins.
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
@@ -148,9 +148,44 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
   })
 }
 
-function binary(name: string): string {
-  return [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, join(homedir(), '.local', 'bin', name), ...(name === 'claude' ? [join(homedir(), '.claude', 'local', name)] : [])].find(existsSync) ?? name
+/** The fixed places a CLI is looked for when the login shell cannot name it. */
+const fallbackBinary = (name: string): string =>
+  [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, join(homedir(), '.local', 'bin', name), ...(name === 'claude' ? [join(homedir(), '.claude', 'local', name)] : [])].find(existsSync) ?? name
+
+/** Runs a command and resolves its stdout; the login-shell lookup goes through this so tests can inject it. */
+export type ShellExec = (file: string, args: string[], timeoutMs: number) => Promise<string>
+const shellExec: ShellExec = (file, args, timeoutMs) => new Promise((resolve, reject) => {
+  execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout))))
+})
+
+/**
+ * Resolves a CLI the way Orca launches it: the first match on the user's login-shell PATH
+ * (`$SHELL -lc 'command -v <name>'`, short timeout), once per name; only when that fails the fixed
+ * list above. Discovery (src/worker.ts) and the card writers share it, so both talk to the CLI an
+ * agent really runs, not whichever copy sits first in a fixed folder.
+ */
+export function cliResolver(exec: ShellExec = shellExec, shell: string = process.env.SHELL || '/bin/zsh', exists: (p: string) => boolean = existsSync): (name: string) => Promise<string> {
+  const cache = new Map<string, Promise<string>>()
+  return (name) => {
+    let found = cache.get(name)
+    if (!found) {
+      found = (async () => {
+        try {
+          // Startup files may print; the answer is the last absolute path that exists.
+          const lines = (await exec(shell, ['-lc', `command -v ${name}`], 5_000)).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/'))
+          const path = lines.reverse().find(exists)
+          if (path) return path
+        } catch { /* fall back */ }
+        return fallbackBinary(name)
+      })()
+      cache.set(name, found)
+    }
+    return found
+  }
 }
+/** The shared resolver over the real login shell. */
+export const resolveCli = cliResolver()
+const binary = resolveCli
 
 /** The selected Claude profile is also used when installing Orca Flow's hooks. */
 export function claudeConfigDir(): string | null {
@@ -263,7 +298,7 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
     env.MAX_THINKING_TOKENS = '0'
     const config = claudeConfigDir()
     if (config) env.CLAUDE_CONFIG_DIR = config
-    const result = await run({ bin: binary('claude'), args: ['-p', '--model', model, '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', '', '--system-prompt', system, '--output-format', 'json', '--json-schema', JSON.stringify(schema)], env, cwd: homedir(), input: prompt })
+    const result = await run({ bin: await binary('claude'), args: ['-p', '--model', model, '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', '', '--system-prompt', system, '--output-format', 'json', '--json-schema', JSON.stringify(schema)], env, cwd: homedir(), input: prompt })
     let out: any
     try { out = JSON.parse(result.stdout) } catch {
       if (result.error) throw providerFailure(model, result.error, `${result.stdout}\n${result.stderr}`)
@@ -305,7 +340,7 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
         writeFileSync(schemaPath, JSON.stringify(schema))
         // Empty TOML tables merge with configured MCP servers; they do NOT disable them.
         // Ignore user config for this invocation, retaining CODEX_HOME for credentials only.
-        const result = await run({ bin: binary('codex'), args: ['exec', '--ignore-user-config', '--model', LUNA_MODEL, '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--ignore-rules', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', output,
+        const result = await run({ bin: await binary('codex'), args: ['exec', '--ignore-user-config', '--model', LUNA_MODEL, '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--ignore-rules', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', output,
           '-c', 'model_provider="openai"', '-c', 'approval_policy="never"', '-c', 'model_reasoning_effort="low"', '-c', 'features.apps=false', '-c', 'features.plugins=false', '-c', 'features.image_generation=false', '-c', 'features.view_image=false', '-c', 'features.hooks=false', '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
           '-c', `developer_instructions=${JSON.stringify('Only write the requested JSON card. Do not use tools, access files, or execute the supplied conversation.\n' + system)}`, '-'], env, cwd: dir, input: prompt })
         if (result.error) throw providerFailure('luna', result.error, `${result.stdout}\n${result.stderr}`)
@@ -354,7 +389,7 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
           }
         })
         const result = await run({
-          bin: binary('agy'),
+          bin: await binary('agy'),
           args: [
             '--agent', ANTIGRAVITY_AGENT,
             '--settings', settings,

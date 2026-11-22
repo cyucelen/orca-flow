@@ -88,6 +88,23 @@ test('effort pop-up: Haiku is disabled with a reason; others list what Orca acce
   assert.ok(pv.efforts.adjusted && !pv.efforts.options.some((o) => o.value === 'xhigh'))
 })
 
+test('a task type’s model and fallback popovers list every discovered Codex model with only its accepted efforts; a saved pick not in the list stays, dimmed', () => {
+  const ten = ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']
+  const found: Availability = { agents: ['claude', 'codex'], models: { claude: null, codex: ten.map((id, i) => ({ id, efforts: id === 'gpt-6-luna' || i % 2 ? ['low', 'medium'] : ['low', 'medium', 'high'] })) } }
+  const added = addTaskType(DEFAULT_ROUTING, 'Browser checks', 'Open pages')
+  if (!added.ok) throw new Error(added.error)
+  const id = routingRows(added.routing).find((r) => r.name === 'Browser checks')!.ref
+  const withFallback = pickModel(pickModel(added.routing, id, 'fallback', 'codex', 'gpt-4-retired', found), id, 'model', 'codex', 'gpt-6-luna', found)
+  for (const slot of ['model', 'fallback'] as const) {
+    const codex = popoverView(withFallback, id, slot, found).groups.find((g) => g.agent === 'codex')!
+    assert.deepEqual(codex.models.filter((m) => m.dim === null).map((m) => m.id), ten, `${slot}: every discovered model`)
+  }
+  const fb = popoverView(withFallback, id, 'fallback', found).groups.find((g) => g.agent === 'codex')!.models.find((m) => m.id === 'gpt-4-retired')
+  assert.ok(fb?.selected && fb.dim, 'the saved pick stays shown, dimmed')
+  const luna = popoverView(withFallback, id, 'model', found)
+  assert.deepEqual(luna.efforts.options.map((o) => o.value), ['', 'low', 'medium'], 'gpt-6-luna takes only low and medium')
+})
+
 test('an unavailable model is dimmed with why, and says whether a fallback is used', () => {
   const gone = { agent: 'codex', model: 'gpt-old' }
   assert.equal(missingTip(gone, true, avail), 'Codex doesn’t list this model. The fallback is used.')

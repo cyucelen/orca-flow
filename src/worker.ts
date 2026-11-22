@@ -32,7 +32,7 @@ import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap
 import { coordinatorLaunchPlan, startCoordinator } from './coordinator-launch.ts'
 import { choiceLabel, taskKind, type Availability, type ModelChoice } from './routing.ts'
 import { discover, type Exec } from './model-discovery.ts'
-import { codexHomeFromAccounts } from './writer.ts'
+import { codexHomeFromAccounts, resolveCli } from './writer.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
 import { readHandoverProviders } from './handover-providers.ts'
 import { coordinatorProviders, firstProvider, readInstalledProviders } from './coordinator-providers.ts'
@@ -1778,17 +1778,16 @@ export function deactivate(): void {
 
 const AVAIL_MAX_MS = 5 * 60_000
 const AVAIL_OPEN_MS = 60_000
-const cliPath = (name: string) => [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, join(homedir(), '.local', 'bin', name)].find(existsSync) ?? name
 
 /**
  * discover() through this worker's processes. Codex lists its models from the Codex home of Orca's
  * selected Codex account, as the card writer resolves it (codexHomeFromAccounts); unresolvable: the
  * default home. Each lookup that fails reads as unknown.
  */
-export async function discoverHere(run: (args: string[], options?: { timeoutMs?: number }) => Promise<any>, execImpl: Exec = execCmd): Promise<Availability> {
+export async function discoverHere(run: (args: string[], options?: { timeoutMs?: number }) => Promise<any>, execImpl: Exec = execCmd, resolve: (name: string) => Promise<string> = resolveCli): Promise<Availability> {
   let codexHome: string | undefined
   try { codexHome = codexHomeFromAccounts({ ok: true, result: await run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }) }) } catch { codexHome = undefined }
-  return discover(execImpl, { orcaBin: ORCA_BIN, codexBin: cliPath('codex'), ...(codexHome ? { env: { CODEX_HOME: codexHome } } : {}) })
+  return discover(execImpl, { orcaBin: ORCA_BIN, codexBin: await resolve('codex'), claudeBin: await resolve('claude'), ...(codexHome ? { env: { CODEX_HOME: codexHome } } : {}) })
 }
 
 /** The discovery the worker runs; tests swap it for a stub. */
