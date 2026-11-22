@@ -674,7 +674,21 @@ select.s-pop.s-preset { max-width: 170px; }
 .s-warn svg { width: 13px; height: 13px; }
 .s-value.s-bad { color: var(--danger); }
 .s-checking { font-style: normal; color: var(--faint); }
-@media (max-width: 520px) { select.s-pop.s-model { max-width: 122px; } select.s-pop.s-effort { max-width: 80px; } select.s-pop.s-fallback { max-width: 130px; } .s-fb { margin-left: 0; flex: 1 1 100%; justify-content: flex-end; } .s-krow > .s-label { flex: 1 1 auto; } }
+/* A worker row keeps model, effort and fallback on one line while the page is wide enough: "if unavailable"
+   shrinks to a faint "or" (the words stay as the fallback select's accessible name and tooltip). Narrower, the
+   fallback wraps under the row. The page is the container, so the dialog's own width decides, not the window's. */
+.s-page { container-type: inline-size; }
+.s-krow > .s-label { flex: 0 0 48px; }
+.s-krow .s-fb { flex: 0 0 auto; }
+.s-krow .s-fb .s-faint { font-size: 0; }
+.s-krow .s-fb .s-faint::before { content: "or"; font-size: 12px; }
+@container (max-width: 459px) {
+  select.s-pop.s-model { max-width: 122px; } select.s-pop.s-effort { max-width: 80px; } select.s-pop.s-fallback { max-width: 130px; }
+  .s-krow > .s-label { flex: 1 1 auto; }
+  .s-krow .s-fb { margin-left: 0; flex: 1 1 100%; justify-content: flex-end; }
+  .s-krow .s-fb .s-faint { font-size: inherit; }
+  .s-krow .s-fb .s-faint::before { content: none; }
+}
 
 /* controls: pop-up menu, switch, stepper, round +/- and push buttons */
 select.s-pop { appearance: none; -webkit-appearance: none; cursor: pointer; border: 0; border-radius: 6px; padding: 3px 22px 3px 8px; max-width: 150px; color: var(--ink);

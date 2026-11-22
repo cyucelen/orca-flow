@@ -157,8 +157,9 @@ server.listen(0, '127.0.0.1', () => {
         const framed = j.width < 600 || !!j.tip
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
           framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]
-        execFile(chrome, args, { timeout: 60_000 }, (e) => {
-          if (e) return reject(e)
+        execFile(chrome, args, { timeout: 60_000 }, (e, _out, stderr) => {
+          // Chrome can exit non-zero on teardown after writing the shot; that is not a failed capture.
+          if (e && !/bytes written to file/.test(String(stderr))) return reject(e)
           // Keep just the panel: sips crops around the centre, where the iframe sits.
           if (framed) execFileSync('sips', ['--cropToHeightWidth', String(j.height), String(j.width), file], { stdio: 'ignore' })
           resolve()
