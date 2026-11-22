@@ -11,7 +11,7 @@
 // Orca reports a finished turn (src/summarize.ts). The worker watches that folder.
 import { antigravityTurnRecorded, launchAntigravityCoordinator, requireAntigravity } from './antigravity.ts'
 import { execFile, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
@@ -130,7 +130,7 @@ function readFolder<T>(dir: string): Record<string, T> {
 
 /**
  * ~/.orca-flow/routes.jsonl (written by `orca-flow dispatch`, one routed launch per line) as what a
- * row shows: dispatch id -> "Claude Sonnet · medium — normal task" (or "— images task" for a typed one). Older lines name the kind `class`. The last line of a dispatch
+ * row shows: dispatch id -> the logged reason ("normal task → Claude Sonnet · medium"), or for older lines "Claude Sonnet · medium — normal task" (or "— images task" for a typed one). Older lines name the kind `class`. The last line of a dispatch
  * wins (a retry or an escalation); a garbled line is skipped.
  */
 export function routeLabels(text: string): Map<string, string> {
@@ -142,7 +142,9 @@ export function routeLabels(text: string): Map<string, string> {
     const c = r?.choice as ModelChoice | undefined
     if (typeof r?.dispatchId !== 'string' || !r.dispatchId || typeof c?.agent !== 'string' || !c.agent) continue
     const kind = taskKind(r.kind ?? r.class)
-    // A typed task (`type`, the type's id) goes by its type, not its kind.
+    // The logged reason, as written, on one line; older lines without one are rebuilt.
+    const logged = typeof r.reason === 'string' ? r.reason.replace(/\s+/g, ' ').trim() : ''
+    if (logged) { out.set(r.dispatchId, logged.length > 100 ? `${logged.slice(0, 99)}…` : logged); continue }
     const why = typeof r.type === 'string' && r.type ? `${r.type} task${r.attempt > 0 ? ', retried' : ''}`
       : kind ? `${kind} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
     out.set(r.dispatchId, `${choiceLabel(c)}${why ? ` — ${why}` : ''}`)
@@ -1127,7 +1129,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       const routing = readSettings(DATA_DIR).settings.routing
       const plan = coordinatorLaunchPlan(routing, agent!, routing.coordinator?.model ? await availability() : null)
       return startCoordinator(plan, { workspaceId, agent: agent!, dir: c.dir, prompt: coordinatorPrompt(skill) }, {
-        host: (input) => orca.host.call('agent.launch', input), run, terminals: terminalsNow, log: (line) => orca.log(line)
+        host: (input) => orca.host.call('agent.launch', input), run, terminals: terminalsNow, log: (line) => orca.log(line),
+        record: (entry) => { mkdirSync(DATA_DIR, { recursive: true }); appendFileSync(join(DATA_DIR, 'routes.jsonl'), `${JSON.stringify(entry)}\n`) }
       })
     })
     await orca.host.call('terminal.focus', { terminalId: launch.terminalId }).catch(async (e: Error) => {

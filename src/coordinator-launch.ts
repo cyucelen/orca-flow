@@ -19,10 +19,16 @@ export type CoordinatorLaunchPlan =
  */
 export function coordinatorLaunchPlan(routing: RoutingSettings, agent: string, avail: Availability | null): CoordinatorLaunchPlan {
   if (!routing.coordinator?.model || agent === 'antigravity') return { kind: 'host' }
+  const pick = routing.coordinator
+  // A pick for another provider is not launched: the provider stays, on its default model, and says so.
+  if (pick.agent !== agent) {
+    const name = (x: string) => x.charAt(0).toUpperCase() + x.slice(1)
+    return { kind: 'host', note: `Coordinator pick is ${name(pick.agent)}; launched ${name(agent)} with its default model` }
+  }
   const a = avail ?? { agents: null, models: {} }
   const d = route(routing, { role: 'coordinator', agent }, a)
   if (!d.ok) return { kind: 'host', note: d.error }
-  if (d.source !== 'role' || !d.choice.model || d.choice.agent !== agent) return d.source === 'default' ? { kind: 'host', note: d.reason } : { kind: 'host' }
+  if (d.source !== 'role' || !d.choice.model) return d.source === 'default' ? { kind: 'host', note: d.reason } : { kind: 'host' }
   return { kind: 'cli', choice: d.choice, reason: d.reason }
 }
 
@@ -38,6 +44,20 @@ export type CoordinatorLaunchIo = {
   run: (args: string[], options?: { timeoutMs?: number; cwd?: string }) => Promise<any>
   terminals: () => Promise<TerminalRecord[]>
   log?: (line: string) => void
+  /** Appends one line to ~/.orca-flow/routes.jsonl (the shape `orca-flow dispatch` writes). */
+  record?: (entry: Record<string, unknown>) => void
+  now?: () => Date
+}
+
+/** The routes.jsonl line for a coordinator launch, in dispatch.mjs's shape with role 'coordinator'. */
+function routeEntry(io: CoordinatorLaunchIo, input: { agent: string; dir: string }, choice: ModelChoice, source: string, reason: string): Record<string, unknown> {
+  return {
+    at: (io.now?.() ?? new Date()).toISOString(), role: 'coordinator', taskId: null, dispatchId: null, workspace: input.dir,
+    choice, source, reason, type: null, kind: null, class: null, risk: null, context: null, explicit: null, attempt: 0
+  }
+}
+function record(io: CoordinatorLaunchIo, entry: Record<string, unknown>): void {
+  try { io.record?.(entry) } catch (e) { io.log?.(`coordinator route not recorded: ${(e as Error).message}`) }
 }
 
 /**
@@ -49,7 +69,9 @@ export type CoordinatorLaunchIo = {
 export async function startCoordinator(plan: CoordinatorLaunchPlan, input: { workspaceId: string; agent: string; dir: string; prompt: string }, io: CoordinatorLaunchIo): Promise<{ terminalId: string }> {
   if (plan.kind === 'host') {
     if (plan.note) io.log?.(`coordinator model not used: ${plan.note}`)
-    return io.host({ workspaceId: input.workspaceId, agent: input.agent, prompt: input.prompt })
+    const started = await io.host({ workspaceId: input.workspaceId, agent: input.agent, prompt: input.prompt })
+    record(io, routeEntry(io, input, { agent: input.agent }, 'default', plan.note ?? `Coordinator launched ${input.agent.charAt(0).toUpperCase() + input.agent.slice(1)} with its default model`))
+    return started
   }
   const opts = { timeoutMs: 90_000, cwd: input.dir }
   let receipt: any
@@ -64,5 +86,6 @@ export async function startCoordinator(plan: CoordinatorLaunchPlan, input: { wor
   if (out?.kind !== 'terminal' || typeof out.handle !== 'string') throw new Error('Orca did not return the new coordinator’s terminal. Inspect the folder before starting another conversation.')
   if (!['journaled', 'handed-to-terminal'].includes(receipt?.prompt?.outcome)) io.log?.(`coordinator launch: Orca did not confirm the prompt (${receipt?.prompt?.outcome ?? 'no prompt outcome'})`)
   const t = await io.terminals().then((ts) => launchedTerminal(ts, out.handle)).catch(() => null)
+  record(io, routeEntry(io, input, plan.choice, 'role', plan.reason))
   return { terminalId: t?.ptyId ?? out.handle }
 }

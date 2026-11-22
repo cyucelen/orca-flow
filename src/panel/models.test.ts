@@ -78,7 +78,14 @@ test('effort pop-up: Haiku is disabled with a reason; others list what Orca acce
   assert.ok(!opus.disabled && opus.efforts.includes('max'))
   assert.deepEqual(effortView({ agent: 'codex', model: 'gpt-6-luna' }, avail).efforts, ['low', 'medium'])
   assert.ok(effortView(null, avail).disabled)
-  assert.ok(effortView({ agent: 'claude', model: 'sonnet', effort: 'xhigh' }, { agents: null, models: { claude: [{ id: 'sonnet', efforts: ['low'] }] } }).efforts.includes('xhigh'), 'a saved effort stays listed')
+  const lowOnly: Availability = { agents: null, models: { claude: [{ id: 'sonnet', efforts: ['low', 'medium'] }] } }
+  const stale = effortView({ agent: 'claude', model: 'sonnet', effort: 'xhigh' }, lowOnly)
+  assert.deepEqual(stale.efforts, ['low', 'medium'], 'only accepted efforts are listed')
+  assert.equal(stale.shown, 'medium', 'the nearest lower one is what routing uses')
+  assert.match(stale.tip, /Xhigh is saved but .* does not accept it, so routing uses medium/)
+  const pv = popoverView({ ...structuredClone(DEFAULT_ROUTING), lead: { agent: 'claude', model: 'sonnet', effort: 'xhigh' } }, { type: 'role', role: 'lead' }, 'model', lowOnly)
+  assert.deepEqual(pv.efforts.options.filter((o) => o.selected).map((o) => o.value), ['medium'])
+  assert.ok(pv.efforts.adjusted && !pv.efforts.options.some((o) => o.value === 'xhigh'))
 })
 
 test('an unavailable model is dimmed with why, and says whether a fallback is used', () => {

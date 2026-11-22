@@ -60,22 +60,28 @@ export function presetView(routing: RoutingSettings): PresetView {
   const now = matchingPreset(routing)
   return { builtIn: all.filter((p) => p.builtIn), saved: all.filter((p) => !p.builtIn), selected: now?.id ?? '', removable: now && !now.builtIn ? now.id : null }
 }
-/** Picking a preset: its models, the limits and saved presets as they were. */
+/** Picking a preset: its models, the saved presets as they were. */
 export const pickPreset = (routing: RoutingSettings, id: string): RoutingSettings => applyPreset(routing, id)
 /** Save as…: the settings with the preset saved, or the error to show next to the name field. */
 export function saveNamed(routing: RoutingSettings, name: string): { ok: true; routing: RoutingSettings } | { ok: false; error: string } {
   try { return { ok: true, routing: savePreset(routing, name) } } catch (e) { return { ok: false, error: (e as Error).message } }
 }
 
-export type EffortView = { efforts: readonly Effort[]; disabled: boolean; tip: string }
+export type EffortView = { efforts: readonly Effort[]; disabled: boolean; tip: string; /** The effort routing will use when the saved one is not accepted. */ shown?: Effort }
 /** The effort pop-up: Default plus these; off (with the reason) when the model takes none. */
 export function effortView(c: ModelChoice | null, avail: Availability): EffortView {
   if (!c?.model) return { efforts: [], disabled: true, tip: 'Choose a model first: an effort applies only with one.' }
   const efforts = [...effortsFor(c.agent, c.model, avail)]
   if (!efforts.length) return { efforts, disabled: true, tip: `Orca sets no effort for ${modelLabel(c.agent, c.model, avail)}.` }
-  // A saved effort the model no longer takes stays listed, so the pop-up never silently changes it.
-  if (c.effort && !efforts.includes(c.effort)) efforts.push(c.effort)
-  return { efforts, disabled: false, tip: 'How hard the model thinks. Default: the model’s own setting.' }
+  const tip = 'How hard the model thinks. Default: the model’s own setting.'
+  if (c.effort && !efforts.includes(c.effort)) {
+    // A saved effort the model does not accept: show what routing will use (nearest lower, as route() does).
+    let used: Effort | undefined
+    for (let i = EFFORTS.indexOf(c.effort) - 1; i >= 0 && !used; i--) if (efforts.includes(EFFORTS[i])) used = EFFORTS[i]
+    used ??= EFFORTS.find((e) => efforts.includes(e))
+    return { efforts, disabled: false, shown: used, tip: `${cap(c.effort)} is saved but ${modelLabel(c.agent, c.model, avail)} does not accept it, so routing uses ${used ?? 'the default effort'}. ${tip}` }
+  }
+  return { efforts, disabled: false, tip }
 }
 
 /** Why a picked model is dimmed, as a tooltip; null when it can run. `fallback`: the row has one. */
@@ -190,9 +196,8 @@ export type PopoverView = {
   none: { label: string; selected: boolean } | null
   groups: PopoverGroup[]
   /** Default, then the efforts the model takes that Orca accepts. Disabled (with the reason) when it takes none. */
-  efforts: { options: { value: Effort | ''; label: string; selected: boolean }[]; disabled: boolean; tip: string }
+  efforts: { options: { value: Effort | ''; label: string; selected: boolean }[]; disabled: boolean; tip: string; /** True when the saved effort is not accepted and the selected one is what routing uses. */ adjusted?: boolean }
 }
-const cap2 = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 /**
  * What the anchored popover lists for one card: models grouped by installed agent, the current pick
@@ -213,13 +218,13 @@ export function popoverView(routing: RoutingSettings, ref: RowRef, slot: Slot, a
   // A pick on an agent that is not installed dims every one of its models.
   for (const g of view) { const why = agentProblem(g.agent, avail) ? unavailable(g.agent, undefined, avail) : null; if (why) for (const m of g.models) m.dim ??= why }
   const ev = effortView(current, avail)
-  const options: PopoverView['efforts']['options'] = [{ value: '', label: 'Default', selected: !current?.effort }, ...ev.efforts.map((e) => ({ value: e, label: cap2(e), selected: current?.effort === e }))]
+  const options: PopoverView['efforts']['options'] = [{ value: '', label: 'Default', selected: !current?.effort }, ...ev.efforts.map((e) => ({ value: e, label: cap(e), selected: (ev.shown ?? current?.effort) === e }))]
   const what = slot === 'model' ? 'model' : 'fallback'
   return {
     title: `${row?.name ?? ''} ${what}`.trim(),
     none: slot === 'model' ? (ref.type === 'role' ? { label: 'Provider default', selected: !current } : null) : { label: 'None', selected: !current?.model },
     groups: view,
-    efforts: { options, disabled: ev.disabled, tip: ev.tip }
+    efforts: { options, disabled: ev.disabled, tip: ev.tip, ...(current?.effort && !ev.disabled && !ev.efforts.includes(current.effort) ? { adjusted: true } : {}) }
   }
 }
 

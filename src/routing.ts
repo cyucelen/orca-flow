@@ -203,8 +203,6 @@ const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 const isEffort = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
 const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
-const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number =>
-  typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback
 
 function normalizeChoice(v: unknown): ModelChoice | null {
   if (!isObject(v)) return null

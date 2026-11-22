@@ -31,6 +31,39 @@ test('at defaults a coordinator starts through the host agent.launch, unchanged,
   assert.deepEqual(coordinatorLaunchPlan(withCoordinator({ agent: 'claude' }), 'claude', avail), { kind: 'host' })
 })
 
+test('a pick for another provider keeps the provider default and records why', async () => {
+  const plan = coordinatorLaunchPlan(withCoordinator({ agent: 'codex', model: 'gpt-6-luna' }), 'claude', avail)
+  assert.deepEqual(plan, { kind: 'host', note: 'Coordinator pick is Codex; launched Claude with its default model' })
+  const { io, calls } = fakeIo()
+  const lines: Record<string, unknown>[] = []
+  await startCoordinator(plan, input, { ...io, record: (e) => lines.push(e), now: () => new Date(0) })
+  assert.equal(calls.host.length, 1)
+  assert.deepEqual(lines, [{ at: '1970-01-01T00:00:00.000Z', role: 'coordinator', taskId: null, dispatchId: null, workspace: input.dir, choice: { agent: 'claude' }, source: 'default', reason: 'Coordinator pick is Codex; launched Claude with its default model', type: null, kind: null, class: null, risk: null, context: null, explicit: null, attempt: 0 }])
+})
+
+test('a verified coordinator launch is recorded in routes.jsonl shape; a failed one is not', async () => {
+  const plan = coordinatorLaunchPlan(withCoordinator({ agent: 'claude', model: 'opus', effort: 'high' }), 'claude', avail)
+  assert.equal(plan.kind, 'cli')
+  const lines: Record<string, unknown>[] = []
+  const ok = fakeIo()
+  await startCoordinator(plan, input, { ...ok.io, record: (e) => lines.push(e) })
+  assert.equal(lines.length, 1)
+  assert.equal(lines[0].role, 'coordinator')
+  assert.equal(lines[0].source, 'role')
+  assert.deepEqual(lines[0].choice, { agent: 'claude', model: 'opus', effort: 'high' })
+  assert.equal(lines[0].taskId, null)
+  assert.equal(typeof lines[0].reason, 'string')
+  const bad = fakeIo({ outcome: { kind: 'none' } })
+  await assert.rejects(startCoordinator(plan, input, { ...bad.io, record: (e) => lines.push(e) }))
+  assert.equal(lines.length, 1, 'nothing recorded without a verified launch')
+  // A recording failure never fails the launch.
+  assert.deepEqual(await startCoordinator(plan, input, { ...ok.io, record: () => { throw new Error('disk full') } }), { terminalId: 'pty-9' })
+  // The host path records too, once agent.launch answers.
+  const host = fakeIo(); const hostLines: unknown[] = []
+  await startCoordinator({ kind: 'host' }, input, { ...host.io, record: (e) => hostLines.push(e) })
+  assert.equal(hostLines.length, 1)
+})
+
 test('a coordinator model set in Settings launches with --model and --effort as a terminal, mapped to its host id', async () => {
   const plan = coordinatorLaunchPlan(withCoordinator({ agent: 'claude', model: 'opus', effort: 'high' }), 'claude', avail)
   assert.equal(plan.kind, 'cli')
@@ -45,7 +78,7 @@ test('a coordinator model set in Settings launches with --model and --effort as 
 })
 
 test('a pick for another provider, or one this machine cannot run, starts with the provider default the host way', async () => {
-  assert.deepEqual(coordinatorLaunchPlan(withCoordinator({ agent: 'codex', model: 'gpt-6-luna' }), 'claude', avail), { kind: 'host' })
+  assert.deepEqual(coordinatorLaunchPlan(withCoordinator({ agent: 'codex', model: 'gpt-6-luna' }), 'claude', avail), { kind: 'host', note: 'Coordinator pick is Codex; launched Claude with its default model' })
   const gone = coordinatorLaunchPlan(withCoordinator({ agent: 'codex', model: 'gpt-retired' }), 'codex', avail)
   assert.equal(gone.kind, 'host')
   assert.ok(gone.kind === 'host' && /unavailable/.test(gone.note ?? ''))

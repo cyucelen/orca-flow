@@ -374,7 +374,7 @@ function renderPopover(refocus = false): void {
   const none = v.none ? `<button type="button" class="m-opt ${v.none.selected ? 'sel' : ''}" role="menuitemradio" aria-checked="${v.none.selected}" data-pnone="1"><span class="m-oname">${esc(v.none.label)}</span>${v.none.selected ? `<span class="m-check" aria-hidden="true">${ICON.tick}</span>` : ''}</button>` : ''
   const groups = v.groups.map((g) => `<div class="m-pgh">${providerMark(g.agent)}<span>${esc(g.name)}</span></div>${g.models.map((m) => item(`${g.agent}|${m.id}`, m.label, m.selected, m.dim)).join('')}`).join('')
   const seg = `<div class="m-seg" role="radiogroup" aria-label="Effort">${v.efforts.options.map((o) => `<button type="button" class="${o.selected ? 'sel' : ''}" role="radio" aria-checked="${o.selected}" data-peffort="${o.value}" ${v.efforts.disabled ? 'disabled' : ''}>${esc(o.label)}</button>`).join('')}</div>`
-  pop.innerHTML = `<div class="m-ptitle" id="s-pop-title">${esc(v.title)}</div><div class="m-plist" role="none">${none}${groups}</div><div class="m-peff"><span class="m-pgh m-pgh-eff">Effort</span>${v.efforts.disabled ? `<span class="s-tipwrap" data-tip="${esc(v.efforts.tip)}">${seg}</span>` : seg}</div>`
+  pop.innerHTML = `<div class="m-ptitle" id="s-pop-title">${esc(v.title)}</div><div class="m-plist" role="none">${none}${groups}</div><div class="m-peff"><span class="m-pgh m-pgh-eff">Effort</span>${v.efforts.disabled || v.efforts.adjusted ? `<span class="s-tipwrap" data-tip="${esc(v.efforts.tip)}">${seg}</span>` : seg}</div>`
   pop.setAttribute('role', 'menu')
   pop.setAttribute('aria-labelledby', 's-pop-title')
   pop.hidden = false
