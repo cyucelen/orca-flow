@@ -155,12 +155,13 @@ const fallbackBinary = (name: string): string =>
 /** Runs a command and resolves its stdout; the login-shell lookup goes through this so tests can inject it. */
 export type ShellExec = (file: string, args: string[], timeoutMs: number) => Promise<string>
 const shellExec: ShellExec = (file, args, timeoutMs) => new Promise((resolve, reject) => {
-  execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout))))
+  const child = execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout))))
+  child.stdin?.end('') // an interactive shell must never wait for input
 })
 
 /**
  * Resolves a CLI the way Orca launches it: the first match on the user's login-shell PATH
- * (`$SHELL -lc 'command -v <name>'`, short timeout), once per name; only when that fails the fixed
+ * (`$SHELL -ilc 'command -v <name>'` with stdin closed, then -lc, 5 s timeout each), once per name; only when that fails the fixed
  * list above. Discovery (src/worker.ts) and the card writers share it, so both talk to the CLI an
  * agent really runs, not whichever copy sits first in a fixed folder.
  */
@@ -170,12 +171,16 @@ export function cliResolver(exec: ShellExec = shellExec, shell: string = process
     let found = cache.get(name)
     if (!found) {
       found = (async () => {
-        try {
-          // Startup files may print; the answer is the last absolute path that exists.
-          const lines = (await exec(shell, ['-lc', `command -v ${name}`], 5_000)).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/'))
-          const path = lines.reverse().find(exists)
-          if (path) return path
-        } catch { /* fall back */ }
+        // Interactive first (-ilc): Orca's agent terminals are interactive, and PATH managers such as
+        // nvm load in ~/.zshrc, which only interactive shells read. Then the plain login shell.
+        // Startup files may print; the answer is the last absolute path that is an existing file.
+        for (const flags of ['-ilc', '-lc']) {
+          try {
+            const lines = (await exec(shell, [flags, `command -v ${name}`], 5_000)).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('/'))
+            const path = lines.reverse().find(exists)
+            if (path) return path
+          } catch { /* try the next */ }
+        }
         return fallbackBinary(name)
       })()
       cache.set(name, found)
