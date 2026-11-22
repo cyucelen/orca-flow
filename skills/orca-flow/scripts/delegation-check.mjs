@@ -29,6 +29,8 @@ export const READ_ONLY = new Set(['Explore', 'Plan', 'claude-code-guide', 'web-f
 
 const ASK = /\b(?:sub[- ]?agents?|agent tool|native agents?)\b/gi
 const NEGATION = /\b(?:no|not|don'?t|do not|never|without|instead of|avoid|stop|rather than)\b[^.!?\n]*$/i
+/** A slash command typed as the first word: "/review", "/code-review high". A path ("/Users/x/y.ts") has a second "/" and is not one. */
+const SLASH_COMMAND = /^\/[a-z][\w:-]*$/i
 
 /**
  * True when the text asks for a subagent: it names one ("subagent", "sub-agent", "sub agent",
@@ -49,7 +51,7 @@ const textOf = (content) =>
 
 /**
  * A real prompt with what it is: its text, and whether the user ran a slash command or a skill
- * (a <command-name> tag, as Claude Code records /review, or text that starts with "/"). Null when
+ * (a <command-name> tag, as Claude Code records /review, or a first word such as "/review"). Null when
  * the record is not a real prompt. Of a dispatch prompt only the TASK block is the text; the
  * command check reads the text before that cut, so a TASK block cannot make a dispatch a command.
  */
@@ -62,7 +64,7 @@ function promptOf(d) {
   let whole = textOf(content).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
   if (!whole || whole.startsWith('<task-notification>')) return null
   if (/^You have \d+ orchestration messages?\b/.test(whole)) return null
-  const command = /<command-name>/.test(whole) || whole.startsWith('/')
+  const command = /<command-name>/.test(whole) || SLASH_COMMAND.test(whole.split(/\s+/)[0])
   let text = whole
   const task = text.indexOf('=== TASK ===')
   if (task >= 0) text = text.slice(task + '=== TASK ==='.length).trim()
@@ -133,8 +135,9 @@ export function decide(input, { env = process.env, home = homedir(), script = pr
   const session = typeof input.session_id === 'string' ? input.session_id : null
   const role = hookRole({ cwd, home, data, session, first: () => firstPromptOf(input.transcript_path) })
   if (role !== 'coordinator' && role !== 'lead') return null
-  let transcript = ''
-  try { transcript = readFileSync(input.transcript_path, 'utf8') } catch {}
+  // A transcript that cannot be read leaves the user's latest prompt unknown: allow, as any error does.
+  let transcript
+  try { transcript = readFileSync(input.transcript_path, 'utf8') } catch { return null }
   const prompt = latestPromptInfo(transcript)
   if (prompt.command || asksForSubagent(prompt.text)) return null
   return {

@@ -162,6 +162,25 @@ test('a slash command or skill the user ran allows any subagent type, the way a 
   assertDeny(plain, hook(plain))
 })
 
+test('a path typed first is not a slash command; a command word is, with or without arguments', () => {
+  const path = world([user(LEAD), user('/Users/x/y.ts fix this')])
+  assertDeny(path, hook(path), 'lead')
+  const review = world([user(LEAD), user('/review')])
+  assert.equal(hook(review), null, '/review')
+  const withArgs = world([user(LEAD), user('/code-review high')])
+  assert.equal(hook(withArgs), null, '/code-review high')
+})
+
+test('an unreadable transcript allows the call, even for a lead or a coordinator', () => {
+  const lead = world()
+  writeFileSync(join(lead.data, 'roles.json'), JSON.stringify({ [SESSION]: { role: 'lead', at: '2026-11-22T10:00:00Z', by: 'user' } }))
+  assert.equal(hook(lead, undefined, { input: { transcript_path: join(lead.home, 'missing.jsonl') } }), null, 'lead, missing transcript')
+  assert.equal(hook(lead, undefined, { input: { transcript_path: lead.home } }), null, 'lead, transcript is a directory')
+  const coordinator = world()
+  assert.equal(hook(coordinator, undefined, { input: { cwd: coordinator.coordinator, transcript_path: join(coordinator.home, 'missing.jsonl') } }), null, 'coordinator, missing transcript')
+  assert.deepEqual([...log(lead), ...log(coordinator)], [], 'no deny is logged')
+})
+
 test('"delegationCheck": "off" turns it off; any other value keeps it on', () => {
   const w = world()
   writeFileSync(join(w.data, 'config.json'), JSON.stringify({ delegationCheck: 'off', messageFormat: 'all' }))
