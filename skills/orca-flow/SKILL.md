@@ -86,7 +86,7 @@ and hand actions before picks and reviews, then longest waiting.
   provider is unavailable, report that before dispatching.
 
 ```sh
-orca-flow dispatch --role worker --class standard --worktree current \
+orca-flow dispatch --role worker --kind normal --worktree current \
   --task-title "<outcome>" --spec-file - <<'EOF'
 <spec>
 EOF
@@ -101,31 +101,33 @@ printed (they fix it in Settings → Models). Neither starts anything.
 
 ### Which model
 
-`orca-flow route --role worker --class <class> --explain` shows the choice and what it passed over,
-without starting anything.
+`orca-flow route --role worker --kind <kind> --explain` shows the choice, the row it came from, its
+fallback and why, without starting anything.
 
 - Coordinators and leads start on the model the user set for that role. None set: the provider's
   default, as before.
-- Workers start on the cheapest enabled model rated for the task, so class every task:
-  - `trivial`: mechanical, one or two files, an obvious result. "Rename `total` to `subtotal` in
+- Workers start on the model the user picked for the task's kind in Settings → Models (a model, an
+  effort and one fallback per kind; a preset sets all of it at once). So give every task a kind:
+  - `simple`: mechanical, one or two files, an obvious result. "Rename `total` to `subtotal` in
     src/cart.ts."
-  - `standard` (the default): a normal bounded change with tests. "Add an empty state to the panel,
-    with a test."
-  - `complex`: cross-cutting design, hard debugging, concurrency, migrations or security. "Find why
+  - `normal` (the default): a bounded change with tests. "Add an empty state to the panel, with
+    a test."
+  - `hard`: cross-cutting design, hard debugging, concurrency, migrations or security. "Find why
     handover drops mail when two runs move at once."
   - Add `--risk high` when a mistake is costly (production data, money, security, a release): one
-    tier more. "Change the release script."
-  - Add `--context large` when the task must read much code or long documents: at least Standard.
+    kind up. "Change the release script."
+  - Add `--context large` when the task must read much code or long documents: at least normal.
     "Map the 40-file sync module before changing it."
-- Tiers (Light, Standard, Strong) and costs (1-5) are the user's own relative settings, not prices
-  and not measured capability. Never quote them as money.
+  - The old `--class trivial|standard|complex` still works and means the same kinds.
+- When a kind's model is unavailable, its fallback starts and the reason says so. When both are,
+  dispatch refuses (exit 3): tell the user to fix that kind in Settings → Models.
 - **The user's choice wins.** When the user names an agent, a model or an effort, pass `--agent`,
   `--model`, `--effort`. They go straight through and are never swapped. When one is unavailable,
   dispatch refuses (exit 3): tell the user; do not pick another yourself.
 - **Escalate only after a demonstrated failure:** the worker reported `--outcome failed`, or it
-  could not fix its result after you sent it what was wrong. Then rerun the task one tier up:
+  could not fix its result after you sent it what was wrong. Then rerun the task one kind up:
   `orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current`. It reads
-  the last attempt from `~/.orca-flow/routes.jsonl`, reuses the task and its class, and refuses past
+  the last attempt from `~/.orca-flow/routes.jsonl`, reuses the task and its kind, and refuses past
   the user's escalation limit; then ask the user. A task Orca still shows as completed must first be
   marked failed: `orca orchestration task-update --id <task> --status failed --result "<why>"`.
   Never escalate because a task looks hard, and never start on a stronger model "to be safe".

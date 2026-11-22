@@ -33,15 +33,13 @@ const settings = {
     writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }],
     messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false,
     routing: {
-      coordinator: { agent: 'claude', model: 'opus', effort: 'high' }, lead: null, workerMode: 'auto', worker: null,
-      candidates: [
-        { agent: 'claude', model: 'haiku', tier: 1, cost: 1, enabled: true },
-        { agent: 'claude', model: 'sonnet', tier: 2, cost: 2, enabled: true },
-        { agent: 'codex', model: 'gpt-6-luna', tier: 2, cost: 2, enabled: false },
-        { agent: 'claude', model: 'opus', tier: 3, cost: 4, enabled: true },
-        { agent: 'gemini', model: 'gemini-4-neon', tier: 3, cost: 3, enabled: true }
-      ],
-      maxEscalations: 1, maxParallel: 3
+      coordinator: { agent: 'claude', model: 'opus', effort: 'high' }, lead: null,
+      workers: {
+        simple: { model: { agent: 'claude', model: 'haiku' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } },
+        normal: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'medium' } },
+        hard: { model: { agent: 'claude', model: 'opus', effort: 'high' }, fallback: null }
+      },
+      maxParallel: 3, maxEscalations: 1, presets: []
     }
   },
   // What the worker discovered: installed agents and the Codex catalog (`codex debug models`).

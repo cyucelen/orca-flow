@@ -10,7 +10,7 @@
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
 //   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
-//   orca-flow route --role worker|lead|coordinator [--class trivial|standard|complex] [--risk high]
+//   orca-flow route --role worker|lead|coordinator [--kind simple|normal|hard] [--risk high]
 //       [--context large] [--attempt n] [--agent a] [--model m] [--effort e] [--json] [--explain]
 //                                             Which model a start would use, and why. Launches nothing
 //   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task

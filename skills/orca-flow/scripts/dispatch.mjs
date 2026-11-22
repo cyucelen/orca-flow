@@ -4,7 +4,8 @@
 //
 // The routing decision is src/routing.ts and the plan checks src/plan.ts (Node strips their types).
 // Every start appends one line to ~/.orca-flow/routes.jsonl:
-//   {at, role, taskId, dispatchId, workspace, choice, source, reason, class, risk, attempt}
+//   {at, role, taskId, dispatchId, workspace, choice, source, reason, kind, class, risk, attempt}
+// `class` repeats `kind` in its old name (trivial, standard, complex) for older readers.
 // The sidebar reads it to show the model on each row; `--retry-of` reads it to escalate.
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -107,23 +108,27 @@ function routeEntry({ at, role, receipt, decision, req }) {
     choice: decision.choice,
     source: decision.source,
     reason: decision.reason,
-    class: req.taskClass ?? null,
+    kind: req.kind ?? null,
+    class: req.kind ? OLD_CLASS[req.kind] : null,
     risk: req.risk ?? null,
     attempt: req.attempt ?? 0
   }
 }
 
 const ROLES = ['coordinator', 'lead', 'worker']
-const CLASSES = ['trivial', 'standard', 'complex']
+const OLD_CLASS = { simple: 'trivial', normal: 'standard', hard: 'complex' }
 
 /** The RouteRequest from command-line flags; refuses values routing would not understand. */
 export function routeRequest(args, roles = ROLES) {
   const role = args.role
   if (!roles.includes(role)) throw new UsageError(`--role is ${roles.join(' or ')}`)
   const req = { role }
-  if (args.class !== undefined) {
-    if (!CLASSES.includes(args.class)) throw new UsageError('--class is trivial, standard or complex')
-    req.taskClass = args.class
+  // --kind; --class and the old names (trivial, standard, complex) still work.
+  const flag = args.kind !== undefined ? 'kind' : 'class'
+  if (args[flag] !== undefined) {
+    const kind = routing.taskKind(args[flag])
+    if (!kind) throw new UsageError(`--${flag} is simple, normal or hard`)
+    req.kind = kind
   }
   if (args.risk !== undefined) {
     if (args.risk !== 'high' && args.risk !== 'low') throw new UsageError('--risk is high (or low)')
@@ -156,8 +161,10 @@ export function formatDecision(decision, { explain = false } = {}) {
     ? [`${label(decision)} (${decision.source})`, `  why: ${decision.reason}`, `  flags: ${routing.launchArgs(decision.choice).join(' ')}`]
     : [`no model: ${decision.error}`]
   if (explain) {
+    const row = decision.row
+    if (row) lines.push(`  row: ${row.kind} → ${routing.choiceLabel(row.route.model)}, fallback ${row.route.fallback ? routing.choiceLabel(row.route.fallback) : 'none'} (Settings → Models)`)
     lines.push(decision.skipped.length ? '  passed over:' : '  passed over: none')
-    for (const s of decision.skipped) lines.push(`    ${s.candidate}: ${s.why}`)
+    for (const s of decision.skipped) lines.push(`    ${s.model}: ${s.why}`)
   }
   return lines.join('\n')
 }
@@ -232,7 +239,8 @@ export async function dispatchCommand(args, deps) {
     // The same task, judged the same way, unless this call says otherwise.
     if (prev) {
       if (!flags.task && prev.taskId) flags.task = prev.taskId
-      if (req.taskClass === undefined && prev.class) req.taskClass = prev.class
+      const prevKind = routing.taskKind(prev.kind ?? prev.class)
+      if (req.kind === undefined && prevKind) req.kind = prevKind
       if (req.risk === undefined && prev.risk) req.risk = prev.risk
     }
     if (!flags.task) throw new UsageError('--retry-of needs --task <the failed task id>')
@@ -320,7 +328,7 @@ const statePath = (dir, plan) => join(PLANS(dir), `${planLib.planSlug(plan.title
 
 const taskRequest = (t) => ({
   role: 'worker',
-  taskClass: t.class,
+  kind: t.kind,
   ...(t.risk && { risk: t.risk }),
   ...(t.context && { context: t.context }),
   ...(t.agent && { agent: t.agent }),

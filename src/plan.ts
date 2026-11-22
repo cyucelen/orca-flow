@@ -5,16 +5,16 @@
 //
 // A plan file:
 //   { "title": "...", "tasks": [{ "id": "a", "title": "...", "spec": "..." | "specFile": "...",
-//     "class": "standard", "risk"?, "context"?, "files": ["src/x.ts", "src/panel/"], "deps": ["b"],
+//     "kind": "normal" (old plans: "class", trivial|standard|complex), "risk"?, "context"?, "files": ["src/x.ts", "src/panel/"], "deps": ["b"],
 //     "agent"?, "model"?, "effort"? }] }
-import { EFFORTS, type ContextSize, type Effort, type Risk, type TaskClass } from './routing.ts'
+import { EFFORTS, taskKind, type ContextSize, type Effort, type Risk, type TaskKind } from './routing.ts'
 
 export type PlanTask = {
   id: string
   title: string
   spec?: string
   specFile?: string
-  class: TaskClass
+  kind: TaskKind
   risk?: Risk
   context?: ContextSize
   /** Files, directories (a trailing `/`, or any path that is a prefix of another) and globs it owns. */
@@ -32,7 +32,6 @@ export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'failed-start
 
 /** More tasks than this is not a split anyone can review: error. */
 export const MAX_TASKS = 8
-const CLASSES: readonly TaskClass[] = ['trivial', 'standard', 'complex']
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
@@ -54,8 +53,10 @@ export function parsePlan(raw: unknown): { plan: Plan | null; errors: string[] }
     const spec = str(t.spec)
     const specFile = str(t.specFile)
     if (!spec === !specFile) errors.push(`${at}: needs exactly one of "spec" or "specFile"`)
-    const cls = t.class === undefined ? 'standard' : t.class
-    if (!CLASSES.includes(cls as TaskClass)) errors.push(`${at}: "class" is trivial, standard or complex, not ${JSON.stringify(t.class)}`)
+    const field = t.kind !== undefined ? 'kind' : 'class'
+    const given = t.kind ?? t.class
+    const kind = given === undefined ? 'normal' : taskKind(given)
+    if (!kind) errors.push(`${at}: "${field}" is simple, normal or hard, not ${JSON.stringify(given)}`)
     if (t.risk !== undefined && t.risk !== 'low' && t.risk !== 'high') errors.push(`${at}: "risk" is high or low`)
     if (t.context !== undefined && t.context !== 'normal' && t.context !== 'large') errors.push(`${at}: "context" is large or normal`)
     if (t.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(t.effort)) errors.push(`${at}: "effort" is one of ${EFFORTS.join(', ')}`)
@@ -68,7 +69,7 @@ export function parsePlan(raw: unknown): { plan: Plan | null; errors: string[] }
       title: title ?? '',
       ...(spec ? { spec } : {}),
       ...(specFile ? { specFile } : {}),
-      class: (CLASSES.includes(cls as TaskClass) ? cls : 'standard') as TaskClass,
+      kind: kind ?? 'normal',
       ...(t.risk === 'high' || t.risk === 'low' ? { risk: t.risk } : {}),
       ...(t.context === 'large' || t.context === 'normal' ? { context: t.context } : {}),
       files: files.map(normalizePath),
@@ -192,7 +193,7 @@ function ancestors(tasks: PlanTask[], id: string): Set<string> {
 /**
  * Everything `plan check` reports. Errors: duplicate ids, unknown deps, cycles, more than
  * MAX_TASKS tasks, and two tasks that can touch the same file without one waiting for the other.
- * Warnings: likely over-splitting (all trivial; a trivial task inside another task's files).
+ * Warnings: likely over-splitting (all simple; a simple task inside another task's files).
  */
 export function checkPlan(plan: Plan): PlanCheck {
   const errors: string[] = []
@@ -223,13 +224,13 @@ export function checkPlan(plan: Plan): PlanCheck {
       }
     }
   }
-  if (tasks.length > 1 && tasks.every((t) => t.class === 'trivial')) {
-    warnings.push(`every task is trivial: one worker can do them all; merge them into one task`)
+  if (tasks.length > 1 && tasks.every((t) => t.kind === 'simple')) {
+    warnings.push(`every task is simple: one worker can do them all; merge them into one task`)
   }
   for (const t of tasks) {
-    if (t.class !== 'trivial') continue
+    if (t.kind !== 'simple') continue
     const host = tasks.find((o) => o !== t && t.files.every((f) => o.files.some((g) => covers(g, f))))
-    if (host) warnings.push(`trivial task "${t.id}" only touches files "${host.id}" owns: merge it into "${host.id}"`)
+    if (host) warnings.push(`simple task "${t.id}" only touches files "${host.id}" owns: merge it into "${host.id}"`)
   }
   return { ok: errors.length === 0, errors, warnings, waves: layers ?? [] }
 }

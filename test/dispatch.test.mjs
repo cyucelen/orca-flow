@@ -14,31 +14,44 @@ const after = (argv, flag) => argv[argv.indexOf(flag) + 1]
 
 test('route prints the label, the reason and, with --explain, what it passed over; launches nothing', async () => {
   const deps = fakeDeps()
-  assert.equal(await routeCommand(argsOf({ role: 'worker', class: 'trivial', explain: true }, 'route'), deps), 0)
-  const out = deps.output.join('\n')
-  assert.match(out, /^Claude Haiku \(auto\)\n {2}why: trivial task → Claude Haiku/)
-  assert.match(out, /flags: --agent claude --model haiku\n/)
-  assert.match(out, /passed over:\n {4}claude sonnet: costs more/)
+  assert.equal(await routeCommand(argsOf({ role: 'worker', kind: 'simple', explain: true }, 'route'), deps), 0)
+  assert.equal(deps.output.join('\n'), [
+    'Claude Haiku (kind)',
+    '  why: simple task → Claude Haiku',
+    '  flags: --agent claude --model haiku',
+    '  row: simple → Claude Haiku, fallback Claude Sonnet · low (Settings → Models)',
+    '  passed over: none'
+  ].join('\n'))
   assert.equal(deps.calls.length, 0)
+  // the row's model is gone: the fallback, and what was passed over
+  const fb = fakeDeps({ avail: { agents: ['claude'], models: { claude: [{ id: 'sonnet' }, { id: 'opus' }] } } })
+  await routeCommand(argsOf({ role: 'worker', kind: 'simple', explain: true }, 'route'), fb)
+  assert.match(fb.output[0], /^Claude Sonnet · low \(fallback\)\n {2}why: simple task → Claude Sonnet · low: Haiku unavailable/)
+  assert.match(fb.output[0], /passed over:\n {4}Claude Haiku: not in Claude's model list$/)
+  // --class and the old names still work
   const json = fakeDeps()
   await routeCommand(argsOf({ role: 'worker', class: 'complex', json: true }, 'route'), json)
   assert.deepEqual(JSON.parse(json.output[0]).choice, { agent: 'claude', model: 'opus', effort: 'high' })
+  const old = fakeDeps()
+  await routeCommand(argsOf({ role: 'worker', kind: 'trivial' }, 'route'), old)
+  assert.match(old.output[0], /why: simple task/)
   await assert.rejects(routeCommand(argsOf({ role: 'boss' }, 'route'), fakeDeps()), UsageError)
-  await assert.rejects(routeCommand(argsOf({ role: 'worker', class: 'huge' }, 'route'), fakeDeps()), /--class is trivial, standard or complex/)
+  await assert.rejects(routeCommand(argsOf({ role: 'worker', class: 'huge' }, 'route'), fakeDeps()), /--class is simple, normal or hard/)
+  await assert.rejects(routeCommand(argsOf({ role: 'worker', kind: 'huge' }, 'route'), fakeDeps()), /--kind is simple, normal or hard/)
 })
 
 test('dispatch starts the worker on the routed agent, model and effort, passes the rest through, and logs the route', async () => {
   const deps = fakeDeps({ stdin: 'Fix the button\nmore spec' })
-  const code = await dispatchCommand(argsOf({ role: 'worker', class: 'trivial', worktree: 'current', 'task-title': 'Fix the button', 'spec-file': '-', 'keep-open': true }, 'dispatch'), deps)
+  const code = await dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', 'task-title': 'Fix the button', 'spec-file': '-', 'keep-open': true }, 'dispatch'), deps)
   assert.equal(code, 0)
   const [start] = starts(deps)
   assert.deepEqual(start.args, ['orchestration', 'worker-start', '--worktree', 'current', '--task-title', 'Fix the button', '--spec-file', '-', '--keep-open', '--agent', 'claude', '--model', 'haiku'])
   assert.equal(start.input, 'Fix the button\nmore spec', 'stdin passes through for --spec-file -')
   assert.deepEqual(deps.capacityCalls, [{}], 'no new worktree: the general gate')
-  assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku — trivial task → /)
+  assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku — simple task → Claude Haiku$/m)
   assert.match(deps.output[0], /task task_new1 · run run_1 · state ready · workspace repo1::\/work\/tree/)
   const [entry] = readRoutes(deps.dir)
-  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'class', 'risk', 'attempt'])
+  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'kind', 'class', 'risk', 'attempt'])
   assert.deepEqual(entry, {
     at: '2026-11-22T10:00:00.000Z',
     role: 'worker',
@@ -46,8 +59,9 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
     dispatchId: 'ctx_1',
     workspace: 'repo1::/work/tree',
     choice: { agent: 'claude', model: 'haiku' },
-    source: 'auto',
-    reason: entry.reason,
+    source: 'kind',
+    reason: 'simple task → Claude Haiku',
+    kind: 'simple',
     class: 'trivial',
     risk: null,
     attempt: 0
@@ -84,24 +98,25 @@ test('capacity refusal launches nothing and logs nothing', async () => {
 })
 
 test('a route failure launches nothing', async () => {
-  const deps = fakeDeps({ routing: { candidates: [{ agent: 'claude', model: 'opus', tier: 3, cost: 4, enabled: false }] } })
-  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), deps), (e) => e instanceof Refused && e.code === 3 && /No enabled Standard model/.test(e.message))
+  const deps = fakeDeps({ routing: { workers: { normal: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: null } } } })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), deps), (e) => e instanceof Refused && e.code === 3 && /No model for this normal task: Codex gpt-6-luna · medium is unavailable \(codex not installed\) and the row has no fallback/.test(e.message))
   const unknown = fakeDeps()
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', model: 'gpt-x', worktree: 'current', spec: 's' }, 'dispatch'), unknown), (e) => e.code === 3)
   assert.equal(deps.calls.length + unknown.calls.length, 0)
 })
 
-test('--retry-of escalates from the logged attempt, reuses the task and its class, and stops at the limit', async () => {
+test('--retry-of escalates from the logged attempt, reuses the task and its kind (old lines: class), and stops at the limit', async () => {
   const deps = fakeDeps({ routing: { maxEscalations: 1 } })
   writeFileSync(join(deps.dir, 'routes.jsonl'), `${JSON.stringify({ at: 'x', role: 'worker', taskId: 'task_a', dispatchId: 'ctx_old', workspace: 'w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, source: 'auto', reason: 'r', class: 'standard', risk: null, attempt: 0 })}\n`)
   await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), deps)
   const argv = starts(deps)[0].args
   assert.equal(after(argv, '--task'), 'task_a', 'Orca needs --task with --retry-of')
   assert.equal(after(argv, '--retry-of'), 'ctx_old')
-  assert.equal(after(argv, '--model'), 'opus', 'standard asks Standard; one escalation asks Strong')
+  assert.equal(after(argv, '--model'), 'opus', 'normal moves one row up to hard')
   const logged = readRoutes(deps.dir).at(-1)
   assert.equal(logged.attempt, 1)
-  assert.equal(logged.class, 'standard')
+  assert.deepEqual([logged.kind, logged.class], ['normal', 'standard'])
+  assert.equal(logged.reason, 'normal task, escalated once → Claude Opus · high')
   assert.equal(logged.dispatchId, 'ctx_1')
 
   // The new dispatch failed too: attempt 2 is past maxEscalations 1.
@@ -118,7 +133,7 @@ test('--dry-run runs the gate and the route, prints the exact command, and start
   assert.equal(deps.calls.length, 0)
   assert.equal(deps.capacityCalls.length, 1)
   assert.equal(existsSync(join(deps.dir, 'routes.jsonl')), false)
-  assert.match(deps.output[0], /^Would start on Claude Opus · high — complex task/)
+  assert.match(deps.output[0], /^Would start on Claude Opus · high — hard task/)
   assert.match(deps.output[0], /\norca orchestration worker-start --worktree current --task-title 'Fix Bob'\\''s race' --spec-file - --agent claude --model opus --effort high --json$/)
 
   const json = fakeDeps()

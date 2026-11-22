@@ -29,11 +29,12 @@ one line, and end your turn.
    pre-diagnosed spec is still a worker task: knowing the fix does not make it small.
 4. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
    it with its whole conversation, so it already knows the code.
-5. **Otherwise start a worker** in this worktree, classed by how demanding the task is (see
-   Which model in [SKILL.md](../SKILL.md)):
-   `orca-flow dispatch --role worker --class <trivial|standard|complex> --worktree current
+5. **Otherwise start a worker** in this worktree, with the kind of task it is (see Which model
+   in [SKILL.md](../SKILL.md)): `simple` (a rename, a copy change), `normal` (a bounded change with
+   tests), `hard` (design, hard bugs, concurrency, migrations, security).
+   `orca-flow dispatch --role worker --kind <simple|normal|hard> --worktree current
    --task-title "<outcome>" --spec-file -`. It runs the capacity gate, starts the worker on the
-   cheapest model the user rated for that class, and prints the model and why. Workers running at
+   model the user picked for that kind in Settings → Models, and prints the model and why. Workers running at
    the same time must touch different files; otherwise send the second task to the first worker,
    or start it after the first reports. Two or more tasks at once go in a plan (Splitting work).
 6. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
@@ -74,11 +75,11 @@ Write the split as a plan file outside the repo (a scratch folder):
 ```json
 { "title": "Order totals",
   "tasks": [
-    { "id": "api", "title": "Totals endpoint returns tax", "class": "standard",
+    { "id": "api", "title": "Totals endpoint returns tax", "kind": "normal",
       "files": ["src/api/totals.ts", "src/api/totals.test.ts"], "spec": "..." },
-    { "id": "ui", "title": "Cart shows tax line", "class": "standard",
+    { "id": "ui", "title": "Cart shows tax line", "kind": "normal",
       "files": ["src/panel/"], "deps": ["api"], "specFile": "ui-spec.md" },
-    { "id": "copy", "title": "Rename Subtotal label", "class": "trivial",
+    { "id": "copy", "title": "Rename Subtotal label", "kind": "simple",
       "files": ["src/i18n/en.json"] } ] }
 ```
 
@@ -86,8 +87,8 @@ Write the split as a plan file outside the repo (a scratch folder):
   migrations and schema count: name them in the one task that changes them.
 - `deps`: tasks that must finish first. Two tasks that own the same path must be chained by deps
   (or merged); the check refuses them otherwise.
-- `class`, `risk`, `context` as in Which model; `agent`, `model`, `effort` only when the user
-  named them.
+- `kind` (simple, normal, hard; an older plan's `class` still reads), `risk`, `context` as in
+  Which model; `agent`, `model`, `effort` only when the user named them.
 
 ```sh
 orca-flow plan check plan.json    # errors: overlap, cycles, missing deps, over 8 tasks
@@ -96,7 +97,7 @@ orca-flow plan next plan.json     # when a worker reports: start what became rea
 orca-flow plan status plan.json   # one line per task: state, model, why
 ```
 
-`check` warns when the split looks too fine (every task trivial, or a trivial task inside another
+`check` warns when the split looks too fine (every task simple, or a simple task inside another
 task's files): merge as it says. `start` routes every task once and keeps that choice, so a change
 in Settings never switches pending work; `next` routes again only when that model is gone, and
 says so. At most `maxParallel` workers of the plan run at once, each behind the capacity gate; the

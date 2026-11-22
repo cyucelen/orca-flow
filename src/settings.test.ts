@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { DEFAULT_ROUTING, normalizeRouting, route, type Availability } from './routing.ts'
+import { applyPreset, DEFAULT_ROUTING, deletePreset, normalizeRouting, route, savePreset, type Availability, type RoutingSettings } from './routing.ts'
 import { applySettings, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
@@ -124,10 +124,27 @@ test('routing persists only when changed, drops at default, keeps unknown keys',
   assert.deepEqual(DEFAULT_DRAFT.routing, DEFAULT_ROUTING)
 })
 
-test('precedence from stored settings: override > role > auto', () => {
+test('worker rows and saved presets persist; a preset applied back to Balanced drops routing from the file', () => {
+  const economy = applyPreset(DEFAULT_ROUTING, 'economy')
+  const file = applySettings({}, { ...DEFAULT_SETTINGS, routing: economy })
+  assert.deepEqual((file.routing as RoutingSettings).workers, economy.workers)
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(file))).routing, economy)
+  const withSaved = savePreset(economy, 'Cheap')
+  const file2 = applySettings(file, { ...DEFAULT_SETTINGS, routing: withSaved })
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(file2))).routing.presets.map((p) => p.id), ['saved:cheap'])
+  // back to Balanced, but the saved preset keeps routing in the file
+  const balancedKept = applyPreset(withSaved, 'balanced')
+  assert.deepEqual(Object.keys(applySettings(file2, { ...DEFAULT_SETTINGS, routing: balancedKept })), ['routing'])
+  assert.deepEqual(applySettings(file2, { ...DEFAULT_SETTINGS, routing: deletePreset(balancedKept, 'saved:cheap') }), {})
+  // old rating fields mean nothing now: the file reads as the default
+  assert.deepEqual(normalizeSettings({ routing: { workerMode: 'fixed', candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }] } }).routing, DEFAULT_ROUTING)
+})
+
+test('precedence from stored settings: override > role > kind row', () => {
   const avail: Availability = { agents: ['claude'], models: { claude: null } }
-  const routing = normalizeSettings({ routing: { lead: { agent: 'claude', model: 'opus' }, candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }] } }).routing
+  const routing = normalizeSettings({ routing: { lead: { agent: 'claude', model: 'opus' }, workers: { simple: { model: { agent: 'claude', model: 'haiku' }, fallback: null } } } }).routing
   assert.deepEqual((route(routing, { role: 'lead' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'opus' })
   assert.deepEqual((route(routing, { role: 'lead', model: 'sonnet' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'sonnet' })
-  assert.deepEqual((route(routing, { role: 'worker', taskClass: 'trivial' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku' }, 'Orca takes no effort for Haiku')
+  assert.deepEqual((route(routing, { role: 'worker', kind: 'simple' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku' }, 'Orca takes no effort for Haiku')
+  assert.deepEqual(routing.workers.normal, DEFAULT_ROUTING.workers.normal)
 })

@@ -1605,17 +1605,18 @@ test('routes.jsonl labels reach the routed worker and lead rows, by dispatch id;
   const lines = [
     JSON.stringify({ at: 1, role: 'worker', taskId: 't1', dispatchId: 'ctx_w', workspace: '/w/env', choice: { agent: 'claude', model: 'haiku', effort: 'low' }, source: 'auto', reason: 'x', class: 'trivial', risk: 'low', attempt: 0 }),
     '{ not json',
-    JSON.stringify({ dispatchId: 'ctx_w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, class: 'standard', attempt: 1 }),
+    JSON.stringify({ dispatchId: 'ctx_w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, kind: 'normal', class: 'standard', attempt: 1 }),
+    JSON.stringify({ dispatchId: 'ctx_old', choice: { agent: 'claude', model: 'opus', effort: 'high' }, class: 'complex', risk: 'high', attempt: 0 }),
     JSON.stringify({ role: 'lead', dispatchId: 'ctx_l', choice: { agent: 'claude', model: 'opus', effort: 'high' }, source: 'role' }),
     JSON.stringify({ dispatchId: 'ctx_bad', choice: {} })
   ].join('\n')
   const labels = main.routeLabels(lines)
-  assert.deepEqual([...labels], [['ctx_w', 'Claude Sonnet · medium — standard task, escalated'], ['ctx_l', 'Claude Opus · high']])
+  assert.deepEqual([...labels], [['ctx_w', 'Claude Sonnet · medium — normal task, escalated'], ['ctx_old', 'Claude Opus · high — hard task, high risk'], ['ctx_l', 'Claude Opus · high']])
   const rows = main.fromPs([{ identity: { key: 'env' }, displayName: 'env', repo: 'isola', path: '/w/env', liveTerminalCount: 2, agents: [
     { paneKey: 'p-worker', parentPaneKey: 'p-lead', state: 'working' }, { paneKey: 'p-lead', state: 'done' }, { paneKey: 'p-other', state: 'done' }
   ] }])
   const routed = main.withRoutes(rows, new Map([['p-worker', 'ctx_w'], ['p-lead', 'ctx_l'], ['p-other', 'ctx_unknown']]), labels)
-  assert.deepEqual(routed[0].agents.map((a) => a.route ?? null), ['Claude Sonnet · medium — standard task, escalated', 'Claude Opus · high', null])
+  assert.deepEqual(routed[0].agents.map((a) => a.route ?? null), ['Claude Sonnet · medium — normal task, escalated', 'Claude Opus · high', null])
   assert.equal(main.withRoutes(rows, undefined, labels), rows)
   const dir = mkdtempSync(join(tmpdir(), 'orca-flow-routes-'))
   assert.equal(main.readRoutes(dir).size, 0, 'no file yet')

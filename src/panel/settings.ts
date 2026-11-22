@@ -5,8 +5,8 @@
 import type { SettingsState, UpdateState } from '../protocol.ts'
 import type { UpdateCheck } from '../update.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
-import { addable, agentName, agentsShown, choiceFrom, choiceValue, effortsFor, examples, modelLabel, modelOptions, newCandidate, UNKNOWN, unavailable } from './models.ts'
-import { TIER_NAMES, type Effort, type ModelChoice, type Tier } from '../routing.ts'
+import { agentName, agentsShown, choiceFrom, choiceValue, effortsFor, examples, modelOptions, UNKNOWN, unavailable } from './models.ts'
+import { matchingPreset, type Effort, type ModelChoice } from '../routing.ts'
 import { ago, DEFAULT_DRAFT, settingsSession, statusView, WRITABLE, type Draft, type DraftKey, type WriterProvider } from '../settings.ts'
 
 const glyph = (d: string) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
@@ -203,45 +203,20 @@ function rstep(key: 'maxParallel' | 'maxEscalations', min: number, max: number, 
     <button type="button" data-rstep="${key}" data-d="-1" ${off(v <= min)} aria-label="${esc(name)}: less">${ICON.minus}</button><button type="button" data-rstep="${key}" data-d="1" ${off(v >= max)} aria-label="${esc(name)}: more">${ICON.plus}</button></span>`
 }
 
-function candidateRow(i: number): string {
-  const c = r().candidates[i]
-  const a = avail()
-  const why = unavailable(c.agent, c.model, a)
-  const name = `${agentName(c.agent)} ${modelLabel(c.agent, c.model, a)}`
-  const logo = (PROVIDER_LOGOS as Record<string, string>)[c.agent] ?? `<span class="s-mono">${esc(agentName(c.agent).slice(0, 1))}</span>`
-  const tier = `<select class="s-pop s-tier" data-ctier="${i}" ${off()} ${described(`${name} capability`, 'Your rating of what this model handles well. Light: mechanical edits. Standard: normal changes with tests. Strong: design, hard bugs, migrations.')}>${([1, 2, 3] as Tier[]).map((t) => `<option value="${t}" ${c.tier === t ? 'selected' : ''}>${TIER_NAMES[t]}</option>`).join('')}</select>`
-  const cost = `<span class="s-value s-cost" aria-hidden="true" data-tip="Relative cost ${c.cost} of 5">${'●'.repeat(c.cost)}<span class="s-faint">${'●'.repeat(5 - c.cost)}</span></span><span class="s-seg" role="group" aria-label="${esc(name)} relative cost: ${c.cost} of 5">
-    <button type="button" data-ccost="${i}" data-d="-1" ${off(c.cost <= 1)} aria-label="${esc(name)}: cheaper">${ICON.minus}</button><button type="button" data-ccost="${i}" data-d="1" ${off(c.cost >= 5)} aria-label="${esc(name)}: costlier">${ICON.plus}</button></span>`
-  return `<div class="s-row s-crow ${why ? 'dim' : ''}" data-cand="${i}"${why ? ` data-tip="${esc(`${why}, so workers are not routed to it.`)}"` : ''}>
-    <span class="s-logo">${logo}</span>
-    <span class="s-label" title="${esc(c.model)}">${esc(modelLabel(c.agent, c.model, a))}</span>
-    <div class="s-ctl">${tier}${cost}${toggle(`s-cand-${i}`, c.enabled, `Route workers to ${name}`, '', false, `data-cen="${i}"`)}<button type="button" class="s-round" data-crm="${i}" ${off()} aria-label="Remove ${esc(name)}">${ICON.minus}</button></div>
-  </div>`
-}
-
 function pageModels(): string {
   const rt = r()
   const roles = group([roleRow('coordinator'), roleRow('lead')], { text: 'Roles', tip: `Coordinators and leads plan and steer, so they usually get a strong model. ${NEW_ONLY}` })
-  const mode = row(label('Choose model', 'Auto: each worker task gets the cheapest model you rated capable enough for it (trivial tasks need Light, standard need Standard, complex need Strong; high-risk tasks one more). Fixed: every worker gets the same model.'),
-    `<select class="s-pop" id="s-wmode" ${off()} ${described('Worker model', 'Auto or fixed')}><option value="auto" ${rt.workerMode === 'auto' ? 'selected' : ''}>Auto (cheapest capable)</option><option value="fixed" ${rt.workerMode === 'fixed' ? 'selected' : ''}>Fixed</option></select>`)
-  const rows = [mode]
-  if (rt.workerMode === 'fixed') {
-    rows.push(row(label('Model', `The model every worker starts with. ${NEW_ONLY}`), lookingUp() ? CHECKING : modelSelect('data-rmodel="worker"', rt.worker, 'Worker model', 'The model every worker starts with') + effortSelect('data-reffort="worker"', rt.worker, 'Worker effort'), 's-mrow'))
-  } else {
-    rt.candidates.forEach((_, i) => rows.push(candidateRow(i)))
-    const add = addable(rt.candidates, avail())
-    if (lookingUp()) rows.push(row(CHECKING, '', 's-add'))
-    else if (add.length) rows.push(row(`<select class="s-pop s-addmodel" id="s-addmodel" ${off()} ${described('Add model', 'Adds a model workers can be routed to, rated Standard at cost 3 until you change it.')}><option value="" selected>Add model…</option>${add.map((g) => `<optgroup label="${esc(agentName(g.agent))}">${g.models.map((m) => `<option value="${esc(`${g.agent}:${m.id}`)}">${esc(m.label)}</option>`).join('')}</optgroup>`).join('')}</select>`, '', 's-add'))
-  }
-  const workers = group(rows, { text: 'Workers', tip: `How each worker task picks its model. ${NEW_ONLY}` })
-    + (rt.workerMode === 'auto' ? '<p class="s-note">Tier and cost are your own ratings, not prices or measured quality.</p>' : '')
+  const KIND_TIP = { simple: 'Mechanical, one or two files, obvious result.', normal: 'A bounded change with tests.', hard: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }
+  // Read-only until the new Models page lands: each kind's model and fallback, and what it would start on now.
+  const preset = matchingPreset(rt)
+  const kinds = lookingUp() ? [row(label('Workers get', 'Shown once Orca Flow has checked which models are installed.'), CHECKING)] : examples(rt, avail()).map((e) => row(label(`${e.kind[0].toUpperCase()}${e.kind.slice(1)} task`, `${KIND_TIP[e.kind]} Set: ${e.row}.`),
+    `<span class="s-value${e.ok ? '' : ' s-bad'}" tabindex="0" data-tip="${esc(e.tip)}" aria-description="${esc(e.tip)}">${esc(e.text)}</span>`))
+  const workers = group(kinds, { text: `Workers · ${preset ? preset.name : 'Custom'}`, tip: `The lead says what kind each task is; each kind starts on its own model, or its fallback when that is unavailable. ${NEW_ONLY}` })
   const limits = group([
     row(label('Workers at once', 'How many workers one lead runs at the same time. Free memory can still hold new ones back.'), rstep('maxParallel', 1, 6, 'Workers at once')),
-    row(label('Retries with a stronger model', 'When a worker fails, how many times its task may be tried again, each time with a model one tier stronger. 0: never; the lead asks you instead.'), rstep('maxEscalations', 0, 2, 'Retries with a stronger model'))
+    row(label('Retries with a stronger model', 'When a worker fails, how many times its task may be tried again, each time one kind up. 0: never; the lead asks you instead.'), rstep('maxEscalations', 0, 2, 'Retries with a stronger model'))
   ])
-  const ex = lookingUp() ? [row(label('Workers get', 'Shown once Orca Flow has checked which models are installed.'), CHECKING)] : examples(rt, avail()).map((e) => row(label(`${e.taskClass[0].toUpperCase()}${e.taskClass.slice(1)} task`, { trivial: 'Mechanical, one or two files, obvious result.', standard: 'A normal bounded change with tests.', complex: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }[e.taskClass]),
-    `<span class="s-value${e.ok ? '' : ' s-bad'}" tabindex="0" data-tip="${esc(e.tip)}" aria-description="${esc(e.tip)}">${esc(e.text)}</span>`))
-  return roles + workers + limits + group(ex, { text: 'Example routing', tip: 'What a new worker task of each kind would start with right now, given these settings and what is installed.' })
+  return roles + workers + limits
 }
 
 /** A selector that finds the same control after a redraw, so keyboard focus stays where it was. */
@@ -249,10 +224,9 @@ function focusKey(el: Element | null): string | null {
   if (!el || !$('s-page').contains(el)) return null
   if (el.id) return `#${el.id}`
   const ds = (el as HTMLElement).dataset
-  for (const k of ['handle', 'model', 'enable', 'rmfolder', 'reset', 'rmodel', 'reffort', 'ctier', 'cen', 'crm']) if (ds[k]) return `[data-${k}="${ds[k]}"]`
+  for (const k of ['handle', 'model', 'enable', 'rmfolder', 'reset', 'rmodel', 'reffort']) if (ds[k]) return `[data-${k}="${ds[k]}"]`
   if (ds.step) return `[data-step="${ds.step}"][data-d="${ds.d}"]`
   if (ds.rstep) return `[data-rstep="${ds.rstep}"][data-d="${ds.d}"]`
-  if (ds.ccost) return `[data-ccost="${ds.ccost}"][data-d="${ds.d}"]`
   return el.classList.contains('s-dot') ? `[data-writer="${el.closest<HTMLElement>('[data-writer]')?.dataset.writer}"] .s-dot` : null
 }
 
@@ -392,8 +366,6 @@ function onClick(e: MouseEvent): void {
   if (ds.reset) { void session.reset(PAGES.find((p) => p.id === ds.reset)!.keys); return }
   if (ds.step) { const k = ds.step as 'marginGB' | 'warnHeadroomGB'; void session.change((x) => { x[k] = Math.min(16, Math.max(0, x[k] + Number(ds.d))) }); return }
   if (ds.rstep) { const k = ds.rstep as 'maxParallel' | 'maxEscalations'; const [lo, hi] = k === 'maxParallel' ? [1, 6] : [0, 2]; void session.change((x) => { x.routing[k] = Math.min(hi, Math.max(lo, x.routing[k] + Number(ds.d))) }); return }
-  if (ds.ccost) { const i = Number(ds.ccost); void session.change((x) => { const c = x.routing.candidates[i]; if (c) c.cost = Math.min(5, Math.max(1, c.cost + Number(ds.d))) }); return }
-  if (ds.crm) { const i = Number(ds.crm); focusAfter = '#s-addmodel'; void session.change((x) => { x.routing.candidates.splice(i, 1) }); return }
   if (ds.rmfolder) { void session.change((x) => { x.folders.splice(Number(ds.rmfolder), 1) }); return }
   switch (t.id) {
     case 's-x': close(); break
@@ -410,7 +382,7 @@ function onChange(e: Event): void {
   else if (t.dataset.enable) { const p = t.dataset.enable as WriterProvider; void session.change((x) => { x.enabled[p] = t.checked }) }
   else if (t.id === 's-format') void session.change((x) => { x.format = t.value as Draft['format'] })
   else if (t.dataset.rmodel) {
-    const role = t.dataset.rmodel as 'coordinator' | 'lead' | 'worker'
+    const role = t.dataset.rmodel as 'coordinator' | 'lead'
     void session.change((x) => {
       const before = x.routing[role]
       const next = choiceFrom(t.value)
@@ -420,16 +392,8 @@ function onChange(e: Event): void {
     })
   }
   else if (t.dataset.reffort) {
-    const role = t.dataset.reffort as 'coordinator' | 'lead' | 'worker'
+    const role = t.dataset.reffort as 'coordinator' | 'lead'
     void session.change((x) => { const c = x.routing[role]; if (c?.model) x.routing[role] = choiceFrom(choiceValue(c), (t.value || undefined) as Effort | undefined) })
-  }
-  else if (t.id === 's-wmode') void session.change((x) => { x.routing.workerMode = t.value === 'fixed' ? 'fixed' : 'auto' })
-  else if (t.dataset.ctier) { const i = Number(t.dataset.ctier); void session.change((x) => { const c = x.routing.candidates[i]; if (c) c.tier = Number(t.value) as Tier }) }
-  else if (t.dataset.cen) { const i = Number(t.dataset.cen); void session.change((x) => { const c = x.routing.candidates[i]; if (c) c.enabled = t.checked }) }
-  else if (t.id === 's-addmodel' && t.value) {
-    const [agent, ...rest] = t.value.split(':')
-    focusAfter = '#s-addmodel'
-    void session.change((x) => { x.routing.candidates.push(newCandidate(agent, rest.join(':'))) })
   }
   else if (t.id === 's-linear') void session.change((x) => { x.linearDryRun = t.checked })
 }

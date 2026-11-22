@@ -8,13 +8,17 @@ const plan = (tasks: unknown[]): Plan => {
   return p as Plan
 }
 
-test('parse: missing fields are named per task; class defaults to standard', () => {
+test('parse: missing fields are named per task; kind defaults to normal; old class names still read', () => {
   const { errors, plan: p } = parsePlan({ tasks: [{ id: 'a', title: 'x', spec: 's', files: [] }, { id: 'b', spec: 's', specFile: 'f', files: ['x'], class: 'huge' }] })
   assert.ok(errors.some((e) => /task "a": names no "files"/.test(e)))
   assert.ok(errors.some((e) => /task "b": needs a "title"/.test(e)))
   assert.ok(errors.some((e) => /task "b": needs exactly one of "spec" or "specFile"/.test(e)))
-  assert.ok(errors.some((e) => /task "b": "class" is trivial, standard or complex/.test(e)))
-  assert.equal(p?.tasks[0].class, 'standard')
+  assert.ok(errors.some((e) => /task "b": "class" is simple, normal or hard, not "huge"/.test(e)))
+  assert.equal(p?.tasks[0].kind, 'normal')
+  const kinds = parsePlan({ tasks: ['simple', 'hard', 'trivial', 'standard', 'complex'].map((k, i) => ({ id: `t${i}`, title: 't', spec: 's', files: [`f${i}`], ...(i < 2 ? { kind: k } : { class: k }) })) })
+  assert.deepEqual(kinds.errors, [])
+  assert.deepEqual(kinds.plan?.tasks.map((t) => t.kind), ['simple', 'hard', 'simple', 'normal', 'hard'])
+  assert.ok(parsePlan({ tasks: [{ id: 'a', title: 't', spec: 's', files: ['x'], kind: 'trivial2' }] }).errors.some((e) => /"kind" is simple, normal or hard/.test(e)))
   assert.deepEqual(parsePlan({ tasks: [] }).errors, ['the plan has no "tasks" list'])
 })
 
@@ -57,12 +61,12 @@ test('check: missing deps, self deps, cycles and duplicate ids are errors', () =
 test('check: more than 8 tasks is an error; over-splitting is a warning', () => {
   const nine = Array.from({ length: 9 }, (_, i) => task(`t${i}`, [`f${i}`]))
   assert.match(checkPlan(plan(nine)).errors.join('\n'), /9 tasks: at most 8/)
-  const trivial = checkPlan(plan([task('a', ['a.ts'], [], { class: 'trivial' }), task('b', ['b.ts'], [], { class: 'trivial' })]))
+  const trivial = checkPlan(plan([task('a', ['a.ts'], [], { kind: 'simple' }), task('b', ['b.ts'], [], { class: 'trivial' })]))
   assert.equal(trivial.ok, true)
-  assert.match(trivial.warnings.join('\n'), /every task is trivial/)
-  const inside = checkPlan(plan([task('big', ['src/panel/']), task('tiny', ['src/panel/a.ts'], ['big'], { class: 'trivial' })]))
+  assert.match(trivial.warnings.join('\n'), /every task is simple/)
+  const inside = checkPlan(plan([task('big', ['src/panel/']), task('tiny', ['src/panel/a.ts'], ['big'], { kind: 'simple' })]))
   assert.equal(inside.ok, true)
-  assert.match(inside.warnings.join('\n'), /trivial task "tiny" only touches files "big" owns: merge it into "big"/)
+  assert.match(inside.warnings.join('\n'), /simple task "tiny" only touches files "big" owns: merge it into "big"/)
 })
 
 test('waves are topological layers', () => {

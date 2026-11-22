@@ -1,6 +1,6 @@
 // What Settings → Models lists and shows, from the worker's availability (src/model-discovery.ts).
 // Pure: no DOM, so the page (src/panel/settings.ts) and tests share it.
-import { CLAUDE_ALIASES, EFFORTS, route, type Availability, type Candidate, type Effort, type ModelChoice, type RoutingSettings, type TaskClass } from '../routing.ts'
+import { CLAUDE_ALIASES, EFFORTS, route, TASK_KINDS, type Availability, type Effort, type ModelChoice, type RoutingSettings, type TaskKind } from '../routing.ts'
 
 export const UNKNOWN: Availability = { agents: null, models: {} }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -55,23 +55,15 @@ export function choiceFrom(value: string, effort?: Effort): ModelChoice | null {
   return model ? { agent, model, ...(effort ? { effort } : {}) } : { agent }
 }
 
-/** Models that can still be added as worker candidates: listed, and not in the list yet. */
-export function addable(candidates: Candidate[], avail: Availability): { agent: string; models: ModelOption[] }[] {
-  return agentsShown(avail)
-    .map((agent) => ({ agent, models: modelOptions(agent, avail).filter((m) => !candidates.some((c) => c.agent === agent && c.model === m.id)) }))
-    .filter((g) => g.models.length)
-}
-
-/** A new candidate: rated Standard at a middle cost until the user says otherwise. */
-export const newCandidate = (agent: string, model: string): Candidate => ({ agent, model, tier: 2, cost: 3, enabled: true })
-
-export type Example = { taskClass: TaskClass; text: string; tip: string; ok: boolean }
-/** What a trivial, a standard and a complex worker task would get with these settings right now. */
+export type Example = { kind: TaskKind; row: string; text: string; tip: string; ok: boolean }
+/** Each kind's row as set, and what a new worker task of that kind would start with right now. */
 export function examples(routing: RoutingSettings, avail: Availability): Example[] {
-  return (['trivial', 'standard', 'complex'] as const).map((taskClass) => {
-    const d = route(routing, { role: 'worker', taskClass }, avail)
+  return TASK_KINDS.map((kind) => {
+    const r = routing.workers[kind]
+    const row = `${choiceText(r.model, avail)}, fallback ${r.fallback ? choiceText(r.fallback, avail) : 'none'}`
+    const d = route(routing, { role: 'worker', kind }, avail)
     return d.ok
-      ? { taskClass, text: choiceText(d.choice, avail), tip: cap(d.reason), ok: true }
-      : { taskClass, text: 'No model available', tip: d.error, ok: false }
+      ? { kind, row, text: choiceText(d.choice, avail), tip: cap(d.reason), ok: true }
+      : { kind, row, text: 'No model available', tip: d.error, ok: false }
   })
 }

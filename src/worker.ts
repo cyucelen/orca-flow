@@ -30,7 +30,7 @@ import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summa
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
 import { coordinatorLaunchPlan, startCoordinator } from './coordinator-launch.ts'
-import { choiceLabel, type Availability, type ModelChoice } from './routing.ts'
+import { choiceLabel, taskKind, type Availability, type ModelChoice } from './routing.ts'
 import { discover, type Exec } from './model-discovery.ts'
 import { codexHomeFromAccounts } from './writer.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
@@ -130,7 +130,7 @@ function readFolder<T>(dir: string): Record<string, T> {
 
 /**
  * ~/.orca-flow/routes.jsonl (written by `orca-flow dispatch`, one routed launch per line) as what a
- * row shows: dispatch id -> "Claude Sonnet · medium — standard task". The last line of a dispatch
+ * row shows: dispatch id -> "Claude Sonnet · medium — normal task". Older lines name the kind `class`. The last line of a dispatch
  * wins (a retry or an escalation); a garbled line is skipped.
  */
 export function routeLabels(text: string): Map<string, string> {
@@ -141,7 +141,8 @@ export function routeLabels(text: string): Map<string, string> {
     try { r = JSON.parse(line) } catch { continue }
     const c = r?.choice as ModelChoice | undefined
     if (typeof r?.dispatchId !== 'string' || !r.dispatchId || typeof c?.agent !== 'string' || !c.agent) continue
-    const why = ['trivial', 'standard', 'complex'].includes(r.class) ? `${r.class} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
+    const kind = taskKind(r.kind ?? r.class)
+    const why = kind ? `${kind} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
     out.set(r.dispatchId, `${choiceLabel(c)}${why ? ` — ${why}` : ''}`)
   }
   return out

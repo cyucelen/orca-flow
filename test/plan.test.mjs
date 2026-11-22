@@ -39,7 +39,7 @@ function writePlan(deps, tasks, title = 'Totals feature') {
   return file
 }
 
-const T = (id, files, deps = [], extra = {}) => ({ id, title: `Do ${id}`, spec: `Spec for ${id}`, class: 'standard', files, deps, ...extra })
+const T = (id, files, deps = [], extra = {}) => ({ id, title: `Do ${id}`, spec: `Spec for ${id}`, kind: 'normal', files, deps, ...extra })
 const verbs = (deps, verb) => deps.calls.filter((c) => c.args[1] === verb)
 const after = (argv, flag) => argv[argv.indexOf(flag) + 1]
 const run = (deps, ...rest) => {
@@ -49,7 +49,7 @@ const run = (deps, ...rest) => {
 
 test('plan check prints waves, errors on overlap, cycles and missing deps, and warns on over-splitting; touches no Orca', async () => {
   const ok = withTasks()
-  const file = writePlan(ok, [T('api', ['src/api.ts']), T('ui', ['src/panel/']), T('docs', ['README.md'], ['api', 'ui'], { class: 'trivial' })])
+  const file = writePlan(ok, [T('api', ['src/api.ts']), T('ui', ['src/panel/']), T('docs', ['README.md'], ['api', 'ui'], { kind: 'simple' })])
   assert.equal(await run(ok, 'check', file), 0)
   assert.equal(ok.output[0], 'Plan "Totals feature": 3 tasks in 2 waves\n  wave 1: api, ui\n  wave 2: docs')
 
@@ -65,8 +65,8 @@ test('plan check prints waves, errors on overlap, cycles and missing deps, and w
   assert.match(overlap.output[0], /error: tasks "a" and "b" both own src\/x\.ts \/ src\/ and neither waits for the other: chain them \(deps\) or merge them/)
 
   const tiny = withTasks()
-  assert.equal(await run(tiny, 'check', writePlan(tiny, [T('a', ['a.ts'], [], { class: 'trivial' }), T('b', ['b.ts'], [], { class: 'trivial' })])), 0)
-  assert.match(tiny.output[0], /warning: every task is trivial: one worker can do them all; merge them into one task/)
+  assert.equal(await run(tiny, 'check', writePlan(tiny, [T('a', ['a.ts'], [], { kind: 'simple' }), T('b', ['b.ts'], [], { kind: 'simple' })])), 0)
+  assert.match(tiny.output[0], /warning: every task is simple: one worker can do them all; merge them into one task/)
   assert.equal(ok.calls.length + bad.calls.length + overlap.calls.length + tiny.calls.length, 0)
 })
 
@@ -79,10 +79,10 @@ test('plan start refuses a failing plan before creating anything', async () => {
 test('plan start creates one Orca task per plan task with deps, routes each once, and starts ready tasks within maxParallel and capacity', async () => {
   const deps = withTasks({ routing: { maxParallel: 2 } })
   const file = writePlan(deps, [
-    T('api', ['src/api.ts'], [], { class: 'trivial' }),
+    T('api', ['src/api.ts'], [], { kind: undefined, class: 'trivial' }), // an older plan's field and name
     T('ui', ['src/panel/']),
     T('wire', ['src/main.ts'], ['api']),
-    T('e2e', ['test/'], ['api', 'ui'], { class: 'complex', risk: 'high' })
+    T('e2e', ['test/'], ['api', 'ui'], { kind: undefined, class: 'complex', risk: 'high' })
   ])
   assert.equal(await run(deps, 'start', file), 0)
   // No Run is created as a side effect; tasks go in wave order, deps as Orca ids.
@@ -112,8 +112,8 @@ test('plan start creates one Orca task per plan task with deps, routes each once
     wire: ['task_3', 'queued', 'sonnet'],
     e2e: ['task_4', 'queued', 'opus']
   })
-  assert.deepEqual(readRoutes(deps.dir).map((r) => [r.taskId, r.dispatchId, r.class]), [['task_1', 'ctx_1', 'trivial'], ['task_2', 'ctx_2', 'standard']])
-  assert.match(deps.output.join('\n'), /e2e +queued +Claude Opus · \w+ — complex task, high risk/)
+  assert.deepEqual(readRoutes(deps.dir).map((r) => [r.taskId, r.dispatchId, r.kind, r.class]), [['task_1', 'ctx_1', 'simple', 'trivial'], ['task_2', 'ctx_2', 'normal', 'standard']])
+  assert.match(deps.output.join('\n'), /e2e +queued +Claude Opus · \w+ — hard task, high risk/)
 
   // Starting the same plan again would duplicate its tasks.
   await assert.rejects(run(deps, 'start', file), /already started.*plan next/)
@@ -133,12 +133,12 @@ test('plan start honours maxParallel and stops at a capacity refusal', async () 
 
 test('plan next starts newly ready tasks on their recorded route, even after settings change', async () => {
   const deps = withTasks({ routing: { maxParallel: 2 } })
-  const file = writePlan(deps, [T('api', ['src/api.ts'], [], { class: 'trivial' }), T('ui', ['src/panel/']), T('wire', ['src/main.ts'], ['api'], { class: 'trivial' })])
+  const file = writePlan(deps, [T('api', ['src/api.ts'], [], { kind: 'simple' }), T('ui', ['src/panel/']), T('wire', ['src/main.ts'], ['api'], { kind: 'simple' })])
   await run(deps, 'start', file)
   assert.equal(verbs(deps, 'worker-start').length, 2)
 
-  // The user turns Haiku off; api finishes. wire was routed to Haiku at start and keeps it.
-  writeFileSync(join(deps.dir, 'config.json'), JSON.stringify({ routing: { maxParallel: 2, candidates: [{ agent: 'claude', model: 'sonnet', tier: 2, cost: 2, enabled: true }] } }))
+  // The user moves simple tasks to Sonnet; api finishes. wire was routed to Haiku at start and keeps it.
+  writeFileSync(join(deps.dir, 'config.json'), JSON.stringify({ routing: { maxParallel: 2, workers: { simple: { model: { agent: 'claude', model: 'sonnet', effort: 'low' }, fallback: null } } } }))
   deps.status.task_1 = 'completed'
   assert.equal(await run(deps, 'next', file), 0)
   const wire = verbs(deps, 'worker-start')[2]
@@ -150,18 +150,18 @@ test('plan next starts newly ready tasks on their recorded route, even after set
   await run(deps, 'status', file)
   const status = deps.output.join('\n')
   assert.match(status, /api +done +Claude Haiku/)
-  assert.match(status, /ui +running +Claude Sonnet · medium — standard task/)
+  assert.match(status, /ui +running +Claude Sonnet · medium — normal task/)
   assert.match(status, /wire +running +Claude Haiku/)
 })
 
 test('plan next routes again when the recorded model is gone, and says so; an explicit one is never swapped', async () => {
   const codex = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-mini', efforts: ['low', 'medium'] }] } }
-  const routing = { maxParallel: 1, candidates: [{ agent: 'codex', model: 'gpt-mini', tier: 1, cost: 1, enabled: true }, { agent: 'claude', model: 'haiku', tier: 1, cost: 2, enabled: true }] }
+  const routing = { maxParallel: 1, workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
   const deps = withTasks({ routing, avail: codex })
   const file = writePlan(deps, [
-    T('a', ['a'], [], { class: 'trivial' }),
-    T('b', ['b'], ['a'], { class: 'trivial' }),
-    T('c', ['c'], ['b'], { class: 'trivial', agent: 'codex', model: 'gpt-mini' })
+    T('a', ['a'], [], { kind: 'simple' }),
+    T('b', ['b'], ['a'], { kind: 'simple' }),
+    T('c', ['c'], ['b'], { kind: 'simple', agent: 'codex', model: 'gpt-mini' })
   ])
   await run(deps, 'start', file)
   assert.equal(after(verbs(deps, 'worker-start')[0].args, '--model'), 'gpt-mini')
@@ -254,10 +254,10 @@ test('a failed start does not bypass the capacity gate for the tasks after it', 
 
 test('plan next re-routes a failed-start task whose recorded model is gone, and says so', async () => {
   const codex = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-mini', efforts: ['low', 'medium'] }] } }
-  const routing = { maxParallel: 1, candidates: [{ agent: 'codex', model: 'gpt-mini', tier: 1, cost: 1, enabled: true }, { agent: 'claude', model: 'haiku', tier: 1, cost: 2, enabled: true }] }
+  const routing = { maxParallel: 1, workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
   let fail = true
   const deps = withTasks({ routing, avail: codex, orca: async (args) => { if (args[1] === 'worker-start' && fail) throw new Error('codex would not launch') } })
-  const file = writePlan(deps, [T('a', ['a'], [], { class: 'trivial' })])
+  const file = writePlan(deps, [T('a', ['a'], [], { kind: 'simple' })])
   assert.equal(await run(deps, 'start', file), 1)
   fail = false
   deps.avail = { agents: ['claude'], models: { claude: null, codex: null } }

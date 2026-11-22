@@ -3,9 +3,11 @@
 // decision and the same one-line reason. Shared by the plugin worker (coordinator launches,
 // Settings → Models) and skills/orca-flow/scripts/orca-flow.mjs (`route`, `dispatch`, `plan`).
 //
-// Honest limits, kept in the words this module writes:
-// - `tier` (Light / Standard / Strong) and `cost` (1-5) are the user's own relative ratings, not
-//   measured capability, token prices or plan usage. Defaults are editable starting points.
+// The model: whoever splits the work says what kind each worker task is (simple, normal, hard);
+// the user picks a model, an effort and one fallback per kind in Settings → Models. Presets set
+// the coordinator, lead and all three kinds in one step. Honest limits, kept in the words this
+// module writes:
+// - The built-in presets are editable starting points, not claims of quality or price.
 // - Availability is what this machine can verify: `orca agent installed` for agents, the Codex
 //   CLI's own catalog (`codex debug models`) and Claude Code's `list_models` control request for
 //   model ids. When a catalog cannot be read, a Claude alias (haiku, sonnet, opus, fable) or a full
@@ -20,66 +22,87 @@
 
 export type Role = 'coordinator' | 'lead' | 'worker'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-/** The user's capability rating of a model: 1 Light, 2 Standard, 3 Strong. */
-export type Tier = 1 | 2 | 3
 /**
  * How demanding a worker task is, set by whoever splits the work:
- * - trivial: mechanical, one or two files, obvious result (rename, copy change, config value).
- * - standard: a normal bounded change with tests.
- * - complex: cross-cutting design, hard debugging, concurrency, migrations or security.
+ * - simple: mechanical, one or two files, obvious result (rename, copy change, config value).
+ * - normal: a bounded change with tests.
+ * - hard: cross-cutting design, hard debugging, concurrency, migrations or security.
  */
-export type TaskClass = 'trivial' | 'standard' | 'complex'
-/** high: a mistake is costly (production data, money, security, release); asks one tier more. */
+export type TaskKind = 'simple' | 'normal' | 'hard'
+/** high: a mistake is costly (production data, money, security, release); one kind up. */
 export type Risk = 'low' | 'high'
-/** large: the task must read much code or long documents; asks at least Standard. */
+/** large: the task must read much code or long documents; at least normal. */
 export type ContextSize = 'normal' | 'large'
 
 /** What a launch passes. No `model`: the provider's own default (Orca passes no --model). */
 export type ModelChoice = { agent: string; model?: string; effort?: Effort }
 
-/** One model the worker router may pick. `effort` pins it; absent, the task class sets it. */
-export type Candidate = { agent: string; model: string; effort?: Effort; tier: Tier; cost: number; enabled: boolean }
+/** One kind's row: the model it starts on (always with a model id) and the one model used when that is unavailable. */
+export type KindRoute = { model: ModelChoice; fallback: ModelChoice | null }
+export type Workers = Record<TaskKind, KindRoute>
+
+/** A named Models configuration. Built-ins are fixed starting points; saved ones are the user's. */
+export type Preset = { id: string; name: string; builtIn: boolean; coordinator: ModelChoice | null; lead: ModelChoice | null; workers: Workers }
 
 export type RoutingSettings = {
   /** null: no model is passed and the provider default applies (Orca Flow 0.2.77 behaviour). */
   coordinator: ModelChoice | null
   lead: ModelChoice | null
-  /** auto: route each worker task to the cheapest capable candidate; fixed: always `worker`. */
-  workerMode: 'auto' | 'fixed'
-  /** fixed mode: the worker model (null: provider default). auto mode: unused. */
-  worker: ModelChoice | null
-  /** Worker candidates in the user's order; the order breaks ties at the same tier and cost. */
-  candidates: Candidate[]
-  /** Escalations allowed per task after a demonstrated failure (0-2). Each one asks one tier more. */
-  maxEscalations: number
+  /** The model each kind of worker task starts on. */
+  workers: Workers
   /** Workers one lead runs at once (1-6), before the memory gate is even asked. */
   maxParallel: number
+  /** How many times a failed task may move up one kind (0-2). */
+  maxEscalations: number
+  /** The user's saved presets only (builtIn false), at most MAX_SAVED_PRESETS. */
+  presets: Preset[]
 }
 
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
-export const TIER_NAMES: Record<Tier, string> = { 1: 'Light', 2: 'Standard', 3: 'Strong' }
-export const CLASS_TIER: Record<TaskClass, Tier> = { trivial: 1, standard: 2, complex: 3 }
-export const CLASS_EFFORT: Record<TaskClass, Effort> = { trivial: 'low', standard: 'medium', complex: 'high' }
+export const TASK_KINDS: readonly TaskKind[] = ['simple', 'normal', 'hard']
+/** The names an older plan file or command line used for the kinds (`class`, `--class`). */
+export const KIND_ALIASES: Record<string, TaskKind> = { trivial: 'simple', standard: 'normal', complex: 'hard' }
+/** A kind from its name or an old class name; undefined for anything else. */
+export const taskKind = (v: unknown): TaskKind | undefined =>
+  typeof v !== 'string' ? undefined : (TASK_KINDS as readonly string[]).includes(v) ? (v as TaskKind) : KIND_ALIASES[v]
 /** Claude Code's model aliases (`claude --help`: "an alias for the latest model"). */
 export const CLAUDE_ALIASES: readonly string[] = ['haiku', 'sonnet', 'opus', 'fable']
+export const MAX_SAVED_PRESETS = 10
+
+const claude = (model: string, effort?: Effort): ModelChoice => ({ agent: 'claude', model, ...(effort ? { effort } : {}) })
+const builtIn = (id: string, name: string, workers: Workers): Preset => ({ id, name, builtIn: true, coordinator: null, lead: null, workers })
 
 /**
- * Editable starting points: Claude's three aliases rated Light, Standard and Strong. Coordinator and
- * lead keep the provider default, as before this feature. No Codex candidate is enabled by default:
- * its models carry no capability rating here until the user gives one.
+ * Editable starting points; coordinator and lead keep the provider default in all three. Haiku
+ * carries no effort: Orca refuses --effort for the haiku alias. Each fallback is a different model.
  */
+export const BUILT_IN_PRESETS: Preset[] = [
+  builtIn('balanced', 'Balanced', {
+    simple: { model: claude('haiku'), fallback: claude('sonnet', 'low') },
+    normal: { model: claude('sonnet', 'medium'), fallback: claude('opus', 'medium') },
+    hard: { model: claude('opus', 'high'), fallback: null }
+  }),
+  builtIn('economy', 'Economy', {
+    simple: { model: claude('haiku'), fallback: claude('sonnet', 'low') },
+    normal: { model: claude('sonnet', 'low'), fallback: claude('opus', 'low') },
+    hard: { model: claude('sonnet', 'high'), fallback: claude('opus', 'high') }
+  }),
+  builtIn('best', 'Best quality', {
+    simple: { model: claude('sonnet', 'low'), fallback: claude('opus', 'low') },
+    normal: { model: claude('opus', 'medium'), fallback: claude('sonnet', 'high') },
+    hard: { model: claude('fable', 'high'), fallback: claude('opus', 'xhigh') }
+  })
+]
+const BALANCED = BUILT_IN_PRESETS[0]
+
+/** Balanced, 3 workers at once, one escalation, no saved presets. */
 export const DEFAULT_ROUTING: RoutingSettings = {
   coordinator: null,
   lead: null,
-  workerMode: 'auto',
-  worker: null,
-  candidates: [
-    { agent: 'claude', model: 'haiku', tier: 1, cost: 1, enabled: true },
-    { agent: 'claude', model: 'sonnet', tier: 2, cost: 2, enabled: true },
-    { agent: 'claude', model: 'opus', tier: 3, cost: 4, enabled: true }
-  ],
+  workers: BALANCED.workers,
+  maxParallel: 3,
   maxEscalations: 1,
-  maxParallel: 3
+  presets: []
 }
 
 /**
@@ -122,8 +145,8 @@ export type Availability = { agents: string[] | null; models: Record<string, Mod
 
 export type RouteRequest = {
   role: Role
-  /** Workers; default standard. */
-  taskClass?: TaskClass
+  /** Workers; default normal. */
+  kind?: TaskKind
   risk?: Risk
   context?: ContextSize
   /** 0 on the first try; n after n demonstrated failures of this task. */
@@ -134,25 +157,26 @@ export type RouteRequest = {
   effort?: Effort
 }
 
-export type Skip = { candidate: string; why: string }
+/** A model passed over, and why (`route --explain`). */
+export type Skip = { model: string; why: string }
 export type RouteDecision =
   | {
       ok: true
       choice: ModelChoice
-      /** override: the task's own flags; role: Settings' coordinator or lead pick; fixed: the fixed worker
-       *  model; auto: routed among candidates; default: provider default (nothing set, or a pick unavailable). */
-      source: 'override' | 'role' | 'fixed' | 'auto' | 'default'
-      requiredTier?: Tier
-      tier?: Tier
-      /** One plain line for people: "standard task → Claude Sonnet · medium: cheapest enabled Standard model". */
+      /** override: the task's own flags; role: Settings' coordinator or lead pick; kind: the worker row's
+       *  model; fallback: that row's fallback; default: provider default (nothing set, or a pick unavailable). */
+      source: 'override' | 'role' | 'kind' | 'fallback' | 'default'
+      /** Workers routed by kind: the row used (after risk, context and escalation) and its settings. */
+      row?: { kind: TaskKind; route: KindRoute }
+      /** One plain line for people: "normal task → Claude Sonnet · medium". */
       reason: string
-      /** Candidates passed over and why, for `route --explain`. */
       skipped: Skip[]
     }
   | { ok: false; error: string; skipped: Skip[] }
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 const isEffort = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
 const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
 const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number =>
@@ -166,66 +190,112 @@ function normalizeChoice(v: unknown): ModelChoice | null {
   // Key order is fixed (agent, model, effort): `same` compares by JSON. Orca takes an effort only with a model.
   return model ? { agent, model, ...(isEffort(v.effort) ? { effort: v.effort } : {}) } : { agent }
 }
+/** A choice that names a model, or null. */
+const withModel = (v: unknown): ModelChoice | null => {
+  const c = normalizeChoice(v)
+  return c?.model ? c : null
+}
 
-function normalizeCandidate(v: unknown): Candidate | null {
+/** A row, or null when its model is unusable. A fallback without a model reads as none. */
+function normalizeRow(v: unknown): KindRoute | null {
   if (!isObject(v)) return null
-  const agent = text(v.agent)
-  const model = text(v.model)
-  if (!agent || !model) return null
-  if (typeof v.tier !== 'number' || !Number.isFinite(v.tier) || typeof v.cost !== 'number' || !Number.isFinite(v.cost)) return null
-  return {
-    agent, model, ...(isEffort(v.effort) ? { effort: v.effort } : {}),
-    tier: clampInt(v.tier, 1, 3, 2) as Tier, cost: clampInt(v.cost, 1, 5, 3), enabled: v.enabled !== false
+  const model = withModel(v.model)
+  return model ? { model, fallback: withModel(v.fallback) } : null
+}
+
+/** All three rows; a bad or missing one is Balanced's row of that kind. With `strict`, a bad row gives null. */
+function normalizeWorkers(v: unknown, strict = false): Workers | null {
+  const raw = isObject(v) ? v : {}
+  const out = {} as Workers
+  for (const kind of TASK_KINDS) {
+    const row = normalizeRow(raw[kind])
+    if (!row && strict) return null
+    out[kind] = row ?? clone(BALANCED.workers[kind])
   }
+  return out
+}
+
+const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+const savedId = (name: string) => `saved:${slug(name) || 'preset'}`
+const isBuiltInName = (name: string) => BUILT_IN_PRESETS.some((p) => p.name.toLowerCase() === name.trim().toLowerCase())
+
+function normalizePreset(v: unknown): Preset | null {
+  if (!isObject(v)) return null
+  const name = text(v.name)
+  if (!name || isBuiltInName(name)) return null
+  const workers = normalizeWorkers(v.workers, true)
+  if (!workers) return null
+  return { id: savedId(name), name, builtIn: false, coordinator: normalizeChoice(v.coordinator), lead: normalizeChoice(v.lead), workers }
 }
 
 /**
  * Every field filled and clamped, in a fixed key order (settings `same` compares JSON). Unknown
- * agent ids are allowed. Malformed candidates are dropped and duplicates (agent + model) keep the
- * first. Not an object, or nothing usable in it: DEFAULT_ROUTING (a copy).
+ * agent ids are allowed. A bad worker row is Balanced's row of that kind; a bad saved preset is
+ * dropped, a second one with the same id too, and only the first MAX_SAVED_PRESETS are kept.
+ * Not an object: DEFAULT_ROUTING (a copy).
  */
 export function normalizeRouting(raw: unknown): RoutingSettings {
   if (!isObject(raw)) return clone(DEFAULT_ROUTING)
-  const known = ['coordinator', 'lead', 'workerMode', 'worker', 'candidates', 'maxEscalations', 'maxParallel']
-  if (!known.some((k) => k in raw)) return clone(DEFAULT_ROUTING)
-  let candidates: Candidate[] = clone(DEFAULT_ROUTING.candidates)
-  if (Array.isArray(raw.candidates)) {
-    const out: Candidate[] = []
-    for (const entry of raw.candidates) {
-      const c = normalizeCandidate(entry)
-      if (c && !out.some((o) => o.agent === c.agent && o.model === c.model)) out.push(c)
-    }
-    if (out.length || raw.candidates.length === 0) candidates = out
+  const presets: Preset[] = []
+  for (const entry of Array.isArray(raw.presets) ? raw.presets : []) {
+    const p = normalizePreset(entry)
+    if (p && !presets.some((o) => o.id === p.id) && presets.length < MAX_SAVED_PRESETS) presets.push(p)
   }
   return {
     coordinator: normalizeChoice(raw.coordinator),
     lead: normalizeChoice(raw.lead),
-    workerMode: raw.workerMode === 'fixed' ? 'fixed' : 'auto',
-    worker: normalizeChoice(raw.worker),
-    candidates,
+    workers: normalizeWorkers(raw.workers) as Workers,
+    maxParallel: clampInt(raw.maxParallel, 1, 6, DEFAULT_ROUTING.maxParallel),
     maxEscalations: clampInt(raw.maxEscalations, 0, 2, DEFAULT_ROUTING.maxEscalations),
-    maxParallel: clampInt(raw.maxParallel, 1, 6, DEFAULT_ROUTING.maxParallel)
+    presets
   }
 }
 
-const TIMES = ['', 'once', 'twice']
-/**
- * The tier a request needs: the class's tier, +1 for high risk, at least Standard for large context,
- * then +1 per escalation. Past Strong the tier stays 3 and the rest becomes `effortBoost`.
- */
-export function requiredTier(req: RouteRequest): { tier: Tier; effortBoost: number; why: string } {
-  const cls = req.taskClass ?? 'standard'
-  let n: number = CLASS_TIER[cls]
-  let why = `${cls} task`
-  if (req.risk === 'high') { n += 1; why += ', high risk' }
-  if (req.context === 'large') { n = Math.max(n, 2); why += ', large context' }
-  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
-  if (attempt > 0) {
-    n += attempt
-    why += `, escalated ${TIMES[attempt] ?? `${attempt} times`} after a failure`
-  }
-  return { tier: Math.min(3, n) as Tier, effortBoost: Math.max(0, n - 3), why }
+// ---------- presets ----------
+
+/** The built-in presets, then the user's saved ones. */
+export function presetsOf(s: RoutingSettings): Preset[] {
+  return [...clone(BUILT_IN_PRESETS), ...clone(normalizeRouting(s).presets)]
 }
+
+/** The preset whose coordinator, lead and workers equal these settings; null means "Custom". */
+export function matchingPreset(s: RoutingSettings): Preset | null {
+  const n = normalizeRouting(s)
+  return presetsOf(n).find((p) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers)) ?? null
+}
+
+/** The settings with a preset's coordinator, lead and workers; the limits and saved presets stay. */
+export function applyPreset(s: RoutingSettings, id: string): RoutingSettings {
+  const n = normalizeRouting(s)
+  const p = presetsOf(n).find((x) => x.id === id)
+  if (!p) throw new Error(`No preset ${id}.`)
+  return { ...n, coordinator: p.coordinator, lead: p.lead, workers: p.workers }
+}
+
+/**
+ * Saves the current coordinator, lead and workers under `name`. The same name replaces that
+ * preset in place. An empty name, a built-in's name, or an 11th preset is refused (throws).
+ */
+export function savePreset(s: RoutingSettings, name: string): RoutingSettings {
+  const n = normalizeRouting(s)
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('A preset needs a name.')
+  if (isBuiltInName(trimmed)) throw new Error(`"${trimmed}" is a built-in preset: choose another name.`)
+  const preset: Preset = { id: savedId(trimmed), name: trimmed, builtIn: false, coordinator: n.coordinator, lead: n.lead, workers: n.workers }
+  const at = n.presets.findIndex((p) => p.id === preset.id)
+  if (at < 0 && n.presets.length >= MAX_SAVED_PRESETS) throw new Error(`At most ${MAX_SAVED_PRESETS} saved presets: delete one first.`)
+  const presets = at < 0 ? [...n.presets, preset] : n.presets.map((p, i) => (i === at ? preset : p))
+  return { ...n, presets: clone(presets) }
+}
+
+/** Removes a saved preset; a built-in one cannot be deleted (throws). An unknown id changes nothing. */
+export function deletePreset(s: RoutingSettings, id: string): RoutingSettings {
+  if (BUILT_IN_PRESETS.some((p) => p.id === id)) throw new Error('Built-in presets cannot be deleted.')
+  const n = normalizeRouting(s)
+  return { ...n, presets: n.presets.filter((p) => p.id !== id) }
+}
+
+// ---------- labels and launch flags ----------
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const isClaudeModel = (m: string) => CLAUDE_ALIASES.includes(m) || /^claude-/.test(m)
@@ -234,9 +304,10 @@ const isClaudeModel = (m: string) => CLAUDE_ALIASES.includes(m) || /^claude-/.te
 export function choiceLabel(choice: ModelChoice): string {
   const agent = cap(choice.agent)
   if (!choice.model) return `${agent} (default model)`
-  const model = choice.agent === 'claude' && CLAUDE_ALIASES.includes(choice.model) ? cap(choice.model) : choice.model
-  return `${agent} ${model}${choice.effort ? ` · ${choice.effort}` : ''}`
+  return `${agent} ${modelName(choice)}${choice.effort ? ` · ${choice.effort}` : ''}`
 }
+/** "Haiku" for a Claude alias, else the model id. */
+const modelName = (c: ModelChoice) => (c.agent === 'claude' && c.model && CLAUDE_ALIASES.includes(c.model) ? cap(c.model) : c.model ?? 'default model')
 
 /** The flags `orca orchestration worker-start` and `orca agent launch` take for a choice. */
 export function launchArgs(choice: ModelChoice): string[] {
@@ -248,6 +319,8 @@ export function launchArgs(choice: ModelChoice): string[] {
   return args
 }
 
+// ---------- availability ----------
+
 /** Why a model cannot be used on this machine, or null when it can (verified, or accepted unverified). */
 function modelProblem(agent: string, model: string, avail: Availability): string | null {
   const catalog = avail.models[agent]
@@ -257,6 +330,8 @@ function modelProblem(agent: string, model: string, avail: Availability): string
 }
 const agentProblem = (agent: string, avail: Availability): string | null =>
   avail.agents && !avail.agents.includes(agent) ? `${agent} not installed` : null
+const choiceProblem = (c: ModelChoice, avail: Availability): string | null =>
+  agentProblem(c.agent, avail) ?? (c.model ? modelProblem(c.agent, c.model, avail) : null)
 /** The efforts a launch may pass: what the provider reports (when it does) that Orca also accepts. Empty: none. */
 const supportedEfforts = (agent: string, model: string | undefined, avail: Availability): readonly Effort[] => {
   if (!model) return []
@@ -271,6 +346,13 @@ function clampEffort(effort: Effort, supported: readonly Effort[]): Effort | und
   for (let i = EFFORTS.indexOf(effort) - 1; i >= 0; i--) if (supported.includes(EFFORTS[i])) return EFFORTS[i]
   return EFFORTS.find((e) => supported.includes(e))
 }
+/** The choice with its effort clamped, and a note when the effort changed. */
+function clamped(c: ModelChoice, want: Effort | undefined, avail: Availability): { choice: ModelChoice; note: string } {
+  if (!c.model || !want) return { choice: c.model ? { agent: c.agent, model: c.model } : { agent: c.agent }, note: '' }
+  const effort = clampEffort(want, supportedEfforts(c.agent, c.model, avail))
+  const choice: ModelChoice = { agent: c.agent, model: c.model, ...(effort ? { effort } : {}) }
+  return { choice, note: effort === want ? '' : `, ${want} not supported so ${effort ?? 'default effort'}` }
+}
 /** Why an explicit effort cannot be launched with this model, or null. */
 function effortProblem(choice: ModelChoice, effort: Effort, avail: Availability): string | null {
   const supported = supportedEfforts(choice.agent, choice.model, avail)
@@ -278,58 +360,70 @@ function effortProblem(choice: ModelChoice, effort: Effort, avail: Availability)
   const name = choiceLabel({ agent: choice.agent, model: choice.model })
   return supported.length ? `${name} does not support effort ${effort} (it takes ${supported.join(', ')}).` : `${name} takes no effort setting, so effort ${effort} cannot be passed.`
 }
-/** choiceLabel, plus "(default effort)" when a model is named but no effort is passed. */
-const decisionLabel = (c: ModelChoice) => (c.model && !c.effort ? `${choiceLabel(c)} (default effort)` : choiceLabel(c))
 const fail = (error: string, skipped: Skip[] = []): RouteDecision => ({ ok: false, error, skipped })
 
-/** A set role pick (coordinator, lead, fixed worker) checked against availability, effort clamped. */
-function pickChoice(pick: ModelChoice | null, who: string, source: 'role' | 'fixed', req: RouteRequest, avail: Availability): RouteDecision {
+// ---------- route ----------
+
+/** A set role pick (coordinator, lead) checked against availability, effort clamped. */
+function pickChoice(pick: ModelChoice | null, who: string, req: RouteRequest, avail: Availability): RouteDecision {
   if (!pick) return { ok: true, choice: { agent: req.agent ?? 'claude' }, source: 'default', reason: `provider default model (none set for ${who})`, skipped: [] }
   const label = choiceLabel(pick)
   const noAgent = agentProblem(pick.agent, avail)
   if (noAgent) return fail(`The ${who} pick ${label} is unavailable (${noAgent}). Change it in Settings → Models.`)
   const noModel = pick.model ? modelProblem(pick.agent, pick.model, avail) : null
   if (noModel) return { ok: true, choice: { agent: pick.agent }, source: 'default', reason: `${label} is unavailable (${noModel}): ${cap(pick.agent)} default model instead`, skipped: [] }
-  let choice = pick
-  let note = ''
-  if (pick.model && pick.effort) {
-    const effort = clampEffort(pick.effort, supportedEfforts(pick.agent, pick.model, avail))
-    if (effort !== pick.effort) {
-      choice = { agent: pick.agent, model: pick.model, ...(effort ? { effort } : {}) }
-      note = `, ${pick.effort} not supported so ${effort ?? 'default effort'}`
-    }
-  }
-  return { ok: true, choice, source, reason: `${who} set in Settings → ${decisionLabel(choice)}${note}`, skipped: [] }
+  const { choice, note } = clamped(pick, pick.effort, avail)
+  const shown = choice.model && !choice.effort ? `${choiceLabel(choice)} (default effort)` : choiceLabel(choice)
+  return { ok: true, choice, source: 'role', reason: `${who} set in Settings → ${shown}${note}`, skipped: [] }
+}
+
+const TIMES = ['', 'once', 'twice']
+
+/**
+ * The row a worker request starts on: its kind (default normal), one up for high risk, at least
+ * normal for large context, one up per escalation. Past hard it stays hard, and each extra level
+ * becomes `effortBoost` (one effort step up).
+ */
+export function rowFor(req: RouteRequest): { kind: TaskKind; effortBoost: number; why: string } {
+  const asked = req.kind ?? 'normal'
+  let n = TASK_KINDS.indexOf(asked)
+  let why = `${asked} task`
+  if (req.risk === 'high') { n += 1; why += ', high risk' }
+  if (req.context === 'large') { n = Math.max(n, 1); why += ', large context' }
+  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+  if (attempt > 0) { n += attempt; why += `, escalated ${TIMES[attempt] ?? `${attempt} times`}` }
+  return { kind: TASK_KINDS[Math.min(2, n)], effortBoost: Math.max(0, n - 2), why }
 }
 
 /**
  * The decision for one launch. Pure: no I/O. Precedence, first match wins:
  *  1. Explicit override (req.model / req.agent / req.effort): validated, never substituted; an
- *     invalid one is ok:false. model → source 'override'. agent-only → that agent (workers in auto
- *     mode: candidates restricted to it). effort-only → routed normally, then that effort.
+ *     invalid one is ok:false. model → source 'override'. agent-only → that agent's default model
+ *     unless the routed choice already runs on it. effort-only → routed normally, then that effort.
  *  2. coordinator / lead: the Settings pick (null → provider default; unavailable model → the same
  *     agent's default; agent not installed → error). Effort clamped to what the model supports.
- *  3. worker, fixed mode: settings.worker the same way (source 'fixed').
- *  4. worker, auto mode: cheapest enabled, installed, verified candidate rated at least the required
- *     tier (ties: lower tier, then list order); escalation limit refuses; nothing eligible is an
- *     error, never a silent premium or provider-default fallback.
+ *  3. worker: the row for its kind (rowFor). Its model unavailable → its fallback, said so in the
+ *     reason; both unavailable (or no fallback) → error, never a silent provider default. Past
+ *     maxEscalations → error.
  */
 export function route(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
   if (req.model) return overrideWithModel(req, avail)
-  let agentOnly: string | undefined
   if (req.agent) {
     const bad = agentProblem(req.agent, avail)
     if (bad) return fail(`Cannot use --agent ${req.agent}: ${bad}.`)
-    const pick = req.role === 'coordinator' ? settings.coordinator : req.role === 'lead' ? settings.lead : settings.workerMode === 'fixed' ? settings.worker : null
-    const autoWorker = req.role === 'worker' && settings.workerMode === 'auto'
-    if (!autoWorker && pick?.agent !== req.agent) return { ok: true, choice: { agent: req.agent }, source: 'override', reason: `${cap(req.agent)} chosen explicitly: its default model`, skipped: [] }
-    agentOnly = autoWorker ? req.agent : undefined
   }
+  const agentDefault = (agent: string): RouteDecision => ({ ok: true, choice: { agent }, source: 'override', reason: `${cap(agent)} chosen explicitly: its default model`, skipped: [] })
   let d: RouteDecision
-  if (req.role === 'coordinator') d = pickChoice(settings.coordinator, 'coordinators', 'role', req, avail)
-  else if (req.role === 'lead') d = pickChoice(settings.lead, 'leads', 'role', req, avail)
-  else if (settings.workerMode === 'fixed') d = pickChoice(settings.worker, 'the fixed worker', 'fixed', req, avail)
-  else d = routeWorker(settings, req, avail, agentOnly)
+  if (req.role === 'coordinator' || req.role === 'lead') {
+    const pick = req.role === 'coordinator' ? settings.coordinator : settings.lead
+    if (req.agent && pick?.agent !== req.agent) return agentDefault(req.agent)
+    d = pickChoice(pick, req.role === 'coordinator' ? 'coordinators' : 'leads', req, avail)
+  } else {
+    const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+    if (attempt > settings.maxEscalations) return fail(`Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`)
+    d = routeWorker(settings, req, avail)
+    if (req.agent && !(d.ok && d.choice.agent === req.agent)) return agentDefault(req.agent)
+  }
   if (!d.ok || !req.effort) return d
   if (d.choice.model) {
     const problem = effortProblem(d.choice, req.effort, avail)
@@ -357,31 +451,31 @@ function overrideWithModel(req: RouteRequest, avail: Availability): RouteDecisio
   return { ok: true, choice, source: 'override', reason: `${choiceLabel(choice)} chosen explicitly`, skipped: [] }
 }
 
-function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availability, onlyAgent?: string): RouteDecision {
-  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
-  if (attempt > settings.maxEscalations) return fail(`Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`)
-  const need = requiredTier(req)
+/** One effort step up per boost, from the row's own effort; a row without an effort stays without. */
+const boosted = (effort: Effort | undefined, boost: number): Effort | undefined =>
+  effort && boost ? EFFORTS[Math.min(EFFORTS.length - 1, EFFORTS.indexOf(effort) + boost)] : effort
+
+function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
+  const at = rowFor(req)
+  const row = settings.workers[at.kind]
+  const rowInfo = { kind: at.kind, route: clone(row) }
+  const primary = row.model
+  const gone = choiceProblem(primary, avail)
   const skipped: Skip[] = []
-  const eligible: { c: Candidate; i: number }[] = []
-  settings.candidates.forEach((c, i) => {
-    const name = `${c.agent} ${c.model}`
-    const why = onlyAgent && c.agent !== onlyAgent ? `not ${onlyAgent}`
-      : !c.enabled ? 'off'
-      : c.tier < need.tier ? `rated ${TIER_NAMES[c.tier]}, task needs ${TIER_NAMES[need.tier]}`
-      : agentProblem(c.agent, avail) ?? modelProblem(c.agent, c.model, avail)
-    if (why) skipped.push({ candidate: name, why })
-    else eligible.push({ c, i })
-  })
-  if (!eligible.length) {
-    return fail(`No enabled ${TIER_NAMES[need.tier]} model is available for this ${need.why}. Enable or add one in Settings → Models, or pass --model.`, skipped)
+  let use = primary
+  let note = ''
+  if (gone) {
+    skipped.push({ model: choiceLabel(primary), why: gone })
+    const fb = row.fallback
+    const fbGone = fb ? choiceProblem(fb, avail) : null
+    if (!fb || fbGone) {
+      if (fb && fbGone) skipped.push({ model: choiceLabel(fb), why: fbGone })
+      const also = fb ? `its fallback ${choiceLabel(fb)} is unavailable too (${fbGone})` : 'the row has no fallback'
+      return fail(`No model for this ${at.why}: ${choiceLabel(primary)} is unavailable (${gone}) and ${also}. Change the ${at.kind} row in Settings → Models, or pass --model.`, skipped)
+    }
+    use = fb
+    note = `: ${modelName(primary)} unavailable (${gone}), used the fallback`
   }
-  eligible.sort((a, b) => a.c.cost - b.c.cost || a.c.tier - b.c.tier || a.i - b.i)
-  const best = eligible[0].c
-  for (const { c } of eligible.slice(1)) skipped.push({ candidate: `${c.agent} ${c.model}`, why: `costs more (relative cost ${c.cost}, not ${best.cost})` })
-  const base = best.effort ?? CLASS_EFFORT[req.taskClass ?? 'standard']
-  const boosted = EFFORTS[Math.min(EFFORTS.length - 1, EFFORTS.indexOf(base) + need.effortBoost)]
-  const effort = clampEffort(boosted, supportedEfforts(best.agent, best.model, avail))
-  const choice: ModelChoice = { agent: best.agent, model: best.model, ...(effort ? { effort } : {}) }
-  const kind = best.tier === need.tier ? `cheapest enabled ${TIER_NAMES[need.tier]} model` : `cheapest capable model (rated ${TIER_NAMES[best.tier]}, task needs ${TIER_NAMES[need.tier]})`
-  return { ok: true, choice, source: 'auto', requiredTier: need.tier, tier: best.tier, reason: `${need.why} → ${decisionLabel(choice)}: ${kind} (relative cost ${best.cost})`, skipped }
+  const { choice, note: effortNote } = clamped(use, boosted(use.effort, at.effortBoost), avail)
+  return { ok: true, choice, source: gone ? 'fallback' : 'kind', row: rowInfo, reason: `${at.why} → ${choiceLabel(choice)}${note}${effortNote}`, skipped }
 }
