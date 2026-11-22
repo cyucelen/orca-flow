@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applyPreset, BUILT_IN_PRESETS, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, supportedEfforts, modelProblem, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
+import { addType, applyPreset, BUILT_IN_PRESETS, findType, MAX_TYPES, removeType, SUGGESTED_TYPES, updateType, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, supportedEfforts, modelProblem, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
 
 const CODEX = [
   { id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] as const },
@@ -43,6 +43,7 @@ test('normalize: defaults, clamps, bad rows fall back to Balanced, old fields dr
       normal: DEFAULT_ROUTING.workers.normal,
       hard: DEFAULT_ROUTING.workers.hard
     },
+    types: [],
     presets: []
   })
   assert.equal(JSON.stringify(n), JSON.stringify(normalizeRouting(n)))
@@ -310,4 +311,146 @@ test('saved presets get unique ids: only an exact (case-insensitive) name replac
   assert.deepEqual(s.presets.map((p) => p.id), ids, 'replace keeps the id')
   assert.deepEqual(normalizeRouting(s).presets.map((p) => p.id), ids, 'ids survive a round trip')
   assert.deepEqual(normalizeRouting(JSON.parse(JSON.stringify(s))).presets.map((p) => p.name), ['日本', '中文', 'FAST', 'Fast!'])
+})
+
+// ---------- task types ----------
+
+const GEM: KindRoute = { model: { agent: 'antigravity', model: 'gemini-3.8-flash', effort: 'low' }, fallback: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' } }
+const LUNA: KindRoute = { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } }
+const ALL3: Availability = { agents: ['claude', 'codex', 'antigravity'], models: { claude: null, codex: CODEX, antigravity: null } }
+const typed = () => addType(addType(S(), 'Browser checks', 'Open pages, click through flows, take screenshots', GEM), 'Images', 'Make or edit images', LUNA)
+
+test('types: suggestions are names and descriptions only, no models', () => {
+  assert.deepEqual(SUGGESTED_TYPES.map((t) => t.name), ['Browser checks', 'Images', 'Docs & copy', 'Research', 'Code review'])
+  for (const t of SUGGESTED_TYPES) assert.deepEqual(Object.keys(t), ['name', 'description'])
+  assert.deepEqual(S().types, [])
+})
+
+test('types: add, update, remove; ids are stable unique slugs; refusals', () => {
+  const s = typed()
+  assert.deepEqual(s.types.map((t) => [t.id, t.name, t.description]), [['browser-checks', 'Browser checks', 'Open pages, click through flows, take screenshots'], ['images', 'Images', 'Make or edit images']])
+  assert.deepEqual(s.types[0].route, GEM)
+  // a renamed type keeps its id; the description and row change on their own
+  const renamed = updateType(s, 'images', { name: '  Pictures ', description: ' Icons and art ' })
+  assert.deepEqual([renamed.types[1].id, renamed.types[1].name, renamed.types[1].description, renamed.types[1].route], ['images', 'Pictures', 'Icons and art', LUNA])
+  assert.deepEqual(updateType(s, 'images', { route: GEM }).types[1].route, GEM)
+  // a new type whose slug is taken gets the next free id
+  assert.equal(addType(renamed, 'Images!', '', LUNA).types[2].id, 'images-2')
+  assert.equal(addType(S(), 'Hard!', '', LUNA).types[0].id, 'hard-2', 'never a kind name as id')
+  // refusals
+  assert.throws(() => addType(s, 'images', '', LUNA), /already a type named/)
+  assert.throws(() => addType(s, '  ', '', LUNA), /needs a name/)
+  for (const kind of ['Simple', 'normal', 'HARD', 'trivial']) assert.throws(() => addType(s, kind, '', LUNA), /is a difficulty/)
+  assert.throws(() => addType(s, 'Long', 'x'.repeat(121), LUNA), /at most 120 characters/)
+  assert.equal(addType(s, 'Long', 'x'.repeat(120), LUNA).types[2].description.length, 120)
+  assert.throws(() => addType(s, 'x'.repeat(41), '', LUNA), /at most 40 characters/)
+  assert.throws(() => addType(s, 'No model', '', { model: { agent: 'claude' }, fallback: null }), /needs a model/)
+  assert.throws(() => updateType(s, 'images', { name: 'Browser Checks' }), /already a type named/)
+  assert.equal(updateType(s, 'images', { name: 'IMAGES' }).types[1].name, 'IMAGES', 'its own name in another case is fine')
+  assert.throws(() => updateType(s, 'nope', { name: 'x' }), /No task type nope/)
+  let full = S()
+  for (let i = 0; i < MAX_TYPES; i++) full = addType(full, `T${i}`, '', LUNA)
+  assert.throws(() => addType(full, 'one more', '', LUNA), /At most 12 task types/)
+  // remove; an unknown id changes nothing
+  assert.deepEqual(removeType(s, 'browser-checks').types.map((t) => t.id), ['images'])
+  assert.deepEqual(removeType(s, 'nope').types, s.types)
+  // lookup by id or name, any case
+  assert.equal(findType(s, 'BROWSER-checks')?.id, 'browser-checks')
+  assert.equal(findType(s, ' browser checks ')?.id, 'browser-checks')
+  assert.equal(findType(s, 'video'), undefined)
+})
+
+test('types: normalize drops bad ones, trims, caps, keeps ids, and round-trips through JSON', () => {
+  const n = normalizeRouting({ types: [
+    { id: 'browser', name: '  Browser checks ', description: `  ${'d'.repeat(130)}  `, route: GEM },
+    { id: 'browser', name: 'Images', description: 'pictures', route: LUNA }, // a taken id: a fresh one
+    { name: 'images', route: LUNA }, // same name
+    { name: 'Normal', route: LUNA }, // a kind's name
+    { name: 'No model', route: { model: { agent: 'claude' } } },
+    { name: '', route: LUNA }, 'x', null,
+    { id: 'Bad Id!', name: 'Docs', route: { model: { agent: 'claude', model: 'haiku' }, fallback: { agent: 'claude' } } }
+  ] })
+  assert.deepEqual(n.types.map((t) => [t.id, t.name, t.description.length]), [['browser', 'Browser checks', 120], ['images', 'Images', 8], ['docs', 'Docs', 0]])
+  assert.deepEqual(n.types[2].route, { model: { agent: 'claude', model: 'haiku' }, fallback: null })
+  assert.equal(normalizeRouting({ types: Array.from({ length: 15 }, (_, i) => ({ name: `T${i}`, route: LUNA })) }).types.length, MAX_TYPES)
+  const s = typed()
+  assert.deepEqual(normalizeRouting(JSON.parse(JSON.stringify(s))), s)
+  assert.equal(JSON.stringify(normalizeRouting(s)), JSON.stringify(s), 'fixed key order')
+})
+
+test('types and presets: saved with the preset, applied with it, compared by matchingPreset', () => {
+  const s = typed()
+  assert.equal(matchingPreset(s), null, 'Balanced rows plus types: no built-in matches')
+  const saved = savePreset(s, 'With types')
+  assert.deepEqual(saved.presets[0].types, s.types)
+  assert.equal(matchingPreset(saved)?.id, 'saved:with-types')
+  assert.equal(matchingPreset(removeType(saved, 'images')), null, 'a removed type is Custom')
+  assert.equal(matchingPreset(updateType(saved, 'images', { description: 'other' })), null, 'an edited type is Custom')
+  // applying a built-in sets its (empty) types; applying the saved preset brings them back
+  const plain = applyPreset(saved, 'balanced')
+  assert.deepEqual([plain.types, matchingPreset(plain)?.id], [[], 'balanced'])
+  assert.deepEqual(applyPreset(plain, 'saved:with-types').types, s.types)
+  for (const p of BUILT_IN_PRESETS) assert.deepEqual(p.types, [])
+  // an older saved preset without types reads as none
+  const old = normalizeRouting({ presets: [{ name: 'Old', workers: DEFAULT_ROUTING.workers }] })
+  assert.deepEqual(old.presets[0].types, [])
+  assert.equal(matchingPreset(old)?.id, 'saved:old')
+})
+
+test('typed task: its type row, by id or name; kind, risk and context do not change it', () => {
+  const s = typed()
+  const d = ok(worker({ type: 'browser-checks' }, s, ALL3))
+  assert.deepEqual([d.choice, d.source, d.reason], [{ agent: 'antigravity', model: 'gemini-3.8-flash', effort: 'low' }, 'type', 'Browser checks task → Antigravity gemini-3.8-flash · low'])
+  assert.deepEqual(d.type, { id: 'browser-checks', name: 'Browser checks', route: GEM })
+  assert.equal(d.row, undefined)
+  for (const extra of [{ kind: 'hard' as const }, { kind: 'simple' as const, risk: 'high' as const }, { context: 'large' as const }, { type: 'Browser Checks' }]) {
+    assert.deepEqual(ok(worker({ type: 'browser-checks', ...extra }, s, ALL3)).choice, d.choice, JSON.stringify(extra))
+  }
+  // a type only means something for workers
+  assert.equal(ok(route(s, { role: 'lead', type: 'nope' }, ALL3)).source, 'default')
+})
+
+test('typed task: fallback when the model is unavailable, refused when both are', () => {
+  const s = typed()
+  const fb = ok(worker({ type: 'browser-checks' }, s, AVAIL))
+  assert.deepEqual([fb.choice, fb.source], [{ agent: 'codex', model: 'gpt-6-luna', effort: 'low' }, 'fallback'])
+  assert.equal(fb.reason, 'Browser checks task → Codex gpt-6-luna · low: gemini-3.8-flash unavailable (antigravity not installed), used the fallback')
+  assert.deepEqual(fb.skipped, [{ model: 'Antigravity gemini-3.8-flash · low', why: 'antigravity not installed' }])
+  const both = bad(worker({ type: 'browser-checks' }, s, { agents: ['claude'], models: {} }))
+  assert.equal(both, 'No model for this Browser checks task: Antigravity gemini-3.8-flash · low is unavailable (antigravity not installed) and its fallback Codex gpt-6-luna · low is unavailable too (codex not installed). Change the Browser checks type in Settings → Models, or pass --model.')
+  const lone = updateType(s, 'browser-checks', { route: { model: GEM.model, fallback: null } })
+  assert.match(bad(worker({ type: 'browser-checks' }, lone, AVAIL)), /and the type has no fallback/)
+})
+
+test('typed task: an unknown type is refused with the known ones, never routed by difficulty', () => {
+  const s = typed()
+  assert.equal(bad(worker({ type: 'video', kind: 'simple' }, s)), 'No task type "video". Known types: browser-checks (Browser checks), images (Images). Use one of these, or route by difficulty with --kind.')
+  assert.match(bad(worker({ type: 'video' })), /^No task type "video": no types are set, so tasks go by difficulty\. Pass --kind simple, normal or hard instead/)
+  assert.match(bad(worker({ type: 'video', model: 'opus' }, s)), /No task type "video"/, 'a typo is refused even beside an override')
+})
+
+test('typed task: an explicit model, agent or effort still wins', () => {
+  const s = typed()
+  const model = ok(worker({ type: 'images', model: 'opus' }, s, ALL3))
+  assert.deepEqual([model.choice, model.source], [{ agent: 'claude', model: 'opus' }, 'override'])
+  const agent = ok(worker({ type: 'images', agent: 'claude' }, s, ALL3))
+  assert.deepEqual([agent.choice, agent.source], [{ agent: 'claude' }, 'override'])
+  assert.deepEqual(ok(worker({ type: 'images', agent: 'codex' }, s, ALL3)).choice, LUNA.model, 'the type row already runs on that agent')
+  const effort = ok(worker({ type: 'images', effort: 'high' }, s, ALL3))
+  assert.deepEqual([effort.choice, effort.reason], [{ agent: 'codex', model: 'gpt-6-luna', effort: 'high' }, 'Images task → Codex gpt-6-luna · medium; effort high set explicitly'])
+})
+
+test('typed task escalation: the first retry runs on the fallback, then refused; never the difficulty rows', () => {
+  const s = typed()
+  const retry = ok(worker({ type: 'images', attempt: 1 }, s, ALL3))
+  assert.deepEqual([retry.choice, retry.source, retry.reason], [{ agent: 'claude', model: 'sonnet', effort: 'low' }, 'fallback', 'Images task, retried → Claude Sonnet · low: fallback after a failure'])
+  assert.equal(bad(worker({ type: 'images', attempt: 2 }, s, ALL3)), 'No stronger model for Images: ask the user before trying again.')
+  assert.deepEqual(ok(worker({ type: 'images', attempt: 1, kind: 'hard' }, s, ALL3)).choice, retry.choice, 'a hard kind does not lift the type, nor refuse it as "already hard"')
+  // no fallback, the same choice as the model, or an unavailable fallback: refused at once
+  const none = updateType(s, 'images', { route: { model: LUNA.model, fallback: null } })
+  assert.equal(bad(worker({ type: 'images', attempt: 1 }, none, ALL3)), 'No stronger model for Images: ask the user before trying again.')
+  const sameFb = updateType(s, 'images', { route: { model: LUNA.model, fallback: LUNA.model } })
+  assert.equal(bad(worker({ type: 'images', attempt: 1 }, sameFb, ALL3)), 'No stronger model for Images: ask the user before trying again.')
+  const gone = bad(worker({ type: 'images', attempt: 1 }, s, { agents: ['codex'], models: { codex: CODEX } }))
+  assert.equal(gone, 'No stronger model for Images: ask the user before trying again.')
 })

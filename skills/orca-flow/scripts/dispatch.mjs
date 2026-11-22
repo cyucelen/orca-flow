@@ -1,11 +1,12 @@
-// orca-flow route | dispatch | plan: start leads and workers on the routed model, behind the memory
+// orca-flow route | dispatch | plan | types: start leads and workers on the routed model, behind the memory
 // gate, and run a lead's parallel plan. orca-flow.mjs wires the real Orca CLI, model discovery and
 // capacity in; tests pass fakes (`deps`), so nothing here starts a real worker under test.
 //
 // The routing decision is src/routing.ts and the plan checks src/plan.ts (Node strips their types).
 // Every start appends one line to ~/.orca-flow/routes.jsonl:
-//   {at, role, taskId, dispatchId, workspace, choice, source, reason, kind, class, risk, context,
-//    explicit, attempt}
+//   {at, role, taskId, dispatchId, workspace, choice, source, reason, type, kind, class, risk,
+//    context, explicit, attempt}
+// `type` is the task type's id (null for a task routed by difficulty).
 // `class` repeats `kind` in its old name (trivial, standard, complex) for older readers. `explicit`
 // is what the caller chose itself ({agent, model, effort}, or null). The sidebar reads it to show
 // the model on each row; `--retry-of` reads it to rebuild the request and escalate.
@@ -197,6 +198,7 @@ function routeEntry({ at, role, receipt, decision, req }) {
     choice: decision.choice,
     source: decision.source,
     reason: decision.reason,
+    type: req.type ?? null,
     kind: req.kind ?? null,
     class: req.kind ? OLD_CLASS[req.kind] : null,
     risk: req.risk ?? null,
@@ -214,6 +216,11 @@ export function routeRequest(args, roles = ROLES) {
   const role = args.role
   if (!roles.includes(role)) throw new UsageError(`--role is ${roles.join(' or ')}`)
   const req = { role }
+  if (args.type === true) throw new UsageError('--type needs a task type id (`orca-flow types` lists them)')
+  if (args.type !== undefined) {
+    if (role !== 'worker') throw new UsageError('--type is for workers only')
+    req.type = String(args.type)
+  }
   // --kind; --class and the old names (trivial, standard, complex) still work.
   const flag = args.kind !== undefined ? 'kind' : 'class'
   if (args[flag] !== undefined) {
@@ -254,6 +261,8 @@ export function formatDecision(decision, { explain = false } = {}) {
   if (explain) {
     const row = decision.row
     if (row) lines.push(`  row: ${row.kind} → ${routing.choiceLabel(row.route.model)}, fallback ${row.route.fallback ? routing.choiceLabel(row.route.fallback) : 'none'} (Settings → Models)`)
+    const type = decision.type
+    if (type) lines.push(`  type row: ${type.name} (${type.id}) → ${routing.choiceLabel(type.route.model)}, fallback ${type.route.fallback ? routing.choiceLabel(type.route.fallback) : 'none'} (Settings → Models)`)
     lines.push(decision.skipped.length ? '  passed over:' : '  passed over: none')
     for (const s of decision.skipped) lines.push(`    ${s.model}: ${s.why}`)
   }
@@ -326,12 +335,42 @@ function retrySameModel(settings, req, prevChoice, avail) {
   return { ok: false, error: `Cannot escalate ${name}: it was chosen explicitly, so the retry keeps it, and it has no effort above ${prevChoice?.effort ?? 'its default'}${why}. Nothing was substituted: retry with --model <another>, or ask the user.`, skipped: [] }
 }
 
+/** The request's type as its id, when the settings know it (a name or another case was given). */
+function canonicalType(settings, req) {
+  if (req.type === undefined) return req
+  const t = routing.findType(settings, req.type)
+  return t ? { ...req, type: t.id } : req
+}
+
+// ---------- types ----------
+
+/** `orca-flow types`: the user's task types (Settings → Models), or that there are none. Returns the exit code. */
+export async function typesCommand(args, deps) {
+  const types = readRouting(deps.dir).types
+  if (args.json) {
+    deps.out(JSON.stringify(types.map((t) => ({ id: t.id, name: t.name, description: t.description, model: routing.choiceLabel(t.route.model), fallback: t.route.fallback ? routing.choiceLabel(t.route.fallback) : null, route: t.route })), null, 2))
+    return 0
+  }
+  if (!types.length) {
+    deps.out('No task types are set: every worker task goes by difficulty (--kind simple, normal or hard). The user adds types in Settings → Models.')
+    return 0
+  }
+  const lines = [`${types.length} task type${types.length === 1 ? '' : 's'}. Give a task --type <id> only when it clearly fits the description; every other task goes by difficulty (--kind).`]
+  for (const t of types) {
+    lines.push(`  ${t.id}  ${t.name}: ${t.description || '(no description)'}`)
+    lines.push(`    → ${routing.choiceLabel(t.route.model)}${t.route.fallback ? `, fallback ${routing.choiceLabel(t.route.fallback)}` : ', no fallback'}`)
+  }
+  deps.out(lines.join('\n'))
+  return 0
+}
+
 // ---------- route ----------
 
 /** `orca-flow route`: the decision only, nothing launched. Returns the exit code. */
 export async function routeCommand(args, deps) {
-  const req = routeRequest(args)
-  const decision = routing.route(readRouting(deps.dir), req, await deps.discover())
+  const settings = readRouting(deps.dir)
+  const req = canonicalType(settings, routeRequest(args))
+  const decision = routing.route(settings, req, await deps.discover())
   deps.out(args.json ? JSON.stringify(decision, null, 2) : formatDecision(decision, { explain: !!args.explain }))
   return decision.ok ? 0 : 3
 }
@@ -361,7 +400,7 @@ function unknownMessage(outcome, e, replay) {
  * `--dry-run` stops before worker-start and the log line.
  */
 export async function dispatchCommand(args, deps) {
-  const req = routeRequest(args, ['worker', 'lead'])
+  let req = routeRequest(args, ['worker', 'lead'])
   const asked = explicitOf(req)
   const flags = { ...args }
   if (flags['retry-of'] === true) throw new UsageError('--retry-of needs the failed dispatch id')
@@ -377,6 +416,7 @@ export async function dispatchCommand(args, deps) {
     // The same task, the same request, unless this call says otherwise.
     if (prev) {
       if (!flags.task && prev.taskId) flags.task = prev.taskId
+      if (req.type === undefined && req.role === 'worker' && typeof prev.type === 'string' && prev.type) req.type = prev.type
       const prevKind = routing.taskKind(prev.kind ?? prev.class)
       if (req.kind === undefined && prevKind) req.kind = prevKind
       if (req.risk === undefined && prev.risk) req.risk = prev.risk
@@ -416,11 +456,14 @@ export async function dispatchCommand(args, deps) {
   if (!capacityAllows(cap.verdict, newWorktree)) throw new Refused(refusal(cap, { newWorktree, taskId: flags.task, title: flags['task-title'] }), 2)
 
   const settings = readRouting(deps.dir)
+  req = canonicalType(settings, req)
   const decision = keepModel ? retrySameModel(settings, req, prev.choice, avail) : routing.route(settings, req, avail)
   if (!decision.ok) throw new Refused(formatDecision(decision, { explain: true }), 3)
   if (keepModel) req.effort = decision.choice.effort
   // An escalation must land somewhere else; a worker retried on the model that just failed is not one.
   if (prev && req.role === 'worker' && !asked && sameChoice(decision.choice, prev.choice)) {
+    // A typed task never leaves its type: the fallback was what failed, so there is nothing above it.
+    if (decision.type) throw new Refused(`${routing.noStrongerModel(decision.type.name)} Attempt ${req.attempt} routes to ${label(decision)} again, the model that failed. Nothing was started.`, 3)
     throw new Refused(`Escalation could not move up: attempt ${req.attempt} routes to ${label(decision)} again, the model that failed (${decision.reason}). Nothing was started. Change the rows in Settings → Models, pass --model, or ask the user.`, 3)
   }
 
@@ -547,6 +590,7 @@ function stateFile(dir, plan, path) {
 
 const taskRequest = (t) => ({
   role: 'worker',
+  ...(t.type && { type: t.type }),
   kind: t.kind,
   ...(t.risk && { risk: t.risk }),
   ...(t.context && { context: t.context }),
@@ -556,7 +600,7 @@ const taskRequest = (t) => ({
 })
 
 /** What the plan state keeps of a task's request: how it was judged, and what the plan chose itself. */
-const requestRecord = (t) => ({ kind: t.kind, risk: t.risk ?? null, context: t.context ?? null, explicit: explicitOf(t) })
+const requestRecord = (t) => ({ type: t.type ?? null, kind: t.kind, risk: t.risk ?? null, context: t.context ?? null, explicit: explicitOf(t) })
 
 /** Orca's task status as a plan state. A dispatched task that Orca put back to ready is queued again. */
 function stateOf(status) {
@@ -743,6 +787,8 @@ export async function planCommand(args, deps) {
   const worktree = typeof args.worktree === 'string' ? args.worktree : 'current'
   if (NEW_WORKTREE.includes(worktree)) throw new UsageError('a plan runs in one existing worktree: --worktree current (or a selector); new worktrees are your coordinator\'s')
   const settings = readRouting(deps.dir)
+  // A type named by name or in another case is kept by its id (plan state, routes.jsonl).
+  for (const t of plan.tasks) if (t.type) t.type = canonicalType(settings, { type: t.type }).type
   const where = stateFile(deps.dir, plan, path)
   const lines = []
   const restart = args.restart === undefined ? [] : String(args.restart).split(',').filter(Boolean)

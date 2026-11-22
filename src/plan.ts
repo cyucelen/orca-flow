@@ -5,6 +5,7 @@
 //
 // A plan file:
 //   { "title": "...", "tasks": [{ "id": "a", "title": "...", "spec": "..." | "specFile": "...",
+//     "type"?: "<task type id or name>" (then its type's row; kind, risk and context do not count),
 //     "kind": "normal" (old plans: "class", trivial|standard|complex), "risk"?, "context"?, "files": ["src/x.ts", "src/panel/"], "deps": ["b"],
 //     "agent"?, "model"?, "effort"? }] }
 import { EFFORTS, taskKind, type ContextSize, type Effort, type Risk, type TaskKind } from './routing.ts'
@@ -14,6 +15,8 @@ export type PlanTask = {
   title: string
   spec?: string
   specFile?: string
+  /** One of the user's task types, by id or name; checked against the settings when the plan is routed. */
+  type?: string
   kind: TaskKind
   risk?: Risk
   context?: ContextSize
@@ -61,6 +64,7 @@ export function parsePlan(raw: unknown): { plan: Plan | null; errors: string[] }
     const given = t.kind ?? t.class
     const kind = given === undefined ? 'normal' : taskKind(given)
     if (!kind) errors.push(`${at}: "${field}" is simple, normal or hard, not ${JSON.stringify(given)}`)
+    if (t.type !== undefined && !str(t.type)) errors.push(`${at}: "type" is a task type id (\`orca-flow types\` lists them)`)
     if (t.risk !== undefined && t.risk !== 'low' && t.risk !== 'high') errors.push(`${at}: "risk" is high or low`)
     if (t.context !== undefined && t.context !== 'normal' && t.context !== 'large') errors.push(`${at}: "context" is large or normal`)
     if (t.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(t.effort)) errors.push(`${at}: "effort" is one of ${EFFORTS.join(', ')}`)
@@ -73,6 +77,7 @@ export function parsePlan(raw: unknown): { plan: Plan | null; errors: string[] }
       title: title ?? '',
       ...(spec ? { spec } : {}),
       ...(specFile ? { specFile } : {}),
+      ...(str(t.type) ? { type: str(t.type) } : {}),
       kind: kind ?? 'normal',
       ...(t.risk === 'high' || t.risk === 'low' ? { risk: t.risk } : {}),
       ...(t.context === 'large' || t.context === 'normal' ? { context: t.context } : {}),

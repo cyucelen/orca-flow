@@ -29,12 +29,16 @@ one line, and end your turn.
    pre-diagnosed spec is still a worker task: knowing the fix does not make it small.
 4. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
    it with its whole conversation, so it already knows the code.
-5. **Otherwise start a worker** in this worktree, with the kind of task it is (see Which model
-   in [SKILL.md](../SKILL.md)): `simple` (a rename, a copy change), `normal` (a bounded change with
-   tests), `hard` (design, hard bugs, concurrency, migrations, security).
+5. **Otherwise start a worker** in this worktree. Run `orca-flow types` once per session before
+   your first dispatch: it lists the user's task types (such as Browser checks or Images), or says
+   there are none. When the task clearly fits a type's description, pass `--type <id>`; otherwise
+   give the kind of task it is (see Which model in [SKILL.md](../SKILL.md)): `simple` (a rename, a
+   copy change), `normal` (a bounded change with tests), `hard` (design, hard bugs, concurrency,
+   migrations, security). Never split a task into a typed part and a code part just to use a type.
    `orca-flow dispatch --role worker --kind <simple|normal|hard> --worktree current
-   --task-title "<outcome>" --spec-file -`. It runs the capacity gate, starts the worker on the
-   model the user picked for that kind in Settings → Models, and prints the model and why. Workers running at
+   --task-title "<outcome>" --spec-file -` (or `--type <id>` instead of `--kind`). It runs the
+   capacity gate, starts the worker on the model the user picked for that type or kind in
+   Settings → Models, and prints the model and why. Workers running at
    the same time must touch different files; otherwise send the second task to the first worker,
    or start it after the first reports. Two or more tasks at once go in a plan (Splitting work).
 6. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
@@ -96,6 +100,9 @@ Write the split as a plan file outside the repo (a scratch folder):
   migrations and schema count: name them in the one task that changes them.
 - `deps`: tasks that must finish first. Two tasks that own the same path must be chained by deps
   (or merged); the check refuses them otherwise.
+- `type`: a task type id from `orca-flow types`, only when the task clearly fits its description;
+  then `kind`, `risk` and `context` do not change its model. Do not split work into a typed part and
+  a code part just to use a type.
 - `kind` (simple, normal, hard; an older plan's `class` still reads), `risk`, `context` as in
   Which model; `agent`, `model`, `effort` only when the user named them.
 

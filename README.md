@@ -37,9 +37,12 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   status, Ask and Reply are read as written: Up next labels the ask with the message's own status
   line ("Needs 2 files from you") and shows the Reply under it. An ask the agent needs only later
   ("Working · needs 2 files later") comes after every ask that stops work.
-- **Model routing:** you pick the model, effort and one fallback for simple, normal and hard worker
-  tasks, plus one for coordinators and leads, with Balanced, Economy and Best quality presets to
-  start from. Each dispatch starts on the model for its task, says why, and refuses rather than
+- **Model routing:** a worker task goes by its task type first, then its difficulty. You can define
+  task types of your own (such as Browser checks or Images), each with a model and a fallback; a
+  typed task runs on its type's model, retries once on its fallback, then asks you. Every other task
+  runs on the model, effort and fallback you pick for simple, normal and hard, and a failed one
+  moves up a row. Coordinators and leads get one each, with Balanced, Economy and Best quality
+  presets to start from. Each dispatch starts on the model for its task, says why, and refuses rather than
   silently using another. Leads and coordinators hand implementation to Orca workers, not to native
   subagents. [Details and limits](docs/model-routing.md)
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
@@ -211,7 +214,8 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
   yet" (see [Card writer](#card-writer)).
 - **Models:** a preset (Balanced, Economy, Best quality, your saved ones or Custom), the model and
   effort for coordinators and leads, a model, effort and fallback per worker task kind
-  ([Model routing](docs/model-routing.md)).
+  ([Model routing](docs/model-routing.md)). Task types are kept with them (in `config.json` until
+  the page shows them).
 - **Message Check:** Off, All agents (every coordinator and lead) or Some folders, with the folder
   list ([Message format](#message-format)).
 - **Capacity:** the memory always kept free and the extra room under memory pressure

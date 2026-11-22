@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applyPreset, DEFAULT_ROUTING, deletePreset, normalizeRouting, route, savePreset, type Availability, type RoutingSettings } from './routing.ts'
+import { addType, applyPreset, DEFAULT_ROUTING, deletePreset, normalizeRouting, removeType, route, savePreset, type Availability, type RoutingSettings } from './routing.ts'
 import { applySettings, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
@@ -142,6 +142,16 @@ test('worker rows and saved presets persist; a preset applied back to Balanced d
   assert.deepEqual(applySettings(file2, { ...DEFAULT_SETTINGS, routing: deletePreset(balancedKept, 'saved:cheap') }), {})
   // old rating fields mean nothing now: the file reads as the default
   assert.deepEqual(normalizeSettings({ routing: { workerMode: 'fixed', candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }] } }).routing, DEFAULT_ROUTING)
+})
+
+test('task types persist in the file, survive the dialog draft, and drop out when removed', () => {
+  const row = { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' as const }, fallback: null }
+  const typed = addType(DEFAULT_ROUTING, 'Images', 'Make or edit images', row)
+  const file = applySettings({ other: 1 }, { ...DEFAULT_SETTINGS, routing: typed })
+  assert.deepEqual((file.routing as RoutingSettings).types, [{ id: 'images', name: 'Images', description: 'Make or edit images', route: row }])
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(file))).routing, typed)
+  assert.deepEqual(fromDraft(toDraft({ ...DEFAULT_SETTINGS, routing: typed })).routing, typed)
+  assert.deepEqual(applySettings(file, { ...DEFAULT_SETTINGS, routing: removeType(typed, 'images') }), { other: 1 }, 'no types and Balanced: the default again')
 })
 
 test('precedence from stored settings: override > role > kind row', () => {

@@ -10,9 +10,12 @@
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
 //   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
-//   orca-flow route --role worker|lead|coordinator [--kind simple|normal|hard] [--risk high]
+//   orca-flow types [--json]                  The user's task types (Settings → Models): id, name,
+//                                             description, model. None: every task goes by difficulty
+//   orca-flow route --role worker|lead|coordinator [--type <id>] [--kind simple|normal|hard] [--risk high]
 //       [--context large] [--attempt n] [--agent a] [--model m] [--effort e] [--json] [--explain]
-//                                             Which model a start would use, and why. Launches nothing
+//                                             Which model a start would use, and why. Launches nothing.
+//                                             --type: that type's row; kind, risk and context then do not count
 //   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task
 //       --task-title --spec --spec-file --keep-open --repo --name --base-branch --display-name
 //       --comment --setup --deps --parent --run --retry-of --retry-request] [--dry-run] [--json]
@@ -497,10 +500,11 @@ async function main() {
       console.log(args.json ? JSON.stringify(b, null, 2) : formatBots(b))
       break
     }
+    case 'types':
     case 'route':
     case 'dispatch':
     case 'plan': {
-      const run = { route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command]
+      const run = { types: flow.typesCommand, route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command]
       try {
         process.exitCode = await run(args, liveDeps(args))
       } catch (e) {
@@ -511,7 +515,7 @@ async function main() {
       break
     }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }

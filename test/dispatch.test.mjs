@@ -5,8 +5,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fakeDeps } from './fake-orca.mjs'
-import { cachedDiscover, dispatchCommand, MODELS_CACHE_MS, readRoutes, Refused, routeCommand, startOutcome, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
+import { CLAUDE_ONLY, fakeDeps } from './fake-orca.mjs'
+import { cachedDiscover, dispatchCommand, MODELS_CACHE_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
 
 const argsOf = (flags, ...positional) => ({ _: positional, ...flags })
 const starts = (deps) => deps.calls.filter((c) => c.args[1] === 'worker-start')
@@ -52,7 +52,7 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
   assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku — simple task → Claude Haiku$/m)
   assert.match(deps.output[0], /task task_new1 · run run_1 · state ready · workspace repo1::\/work\/tree/)
   const [entry] = readRoutes(deps.dir)
-  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'kind', 'class', 'risk', 'context', 'explicit', 'attempt'])
+  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'type', 'kind', 'class', 'risk', 'context', 'explicit', 'attempt'])
   assert.deepEqual(entry, {
     at: '2026-11-22T10:00:00.000Z',
     role: 'worker',
@@ -62,6 +62,7 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
     choice: { agent: 'claude', model: 'haiku' },
     source: 'kind',
     reason: 'simple task → Claude Haiku',
+    type: null,
     kind: 'simple',
     class: 'trivial',
     risk: null,
@@ -305,4 +306,82 @@ test('dispatch runs model discovery and the capacity scan side by side', async (
   }
   await dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), deps)
   assert.ok(events.indexOf('discover start') < events.indexOf('capacity end'), events.join(', '))
+})
+
+// ---------- task types ----------
+
+const IMAGES = { id: 'images', name: 'Images', description: 'Make or edit images, icons and illustrations', route: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } } }
+const BROWSER = { id: 'browser', name: 'Browser checks', description: 'Open pages, click through flows, take screenshots', route: { model: { agent: 'claude', model: 'haiku' }, fallback: null } }
+const TYPED_AVAIL = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] }] } }
+const typedDeps = (over = {}) => fakeDeps({ routing: { types: [IMAGES, BROWSER] }, avail: TYPED_AVAIL, ...over })
+
+test('types lists the user types with their models, or says there are none and tasks go by difficulty', async () => {
+  const none = fakeDeps()
+  assert.equal(await typesCommand(argsOf({}, 'types'), none), 0)
+  assert.equal(none.output[0], 'No task types are set: every worker task goes by difficulty (--kind simple, normal or hard). The user adds types in Settings → Models.')
+  const noneJson = fakeDeps()
+  await typesCommand(argsOf({ json: true }, 'types'), noneJson)
+  assert.deepEqual(JSON.parse(noneJson.output[0]), [])
+  const deps = typedDeps()
+  await typesCommand(argsOf({}, 'types'), deps)
+  assert.equal(deps.output[0], [
+    '2 task types. Give a task --type <id> only when it clearly fits the description; every other task goes by difficulty (--kind).',
+    '  images  Images: Make or edit images, icons and illustrations',
+    '    → Codex gpt-6-luna · medium, fallback Claude Sonnet · low',
+    '  browser  Browser checks: Open pages, click through flows, take screenshots',
+    '    → Claude Haiku, no fallback'
+  ].join('\n'))
+  const json = typedDeps()
+  await typesCommand(argsOf({ json: true }, 'types'), json)
+  assert.deepEqual(JSON.parse(json.output[0])[0], { id: 'images', name: 'Images', description: IMAGES.description, model: 'Codex gpt-6-luna · medium', fallback: 'Claude Sonnet · low', route: IMAGES.route })
+  assert.equal(deps.calls.length, 0, 'reads the settings only')
+})
+
+test('route --type uses the type row and --explain shows it; an unknown type is refused with the known ones', async () => {
+  const deps = typedDeps()
+  assert.equal(await routeCommand(argsOf({ role: 'worker', type: 'Images', kind: 'hard', explain: true }, 'route'), deps), 0)
+  assert.equal(deps.output[0], [
+    'Codex gpt-6-luna · medium (type)',
+    '  why: Images task → Codex gpt-6-luna · medium',
+    '  flags: --agent codex --model gpt-6-luna --effort medium',
+    '  type row: Images (images) → Codex gpt-6-luna · medium, fallback Claude Sonnet · low (Settings → Models)',
+    '  passed over: none'
+  ].join('\n'))
+  const unknown = typedDeps()
+  assert.equal(await routeCommand(argsOf({ role: 'worker', type: 'video' }, 'route'), unknown), 3)
+  assert.equal(unknown.output[0], 'no model: No task type "video". Known types: images (Images), browser (Browser checks). Use one of these, or route by difficulty with --kind.')
+  await assert.rejects(routeCommand(argsOf({ role: 'worker', type: true }, 'route'), typedDeps()), /--type needs a task type id/)
+  await assert.rejects(routeCommand(argsOf({ role: 'lead', type: 'images' }, 'route'), typedDeps()), /--type is for workers only/)
+})
+
+test('dispatch --type starts on the type model and logs the type id; an unknown type starts nothing', async () => {
+  const deps = typedDeps()
+  await dispatchCommand(argsOf({ role: 'worker', type: 'IMAGES', worktree: 'current', spec: 'Make the icon' }, 'dispatch'), deps)
+  assert.deepEqual(starts(deps)[0].args.slice(-6), ['--agent', 'codex', '--model', 'gpt-6-luna', '--effort', 'medium'])
+  const [entry] = readRoutes(deps.dir)
+  assert.deepEqual([entry.type, entry.kind, entry.source, entry.reason], ['images', null, 'type', 'Images task → Codex gpt-6-luna · medium'])
+  const unknown = typedDeps()
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', type: 'video', worktree: 'current', spec: 's' }, 'dispatch'), unknown), (e) => e.code === 3 && /No task type "video"\. Known types: images/.test(e.message))
+  assert.equal(starts(unknown).length, 0)
+  // an explicit model still wins, and the type is still logged
+  const own = typedDeps()
+  await dispatchCommand(argsOf({ role: 'worker', type: 'images', model: 'opus', worktree: 'current', spec: 's' }, 'dispatch'), own)
+  assert.deepEqual(starts(own)[0].args.slice(-4), ['--agent', 'claude', '--model', 'opus'])
+  assert.equal(readRoutes(own.dir)[0].type, 'images')
+})
+
+test('--retry-of a typed task runs on its fallback once, then is refused; never the difficulty rows', async () => {
+  const deps = typedDeps()
+  await dispatchCommand(argsOf({ role: 'worker', type: 'images', worktree: 'current', spec: 's' }, 'dispatch'), deps)
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
+  assert.deepEqual(starts(deps)[1].args.slice(-6), ['--agent', 'claude', '--model', 'sonnet', '--effort', 'low'])
+  const retried = readRoutes(deps.dir).at(-1)
+  assert.deepEqual([retried.type, retried.attempt, retried.reason], ['images', 1, 'Images task, retried → Claude Sonnet · low: fallback after a failure'])
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_2', worktree: 'current' }, 'dispatch'), deps), (e) => e.code === 3 && /^no model: No stronger model for Images: ask the user before trying again\./.test(e.message))
+  assert.equal(starts(deps).length, 2)
+  // the primary was unavailable, so the fallback ran and failed: the retry would land on it again
+  const fbRan = typedDeps({ avail: CLAUDE_ONLY })
+  logLine(fbRan, { choice: { agent: 'claude', model: 'sonnet', effort: 'low' }, source: 'fallback', reason: 'r', type: 'images', kind: null })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), fbRan), (e) => e.code === 3 && /^No stronger model for Images: ask the user before trying again\. Attempt 1 routes to Claude Sonnet · low again/.test(e.message))
+  assert.equal(starts(fbRan).length, 0)
 })

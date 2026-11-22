@@ -14,12 +14,19 @@ does not do.
 
 ## Settings → Models
 
-**Preset.** One pop-up sets the coordinator, the lead and all three worker rows at once. Your
-saved presets stay as they were.
+A worker task gets its model in two steps: **its task type first, then its difficulty.** A task of
+one of your task types (such as Browser checks or Images) runs on that type's row. Every other task
+runs on the row for its difficulty: simple, normal or hard. Difficulty measures how much reasoning a
+task needs; types let you send other kinds of work, such as browser or image work, to a model you
+prefer for it.
+
+**Preset.** One pop-up sets the coordinator, the lead, all three worker rows and your task types at
+once. Your saved presets stay as they were.
 
 - **Balanced, Economy, Best quality:** built-in starting points. They are fixed; edit a row and the
-  pop-up shows Custom.
-- **Saved presets:** use Save as… to keep the current setup under a name (up to 10). The same name
+  pop-up shows Custom. They have no task types: applying one removes your current types, and while
+  you have types no built-in matches.
+- **Saved presets:** use Save as… to keep the current setup, types included, under a name (up to 10). The same name
   replaces that preset. A built-in's name is refused. A saved preset can be deleted; a built-in one
   cannot.
 - **Custom:** shown while nothing matches a preset.
@@ -39,6 +46,25 @@ Orca takes none for it.
 model, which is how Orca Flow started them before routing existed. Each pop-up lists the agents Orca
 has installed.
 
+**Task types.** Up to 12 types of your own, each with a name, a description (up to 120 characters)
+and a row: a model, an effort and one fallback. The description tells the agent that splits the
+work when a task is of that type. Suggestions to start from (names only; no model comes with them):
+Browser checks, Images, Docs & copy, Research, Code review. A type's id is a slug of its first name
+(`browser-checks`) and stays the same when you rename it. A difficulty's name (simple, normal, hard)
+cannot be a type's name. Until the Models page shows types, they are kept in
+`~/.orca-flow/config.json` under `routing.types`:
+
+```json
+{ "routing": { "types": [
+  { "id": "browser", "name": "Browser checks", "description": "Open pages, click through flows, take screenshots",
+    "route": { "model": { "agent": "codex", "model": "gpt-6-luna", "effort": "low" },
+               "fallback": { "agent": "claude", "model": "sonnet", "effort": "low" } } } ] } }
+```
+
+Agents are told to run `orca-flow types` once per session, to give a task a type only when it
+clearly fits the type's description, and never to split a task into a typed part and a code part
+just to use a type.
+
 **Workers, by task kind.** Whoever splits the work calls each task `simple`, `normal` or `hard`:
 
 - `simple`: mechanical, one or two files, an obvious result.
@@ -50,7 +76,11 @@ this machine; its tooltip says why and whether a fallback will be used.
 
 A plan starts every ready task that the memory check allows; the rest stay queued.
 
-After a failure, the nth retry of a task runs n rows up, never past hard; a retry of a task that already ran on the hard row is refused and the agent asks you.
+After a failure, the nth retry of an untyped task runs n rows up, never past hard; a retry of a task
+that already ran on the hard row is refused and the agent asks you. A typed task never moves into
+the difficulty rows: its first retry runs on its type's fallback (when that is another model and
+available), and after that it is refused ("No stronger model for Images: ask the user before trying
+again.").
 
 ## What a dispatch does
 
@@ -60,9 +90,12 @@ Order of precedence, first match wins:
    that is unavailable is refused, and nothing is substituted. The same goes for an effort the model
    does not take.
 2. **The coordinator or lead pick** from Settings, for those roles.
-3. **The kind's row** from Settings, for workers.
+3. **The task type's row** (`--type <id or name>`), for workers. Kind, risk and context do not
+   change it. An unknown type is refused with exit 3 and lists the known types; it never falls back
+   to difficulty. Reasons read "Browser checks task → Codex gpt-6-luna · low".
+4. **The kind's row** from Settings, for every other worker.
 
-For a worker, the row is worked out first:
+For an untyped worker, the row is worked out first:
 
 - **Risk high** (`--risk high`) moves up one kind.
 - **Large context** (`--context large`) means at least `normal`.
@@ -74,7 +107,7 @@ For a worker, the row is worked out first:
 
 Then the model:
 
-- **Row's model unavailable:** the row's fallback starts, and the reason says so.
+- **Row's model unavailable:** the row's (kind's or type's) fallback starts, and the reason says so.
 - **Both unavailable, or no fallback:** the dispatch is refused with exit 3 and names the row to fix.
   It never falls back to a provider default or a premium model on its own.
 - **A coordinator or lead pick whose model is unavailable:** that agent's default model starts, and
@@ -109,10 +142,19 @@ being checked. A model another agent does not list is refused.
 These run from `skills/orca-flow/scripts/orca-flow.mjs` (agents reach it through the skill link).
 Examples use `orca-flow` for short.
 
-**Show a decision, start nothing.** `--explain` adds the row, its fallback and what was passed over.
+**List the task types.** Each type's id, name, description and model, or that there are none and
+tasks go by difficulty. `--json` for the full rows.
+
+```sh
+orca-flow types
+```
+
+**Show a decision, start nothing.** `--explain` adds the row (or the type row), its fallback and what
+was passed over.
 
 ```sh
 orca-flow route --role worker --kind hard --risk high --explain
+orca-flow route --role worker --type browser --explain
 ```
 
 **Start a worker.** Runs the capacity gate, routes, then `orca orchestration worker-start` with the
@@ -142,7 +184,9 @@ orca-flow plan next plan.json     # start what became ready
 orca-flow plan status plan.json   # the table
 ```
 
-A plan has at most 8 tasks. `kind` defaults to `normal`. Its state is kept in
+A plan has at most 8 tasks. `kind` defaults to `normal`. A task may set `"type"` (an id or name
+from `orca-flow types`); its model then comes from the type, and the plan state and `routes.jsonl`
+record the type's id. Its state is kept in
 `~/.orca-flow/plans/<slug>-<hash>.json`: the title, and a hash of the plan file's path, so two plans
 with the same title do not share a file.
 
@@ -170,8 +214,9 @@ orca-flow plan next plan.json --restart ui
 A task may also set `agent`, `model` and `effort`, which win as in the precedence above.
 
 **Escalate a failure.** After a worker reports `--outcome failed`, run the task again one kind up. It
-reads the last attempt from `routes.jsonl`, reuses the task, its kind, context, risk and explicit
-model, and refuses when the task already ran on the hard row or when it would land on the model that failed.
+reads the last attempt from `routes.jsonl`, reuses the task, its type, kind, context, risk and
+explicit model, and refuses when the task already ran on the hard row or when it would land on the
+model that failed. A typed task runs once more on its type's fallback, then is refused.
 
 ```sh
 orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current
@@ -218,13 +263,14 @@ call's description.
 
 - **One line from dispatch:** `Started <dispatch id> on <model> — <why>`.
 - **`~/.orca-flow/routes.jsonl`:** one line per routed start, with the choice, the source, the reason,
-  the kind, the risk and the attempt. `--retry-of` reads it too.
+  the type (its id, or null), the kind, the risk and the attempt. `--retry-of` reads it too.
 - **The sidebar:** a worker's row shows the model its dispatch was routed to in its tooltip, from
   `routes.jsonl`.
 
 ## Limits
 
-- Presets and kinds are your choices, not measured quality. The built-ins are starting points to
+- Presets, types and kinds are your choices, not measured quality. The suggested types come with no
+  model and claim nothing about which model suits them. The built-ins are starting points to
   edit.
 - No token prices and no plan usage are read. Economy is not a cost promise.
 - The coordinator model needs the `orca agent launch` CLI, because the plugin host's `agent.launch`

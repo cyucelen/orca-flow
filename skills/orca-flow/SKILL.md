@@ -91,6 +91,9 @@ and hand actions before picks and reviews, then longest waiting.
   `orca agent installed --worktree <selector> --json` on the target host. If the requested
   provider is unavailable, report that before dispatching.
 
+Before your first dispatch in a session, run `orca-flow types` once: it lists the task types the
+user routes to their own models (see Which model), or says there are none.
+
 ```sh
 orca-flow dispatch --role worker --kind normal --worktree current \
   --task-title "<outcome>" --spec-file - <<'EOF'
@@ -111,13 +114,20 @@ as a native subagent instead.
 
 ### Which model
 
-`orca-flow route --role worker --kind <kind> --explain` shows the choice, the row it came from, its
-fallback and why, without starting anything.
+`orca-flow route --role worker --kind <kind> --explain` (or `--type <id>`) shows the choice, the row
+it came from, its fallback and why, without starting anything.
 
 - Coordinators and leads start on the model the user set for that role. None set: the provider's
   default, as before.
-- Workers start on the model the user picked for the task's kind in Settings → Models (a model, an
-  effort and one fallback per kind; a preset sets all of it at once). So give every task a kind:
+- **Task type first.** The user may define task types in Settings → Models (such as Browser checks
+  or Images), each with its own model and fallback. `orca-flow types` lists them with their
+  descriptions; run it once per session before you dispatch. Give a task `--type <id>` only when it
+  clearly fits that type's description. A typed task runs on its type's model whatever its kind,
+  risk or context. Do not split a task into a typed part and a code part just to use a type: a task
+  that is mostly code goes by difficulty. An unknown type is refused (exit 3) with the known ones.
+- **Then difficulty.** Every other task starts on the model the user picked for its kind (a model,
+  an effort and one fallback per kind; a preset sets the kinds and the types at once). So give every
+  untyped task a kind:
   - `simple`: mechanical, one or two files, an obvious result. "Rename `total` to `subtotal` in
     src/cart.ts."
   - `normal` (the default): a bounded change with tests. "Add an empty state to the panel, with
@@ -129,17 +139,20 @@ fallback and why, without starting anything.
   - Add `--context large` when the task must read much code or long documents: at least normal.
     "Map the 40-file sync module before changing it."
   - The old `--class trivial|standard|complex` still works and means the same kinds.
-- When a kind's model is unavailable, its fallback starts and the reason says so. When both are,
-  dispatch refuses (exit 3): tell the user to fix that kind in Settings → Models.
+- When a type's or kind's model is unavailable, its fallback starts and the reason says so. When
+  both are, dispatch refuses (exit 3): tell the user to fix that row in Settings → Models.
 - **The user's choice wins.** When the user names an agent, a model or an effort, pass `--agent`,
   `--model`, `--effort`. They go straight through and are never swapped. When one is unavailable,
   dispatch refuses (exit 3): tell the user; do not pick another yourself.
 - **Escalate only after a demonstrated failure:** the worker reported `--outcome failed`, or it
   could not fix its result after you sent it what was wrong. Then rerun the task one kind up:
   `orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current`. It reads
-  the last attempt from `~/.orca-flow/routes.jsonl` and reuses the task, its kind, risk and context.
-  A model the user chose is kept and retried at the next effort. It refuses when the task already ran on the hard row, or when the retry would land on the model
-  that failed; then ask the user. A task Orca still shows as completed must first be
+  the last attempt from `~/.orca-flow/routes.jsonl` and reuses the task, its type, kind, risk and
+  context. A model the user chose is kept and retried at the next effort. A typed task never moves
+  to the difficulty rows: its first retry runs on the type's fallback, and after that (or with no
+  other fallback) dispatch refuses: "No stronger model for <type>: ask the user before trying
+  again." It also refuses when the task already ran on the hard row, or when the retry would land on
+  the model that failed; then ask the user. A task Orca still shows as completed must first be
   marked failed: `orca orchestration task-update --id <task> --status failed --result "<why>"`.
   Never escalate because a task looks hard, and never start on a stronger model "to be safe".
 
@@ -147,7 +160,9 @@ fallback and why, without starting anything.
 
 Split only into independent, bounded tasks, each owning named files. Do not split trivial work:
 one worker does a handful of small edits faster than several workers start. Several tasks go in a
-plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/lead.md)).
+plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/lead.md)). A plan
+task takes `"type"` like `--type`. Never split a task into a typed part and a code part just to use
+a type.
 `plan start` also finishes a partly started plan. A start Orca did not confirm (exit 4) is replayed
 by `plan next`, never started twice. If Orca gave no request id, check
 `orca orchestration task-list`, and use `plan next --restart <task id>` only when no worker runs for

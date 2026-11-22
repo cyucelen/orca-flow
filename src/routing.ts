@@ -3,9 +3,10 @@
 // decision and the same one-line reason. Shared by the plugin worker (coordinator launches,
 // Settings → Models) and skills/orca-flow/scripts/orca-flow.mjs (`route`, `dispatch`, `plan`).
 //
-// The model: whoever splits the work says what kind each worker task is (simple, normal, hard);
-// the user picks a model, an effort and one fallback per kind in Settings → Models. Presets set
-// the coordinator, lead and all three kinds in one step. Honest limits, kept in the words this
+// The model: whoever splits the work says what each worker task is. A task of one of the user's own
+// types (Browser checks, Images ...) runs on that type's row; every other task goes by its kind
+// (simple, normal, hard). The user picks a model, an effort and one fallback per type and per kind
+// in Settings → Models. Presets set the coordinator, lead, the three kinds and the types in one step. Honest limits, kept in the words this
 // module writes:
 // - The built-in presets are editable starting points, not claims of quality or price.
 // - Availability is what this machine can verify: `orca agent installed` for agents, the Codex
@@ -41,8 +42,15 @@ export type ModelChoice = { agent: string; model?: string; effort?: Effort }
 export type KindRoute = { model: ModelChoice; fallback: ModelChoice | null }
 export type Workers = Record<TaskKind, KindRoute>
 
+/**
+ * A kind of work the user routes to its own model, whatever its difficulty (browser checks, images).
+ * `id`: a lowercase slug, unique among the types and never a kind's name; it never changes on rename.
+ * `description`: when a task is of this type, for whoever splits the work (at most MAX_TYPE_DESCRIPTION characters).
+ */
+export type TaskType = { id: string; name: string; description: string; route: KindRoute }
+
 /** A named Models configuration. Built-ins are fixed starting points; saved ones are the user's. */
-export type Preset = { id: string; name: string; builtIn: boolean; coordinator: ModelChoice | null; lead: ModelChoice | null; workers: Workers }
+export type Preset = { id: string; name: string; builtIn: boolean; coordinator: ModelChoice | null; lead: ModelChoice | null; workers: Workers; types: TaskType[] }
 
 export type RoutingSettings = {
   /** null: no model is passed and the provider default applies (Orca Flow 0.2.77 behaviour). */
@@ -50,6 +58,8 @@ export type RoutingSettings = {
   lead: ModelChoice | null
   /** The model each kind of worker task starts on. */
   workers: Workers
+  /** The user's task types, at most MAX_TYPES; a typed task uses its type's row instead of its kind's. */
+  types: TaskType[]
   /** The user's saved presets only (builtIn false), at most MAX_SAVED_PRESETS. */
   presets: Preset[]
 }
@@ -64,9 +74,23 @@ export const taskKind = (v: unknown): TaskKind | undefined =>
 /** Claude Code's model aliases (`claude --help`: "an alias for the latest model"). */
 export const CLAUDE_ALIASES: readonly string[] = ['haiku', 'sonnet', 'opus', 'fable']
 export const MAX_SAVED_PRESETS = 10
+export const MAX_TYPES = 12
+export const MAX_TYPE_NAME = 40
+export const MAX_TYPE_DESCRIPTION = 120
+/**
+ * Types the Models page may offer as starting points. Suggestions only: no model is attached, and
+ * nothing here claims a model is good at them.
+ */
+export const SUGGESTED_TYPES: { name: string; description: string }[] = [
+  { name: 'Browser checks', description: 'Open pages, click through flows, take screenshots' },
+  { name: 'Images', description: 'Make or edit images, icons and illustrations' },
+  { name: 'Docs & copy', description: 'Write or edit docs, README text and UI copy' },
+  { name: 'Research', description: 'Read code or the web and answer a question, no edits' },
+  { name: 'Code review', description: 'Review a diff and report findings' }
+]
 
 const claude = (model: string, effort?: Effort): ModelChoice => ({ agent: 'claude', model, ...(effort ? { effort } : {}) })
-const builtIn = (id: string, name: string, workers: Workers): Preset => ({ id, name, builtIn: true, coordinator: null, lead: null, workers })
+const builtIn = (id: string, name: string, workers: Workers): Preset => ({ id, name, builtIn: true, coordinator: null, lead: null, workers, types: [] })
 
 /**
  * Editable starting points; coordinator and lead keep the provider default in all three. Haiku
@@ -91,11 +115,12 @@ export const BUILT_IN_PRESETS: Preset[] = [
 ]
 const BALANCED = BUILT_IN_PRESETS[0]
 
-/** Balanced, no saved presets. */
+/** Balanced, no types, no saved presets. */
 export const DEFAULT_ROUTING: RoutingSettings = {
   coordinator: null,
   lead: null,
   workers: BALANCED.workers,
+  types: [],
   presets: []
 }
 
@@ -139,6 +164,8 @@ export type Availability = { agents: string[] | null; models: Record<string, Mod
 
 export type RouteRequest = {
   role: Role
+  /** Workers: one of the user's task types, by id or name (case-insensitive). Wins over kind, risk and context. */
+  type?: string
   /** Workers; default normal. */
   kind?: TaskKind
   risk?: Risk
@@ -157,11 +184,14 @@ export type RouteDecision =
   | {
       ok: true
       choice: ModelChoice
-      /** override: the task's own flags; role: Settings' coordinator or lead pick; kind: the worker row's
-       *  model; fallback: that row's fallback; default: provider default (nothing set, or a pick unavailable). */
-      source: 'override' | 'role' | 'kind' | 'fallback' | 'default'
+      /** override: the task's own flags; role: Settings' coordinator or lead pick; kind: the worker kind
+       *  row's model; type: the task type's model; fallback: the row's (kind or type) fallback;
+       *  default: provider default (nothing set, or a pick unavailable). */
+      source: 'override' | 'role' | 'kind' | 'type' | 'fallback' | 'default'
       /** Workers routed by kind: the row used (after risk, context and escalation) and its settings. */
       row?: { kind: TaskKind; route: KindRoute }
+      /** Workers routed by type: the type used and its row. */
+      type?: { id: string; name: string; route: KindRoute }
       /** One plain line for people: "normal task → Claude Sonnet · medium". */
       reason: string
       skipped: Skip[]
@@ -218,6 +248,49 @@ function savedId(name: string, taken: readonly string[]): string {
   return id
 }
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+
+// ---------- task types ----------
+
+const TYPE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+/** Kind names (and their old names) are never type names or ids: `--type hard` would read as a kind. */
+const isKindName = (name: string) => taskKind(name.trim().toLowerCase()) !== undefined
+/** A type id no other type in `taken` has, and no kind's name: the name's slug, then slug-2, slug-3 ... */
+function typeId(name: string, taken: readonly string[]): string {
+  const base = slug(name) || 'type'
+  let id = base
+  for (let n = 2; taken.includes(id) || isKindName(id); n++) id = `${base}-${n}`
+  return id
+}
+/** Why a type name cannot be used (null when it can); `others` are the other types. */
+function typeNameProblem(name: string, others: readonly TaskType[]): string | null {
+  if (!name) return 'A type needs a name.'
+  if (name.length > MAX_TYPE_NAME) return `A type name has at most ${MAX_TYPE_NAME} characters.`
+  if (isKindName(name)) return `"${name}" is a difficulty (simple, normal, hard), not a type: choose another name.`
+  if (others.some((t) => sameName(t.name, name))) return `There is already a type named "${name}".`
+  return null
+}
+
+/** One type, or null when it has no name or no usable model. Name and description are trimmed and cut to their limits. */
+function normalizeType(v: unknown, taken: readonly TaskType[]): TaskType | null {
+  if (!isObject(v)) return null
+  const name = text(v.name)?.slice(0, MAX_TYPE_NAME).trim()
+  const route = normalizeRow(v.route)
+  if (!name || !route || typeNameProblem(name, taken)) return null
+  const ids = taken.map((t) => t.id)
+  const stored = text(v.id)
+  const id = stored && TYPE_ID.test(stored) && !ids.includes(stored) && !isKindName(stored) ? stored : typeId(name, ids)
+  const description = (text(v.description) ?? '').slice(0, MAX_TYPE_DESCRIPTION).trim()
+  return { id, name, description, route }
+}
+/** The usable types, in order: a bad one, a second with the same name, and any past MAX_TYPES are dropped. */
+function normalizeTypes(v: unknown): TaskType[] {
+  const out: TaskType[] = []
+  for (const entry of Array.isArray(v) ? v : []) {
+    const t = normalizeType(entry, out)
+    if (t && out.length < MAX_TYPES) out.push(t)
+  }
+  return out
+}
 const isBuiltInName = (name: string) => BUILT_IN_PRESETS.some((p) => p.name.toLowerCase() === name.trim().toLowerCase())
 
 function normalizePreset(v: unknown, taken: readonly string[]): Preset | null {
@@ -228,13 +301,14 @@ function normalizePreset(v: unknown, taken: readonly string[]): Preset | null {
   if (!workers) return null
   const stored = text(v.id)
   const id = stored && /^saved:.+/.test(stored) && !taken.includes(stored) ? stored : savedId(name, taken)
-  return { id, name, builtIn: false, coordinator: normalizeChoice(v.coordinator), lead: normalizeChoice(v.lead), workers }
+  return { id, name, builtIn: false, coordinator: normalizeChoice(v.coordinator), lead: normalizeChoice(v.lead), workers, types: normalizeTypes(v.types) }
 }
 
 /**
  * Every field filled and clamped, in a fixed key order (settings `same` compares JSON). Unknown
- * agent ids are allowed. A bad worker row is Balanced's row of that kind; a bad saved preset is
- * dropped, a second one with the same id too, and only the first MAX_SAVED_PRESETS are kept.
+ * agent ids are allowed. A bad worker row is Balanced's row of that kind; a bad type (no name, a
+ * kind's name, a repeated name, no usable model) is dropped and only the first MAX_TYPES are kept;
+ * a bad saved preset is dropped, a second one with the same id too, and only the first MAX_SAVED_PRESETS are kept.
  * Not an object: DEFAULT_ROUTING (a copy).
  */
 export function normalizeRouting(raw: unknown): RoutingSettings {
@@ -248,6 +322,7 @@ export function normalizeRouting(raw: unknown): RoutingSettings {
     coordinator: normalizeChoice(raw.coordinator),
     lead: normalizeChoice(raw.lead),
     workers: normalizeWorkers(raw.workers) as Workers,
+    types: normalizeTypes(raw.types),
     presets
   }
 }
@@ -260,26 +335,27 @@ export function presetsOf(s: RoutingSettings): Preset[] {
 }
 
 /**
- * The preset whose coordinator, lead and workers equal these settings; null means "Custom".
+ * The preset whose coordinator, lead, workers and types equal these settings; null means "Custom".
+ * Built-ins have no types, so with any type set only a saved preset can match.
  * A saved preset wins over a built-in with the same setup (the last saved match if several).
  */
 export function matchingPreset(s: RoutingSettings): Preset | null {
   const n = normalizeRouting(s)
-  const equal = (p: Preset) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers)
+  const equal = (p: Preset) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers) && same(p.types, n.types)
   const saved = [...clone(n.presets)].reverse().find(equal)
   return saved ?? clone(BUILT_IN_PRESETS).find(equal) ?? null
 }
 
-/** The settings with a preset's coordinator, lead and workers; the limits and saved presets stay. */
+/** The settings with a preset's coordinator, lead, workers and types (none for a built-in); the saved presets stay. */
 export function applyPreset(s: RoutingSettings, id: string): RoutingSettings {
   const n = normalizeRouting(s)
   const p = presetsOf(n).find((x) => x.id === id)
   if (!p) throw new Error(`No preset ${id}.`)
-  return { ...n, coordinator: p.coordinator, lead: p.lead, workers: p.workers }
+  return { ...n, coordinator: p.coordinator, lead: p.lead, workers: p.workers, types: p.types }
 }
 
 /**
- * Saves the current coordinator, lead and workers under `name`. The same name replaces that
+ * Saves the current coordinator, lead, workers and types under `name`. The same name replaces that
  * preset in place. An empty name, a built-in's name, or an 11th preset is refused (throws).
  */
 export function savePreset(s: RoutingSettings, name: string): RoutingSettings {
@@ -289,7 +365,7 @@ export function savePreset(s: RoutingSettings, name: string): RoutingSettings {
   if (isBuiltInName(trimmed)) throw new Error(`"${trimmed}" is a built-in preset: choose another name.`)
   const at = n.presets.findIndex((p) => sameName(p.name, trimmed))
   const id = at < 0 ? savedId(trimmed, n.presets.map((p) => p.id)) : n.presets[at].id
-  const preset: Preset = { id, name: trimmed, builtIn: false, coordinator: n.coordinator, lead: n.lead, workers: n.workers }
+  const preset: Preset = { id, name: trimmed, builtIn: false, coordinator: n.coordinator, lead: n.lead, workers: n.workers, types: n.types }
   if (at < 0 && n.presets.length >= MAX_SAVED_PRESETS) throw new Error(`At most ${MAX_SAVED_PRESETS} saved presets: delete one first.`)
   const presets = at < 0 ? [...n.presets, preset] : n.presets.map((p, i) => (i === at ? preset : p))
   return { ...n, presets: clone(presets) }
@@ -300,6 +376,65 @@ export function deletePreset(s: RoutingSettings, id: string): RoutingSettings {
   if (BUILT_IN_PRESETS.some((p) => p.id === id)) throw new Error('Built-in presets cannot be deleted.')
   const n = normalizeRouting(s)
   return { ...n, presets: n.presets.filter((p) => p.id !== id) }
+}
+
+// ---------- editing task types ----------
+
+/** The row as normalize keeps it; throws when its model is unusable. */
+function typeRoute(route: unknown): KindRoute {
+  const r = normalizeRow(route)
+  if (!r) throw new Error('A type needs a model.')
+  return r
+}
+function typeDescription(description: string): string {
+  const d = description.trim()
+  if (d.length > MAX_TYPE_DESCRIPTION) throw new Error(`A type description has at most ${MAX_TYPE_DESCRIPTION} characters.`)
+  return d
+}
+
+/** Adds a type at the end. Refused (throws): no name, a kind's name, a name in use, a description over the limit, no model, a 13th type. */
+export function addType(s: RoutingSettings, name: string, description: string, route: KindRoute): RoutingSettings {
+  const n = normalizeRouting(s)
+  const trimmed = name.trim()
+  const problem = typeNameProblem(trimmed, n.types)
+  if (problem) throw new Error(problem)
+  if (n.types.length >= MAX_TYPES) throw new Error(`At most ${MAX_TYPES} task types: remove one first.`)
+  const type: TaskType = { id: typeId(trimmed, n.types.map((t) => t.id)), name: trimmed, description: typeDescription(description), route: typeRoute(route) }
+  return { ...n, types: [...n.types, type] }
+}
+
+/** Changes a type's name, description or row; its id stays. Refused (throws) as addType, and for an unknown id. */
+export function updateType(s: RoutingSettings, id: string, patch: Partial<Omit<TaskType, 'id'>>): RoutingSettings {
+  const n = normalizeRouting(s)
+  const at = n.types.findIndex((t) => t.id === id)
+  if (at < 0) throw new Error(`No task type ${id}.`)
+  const old = n.types[at]
+  const name = patch.name === undefined ? old.name : patch.name.trim()
+  if (patch.name !== undefined) {
+    const problem = typeNameProblem(name, n.types.filter((_, i) => i !== at))
+    if (problem) throw new Error(problem)
+  }
+  const type: TaskType = {
+    id,
+    name,
+    description: patch.description === undefined ? old.description : typeDescription(patch.description),
+    route: patch.route === undefined ? old.route : typeRoute(patch.route)
+  }
+  return { ...n, types: n.types.map((t, i) => (i === at ? type : t)) }
+}
+
+/** Removes a type; an unknown id changes nothing. */
+export function removeType(s: RoutingSettings, id: string): RoutingSettings {
+  const n = normalizeRouting(s)
+  return { ...n, types: n.types.filter((t) => t.id !== id) }
+}
+
+/** The type a task names, by id or name, case-insensitive; undefined when none. */
+export function findType(s: RoutingSettings, idOrName: string): TaskType | undefined {
+  const want = idOrName.trim().toLowerCase()
+  if (!want) return undefined
+  const types = normalizeRouting(s).types
+  return types.find((t) => t.id === want) ?? types.find((t) => sameName(t.name, want))
 }
 
 // ---------- labels and launch flags ----------
@@ -416,11 +551,16 @@ export function rowFor(req: RouteRequest): { kind: TaskKind; spent: boolean; why
  *     unless the routed choice already runs on it. effort-only → routed normally, then that effort.
  *  2. coordinator / lead: the Settings pick (null → provider default; unavailable model → the same
  *     agent's default; agent not installed → error). Effort clamped to what the model supports.
- *  3. worker: the row for its kind (rowFor). Its model unavailable → its fallback, said so in the
+ *  3. worker with a type: that type's row (routeTyped); kind, risk and context do not change it. An
+ *     unknown type → error listing the known types, never a silent fall back to difficulty.
+ *  4. worker: the row for its kind (rowFor). Its model unavailable → its fallback, said so in the
  *     reason; both unavailable (or no fallback) → error, never a silent provider default. A retry of
  *     a task that already ran on the hard row → error.
+ * A worker's type is checked first, so a typo is refused even beside an override.
  */
 export function route(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
+  const typed = req.role === 'worker' && req.type !== undefined ? findType(settings, req.type) : undefined
+  if (req.role === 'worker' && req.type !== undefined && !typed) return fail(unknownType(settings, req.type))
   if (req.model) return overrideWithModel(req, avail)
   if (req.agent) {
     const bad = agentProblem(req.agent, avail)
@@ -435,6 +575,9 @@ export function route(settings: RoutingSettings, req: RouteRequest, avail: Avail
     const pick = req.role === 'coordinator' ? settings.coordinator : settings.lead
     if (req.agent && pick?.agent !== req.agent) return agentDefault(req.agent)
     d = pickChoice(pick, req.role === 'coordinator' ? 'coordinators' : 'leads', req, avail)
+  } else if (typed) {
+    d = routeTyped(typed, req, avail)
+    if (req.agent && !(d.ok && d.choice.agent === req.agent)) return agentDefault(req.agent)
   } else {
     if (rowFor(req).spent) return fail(ALREADY_HARD)
     d = routeWorker(settings, req, avail)
@@ -464,6 +607,54 @@ function overrideWithModel(req: RouteRequest, avail: Availability): RouteDecisio
   }
   const choice: ModelChoice = { agent, model, ...(req.effort ? { effort: req.effort } : {}) }
   return { ok: true, choice, source: 'override', reason: `${choiceLabel(choice)} chosen explicitly`, skipped: [] }
+}
+
+/** The refusal for a type the settings do not have: the known ones, or that there are none. */
+function unknownType(settings: RoutingSettings, asked: string): string {
+  const types = normalizeRouting(settings).types
+  if (!types.length) return `No task type "${asked}": no types are set, so tasks go by difficulty. Pass --kind simple, normal or hard instead, or add the type in Settings → Models.`
+  return `No task type "${asked}". Known types: ${types.map((t) => `${t.id} (${t.name})`).join(', ')}. Use one of these, or route by difficulty with --kind.`
+}
+
+/** "No stronger model for Images: ask the user before trying again." */
+export const noStrongerModel = (typeName: string) => `No stronger model for ${typeName}: ask the user before trying again.`
+
+/**
+ * A typed task: the type's model, or its fallback when the model is unavailable. Escalation never
+ * leaves the type: the first retry runs on the fallback (when it is another choice and available),
+ * and anything after that is refused.
+ */
+function routeTyped(type: TaskType, req: RouteRequest, avail: Availability): RouteDecision {
+  const row = type.route
+  const info = { id: type.id, name: type.name, route: clone(row) }
+  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+  const fb = row.fallback
+  const skipped: Skip[] = []
+  if (attempt > 0) {
+    const fbGone = fb ? choiceProblem(fb, avail) : null
+    if (attempt > 1 || !fb || same(fb, row.model) || fbGone) {
+      if (attempt === 1 && fb && fbGone) skipped.push({ model: choiceLabel(fb), why: fbGone })
+      return fail(noStrongerModel(type.name), skipped)
+    }
+    const { choice, note } = clamped(fb, fb.effort, avail)
+    return { ok: true, choice, source: 'fallback', type: info, reason: `${type.name} task, retried → ${choiceLabel(choice)}: fallback after a failure${note}`, skipped }
+  }
+  const gone = choiceProblem(row.model, avail)
+  let use = row.model
+  let note = ''
+  if (gone) {
+    skipped.push({ model: choiceLabel(row.model), why: gone })
+    const fbGone = fb ? choiceProblem(fb, avail) : null
+    if (!fb || fbGone) {
+      if (fb && fbGone) skipped.push({ model: choiceLabel(fb), why: fbGone })
+      const also = fb ? `its fallback ${choiceLabel(fb)} is unavailable too (${fbGone})` : 'the type has no fallback'
+      return fail(`No model for this ${type.name} task: ${choiceLabel(row.model)} is unavailable (${gone}) and ${also}. Change the ${type.name} type in Settings → Models, or pass --model.`, skipped)
+    }
+    use = fb
+    note = `: ${modelName(row.model)} unavailable (${gone}), used the fallback`
+  }
+  const { choice, note: effortNote } = clamped(use, use.effort, avail)
+  return { ok: true, choice, source: gone ? 'fallback' : 'type', type: info, reason: `${type.name} task → ${choiceLabel(choice)}${note}${effortNote}`, skipped }
 }
 
 function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {

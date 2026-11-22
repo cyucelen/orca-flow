@@ -130,7 +130,7 @@ function readFolder<T>(dir: string): Record<string, T> {
 
 /**
  * ~/.orca-flow/routes.jsonl (written by `orca-flow dispatch`, one routed launch per line) as what a
- * row shows: dispatch id -> "Claude Sonnet · medium — normal task". Older lines name the kind `class`. The last line of a dispatch
+ * row shows: dispatch id -> "Claude Sonnet · medium — normal task" (or "— images task" for a typed one). Older lines name the kind `class`. The last line of a dispatch
  * wins (a retry or an escalation); a garbled line is skipped.
  */
 export function routeLabels(text: string): Map<string, string> {
@@ -142,7 +142,9 @@ export function routeLabels(text: string): Map<string, string> {
     const c = r?.choice as ModelChoice | undefined
     if (typeof r?.dispatchId !== 'string' || !r.dispatchId || typeof c?.agent !== 'string' || !c.agent) continue
     const kind = taskKind(r.kind ?? r.class)
-    const why = kind ? `${kind} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
+    // A typed task (`type`, the type's id) goes by its type, not its kind.
+    const why = typeof r.type === 'string' && r.type ? `${r.type} task${r.attempt > 0 ? ', retried' : ''}`
+      : kind ? `${kind} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
     out.set(r.dispatchId, `${choiceLabel(c)}${why ? ` — ${why}` : ''}`)
   }
   return out

@@ -1608,10 +1608,11 @@ test('routes.jsonl labels reach the routed worker and lead rows, by dispatch id;
     JSON.stringify({ dispatchId: 'ctx_w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, kind: 'normal', class: 'standard', attempt: 1 }),
     JSON.stringify({ dispatchId: 'ctx_old', choice: { agent: 'claude', model: 'opus', effort: 'high' }, class: 'complex', risk: 'high', attempt: 0 }),
     JSON.stringify({ role: 'lead', dispatchId: 'ctx_l', choice: { agent: 'claude', model: 'opus', effort: 'high' }, source: 'role' }),
-    JSON.stringify({ dispatchId: 'ctx_bad', choice: {} })
+    JSON.stringify({ dispatchId: 'ctx_bad', choice: {} }),
+    JSON.stringify({ dispatchId: 'ctx_img', choice: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' }, type: 'images', kind: 'simple', attempt: 1 })
   ].join('\n')
   const labels = main.routeLabels(lines)
-  assert.deepEqual([...labels], [['ctx_w', 'Claude Sonnet · medium — normal task, escalated'], ['ctx_old', 'Claude Opus · high — hard task, high risk'], ['ctx_l', 'Claude Opus · high']])
+  assert.deepEqual([...labels], [['ctx_w', 'Claude Sonnet · medium — normal task, escalated'], ['ctx_old', 'Claude Opus · high — hard task, high risk'], ['ctx_l', 'Claude Opus · high'], ['ctx_img', 'Codex gpt-6-luna · low — images task, retried']])
   const rows = main.fromPs([{ identity: { key: 'env' }, displayName: 'env', repo: 'isola', path: '/w/env', liveTerminalCount: 2, agents: [
     { paneKey: 'p-worker', parentPaneKey: 'p-lead', state: 'working' }, { paneKey: 'p-lead', state: 'done' }, { paneKey: 'p-other', state: 'done' }
   ] }])

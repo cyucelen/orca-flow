@@ -114,7 +114,7 @@ test('plan start creates one Orca task per plan task with deps, routes each once
 
   assert.match(stateFileOf(deps), /plans\/totals-feature-[0-9a-f]{8}\.json$/)
   const state = readState(deps)
-  assert.deepEqual(state.tasks.e2e.request, { kind: 'hard', risk: 'high', context: null, explicit: null }, 'how each task was judged is kept')
+  assert.deepEqual(state.tasks.e2e.request, { type: null, kind: 'hard', risk: 'high', context: null, explicit: null }, 'how each task was judged is kept')
   assert.equal(state.runId, 'run_7', 'read back from the first task')
   assert.deepEqual(Object.fromEntries(Object.entries(state.tasks).map(([id, t]) => [id, [t.taskId, t.state, t.route.choice.model]])), {
     api: ['task_1', 'running', 'haiku'],
@@ -415,4 +415,27 @@ test('plan next re-routes a failed-start task whose recorded model is gone, and 
   assert.equal(await run(deps, 'next', file), 0)
   assert.match(deps.output[0], /^a: Codex gpt-mini · low is no longer available; routed again to Claude Haiku/)
   assert.equal(after(verbs(deps, 'worker-start').at(-1).args, '--model'), 'haiku')
+})
+
+test('a plan task with a type starts on the type row and records the type; an unknown type creates nothing', async () => {
+  const types = [{ id: 'browser', name: 'Browser checks', description: 'Open pages', route: { model: { agent: 'claude', model: 'opus', effort: 'low' }, fallback: null } }]
+  const deps = withTasks({ routing: { types } })
+  const file = writePlan(deps, [T('check', ['shots/'], [], { type: 'Browser Checks', kind: 'simple' }), T('ui', ['src/panel/'])])
+  assert.equal(await run(deps, 'start', file), 0)
+  const [check, ui] = verbs(deps, 'worker-start')
+  assert.deepEqual(check.args.slice(-6), ['--agent', 'claude', '--model', 'opus', '--effort', 'low'], 'the type row, not the simple row')
+  assert.equal(after(ui.args, '--model'), 'sonnet')
+  const state = readState(deps)
+  assert.deepEqual(state.tasks.check.request, { type: 'browser', kind: 'simple', risk: null, context: null, explicit: null })
+  assert.equal(state.tasks.ui.request.type, null)
+  assert.deepEqual(readRoutes(deps.dir).map((r) => r.type), ['browser', null])
+  assert.match(deps.output.join('\n'), /check +running +Claude Opus · low — Browser checks task → Claude Opus · low/)
+
+  const bad = withTasks({ routing: { types } })
+  const badFile = writePlan(bad, [T('check', ['shots/'], [], { type: 'video' })])
+  await assert.rejects(run(bad, 'start', badFile), (e) => e.code === 3 && /check: No task type "video"\. Known types: browser \(Browser checks\)/.test(e.message))
+  assert.equal(verbs(bad, 'task-create').length, 0)
+  const empty = withTasks()
+  assert.equal(await run(empty, 'check', writePlan(empty, [T('a', ['a/'], [], { type: '' })])), 1)
+  assert.match(empty.output.join('\n'), /task "a": "type" is a task type id/)
 })
