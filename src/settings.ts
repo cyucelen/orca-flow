@@ -3,12 +3,14 @@
 // Existing keys keep their names and meaning; their readers are src/worker.ts, src/capacity.ts,
 // skills/orca-flow/scripts/stop-check.mjs and skills/orca-flow/scripts/orca-flow.mjs.
 
+import { DEFAULT_ROUTING, normalizeRouting, type RoutingSettings } from './routing.ts'
+
 export type WriterProvider = 'claude' | 'codex' | 'antigravity'
 /** One writer in `writers`, tried in list order. `model` is absent for a writer without a choice. */
 export type WriterSetting = { provider: WriterProvider; model?: string; enabled: boolean }
 /** Absent or "off": no check; "all": every coordinator and lead; a list: agents working under those folders. */
 export type MessageFormat = 'off' | 'all' | string[]
-export type FlowSettings = { writers: WriterSetting[]; messageFormat: MessageFormat; marginGB: number; warnHeadroomGB: number; linearDryRun: boolean }
+export type FlowSettings = { writers: WriterSetting[]; messageFormat: MessageFormat; marginGB: number; warnHeadroomGB: number; linearDryRun: boolean; routing: RoutingSettings }
 export type SettingsKey = keyof FlowSettings
 
 export const WRITER_PROVIDERS: readonly WriterProvider[] = ['claude', 'codex', 'antigravity']
@@ -31,9 +33,10 @@ export const DEFAULT_SETTINGS: FlowSettings = {
   messageFormat: 'off',
   marginGB: 2,
   warnHeadroomGB: 2,
-  linearDryRun: false
+  linearDryRun: false,
+  routing: DEFAULT_ROUTING
 }
-export const SETTINGS_KEYS: readonly SettingsKey[] = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun']
+export const SETTINGS_KEYS: readonly SettingsKey[] = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun', 'routing']
 
 export const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
@@ -81,7 +84,8 @@ export function normalizeSettings(raw: unknown): FlowSettings {
     messageFormat: normalizeFormat(c.messageFormat),
     marginGB: gb(c.marginGB, DEFAULT_SETTINGS.marginGB),
     warnHeadroomGB: gb(c.warnHeadroomGB, DEFAULT_SETTINGS.warnHeadroomGB),
-    linearDryRun: c.linearDryRun === true
+    linearDryRun: c.linearDryRun === true,
+    routing: normalizeRouting(c.routing)
   }
 }
 
@@ -114,6 +118,7 @@ export type Draft = {
   marginGB: number
   warnHeadroomGB: number
   linearDryRun: boolean
+  routing: RoutingSettings
 }
 export type DraftKey = keyof Draft
 export const DEFAULT_FOLDERS = ['~/orca/coordinators']
@@ -133,7 +138,7 @@ export function toDraft(s: FlowSettings): Draft {
     writers: writers.map((w) => w.provider), enabled, models,
     format: Array.isArray(format) ? 'folders' : format,
     folders: Array.isArray(format) ? format : [...DEFAULT_FOLDERS],
-    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun
+    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun, routing: clone(normalizeRouting(s.routing))
   }
 }
 
@@ -141,7 +146,7 @@ export function fromDraft(d: Draft): FlowSettings {
   return normalizeSettings({
     writers: d.writers.map((provider) => ({ provider, ...(WRITER_MODELS[provider].length ? { model: d.models[provider] } : {}), enabled: d.enabled[provider] })),
     messageFormat: d.format === 'folders' ? d.folders : d.format,
-    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun
+    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing
   })
 }
 

@@ -119,27 +119,219 @@ export type RouteDecision =
     }
   | { ok: false; error: string; skipped: Skip[] }
 
-/** Settings as stored under `routing` in ~/.orca-flow/config.json, every field filled and clamped. */
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
+const isEffort = (v: unknown): v is Effort => typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
+const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
+const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback
+
+function normalizeChoice(v: unknown): ModelChoice | null {
+  if (!isObject(v)) return null
+  const agent = text(v.agent)
+  if (!agent) return null
+  const model = text(v.model)
+  // Key order is fixed (agent, model, effort): `same` compares by JSON. Orca takes an effort only with a model.
+  return model ? { agent, model, ...(isEffort(v.effort) ? { effort: v.effort } : {}) } : { agent }
+}
+
+function normalizeCandidate(v: unknown): Candidate | null {
+  if (!isObject(v)) return null
+  const agent = text(v.agent)
+  const model = text(v.model)
+  if (!agent || !model) return null
+  if (typeof v.tier !== 'number' || !Number.isFinite(v.tier) || typeof v.cost !== 'number' || !Number.isFinite(v.cost)) return null
+  return {
+    agent, model, ...(isEffort(v.effort) ? { effort: v.effort } : {}),
+    tier: clampInt(v.tier, 1, 3, 2) as Tier, cost: clampInt(v.cost, 1, 5, 3), enabled: v.enabled !== false
+  }
+}
+
+/**
+ * Every field filled and clamped, in a fixed key order (settings `same` compares JSON). Unknown
+ * agent ids are allowed. Malformed candidates are dropped and duplicates (agent + model) keep the
+ * first. Not an object, or nothing usable in it: DEFAULT_ROUTING (a copy).
+ */
 export function normalizeRouting(raw: unknown): RoutingSettings {
-  throw new Error('not implemented')
+  if (!isObject(raw)) return clone(DEFAULT_ROUTING)
+  const known = ['coordinator', 'lead', 'workerMode', 'worker', 'candidates', 'maxEscalations', 'maxParallel']
+  if (!known.some((k) => k in raw)) return clone(DEFAULT_ROUTING)
+  let candidates: Candidate[] = clone(DEFAULT_ROUTING.candidates)
+  if (Array.isArray(raw.candidates)) {
+    const out: Candidate[] = []
+    for (const entry of raw.candidates) {
+      const c = normalizeCandidate(entry)
+      if (c && !out.some((o) => o.agent === c.agent && o.model === c.model)) out.push(c)
+    }
+    if (out.length || raw.candidates.length === 0) candidates = out
+  }
+  return {
+    coordinator: normalizeChoice(raw.coordinator),
+    lead: normalizeChoice(raw.lead),
+    workerMode: raw.workerMode === 'fixed' ? 'fixed' : 'auto',
+    worker: normalizeChoice(raw.worker),
+    candidates,
+    maxEscalations: clampInt(raw.maxEscalations, 0, 2, DEFAULT_ROUTING.maxEscalations),
+    maxParallel: clampInt(raw.maxParallel, 1, 6, DEFAULT_ROUTING.maxParallel)
+  }
 }
 
-/** The tier a request needs, after class, risk, context and escalation, with the plain why. */
+const TIMES = ['', 'once', 'twice']
+/**
+ * The tier a request needs: the class's tier, +1 for high risk, at least Standard for large context,
+ * then +1 per escalation. Past Strong the tier stays 3 and the rest becomes `effortBoost`.
+ */
 export function requiredTier(req: RouteRequest): { tier: Tier; effortBoost: number; why: string } {
-  throw new Error('not implemented')
+  const cls = req.taskClass ?? 'standard'
+  let n: number = CLASS_TIER[cls]
+  let why = `${cls} task`
+  if (req.risk === 'high') { n += 1; why += ', high risk' }
+  if (req.context === 'large') { n = Math.max(n, 2); why += ', large context' }
+  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+  if (attempt > 0) {
+    n += attempt
+    why += `, escalated ${TIMES[attempt] ?? `${attempt} times`} after a failure`
+  }
+  return { tier: Math.min(3, n) as Tier, effortBoost: Math.max(0, n - 3), why }
 }
 
-/** The decision for one launch. Pure: no I/O. */
-export function route(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
-  throw new Error('not implemented')
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const isClaudeModel = (m: string) => CLAUDE_ALIASES.includes(m) || /^claude-/.test(m)
+
+/** A short label for people: "Claude Sonnet · medium", "Codex gpt-6-luna · low", "Claude (default model)". */
+export function choiceLabel(choice: ModelChoice): string {
+  const agent = cap(choice.agent)
+  if (!choice.model) return `${agent} (default model)`
+  const model = choice.agent === 'claude' && CLAUDE_ALIASES.includes(choice.model) ? cap(choice.model) : choice.model
+  return `${agent} ${model}${choice.effort ? ` · ${choice.effort}` : ''}`
 }
 
 /** The flags `orca orchestration worker-start` and `orca agent launch` take for a choice. */
 export function launchArgs(choice: ModelChoice): string[] {
-  throw new Error('not implemented')
+  const args = ['--agent', choice.agent]
+  if (choice.model) {
+    args.push('--model', choice.model)
+    if (choice.effort) args.push('--effort', choice.effort)
+  }
+  return args
 }
 
-/** A short label for people: "Claude Sonnet · medium", "Codex gpt-6-luna · low", "Claude (default model)". */
-export function choiceLabel(choice: ModelChoice): string {
-  throw new Error('not implemented')
+/** Why a model cannot be used on this machine, or null when it can (verified, or accepted unverified). */
+function modelProblem(agent: string, model: string, avail: Availability): string | null {
+  const catalog = avail.models[agent]
+  if (catalog) return catalog.some((m) => m.id === model) ? null : `not in ${cap(agent)}'s model list`
+  if (agent === 'claude' && !isClaudeModel(model)) return 'not a Claude model name'
+  return null
+}
+const agentProblem = (agent: string, avail: Availability): string | null =>
+  avail.agents && !avail.agents.includes(agent) ? `${agent} not installed` : null
+const supportedEfforts = (agent: string, model: string | undefined, avail: Availability): readonly Effort[] => {
+  const info = model ? avail.models[agent]?.find((m) => m.id === model) : undefined
+  return info?.efforts?.length ? info.efforts : EFFORTS
+}
+/** The effort itself when supported, else the nearest lower one, else the lowest supported. */
+function clampEffort(effort: Effort, supported: readonly Effort[]): Effort {
+  if (supported.includes(effort)) return effort
+  for (let i = EFFORTS.indexOf(effort) - 1; i >= 0; i--) if (supported.includes(EFFORTS[i])) return EFFORTS[i]
+  return EFFORTS.find((e) => supported.includes(e)) ?? effort
+}
+const fail = (error: string, skipped: Skip[] = []): RouteDecision => ({ ok: false, error, skipped })
+
+/** A set role pick (coordinator, lead, fixed worker) checked against availability, effort clamped. */
+function pickChoice(pick: ModelChoice | null, who: string, source: 'role' | 'fixed', req: RouteRequest, avail: Availability): RouteDecision {
+  if (!pick) return { ok: true, choice: { agent: req.agent ?? 'claude' }, source: 'default', reason: `provider default model (none set for ${who})`, skipped: [] }
+  const label = choiceLabel(pick)
+  const noAgent = agentProblem(pick.agent, avail)
+  if (noAgent) return fail(`The ${who} pick ${label} is unavailable (${noAgent}). Change it in Settings → Models.`)
+  const noModel = pick.model ? modelProblem(pick.agent, pick.model, avail) : null
+  if (noModel) return { ok: true, choice: { agent: pick.agent }, source: 'default', reason: `${label} is unavailable (${noModel}): ${cap(pick.agent)} default model instead`, skipped: [] }
+  let choice = pick
+  let note = ''
+  if (pick.model && pick.effort) {
+    const effort = clampEffort(pick.effort, supportedEfforts(pick.agent, pick.model, avail))
+    if (effort !== pick.effort) { choice = { ...pick, effort }; note = `, ${pick.effort} not supported so ${effort}` }
+  }
+  return { ok: true, choice, source, reason: `${who} set in Settings → ${choiceLabel(choice)}${note}`, skipped: [] }
+}
+
+/**
+ * The decision for one launch. Pure: no I/O. Precedence, first match wins:
+ *  1. Explicit override (req.model / req.agent / req.effort): validated, never substituted; an
+ *     invalid one is ok:false. model → source 'override'. agent-only → that agent (workers in auto
+ *     mode: candidates restricted to it). effort-only → routed normally, then that effort.
+ *  2. coordinator / lead: the Settings pick (null → provider default; unavailable model → the same
+ *     agent's default; agent not installed → error). Effort clamped to what the model supports.
+ *  3. worker, fixed mode: settings.worker the same way (source 'fixed').
+ *  4. worker, auto mode: cheapest enabled, installed, verified candidate rated at least the required
+ *     tier (ties: lower tier, then list order); escalation limit refuses; nothing eligible is an
+ *     error, never a silent premium or provider-default fallback.
+ */
+export function route(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
+  if (req.model) return overrideWithModel(req, avail)
+  let agentOnly: string | undefined
+  if (req.agent) {
+    const bad = agentProblem(req.agent, avail)
+    if (bad) return fail(`Cannot use --agent ${req.agent}: ${bad}.`)
+    const pick = req.role === 'coordinator' ? settings.coordinator : req.role === 'lead' ? settings.lead : settings.workerMode === 'fixed' ? settings.worker : null
+    const autoWorker = req.role === 'worker' && settings.workerMode === 'auto'
+    if (!autoWorker && pick?.agent !== req.agent) return { ok: true, choice: { agent: req.agent }, source: 'override', reason: `${cap(req.agent)} chosen explicitly: its default model`, skipped: [] }
+    agentOnly = autoWorker ? req.agent : undefined
+  }
+  let d: RouteDecision
+  if (req.role === 'coordinator') d = pickChoice(settings.coordinator, 'coordinators', 'role', req, avail)
+  else if (req.role === 'lead') d = pickChoice(settings.lead, 'leads', 'role', req, avail)
+  else if (settings.workerMode === 'fixed') d = pickChoice(settings.worker, 'the fixed worker', 'fixed', req, avail)
+  else d = routeWorker(settings, req, avail, agentOnly)
+  if (!d.ok || !req.effort) return d
+  const supported = supportedEfforts(d.choice.agent, d.choice.model, avail)
+  if (!supported.includes(req.effort)) return fail(`${choiceLabel(d.choice)} does not support effort ${req.effort} (it takes ${supported.join(', ')}).`, d.skipped)
+  const choice = { ...d.choice, effort: req.effort }
+  return { ...d, choice, reason: `${d.reason}; effort ${req.effort} set explicitly` }
+}
+
+function overrideWithModel(req: RouteRequest, avail: Availability): RouteDecision {
+  const model = req.model as string
+  let agent = req.agent
+  if (!agent) {
+    if (isClaudeModel(model)) agent = 'claude'
+    else agent = Object.keys(avail.models).find((a) => avail.models[a]?.some((m) => m.id === model))
+    if (!agent) return fail(`Cannot tell which agent runs model ${model}: pass --agent.`)
+  }
+  const bad = agentProblem(agent, avail) ?? modelProblem(agent, model, avail)
+  if (bad) return fail(`Cannot use ${agent} ${model}: ${bad}. Nothing was substituted.`)
+  if (req.effort) {
+    const supported = supportedEfforts(agent, model, avail)
+    if (!supported.includes(req.effort)) return fail(`${choiceLabel({ agent, model })} does not support effort ${req.effort} (it takes ${supported.join(', ')}). Nothing was substituted.`)
+  }
+  const choice: ModelChoice = { agent, model, ...(req.effort ? { effort: req.effort } : {}) }
+  return { ok: true, choice, source: 'override', reason: `${choiceLabel(choice)} chosen explicitly`, skipped: [] }
+}
+
+function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availability, onlyAgent?: string): RouteDecision {
+  const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+  if (attempt > settings.maxEscalations) return fail(`Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`)
+  const need = requiredTier(req)
+  const skipped: Skip[] = []
+  const eligible: { c: Candidate; i: number }[] = []
+  settings.candidates.forEach((c, i) => {
+    const name = `${c.agent} ${c.model}`
+    const why = onlyAgent && c.agent !== onlyAgent ? `not ${onlyAgent}`
+      : !c.enabled ? 'off'
+      : c.tier < need.tier ? `rated ${TIER_NAMES[c.tier]}, task needs ${TIER_NAMES[need.tier]}`
+      : agentProblem(c.agent, avail) ?? modelProblem(c.agent, c.model, avail)
+    if (why) skipped.push({ candidate: name, why })
+    else eligible.push({ c, i })
+  })
+  if (!eligible.length) {
+    return fail(`No enabled ${TIER_NAMES[need.tier]} model is available for this ${need.why}. Enable or add one in Settings → Models, or pass --model.`, skipped)
+  }
+  eligible.sort((a, b) => a.c.cost - b.c.cost || a.c.tier - b.c.tier || a.i - b.i)
+  const best = eligible[0].c
+  for (const { c } of eligible.slice(1)) skipped.push({ candidate: `${c.agent} ${c.model}`, why: `costs more (relative cost ${c.cost}, not ${best.cost})` })
+  const base = best.effort ?? CLASS_EFFORT[req.taskClass ?? 'standard']
+  const boosted = EFFORTS[Math.min(EFFORTS.length - 1, EFFORTS.indexOf(base) + need.effortBoost)]
+  const effort = clampEffort(boosted, supportedEfforts(best.agent, best.model, avail))
+  const choice: ModelChoice = { agent: best.agent, model: best.model, effort }
+  const kind = best.tier === need.tier ? `cheapest enabled ${TIER_NAMES[need.tier]} model` : `cheapest capable model (rated ${TIER_NAMES[best.tier]}, task needs ${TIER_NAMES[need.tier]})`
+  return { ok: true, choice, source: 'auto', requiredTier: need.tier, tier: best.tier, reason: `${need.why} → ${choiceLabel(choice)}: ${kind} (relative cost ${best.cost})`, skipped }
 }

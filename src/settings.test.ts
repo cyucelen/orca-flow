@@ -1,5 +1,6 @@
 import { assert, test } from 'orca/testing'
-import { applySettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
+import { DEFAULT_ROUTING, normalizeRouting, route, type Availability } from './routing.ts'
+import { applySettings, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
   assert.deepEqual(normalizeWriters([
@@ -109,4 +110,24 @@ test('a change that does not reach the file sends nothing, and reset saves defau
   assert.equal(io.calls.length, 1)
   assert.deepEqual(io.calls[0], DEFAULT_SETTINGS)
   assert.equal(session.isDefault(['linearDryRun', 'format']), true)
+})
+
+test('routing persists only when changed, drops at default, keeps unknown keys', () => {
+  const routing = normalizeRouting({ ...DEFAULT_ROUTING, maxParallel: 5, lead: { agent: 'claude', model: 'opus', effort: 'high' } })
+  const saved = applySettings({ other: 1 }, { ...DEFAULT_SETTINGS, routing })
+  assert.deepEqual(saved, { other: 1, routing })
+  assert.deepEqual(applySettings(saved, { ...DEFAULT_SETTINGS, routing: DEFAULT_ROUTING }), { other: 1 })
+  assert.deepEqual(applySettings({ routing: { maxParallel: 'x' }, other: 1 }, DEFAULT_SETTINGS), { routing: { maxParallel: 'x' }, other: 1 })
+  assert.deepEqual(normalizeSettings({ routing: { maxParallel: 9 } }).routing.maxParallel, 6)
+  assert.deepEqual(normalizeSettings({}).routing, DEFAULT_ROUTING)
+  assert.deepEqual(fromDraft(toDraft({ ...DEFAULT_SETTINGS, routing })).routing, routing)
+  assert.deepEqual(DEFAULT_DRAFT.routing, DEFAULT_ROUTING)
+})
+
+test('precedence from stored settings: override > role > auto', () => {
+  const avail: Availability = { agents: ['claude'], models: { claude: null } }
+  const routing = normalizeSettings({ routing: { lead: { agent: 'claude', model: 'opus' }, candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }] } }).routing
+  assert.deepEqual((route(routing, { role: 'lead' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'opus' })
+  assert.deepEqual((route(routing, { role: 'lead', model: 'sonnet' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'sonnet' })
+  assert.deepEqual((route(routing, { role: 'worker', taskClass: 'trivial' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku', effort: 'low' })
 })
