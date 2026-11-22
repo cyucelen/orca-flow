@@ -144,3 +144,14 @@ test('Waiting on <thing> asks nothing and names what the card watches', () => {
   assert.equal(withFrame(lead(PLAN), haiku({ watching: 'its workers' })).watching, 'its workers', "Working keeps Haiku's watching")
   assert.equal(frameAsk(lead('**Waiting on your review**\n\nPR #55 is up.\n\n**Ask:** review PR #55?\n**Reply:** approve, or your comments')), null, 'Waiting on your ... is an old status word')
 })
+
+test('the queued QA list in message-samples.md (sample 6) asks nothing and watches memory', () => {
+  const samples = readFileSync(new URL('../docs/message-samples.md', import.meta.url).pathname, 'utf8')
+  const queued = [...samples.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1]).find((b) => /^\*\*Waiting on memory for a new worktree\*\*$/m.test(b))
+  assert.ok(queued, 'sample 6 has its Waiting on After')
+  const d = coordinator(queued!)
+  assert.deepEqual(frameAsk(d)?.needs, { type: 'none', ask: '', options: [] })
+  assert.equal(frameAsk(d)?.waitingOn, 'memory for a new worktree')
+  const card = withFrame(d, guessed)
+  assert.deepEqual([card.needs.type, card.glance, card.watching, card.source], ['none', '', 'memory for a new worktree', 'frame'])
+})
