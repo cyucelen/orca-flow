@@ -3,7 +3,7 @@ import { assert, test } from 'orca/testing'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureOwnStopHook, ensureStopHook, promptHookFor, sessionHookFor, stopHookFor } from './install.ts'
+import { delegationHookFor, ensureOwnStopHook, ensureStopHook, promptHookFor, sessionHookFor, stopHookFor } from './install.ts'
 import { claudeDiscoveryDir, ensureOwnLinks, ensureSeeds, linksFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
 import { scaffoldCoordinator } from './coordinators.ts'
@@ -152,7 +152,7 @@ test('a settings.json that is a link stays a link; a development folder writes n
   const dev = stopHookFor(home, join(home, 'dev-profile'))
   assert.equal(ensureOwnStopHook(dev, false).length, 1)
   assert.equal(existsSync(dev.path), false)
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`], 'the installed copy adds the prompt and session hooks next to the Stop hook')
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`, `added the PreToolUse hook in ${hook.path}`], 'the installed copy adds the prompt, session and delegation hooks next to the Stop hook')
   assert.deepEqual(ensureOwnStopHook(hook, true), [])
   assert.ok(lstatSync(hook.path).isSymbolicLink())
   rmSync(home, { recursive: true })
@@ -174,12 +174,13 @@ test('both hooks go in once, next to Orca\'s own hooks, each updated in place', 
   const old = { type: 'command', command: 'node "/old/skills/orca-flow/scripts/prompt-check.mjs"', timeout: 5 }
   writeFileSync(hook.path, JSON.stringify({ model: 'opus', hooks: { Stop: [orcaStop], UserPromptSubmit: [orcaPrompt, { hooks: [old] }, { hooks: [old] }] } }))
   const session = sessionHookFor(home, join(home, '.claude'))
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `updated the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`])
-  assert.deepEqual(read(hook.path), { model: 'opus', hooks: { Stop: [orcaStop, hook.entry], UserPromptSubmit: [orcaPrompt, prompt.entry], SessionStart: [session.entry] } })
+  const delegation = delegationHookFor(home, join(home, '.claude'))
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `updated the UserPromptSubmit hook in ${hook.path}`, `added the SessionStart hook in ${hook.path}`, `added the PreToolUse hook in ${hook.path}`])
+  assert.deepEqual(read(hook.path), { model: 'opus', hooks: { Stop: [orcaStop, hook.entry], UserPromptSubmit: [orcaPrompt, prompt.entry], SessionStart: [session.entry], PreToolUse: [delegation.entry] } })
   assert.deepEqual(ensureOwnStopHook(hook, true), [], 'a second run changes nothing')
   assert.equal(readFileSync(hook.path, 'utf8'), `${JSON.stringify(read(hook.path), null, 2)}\n`)
   writeFileSync(hook.path, '{"hooks":{"UserPromptSubmit":{}}}')
-  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`, `added the SessionStart hook in ${hook.path}`])
+  assert.deepEqual(ensureOwnStopHook(hook, true), [`added the Stop hook in ${hook.path}`, `left ${hook.path}: hooks.UserPromptSubmit is not a list; the UserPromptSubmit hook is not installed`, `added the SessionStart hook in ${hook.path}`, `added the PreToolUse hook in ${hook.path}`])
   rmSync(home, { recursive: true })
 })
 
@@ -233,4 +234,40 @@ test('Antigravity discovers the installed Flow skill and preserves existing user
     ensureOwnLinks(links, true)
     assert.equal(readlinkSync(path), foreign, 'a content-addressed path of another plugin is not ours')
   } finally { rmSync(home, { recursive: true }) }
+})
+
+test('the PreToolUse hook runs the delegation check through the skill link, only in an Orca pane, for the Agent tool and its old name', () => {
+  const { path, event, entry } = delegationHookFor('/h', '/h/.claude')
+  assert.deepEqual([path, event], ['/h/.claude/settings.json', 'PreToolUse'])
+  assert.deepEqual(entry, {
+    matcher: 'Agent|Task',
+    hooks: [{ type: 'command', command: 'if [ -n "${ORCA_AGENT_PANE-}" ]; then node "/h/.claude/skills/orca-flow/scripts/delegation-check.mjs"; fi', timeout: 10 }]
+  })
+})
+
+test('the PreToolUse hook goes in once next to the user\'s own, is repointed and re-matched in place, and leaves with the rest', () => {
+  const { home, hook } = profile()
+  const delegation = delegationHookFor(home, join(home, '.claude'))
+  const guard = { matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }
+  const old = { type: 'command', command: 'node "/old/plugins/cyucelen.flow/abc/skills/orca-flow/scripts/delegation-check.mjs"', timeout: 5 }
+  // An older copy (another install path) under the right matcher, and a second copy: repointed, deduplicated.
+  writeFileSync(hook.path, JSON.stringify({ hooks: { PreToolUse: [guard, { matcher: 'Agent|Task', hooks: [old] }, { matcher: 'Agent|Task', hooks: [old] }] } }))
+  assert.deepEqual(ensureStopHook(delegation), [`updated the PreToolUse hook in ${hook.path}`])
+  assert.deepEqual(read(hook.path).hooks.PreToolUse, [guard, delegation.entry])
+  assert.deepEqual(ensureStopHook(delegation), [], 'a second run changes nothing')
+  // Under another matcher (shared with a user hook): ours leaves that group, the user's hook stays.
+  const user = { type: 'command', command: 'audit' }
+  writeFileSync(hook.path, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Task', hooks: [user, old] }] } }))
+  assert.deepEqual(ensureStopHook(delegation), [`updated the PreToolUse hook in ${hook.path}`])
+  assert.deepEqual(read(hook.path).hooks.PreToolUse, [{ matcher: 'Task', hooks: [user] }, delegation.entry])
+  assert.deepEqual(ensureStopHook(delegation), [])
+  // Removed by the user: it comes back at the next install, like the other hooks.
+  writeFileSync(hook.path, JSON.stringify({ hooks: { PreToolUse: [guard] } }))
+  assert.ok(ensureOwnStopHook(hook, true).includes(`added the PreToolUse hook in ${hook.path}`))
+  assert.deepEqual(read(hook.path).hooks.PreToolUse, [guard, delegation.entry])
+  // A development folder writes none of it.
+  const dev = stopHookFor(home, join(home, 'dev-profile'))
+  assert.match(ensureOwnStopHook(dev, false)[0], /PreToolUse/)
+  assert.equal(existsSync(dev.path), false)
+  rmSync(home, { recursive: true })
 })

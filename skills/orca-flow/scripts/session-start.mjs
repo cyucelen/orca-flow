@@ -19,6 +19,7 @@ export function leadBootstrap(skill) {
   return [
     'Your role: lead. (Orca Flow restates it each time this session resumes or is compacted.)',
     `Read ${join(skill, 'SKILL.md')} and ${join(skill, 'roles', 'lead.md')} now and follow the lead role.`,
+    'Implementation and parallel work go to tracked Orca workers (orca-flow dispatch, or plan start for several tasks), never to native subagents; those are only for read-only lookups (Explore).',
     'If you were dispatched, worker_done applies to the whole workstream, not to a first deliverable: send it only when the user says the workstream is done or the PR is merged.'
   ].join('\n')
 }

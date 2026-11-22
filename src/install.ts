@@ -6,7 +6,10 @@
 // the message frame (skills/orca-flow/scripts/stop-check.mjs) and one UserPromptSubmit hook that
 // passes its quiet reminders to the agent (prompt-check.mjs); both do nothing until the user opts in.
 // A SessionStart hook (session-start.mjs) gives a lead its role instructions back when its session
-// resumes or compacts; it needs no opt-in and gives everyone else nothing.
+// resumes or compacts; it needs no opt-in and gives everyone else nothing. A PreToolUse hook on the
+// Agent tool (delegation-check.mjs) denies a coordinator's or lead's native subagent for anything
+// but a read-only lookup and points it at `orca-flow dispatch`; on by default, off with
+// "delegationCheck": "off" in ~/.orca-flow/config.json.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -140,19 +143,19 @@ export const STOP_HOOK_MARK = 'skills/orca-flow/scripts/stop-check.mjs'
 export const PROMPT_HOOK_MARK = 'skills/orca-flow/scripts/prompt-check.mjs'
 /** Finds our SessionStart hook, which gives a lead its role back after a resume or a compaction. */
 export const SESSION_HOOK_MARK = 'skills/orca-flow/scripts/session-start.mjs'
+/** Finds our PreToolUse hook, which sends a coordinator's or lead's work to Orca workers. */
+export const DELEGATION_HOOK_MARK = 'skills/orca-flow/scripts/delegation-check.mjs'
+/** The Agent tool, under its current name and the one it had before. */
+export const AGENT_TOOL_MATCHER = 'Agent|Task'
 
-export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart'
-export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { hooks: { type: 'command'; command: string; timeout: number }[] } }
+export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'PreToolUse'
+export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { matcher?: string; hooks: { type: 'command'; command: string; timeout: number }[] } }
 
 /** One of our hook entries: it runs the script through the skill link, only in an Orca agent pane. */
-function hookFor(claudeDir: string, event: HookEvent, mark: string): StopHook {
+function hookFor(claudeDir: string, event: HookEvent, mark: string, matcher?: string): StopHook {
   const script = join(claudeDir, mark)
-  return {
-    path: join(claudeDir, 'settings.json'),
-    event,
-    mark,
-    entry: { hooks: [{ type: 'command', command: `if [ -n "\${ORCA_AGENT_PANE-}" ]; then node "${script}"; fi`, timeout: 10 }] }
-  }
+  const hooks: StopHook['entry']['hooks'] = [{ type: 'command', command: `if [ -n "\${ORCA_AGENT_PANE-}" ]; then node "${script}"; fi`, timeout: 10 }]
+  return { path: join(claudeDir, 'settings.json'), event, mark, entry: matcher === undefined ? { hooks } : { matcher, hooks } }
 }
 
 /** The profile's settings.json and our Stop hook entry. */
@@ -173,11 +176,18 @@ export function sessionHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(
   return hookFor(claudeDir, 'SessionStart', SESSION_HOOK_MARK)
 }
 
+/** The profile's settings.json and our PreToolUse hook entry, for the Agent tool only. */
+export function delegationHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
+  return hookFor(claudeDir, 'PreToolUse', DELEGATION_HOOK_MARK, AGENT_TOOL_MATCHER)
+}
+
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
  * Makes settings.json hold one of our hooks exactly once under its event (Stop unless the hook
  * names another): added when missing, updated in place when it differs, a second copy removed.
+ * An entry with a matcher lives in a group with exactly that matcher: found under another one, it
+ * leaves that group (the group's other hooks stay) and goes in a group of its own.
  * Every other key and hook stays as it is (Orca keeps its own hooks here). A file it cannot read
  * as a JSON object is left alone; a missing one is created with only our hook. Written atomically,
  * 2-space JSON. Returns what it did, one line each, for the log.
@@ -205,8 +215,10 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
   if (!isObject(hooks) || !Array.isArray(list)) return [`left ${path}: hooks.${event} is not a list; the ${event} hook is not installed`]
 
   const want = entry.hooks[0]
+  const matched = (group: Record<string, any>) => entry.matcher === undefined || group.matcher === entry.matcher
   let found = false
   let changed = false
+  let moved = false
   const groups: any[] = []
   for (const group of list) {
     if (!isObject(group) || !Array.isArray(group.hooks) || !group.hooks.some(ours)) {
@@ -216,6 +228,7 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
     const kept: any[] = []
     for (const hook of group.hooks) {
       if (!ours(hook)) kept.push(hook)
+      else if (!matched(group)) moved = true // under another matcher: it goes in a group of its own
       else if (found) changed = true // a second copy
       else {
         found = true
@@ -225,7 +238,7 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
     }
     if (kept.length) groups.push({ ...group, hooks: kept })
   }
-  if (found && !changed) return []
+  if (found && !changed && !moved) return []
   if (!found) groups.push(entry)
   settings.hooks = { ...hooks, [event]: groups }
 
@@ -240,15 +253,21 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
   } catch (e) {
     return [`could not write ${path}: ${(e as Error).message}`]
   }
-  return [`${found ? 'updated' : 'added'} the ${event} hook in ${path}`]
+  return [`${found || moved ? 'updated' : 'added'} the ${event} hook in ${path}`]
 }
 
 /**
  * Like ensureOwnLinks: only the installed copy writes our hooks, never a development folder. With
- * the Stop hook go its UserPromptSubmit partner and the SessionStart hook, in the same settings.json.
+ * the Stop hook go its UserPromptSubmit partner, the SessionStart hook and the PreToolUse
+ * delegation hook, in the same settings.json.
  */
 export function ensureOwnStopHook(hook: StopHook, installed: boolean): string[] {
-  if (!installed) return [`left the Stop, UserPromptSubmit and SessionStart hooks in ${hook.path} to the installed copy: this is a development folder`]
+  if (!installed) return [`left the Stop, UserPromptSubmit, SessionStart and PreToolUse hooks in ${hook.path} to the installed copy: this is a development folder`]
   const claudeDir = join(hook.path, '..')
-  return [...ensureStopHook(hook), ...ensureStopHook(promptHookFor(undefined, claudeDir)), ...ensureStopHook(sessionHookFor(undefined, claudeDir))]
+  return [
+    ...ensureStopHook(hook),
+    ...ensureStopHook(promptHookFor(undefined, claudeDir)),
+    ...ensureStopHook(sessionHookFor(undefined, claudeDir)),
+    ...ensureStopHook(delegationHookFor(undefined, claudeDir))
+  ]
 }
