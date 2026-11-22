@@ -1085,15 +1085,12 @@ export default function activate(orca: OrcaWorkerApi): void {
   // A terminal still attaching makes Orca refuse the list for a moment: retried briefly (listTerminals).
   const terminalsNow = (): Promise<TerminalRecord[]> => listTerminals(run)
 
-  // What this machine can run, for Settings → Models and coordinator models: discovered at most
-  // every few minutes (and again when Settings opens, if over a minute old), one lookup at a time.
-  let avail: { at: number; value: Availability } | null = null
-  let discovering: Promise<Availability> | null = null
-  async function availability(maxAgeMs = AVAIL_MAX_MS): Promise<Availability> {
-    if (avail && Date.now() - avail.at < maxAgeMs) return avail.value
-    discovering ??= discoverHere(run).then((value) => { avail = { at: Date.now(), value }; return value }).finally(() => { discovering = null })
-    return discovering
-  }
+  // What this machine can run, for Settings → Models and coordinator models. Settings never waits
+  // for it: the dialog gets what is cached, and a fresh lookup is pushed as sidebar.settingsChanged.
+  const models = availabilityCache(() => discovery.run(run), () => {
+    void settingsState().then((s) => orca.panels.post('sidebar.settingsChanged', s)).catch((e: Error) => orca.log(`settings refresh failed: ${e.message}`))
+  })
+  const availability = (maxAgeMs = AVAIL_MAX_MS) => models.get(maxAgeMs)
 
   /**
    * Fresh means a new explicitly associated member; it never closes an older member. agent.launch
@@ -1667,16 +1664,17 @@ export default function activate(orca: OrcaWorkerApi): void {
   // ---------- Settings dialog ----------
   let version: string | null = null
   try { version = JSON.parse(readFileSync(join(dir ?? '', 'orca-plugin.json'), 'utf8')).version ?? null } catch {}
-  const settingsState = async (fresh = false): Promise<SettingsState> => {
+  async function settingsState(fresh = false): Promise<SettingsState> {
     const read = readSettings(DATA_DIR)
-    const avail = await availability(fresh ? AVAIL_OPEN_MS : AVAIL_MAX_MS)
+    models.refresh(fresh ? AVAIL_OPEN_MS : AVAIL_MAX_MS)
+    const avail = models.cached()
     if (!installedAgents) installedAgents = (await readInstalledProviders(run))?.map((a) => a.id) ?? null
     const health = writer.health()
     const writers: WriterStatus[] = WRITER_PROVIDERS.map((provider) => {
       const h = health.find((x) => x.provider === provider)
       return { provider, lastSuccessAt: h?.lastSuccessAt ?? null, failure: h?.failure ?? null, installed: installedAgents ? installedAgents.includes(provider) : null }
     })
-    return { settings: read.settings, error: read.error, version, writers, availability: avail, update: updateState, updateCheck: upd.last() }
+    return { settings: read.settings, error: read.error, version, writers, ...(avail ? { availability: avail } : {}), update: updateState, updateCheck: upd.last() }
   }
   orca.panels.handle('sidebar.settings', () => settingsState(true))
   orca.panels.handle('sidebar.saveSettings', async ({ settings }) => {
@@ -1785,6 +1783,28 @@ export async function discoverHere(run: (args: string[], options?: { timeoutMs?:
   let codexHome: string | undefined
   try { codexHome = codexHomeFromAccounts({ ok: true, result: await run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }) }) } catch { codexHome = undefined }
   return discover(execImpl, { orcaBin: ORCA_BIN, codexBin: cliPath('codex'), ...(codexHome ? { env: { CODEX_HOME: codexHome } } : {}) })
+}
+
+/** The discovery the worker runs; tests swap it for a stub. */
+export const discovery = { run: (run: Parameters<typeof discoverHere>[0]) => discoverHere(run) }
+
+/**
+ * The last availability and when it was read. `refresh` starts a lookup in the background when the
+ * cached one is older than `maxAgeMs` (one at a time) and calls `onFresh` when it lands; `get`
+ * waits for a fresh one (coordinator launches); `cached` never waits.
+ */
+export function availabilityCache(discoverFn: () => Promise<Availability>, onFresh: (a: Availability) => void = () => {}, now = Date.now) {
+  let last: { at: number; value: Availability } | null = null
+  let running: Promise<Availability> | null = null
+  const start = () => (running ??= discoverFn()
+    .then((value) => { last = { at: now(), value }; onFresh(value); return value })
+    .finally(() => { running = null }))
+  const stale = (maxAgeMs: number) => !last || now() - last.at >= maxAgeMs
+  return {
+    cached: (): Availability | undefined => last?.value,
+    refresh(maxAgeMs: number): void { if (stale(maxAgeMs)) start().catch(() => null) },
+    get: (maxAgeMs: number): Promise<Availability> => (stale(maxAgeMs) ? start() : Promise.resolve(last!.value))
+  }
 }
 
 const execCmd: Exec = (cmd, args, opts) => new Promise((resolve, reject) => {

@@ -156,6 +156,9 @@ function pageAdvanced(): string {
 // ---------- Models ----------
 
 const avail = () => state?.availability ?? UNKNOWN
+/** No lookup has landed yet (the worker pushes it): lists that depend on it say so instead. */
+const lookingUp = () => !state?.availability
+const CHECKING = '<span class="s-value s-checking">Checking installed models…</span>'
 const r = () => d().routing
 const NEW_ONLY = 'Applies to new launches only: running and resumed sessions keep their model.'
 const ROLE_TIP: Record<'coordinator' | 'lead', string> = {
@@ -188,6 +191,7 @@ function effortSelect(attr: string, c: ModelChoice | null, name: string): string
 function roleRow(role: 'coordinator' | 'lead'): string {
   const c = r()[role]
   const title = role === 'coordinator' ? 'Coordinator' : 'Lead'
+  if (lookingUp()) return row(label(title, ROLE_TIP[role]), CHECKING, 's-mrow')
   const why = c ? unavailable(c.agent, c.model, avail()) : null
   return row(`${label(title, ROLE_TIP[role])}${why ? `<span class="s-warn" tabindex="0" data-tip="${esc(`${why}. New ${role}s start with the provider default until it is back.`)}" aria-label="${esc(why)}">${ICON.warn}</span>` : ''}`,
     modelSelect(`data-rmodel="${role}"`, c, `${title} model`, ROLE_TIP[role]) + effortSelect(`data-reffort="${role}"`, c, `${title} effort`), 's-mrow')
@@ -222,11 +226,12 @@ function pageModels(): string {
     `<select class="s-pop" id="s-wmode" ${off()} ${described('Worker model', 'Auto or fixed')}><option value="auto" ${rt.workerMode === 'auto' ? 'selected' : ''}>Auto (cheapest capable)</option><option value="fixed" ${rt.workerMode === 'fixed' ? 'selected' : ''}>Fixed</option></select>`)
   const rows = [mode]
   if (rt.workerMode === 'fixed') {
-    rows.push(row(label('Model', `The model every worker starts with. ${NEW_ONLY}`), modelSelect('data-rmodel="worker"', rt.worker, 'Worker model', 'The model every worker starts with') + effortSelect('data-reffort="worker"', rt.worker, 'Worker effort'), 's-mrow'))
+    rows.push(row(label('Model', `The model every worker starts with. ${NEW_ONLY}`), lookingUp() ? CHECKING : modelSelect('data-rmodel="worker"', rt.worker, 'Worker model', 'The model every worker starts with') + effortSelect('data-reffort="worker"', rt.worker, 'Worker effort'), 's-mrow'))
   } else {
     rt.candidates.forEach((_, i) => rows.push(candidateRow(i)))
     const add = addable(rt.candidates, avail())
-    if (add.length) rows.push(row(`<select class="s-pop s-addmodel" id="s-addmodel" ${off()} ${described('Add model', 'Adds a model workers can be routed to, rated Standard at cost 3 until you change it.')}><option value="" selected>Add model…</option>${add.map((g) => `<optgroup label="${esc(agentName(g.agent))}">${g.models.map((m) => `<option value="${esc(`${g.agent}:${m.id}`)}">${esc(m.label)}</option>`).join('')}</optgroup>`).join('')}</select>`, '', 's-add'))
+    if (lookingUp()) rows.push(row(CHECKING, '', 's-add'))
+    else if (add.length) rows.push(row(`<select class="s-pop s-addmodel" id="s-addmodel" ${off()} ${described('Add model', 'Adds a model workers can be routed to, rated Standard at cost 3 until you change it.')}><option value="" selected>Add model…</option>${add.map((g) => `<optgroup label="${esc(agentName(g.agent))}">${g.models.map((m) => `<option value="${esc(`${g.agent}:${m.id}`)}">${esc(m.label)}</option>`).join('')}</optgroup>`).join('')}</select>`, '', 's-add'))
   }
   const workers = group(rows, { text: 'Workers', tip: `How each worker task picks its model. ${NEW_ONLY}` })
     + (rt.workerMode === 'auto' ? '<p class="s-note">Tier and cost are your own ratings, not prices or measured quality.</p>' : '')
@@ -234,7 +239,7 @@ function pageModels(): string {
     row(label('Workers at once', 'How many workers one lead runs at the same time. Free memory can still hold new ones back.'), rstep('maxParallel', 1, 6, 'Workers at once')),
     row(label('Retries with a stronger model', 'When a worker fails, how many times its task may be tried again, each time with a model one tier stronger. 0: never; the lead asks you instead.'), rstep('maxEscalations', 0, 2, 'Retries with a stronger model'))
   ])
-  const ex = examples(rt, avail()).map((e) => row(label(`${e.taskClass[0].toUpperCase()}${e.taskClass.slice(1)} task`, { trivial: 'Mechanical, one or two files, obvious result.', standard: 'A normal bounded change with tests.', complex: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }[e.taskClass]),
+  const ex = lookingUp() ? [row(label('Workers get', 'Shown once Orca Flow has checked which models are installed.'), CHECKING)] : examples(rt, avail()).map((e) => row(label(`${e.taskClass[0].toUpperCase()}${e.taskClass.slice(1)} task`, { trivial: 'Mechanical, one or two files, obvious result.', standard: 'A normal bounded change with tests.', complex: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }[e.taskClass]),
     `<span class="s-value${e.ok ? '' : ' s-bad'}" tabindex="0" data-tip="${esc(e.tip)}" aria-description="${esc(e.tip)}">${esc(e.text)}</span>`))
   return roles + workers + limits + group(ex, { text: 'Example routing', tip: 'What a new worker task of each kind would start with right now, given these settings and what is installed.' })
 }
@@ -328,6 +333,15 @@ function render(): void {
 }
 
 export const settingsOpen = (): boolean => !$('settings').hidden
+
+// A model lookup that landed after the dialog opened: fresh availability and writer status, never
+// the draft (an edit in flight stays as it is).
+orca.plugin.on('sidebar.settingsChanged', (s) => {
+  if (!settingsOpen() || !state) return
+  const next = s as SettingsState
+  state = { ...state, availability: next.availability, writers: next.writers }
+  render()
+})
 
 export function openSettings(): void {
   opener = document.activeElement as HTMLElement | null

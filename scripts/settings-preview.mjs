@@ -72,6 +72,8 @@ const CHECKS = {
 const upd = q.get('update');
 settings.updateCheck = CHECKS[upd] ?? null;
 if (upd === 'available') settings.update = { kind: 'available', version: '0.2.65' };
+// ?avail=none: the first model lookup has not landed yet.
+if (q.get('avail') === 'none') delete settings.availability;
 if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
 window.previewCalls = [];
 window.orca = {
@@ -135,6 +137,7 @@ server.listen(0, '127.0.0.1', () => {
     for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'models', theme, w, width, height })
     jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-crow.dim', name: 'models-unavailable-tooltip' })
     jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, scroll: true, name: 'models-bottom' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, avail: 'none', name: 'models-checking' })
   }
   if (process.argv.includes('--tips')) {
     jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-gh .s-label', name: 'tooltip-writers' })
@@ -145,7 +148,7 @@ server.listen(0, '127.0.0.1', () => {
     for (const j of jobs) {
       const file = join(out, `${j.name ? `${j.name}-${j.theme}-${j.w}` : `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}`}.png`)
       await new Promise((resolve, reject) => {
-        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}${j.scroll ? '&scroll=1' : ''}`
+        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}${j.scroll ? '&scroll=1' : ''}${j.avail ? `&avail=${j.avail}` : ''}`
         const framed = j.width < 600 || !!j.tip
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
           framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]

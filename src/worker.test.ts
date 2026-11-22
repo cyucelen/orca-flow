@@ -1641,3 +1641,42 @@ test('model discovery runs Orca and the Codex CLI with the selected Codex accoun
   await main.discoverHere(async () => { throw new Error('offline') }, exec)
   assert.equal(calls.find((c) => c.args[0] === 'debug')?.env, undefined)
 })
+
+test('the availability cache never makes a reader wait: refresh runs in the background and reports when it lands', async () => {
+  let release: (a: import('./routing.ts').Availability) => void = () => {}
+  let lookups = 0
+  const fresh: unknown[] = []
+  let t = 0
+  const cache = main.availabilityCache(() => { lookups++; return new Promise((r) => { release = r }) }, (a) => fresh.push(a), () => t)
+  cache.refresh(60_000)
+  cache.refresh(60_000)
+  assert.equal(cache.cached(), undefined, 'nothing cached yet, and refresh returned at once')
+  assert.equal(lookups, 1, 'one lookup at a time')
+  const found = { agents: ['claude'], models: { claude: null } }
+  release(found)
+  await new Promise((r) => setTimeout(r, 0))
+  assert.deepEqual(cache.cached(), found)
+  assert.deepEqual(fresh, [found])
+  t = 30_000
+  cache.refresh(60_000)
+  assert.equal(lookups, 1, 'a recent lookup is not repeated')
+  assert.deepEqual(await cache.get(60_000), found)
+})
+
+test('opening Settings answers at once while model discovery is slow, then pushes the fresh state', async () => {
+  const before = main.discovery.run
+  let release: (a: import('./routing.ts').Availability) => void = () => {}
+  main.discovery.run = () => new Promise((r) => { release = r })
+  const host = mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } })
+  const worker = await mountWorker(main, { host })
+  try {
+    const slow = new Promise((r) => setTimeout(() => r('timed out'), 8_000))
+    const reply = await Promise.race([worker.request('sidebar.settings'), slow]) as import('./protocol.ts').SettingsState | string
+    assert.notEqual(reply, 'timed out', 'the reply did not wait for discovery')
+    assert.equal((reply as import('./protocol.ts').SettingsState).availability, undefined, 'none yet')
+    release({ agents: ['claude', 'codex'], models: { claude: null, codex: null } })
+  } finally {
+    main.discovery.run = before
+    await worker.deactivate()
+  }
+})
