@@ -14,8 +14,8 @@ does not do.
 
 ## Settings → Models
 
-**Preset.** One pop-up sets the coordinator, the lead and all three worker rows at once. The limits
-below and your saved presets stay as they were.
+**Preset.** One pop-up sets the coordinator, the lead and all three worker rows at once. Your
+saved presets stay as they were.
 
 - **Balanced, Economy, Best quality:** built-in starting points. They are fixed; edit a row and the
   pop-up shows Custom.
@@ -48,11 +48,9 @@ has installed.
 Each kind has a row: a model, an effort and one fallback. A model shown dimmed is not available on
 this machine; its tooltip says why and whether a fallback will be used.
 
-**Workers at once.** How many workers one lead runs at the same time (1 to 6, default 3). The memory
-check still applies to every start.
+A plan starts every ready task that the memory check allows; the rest stay queued.
 
-**Moves up after a failure.** How many times a failed task may be retried one kind up (0 to 2,
-default 1). Past that, dispatch refuses and the agent asks you.
+After a failure, the nth retry of a task runs n rows up, never past hard; a retry of a task that already ran on the hard row is refused and the agent asks you.
 
 ## What a dispatch does
 
@@ -68,8 +66,8 @@ For a worker, the row is worked out first:
 
 - **Risk high** (`--risk high`) moves up one kind.
 - **Large context** (`--context large`) means at least `normal`.
-- **A retry** (`--retry-of`) moves up one kind per earlier failure, up to the limit above. Past
-  `hard` the kind stays `hard` and each extra step raises the effort one level. The retry keeps the
+- **A retry** (`--retry-of`) moves up one kind per earlier failure; a task that already ran on the hard
+  row is refused ("Already at the hard level: ask the user before trying again."). The retry keeps the
   earlier context, risk and explicit model. An explicit model is never swapped: the retry runs on
   the same model at the next effort. If a retry would land on the model that failed, it is refused
   with exit 3 and nothing starts.
@@ -173,7 +171,7 @@ A task may also set `agent`, `model` and `effort`, which win as in the precedenc
 
 **Escalate a failure.** After a worker reports `--outcome failed`, run the task again one kind up. It
 reads the last attempt from `routes.jsonl`, reuses the task, its kind, context, risk and explicit
-model, and refuses past the limit or when it would land on the model that failed.
+model, and refuses when the task already ran on the hard row or when it would land on the model that failed.
 
 ```sh
 orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current

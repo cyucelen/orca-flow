@@ -34,15 +34,14 @@ test('Claude models come from discovery, aliases first, with display labels', ()
   assert.deepEqual(effortsFor('claude', 'sonnet', found), ['low', 'medium', 'high', 'xhigh', 'max'])
 })
 
-test('picking a preset applies it and keeps the limits and saved presets; editing a row shows Custom', async () => {
+test('picking a preset applies it and keeps saved presets; editing a row shows Custom', async () => {
   const saved: FlowSettings[] = []
   const session = settingsSession(async (settings) => { saved.push(settings); return { ok: true, settings } })
   session.load(structuredClone(DEFAULT_SETTINGS))
   assert.equal(presetView(session.shown.routing).selected, 'balanced')
-  await session.change((d) => { d.routing.maxParallel = 5; d.routing = pickPreset(d.routing, 'best') })
+  await session.change((d) => { d.routing = pickPreset(d.routing, 'best') })
   assert.equal(saved.length, 1, 'saved at once')
   assert.equal(saved[0].routing.workers.hard.model.model, 'fable')
-  assert.equal(saved[0].routing.maxParallel, 5)
   assert.equal(presetView(session.shown.routing).selected, 'best')
   await session.change((d) => { d.routing.workers.normal.model = { agent: 'claude', model: 'sonnet', effort: 'high' } })
   assert.equal(presetView(session.shown.routing).selected, '', 'no preset matches: Custom')
@@ -113,12 +112,10 @@ test('routing changes round-trip through the draft and are saved instantly', asy
   await session.change((d) => {
     d.routing.coordinator = { agent: 'claude', model: 'opus', effort: 'high' }
     d.routing.workers.simple = { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' }, fallback: null }
-    d.routing.maxParallel = 5
   })
   assert.equal(saved.length, 1)
   assert.deepEqual(saved[0].routing.coordinator, { agent: 'claude', model: 'opus', effort: 'high' })
   assert.deepEqual(saved[0].routing.workers.simple, { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' }, fallback: null })
-  assert.equal(saved[0].routing.maxParallel, 5)
   assert.deepEqual(toDraft(fromDraft(session.shown)).routing, session.shown.routing)
   assert.ok(!session.isDefault(['routing']))
   await session.reset(['routing'])

@@ -311,11 +311,10 @@ const sameChoice = (a, b) => !!a && !!b && a.agent === b.agent && (a.model ?? nu
 /**
  * A retry of a model the user chose: the same model, one effort step above the one that failed
  * (above medium when it ran on its default effort). Never another model; ok:false when it has no
- * higher effort, or past maxEscalations.
+ * higher effort.
  */
 function retrySameModel(settings, req, prevChoice, avail) {
   const name = routing.choiceLabel({ agent: req.agent, model: req.model })
-  if (req.role === 'worker' && (req.attempt ?? 0) > settings.maxEscalations) return { ok: false, error: `Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`, skipped: [] }
   const from = routing.EFFORTS.indexOf(prevChoice?.effort ?? 'medium')
   const tried = []
   for (const effort of routing.EFFORTS.slice(from + 1)) {
@@ -638,8 +637,7 @@ async function startTask({ id, t, argv, decision, task, deps, lines, failures, u
 
 /**
  * Replays starts whose outcome was unknown, then starts what may start now: ready tasks (deps
- * done) up to maxParallel minus this plan's running workers, each behind the capacity gate and on
- * its recorded route. Capacity is scanned once (`capacity`, a promise) and each start's agent is
+ * done), each behind the memory check and on its recorded route. Capacity is scanned once (`capacity`, a promise) and each start's agent is
  * priced locally for the next. A recorded model that is no longer available is routed again and
  * said so; an explicit one is never swapped.
  */
@@ -667,11 +665,10 @@ async function startReady({ plan, state, settings, avail, deps, worktree, dryRun
   for (const id of Object.keys(state.tasks)) if (!plan.tasks.some((t) => t.id === id)) lines.push(`${id}: in the plan state but no longer in the plan file; left as it is.`)
 
   const states = statesOf(plan, state)
-  const queued = planLib.startable(plan, states, settings.maxParallel)
-  const running = Object.values(state.tasks).filter((t) => t.state === 'running' || t.state === 'unknown').length
+  const queued = planLib.startable(plan, states)
   if (!queued.length) {
     const waiting = plan.tasks.filter((t) => states[t.id] === 'queued').length
-    if (waiting) lines.push(running >= settings.maxParallel ? `Nothing started: ${running} of this plan's workers run (limit ${settings.maxParallel}).` : `Nothing started: ${waiting} task${waiting === 1 ? ' waits' : 's wait'} on dependencies.`)
+    if (waiting) lines.push(`Nothing started: ${waiting} task${waiting === 1 ? ' waits' : 's wait'} on dependencies.`)
     return { failures, unknowns }
   }
   let cap = await capacity()

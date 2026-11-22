@@ -126,8 +126,8 @@ test('a route failure launches nothing', async () => {
   assert.equal(deps.calls.length + unknown.calls.length, 0)
 })
 
-test('--retry-of escalates from the logged attempt, reuses the task and its kind (old lines: class), and stops at the limit', async () => {
-  const deps = fakeDeps({ routing: { maxEscalations: 1 } })
+test('--retry-of escalates from the logged attempt, reuses the task and its kind (old lines: class), and stops at the hard row', async () => {
+  const deps = fakeDeps()
   writeFileSync(join(deps.dir, 'routes.jsonl'), `${JSON.stringify({ at: 'x', role: 'worker', taskId: 'task_a', dispatchId: 'ctx_old', workspace: 'w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, source: 'auto', reason: 'r', class: 'standard', risk: null, attempt: 0 })}\n`)
   await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), deps)
   const argv = starts(deps)[0].args
@@ -140,8 +140,8 @@ test('--retry-of escalates from the logged attempt, reuses the task and its kind
   assert.equal(logged.reason, 'normal task, escalated once → Claude Opus · high')
   assert.equal(logged.dispatchId, 'ctx_1')
 
-  // The new dispatch failed too: attempt 2 is past maxEscalations 1.
-  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps), (e) => e.code === 3 && /Escalation limit reached \(1\)/.test(e.message))
+  // The new dispatch (already on the hard row) failed too: there is no row above.
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps), (e) => e.code === 3 && /Already at the hard level: ask the user before trying again\./.test(e.message))
   assert.equal(starts(deps).length, 1, 'nothing more launched')
 
   const none = fakeDeps()
@@ -186,7 +186,7 @@ test('--retry-of keeps the context: a large-context simple task moves up from no
 })
 
 test("--retry-of retries the user's explicit model on that same model at the next effort, never another one", async () => {
-  const deps = fakeDeps({ routing: { maxEscalations: 2 } })
+  const deps = fakeDeps()
   await dispatchCommand(argsOf({ role: 'worker', model: 'opus', effort: 'medium', worktree: 'current', spec: 's' }, 'dispatch'), deps)
   await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
   let argv = starts(deps)[1].args

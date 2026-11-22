@@ -210,8 +210,7 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
   dialog. "Writing now" names the writer the next card would use. Antigravity is "Not available
   yet" (see [Card writer](#card-writer)).
 - **Models:** a preset (Balanced, Economy, Best quality, your saved ones or Custom), the model and
-  effort for coordinators and leads, a model, effort and fallback per worker task kind, how many
-  workers run at once, and how often a failed task moves up a level
+  effort for coordinators and leads, a model, effort and fallback per worker task kind
   ([Model routing](docs/model-routing.md)).
 - **Message Check:** Off, All agents (every coordinator and lead) or Some folders, with the folder
   list ([Message format](#message-format)).

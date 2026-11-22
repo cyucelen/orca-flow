@@ -39,7 +39,7 @@ const settings = {
         normal: { model: { agent: 'codex', model: 'gpt-retired', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'medium' } },
         hard: { model: { agent: 'claude', model: 'opus', effort: 'high' }, fallback: null }
       },
-      maxParallel: 3, maxEscalations: 1, presets: []
+      presets: []
     }
   },
   // What the worker discovered: installed agents and the Codex catalog (`codex debug models`).

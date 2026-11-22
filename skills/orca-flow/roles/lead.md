@@ -109,7 +109,7 @@ orca-flow plan status plan.json   # one line per task: state, model, why
 `check` warns when the split looks too fine (every task simple, or a simple task inside another
 task's files): merge as it says. `start` routes every task once and keeps that choice, so a change
 in Settings never switches pending work; `next` routes again only when that model is gone, and
-says so. At most `maxParallel` workers of the plan run at once, each behind the capacity gate; the
+says so. Every ready task starts behind the capacity gate; the
 rest wait as Orca tasks. Run `plan next` each time a plan worker reports.
 
 **Runs.** You are a dispatched worker inside your coordinator's Run, so `plan start` never runs
@@ -138,7 +138,7 @@ turn; otherwise send them to the worker that owns those files.
 - A demonstrated failure the worker cannot fix (it reported `--outcome failed`, or the fix you
   sent did not work): rerun it one tier up with
   `orca-flow dispatch --role worker --retry-of <its dispatch id> --worktree current`. Never
-  escalate before a failure. Past the user's limit dispatch refuses; then ask the user.
+  escalate before a failure. A task that already ran on the hard row is refused; then ask the user.
 
 **A worker's question:** answer it with `orca orchestration reply --id <message_id>` when it follows
 from the task or what the user told you. Otherwise ask the user: put the one Ask (see

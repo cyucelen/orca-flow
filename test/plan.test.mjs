@@ -84,8 +84,8 @@ test('plan start refuses a failing plan before creating anything', async () => {
   assert.equal(deps.calls.length, 0)
 })
 
-test('plan start creates one Orca task per plan task with deps, routes each once, and starts ready tasks within maxParallel and capacity', async () => {
-  const deps = withTasks({ routing: { maxParallel: 2 } })
+test('plan start creates one Orca task per plan task with deps, routes each once, and starts every ready task the memory check allows', async () => {
+  const deps = withTasks()
   const file = writePlan(deps, [
     T('api', ['src/api.ts'], [], { kind: undefined, class: 'trivial' }), // an older plan's field and name
     T('ui', ['src/panel/']),
@@ -129,10 +129,20 @@ test('plan start creates one Orca task per plan task with deps, routes each once
   await assert.rejects(run(deps, 'start', file), /already started.*plan next/)
 })
 
-test('plan start honours maxParallel and stops at a capacity refusal', async () => {
-  const one = withTasks({ routing: { maxParallel: 1 } })
-  await run(one, 'start', writePlan(one, [T('a', ['a']), T('b', ['b']), T('c', ['c'])]))
-  assert.equal(verbs(one, 'worker-start').length, 1)
+test('plan start starts every ready task: all 4 when memory allows, only 2 when memory fits two, the rest stay queued', async () => {
+  const four = [T('a', ['a']), T('b', ['b']), T('c', ['c']), T('d', ['d'])]
+  const roomy = withTasks({ freeGB: 8, agentGB: 0.5 })
+  await run(roomy, 'start', writePlan(roomy, four))
+  assert.deepEqual(verbs(roomy, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2', 'task_3', 'task_4'])
+  assert.equal(roomy.capacityCalls.length, 1, 'one scan; each start is priced locally')
+
+  // 1.2 GB free, 0.5 GB an agent: two fit (1.2 → 0.7 → 0.2), then the memory check says no.
+  const tight = withTasks({ freeGB: 1.2, agentGB: 0.5 })
+  const file = writePlan(tight, four)
+  await run(tight, 'start', file)
+  assert.deepEqual(verbs(tight, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2'])
+  assert.deepEqual(Object.values(readState(tight).tasks).map((t) => t.state), ['running', 'running', 'queued', 'queued'])
+  assert.match(tight.output.join('\n'), /c: queued: capacity says full/)
 
   const full = withTasks({ verdict: 'full' })
   await run(full, 'start', writePlan(full, [T('a', ['a']), T('b', ['b'])]))
@@ -142,13 +152,13 @@ test('plan start honours maxParallel and stops at a capacity refusal', async () 
 })
 
 test('plan next starts newly ready tasks on their recorded route, even after settings change', async () => {
-  const deps = withTasks({ routing: { maxParallel: 2 } })
+  const deps = withTasks()
   const file = writePlan(deps, [T('api', ['src/api.ts'], [], { kind: 'simple' }), T('ui', ['src/panel/']), T('wire', ['src/main.ts'], ['api'], { kind: 'simple' })])
   await run(deps, 'start', file)
   assert.equal(verbs(deps, 'worker-start').length, 2)
 
   // The user moves simple tasks to Sonnet; api finishes. wire was routed to Haiku at start and keeps it.
-  writeFileSync(join(deps.dir, 'config.json'), JSON.stringify({ routing: { maxParallel: 2, workers: { simple: { model: { agent: 'claude', model: 'sonnet', effort: 'low' }, fallback: null } } } }))
+  writeFileSync(join(deps.dir, 'config.json'), JSON.stringify({ routing: { workers: { simple: { model: { agent: 'claude', model: 'sonnet', effort: 'low' }, fallback: null } } } }))
   deps.status.task_1 = 'completed'
   assert.equal(await run(deps, 'next', file), 0)
   const wire = verbs(deps, 'worker-start')[2]
@@ -166,7 +176,7 @@ test('plan next starts newly ready tasks on their recorded route, even after set
 
 test('plan next routes again when the recorded model is gone, and says so; an explicit one is never swapped', async () => {
   const codex = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-mini', efforts: ['low', 'medium'] }] } }
-  const routing = { maxParallel: 1, workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
+  const routing = { workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
   const deps = withTasks({ routing, avail: codex })
   const file = writePlan(deps, [
     T('a', ['a'], [], { kind: 'simple' }),
@@ -230,7 +240,6 @@ test('plan start --new-run is the only way a Run gets created, and the output sa
 test('a failed worker-start marks only that task failed-start, tries the rest, prints the table and exits 1; plan next retries it', async () => {
   let fail = true
   const deps = withTasks({
-    routing: { maxParallel: 3 },
     orca: async (args) => {
       if (args[1] === 'worker-start' && fail && args.includes('task_1')) throw new Error('worktree is busy\nsecond line')
       return undefined
@@ -257,14 +266,14 @@ test('a failed worker-start marks only that task failed-start, tries the rest, p
 })
 
 test('a failed start does not bypass the capacity gate for the tasks after it', async () => {
-  const deps = withTasks({ routing: { maxParallel: 3 }, verdict: 'full', orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_1')) throw new Error('nope') } })
+  const deps = withTasks({ verdict: 'full', orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_1')) throw new Error('nope') } })
   assert.equal(await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b'])])), 0)
   assert.equal(verbs(deps, 'worker-start').length, 0, 'the gate holds every task')
 })
 
 test('capacity is scanned once per plan start or next, and each started agent is priced locally for the next', async () => {
   // 1.2 GB free, 0.5 GB an agent: two fit (1.2 → 0.7 → 0.2), the third waits.
-  const deps = withTasks({ routing: { maxParallel: 4 }, freeGB: 1.2, agentGB: 0.5, orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_2')) throw new Error('nope') } })
+  const deps = withTasks({ freeGB: 1.2, agentGB: 0.5, orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_2')) throw new Error('nope') } })
   await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c']), T('d', ['d'])]))
   assert.equal(deps.capacityCalls.length, 1)
   assert.deepEqual(verbs(deps, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2', 'task_3'], 'a refused start costs nothing')
@@ -273,7 +282,7 @@ test('capacity is scanned once per plan start or next, and each started agent is
   await run(deps, 'next', writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c']), T('d', ['d'])]))
   assert.equal(deps.capacityCalls.length, 2, 'plan next scans once')
   // Nothing to start: no scan at all.
-  const idle = withTasks({ routing: { maxParallel: 1 } })
+  const idle = withTasks()
   const file = writePlan(idle, [T('a', ['a']), T('b', ['b'], ['a'])])
   await run(idle, 'start', file)
   const scans = idle.capacityCalls.length
@@ -338,10 +347,9 @@ test('plan next and status never crash on a task missing from the state, and pla
 
 const REQ = '0b8f3c1e-2d4a-4e6f-8a9b-1c2d3e4f5a6b'
 
-test('a start with an unknown outcome is marked unknown, holds its slot, and plan next replays it by request id instead of starting it again', async () => {
+test('a start with an unknown outcome is marked unknown, is never started again, and plan next replays it by request id instead of starting it again', async () => {
   let unknown = true
   const deps = withTasks({
-    routing: { maxParallel: 2 },
     orca: async (args) => {
       if (args[1] === 'worker-start' && args.includes('task_1') && unknown) throw Object.assign(new Error('start: timed out\nmore'), { result: { state: 'outcome_unknown', dispatchId: 'ctx_u' }, data: { orchestrationRequestId: REQ } })
     }
@@ -352,7 +360,7 @@ test('a start with an unknown outcome is marked unknown, holds its slot, and pla
   assert.match(out, new RegExp(`a: start outcome unknown on Claude Sonnet · medium: start: timed out\\. Not started again: \`orca-flow plan next\` replays request ${REQ}`))
   assert.match(out, /a +unknown /)
   assert.match(out, /1 start with an unknown outcome/)
-  assert.deepEqual(verbs(deps, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2'], 'c waits: a may be running and holds its slot')
+  assert.deepEqual(verbs(deps, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2', 'task_3'], 'a is not started again; the others are')
   const state = readState(deps)
   assert.deepEqual([state.tasks.a.state, state.tasks.a.requestId, state.tasks.a.dispatchId], ['unknown', REQ, 'ctx_u'])
 
@@ -396,7 +404,7 @@ test('an unknown start with no request id is held, never restarted, until --rest
 
 test('plan next re-routes a failed-start task whose recorded model is gone, and says so', async () => {
   const codex = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-mini', efforts: ['low', 'medium'] }] } }
-  const routing = { maxParallel: 1, workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
+  const routing = { workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'haiku' } } } }
   let fail = true
   const deps = withTasks({ routing, avail: codex, orca: async (args) => { if (args[1] === 'worker-start' && fail) throw new Error('codex would not launch') } })
   const file = writePlan(deps, [T('a', ['a'], [], { kind: 'simple' })])

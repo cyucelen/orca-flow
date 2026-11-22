@@ -21,7 +21,7 @@
 //                                             4: start outcome unknown (the same command replays it)
 //   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
 //       [--restart <id>]                      A lead's parallel plan: checked file ownership and deps,
-//                                             one Orca task each, started in waves within maxParallel
+//                                             one Orca task each, started in waves, each behind the memory check
 //   route, dispatch and plan cache model discovery for 10 minutes (models-cache.json);
 //   --refresh-models looks again.
 //

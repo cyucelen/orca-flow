@@ -138,8 +138,8 @@ fallback and why, without starting anything.
   could not fix its result after you sent it what was wrong. Then rerun the task one kind up:
   `orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current`. It reads
   the last attempt from `~/.orca-flow/routes.jsonl` and reuses the task, its kind, risk and context.
-  A model the user chose is kept and retried at the next effort. It refuses past the user's
-  escalation limit, or when the retry would land on the model that failed; then ask the user. A task Orca still shows as completed must first be
+  A model the user chose is kept and retried at the next effort. It refuses when the task already ran on the hard row, or when the retry would land on the model
+  that failed; then ask the user. A task Orca still shows as completed must first be
   marked failed: `orca orchestration task-update --id <task> --status failed --result "<why>"`.
   Never escalate because a task looks hard, and never start on a stronger model "to be safe".
 
@@ -151,9 +151,7 @@ plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/l
 `plan start` also finishes a partly started plan. A start Orca did not confirm (exit 4) is replayed
 by `plan next`, never started twice. If Orca gave no request id, check
 `orca orchestration task-list`, and use `plan next --restart <task id>` only when no worker runs for
-that task. At most
-`maxParallel` workers of one plan run at once (Settings → Models), and each start also passes the
-capacity gate.
+that task. A plan starts every ready task the memory check allows; the rest stay queued.
 
 **Worker lifecycle is Orca's job.** A finished worker closes on its own and frees its memory.
 `orca orchestration send --to dispatch:<id>` reaches it in any state: a closed one is reopened with

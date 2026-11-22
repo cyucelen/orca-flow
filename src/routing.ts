@@ -50,10 +50,6 @@ export type RoutingSettings = {
   lead: ModelChoice | null
   /** The model each kind of worker task starts on. */
   workers: Workers
-  /** Workers one lead runs at once (1-6), before the memory gate is even asked. */
-  maxParallel: number
-  /** How many times a failed task may move up one kind (0-2). */
-  maxEscalations: number
   /** The user's saved presets only (builtIn false), at most MAX_SAVED_PRESETS. */
   presets: Preset[]
 }
@@ -95,13 +91,11 @@ export const BUILT_IN_PRESETS: Preset[] = [
 ]
 const BALANCED = BUILT_IN_PRESETS[0]
 
-/** Balanced, 3 workers at once, one escalation, no saved presets. */
+/** Balanced, no saved presets. */
 export const DEFAULT_ROUTING: RoutingSettings = {
   coordinator: null,
   lead: null,
   workers: BALANCED.workers,
-  maxParallel: 3,
-  maxEscalations: 1,
   presets: []
 }
 
@@ -254,8 +248,6 @@ export function normalizeRouting(raw: unknown): RoutingSettings {
     coordinator: normalizeChoice(raw.coordinator),
     lead: normalizeChoice(raw.lead),
     workers: normalizeWorkers(raw.workers) as Workers,
-    maxParallel: clampInt(raw.maxParallel, 1, 6, DEFAULT_ROUTING.maxParallel),
-    maxEscalations: clampInt(raw.maxEscalations, 0, 2, DEFAULT_ROUTING.maxEscalations),
     presets
   }
 }
@@ -393,21 +385,23 @@ function pickChoice(pick: ModelChoice | null, who: string, req: RouteRequest, av
 }
 
 const TIMES = ['', 'once', 'twice']
+export const ALREADY_HARD = 'Already at the hard level: ask the user before trying again.'
 
 /**
  * The row a worker request starts on: its kind (default normal), one up for high risk, at least
- * normal for large context, one up per escalation. Past hard it stays hard, and each extra level
- * becomes `effortBoost` (one effort step up).
+ * normal for large context, and n more for the nth retry (each failure moves it up n rows, never past
+ * hard). `spent`: the retry follows a run that was already on the hard row, so there is no row left.
  */
-export function rowFor(req: RouteRequest): { kind: TaskKind; effortBoost: number; why: string } {
+export function rowFor(req: RouteRequest): { kind: TaskKind; spent: boolean; why: string } {
   const asked = req.kind ?? 'normal'
   let n = TASK_KINDS.indexOf(asked)
   let why = `${asked} task`
   if (req.risk === 'high') { n += 1; why += ', high risk' }
   if (req.context === 'large') { n = Math.max(n, 1); why += ', large context' }
   const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
+  const spent = attempt > 0 && n + attempt - 1 >= 2
   if (attempt > 0) { n += attempt; why += `, escalated ${TIMES[attempt] ?? `${attempt} times`}` }
-  return { kind: TASK_KINDS[Math.min(2, n)], effortBoost: Math.max(0, n - 2), why }
+  return { kind: TASK_KINDS[Math.min(2, n)], spent, why }
 }
 
 /**
@@ -418,8 +412,8 @@ export function rowFor(req: RouteRequest): { kind: TaskKind; effortBoost: number
  *  2. coordinator / lead: the Settings pick (null → provider default; unavailable model → the same
  *     agent's default; agent not installed → error). Effort clamped to what the model supports.
  *  3. worker: the row for its kind (rowFor). Its model unavailable → its fallback, said so in the
- *     reason; both unavailable (or no fallback) → error, never a silent provider default. Past
- *     maxEscalations → error.
+ *     reason; both unavailable (or no fallback) → error, never a silent provider default. A retry of
+ *     a task that already ran on the hard row → error.
  */
 export function route(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
   if (req.model) return overrideWithModel(req, avail)
@@ -437,8 +431,7 @@ export function route(settings: RoutingSettings, req: RouteRequest, avail: Avail
     if (req.agent && pick?.agent !== req.agent) return agentDefault(req.agent)
     d = pickChoice(pick, req.role === 'coordinator' ? 'coordinators' : 'leads', req, avail)
   } else {
-    const attempt = Math.max(0, Math.floor(req.attempt ?? 0))
-    if (attempt > settings.maxEscalations) return fail(`Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`)
+    if (rowFor(req).spent) return fail(ALREADY_HARD)
     d = routeWorker(settings, req, avail)
     if (req.agent && !(d.ok && d.choice.agent === req.agent)) return agentDefault(req.agent)
   }
@@ -468,10 +461,6 @@ function overrideWithModel(req: RouteRequest, avail: Availability): RouteDecisio
   return { ok: true, choice, source: 'override', reason: `${choiceLabel(choice)} chosen explicitly`, skipped: [] }
 }
 
-/** One effort step up per boost, from the row's own effort; a row without an effort stays without. */
-const boosted = (effort: Effort | undefined, boost: number): Effort | undefined =>
-  effort && boost ? EFFORTS[Math.min(EFFORTS.length - 1, EFFORTS.indexOf(effort) + boost)] : effort
-
 function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availability): RouteDecision {
   const at = rowFor(req)
   const row = settings.workers[at.kind]
@@ -493,6 +482,6 @@ function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availa
     use = fb
     note = `: ${modelName(primary)} unavailable (${gone}), used the fallback`
   }
-  const { choice, note: effortNote } = clamped(use, boosted(use.effort, at.effortBoost), avail)
+  const { choice, note: effortNote } = clamped(use, use.effort, avail)
   return { ok: true, choice, source: gone ? 'fallback' : 'kind', row: rowInfo, reason: `${at.why} → ${choiceLabel(choice)}${note}${effortNote}`, skipped }
 }

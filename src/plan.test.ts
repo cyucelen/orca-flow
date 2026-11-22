@@ -75,16 +75,16 @@ test('waves are topological layers', () => {
   assert.equal(waves([{ id: 'x', deps: ['x'] }]), null)
 })
 
-test('startable: deps done, queued only, bounded by maxParallel minus running', () => {
+test('startable: deps done, queued only, every ready task, nothing else limits it', () => {
   const p = plan([task('a', ['a']), task('b', ['b']), task('c', ['c']), task('d', ['d'], ['a'])])
-  assert.deepEqual(startable(p, {}, 2), ['a', 'b'])
-  assert.deepEqual(startable(p, { a: 'running' }, 2), ['b'])
-  assert.deepEqual(startable(p, { a: 'done', b: 'running' }, 3), ['c', 'd'])
-  assert.deepEqual(startable(p, { a: 'failed' }, 3), ['b', 'c'], 'a failed dependency holds d back')
-  assert.deepEqual(startable(p, { a: 'running', b: 'running', c: 'running' }, 2), [])
-  assert.deepEqual(startable(p, { a: 'failed-start' }, 3), ['a', 'b', 'c'], 'a failed start can be started again')
-  assert.deepEqual(startable(p, { a: 'unknown' }, 2), ['b'], 'a start whose outcome is unknown is never started again, and holds a slot')
-  assert.deepEqual(startable(p, { a: 'missing' }, 3), ['b', 'c'], 'a task with no Orca task is not started')
+  assert.deepEqual(startable(p, {}), ['a', 'b', 'c'])
+  assert.deepEqual(startable(p, { a: 'running' }), ['b', 'c'])
+  assert.deepEqual(startable(p, { a: 'done', b: 'running' }), ['c', 'd'])
+  assert.deepEqual(startable(p, { a: 'failed' }), ['b', 'c'], 'a failed dependency holds d back')
+  assert.deepEqual(startable(p, { a: 'running', b: 'running', c: 'running' }), [])
+  assert.deepEqual(startable(p, { a: 'failed-start' }), ['a', 'b', 'c'], 'a failed start can be started again')
+  assert.deepEqual(startable(p, { a: 'unknown' }), ['b', 'c'], 'a start whose outcome is unknown is never started again')
+  assert.deepEqual(startable(p, { a: 'missing' }), ['b', 'c'], 'a task with no Orca task is not started')
 })
 
 test('slug and ownership note', () => {

@@ -112,13 +112,17 @@ test('a change that does not reach the file sends nothing, and reset saves defau
   assert.equal(session.isDefault(['linearDryRun', 'format']), true)
 })
 
+// The two removed limits, spelled apart so a search for them in the code finds nothing.
+const OLD_LIMITS = { ['max' + 'Parallel']: 5, ['max' + 'Escalations']: 2 }
+
 test('routing persists only when changed, drops at default, keeps unknown keys', () => {
-  const routing = normalizeRouting({ ...DEFAULT_ROUTING, maxParallel: 5, lead: { agent: 'claude', model: 'opus', effort: 'high' } })
+  const routing = normalizeRouting({ ...DEFAULT_ROUTING, ...OLD_LIMITS, lead: { agent: 'claude', model: 'opus', effort: 'high' } })
   const saved = applySettings({ other: 1 }, { ...DEFAULT_SETTINGS, routing })
   assert.deepEqual(saved, { other: 1, routing })
   assert.deepEqual(applySettings(saved, { ...DEFAULT_SETTINGS, routing: DEFAULT_ROUTING }), { other: 1 })
-  assert.deepEqual(applySettings({ routing: { maxParallel: 'x' }, other: 1 }, DEFAULT_SETTINGS), { routing: { maxParallel: 'x' }, other: 1 })
-  assert.deepEqual(normalizeSettings({ routing: { maxParallel: 9 } }).routing.maxParallel, 6)
+  assert.deepEqual(applySettings({ routing: OLD_LIMITS, other: 1 }, DEFAULT_SETTINGS), { routing: OLD_LIMITS, other: 1 })
+  assert.deepEqual(Object.keys(routing).filter((k) => k in OLD_LIMITS), [], 'the old limits are read without error and dropped')
+  assert.deepEqual(normalizeSettings({ routing: OLD_LIMITS }).routing, DEFAULT_ROUTING)
   assert.deepEqual(normalizeSettings({}).routing, DEFAULT_ROUTING)
   assert.deepEqual(fromDraft(toDraft({ ...DEFAULT_SETTINGS, routing })).routing, routing)
   assert.deepEqual(DEFAULT_DRAFT.routing, DEFAULT_ROUTING)

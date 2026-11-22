@@ -250,18 +250,14 @@ function covers(outer: string, inner: string): boolean {
 // ---------- scheduling ----------
 
 /**
- * The tasks to start now, in wave order: queued, every dependency done, and no more than
- * `maxParallel` of this plan running at once (a start whose outcome is unknown counts as running).
- * Failed dependencies hold their dependents back.
+ * The tasks to start now, in wave order: queued (or a failed start) with every dependency done.
+ * Failed dependencies hold their dependents back; the memory check is the only other limit.
  */
-export function startable(plan: Plan, states: Record<string, TaskState>, maxParallel: number): string[] {
-  const running = plan.tasks.filter((t) => states[t.id] === 'running' || states[t.id] === 'unknown').length
-  const slots = Math.max(0, maxParallel - running)
+export function startable(plan: Plan, states: Record<string, TaskState>): string[] {
   const order = (waves(plan.tasks) ?? []).flat()
   const byId = new Map(plan.tasks.map((t) => [t.id, t]))
   return order
     .filter((id) => ['queued', 'failed-start'].includes(states[id] ?? 'queued') && (byId.get(id)?.deps ?? []).every((d) => states[d] === 'done'))
-    .slice(0, slots)
 }
 
 /** A file-name-safe slug for the plan's state file. */

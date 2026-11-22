@@ -225,14 +225,7 @@ function kindRow(kind: TaskKind): string {
 }
 const KIND_NOTE = 'A task’s own model choice always wins.'
 
-function rstep(key: 'maxParallel' | 'maxEscalations', min: number, max: number, name: string): string {
-  const v = r()[key]
-  const shown = key === 'maxEscalations' ? `${v} ${v === 1 ? 'time' : 'times'}` : String(v)
-  return `<span class="s-value" aria-hidden="true">${shown}</span><span class="s-seg" role="group" aria-label="${esc(name)}: ${shown}">
-    <button type="button" data-rstep="${key}" data-d="-1" ${off(v <= min)} aria-label="${esc(name)}: less">${ICON.minus}</button><button type="button" data-rstep="${key}" data-d="1" ${off(v >= max)} aria-label="${esc(name)}: more">${ICON.plus}</button></span>`
-}
-
-const PRESET_TIP = 'Sets the coordinator, lead and worker models at once. Workers at once and retries stay as you set them.'
+const PRESET_TIP = 'Sets the coordinator, lead and worker models at once.'
 function presetRow(): string {
   const v = presetView(r())
   const opt = (p: Preset) => `<option value="${esc(p.id)}" ${v.selected === p.id ? 'selected' : ''}>${esc(p.name)}</option>`
@@ -250,14 +243,10 @@ function presetRow(): string {
 function pageModels(): string {
   const roles = group([roleRow('coordinator'), roleRow('lead')], { text: 'Roles', tip: ROLE_TIP })
   const workers = group(TASK_KINDS.map(kindRow), { text: 'Workers, by task', tip: `The lead marks each task simple, normal or hard. ${KIND_NOTE}` })
-  const limits = group([
-    row(label('Workers at once', 'How many workers one lead runs at the same time. Free memory can still hold new ones back.'), rstep('maxParallel', 1, 6, 'Workers at once')),
-    row(label('Failed task moves up a level', 'After a failed try, the task runs again one level up, this many times at most.'), rstep('maxEscalations', 0, 2, 'Failed task moves up a level'))
-  ])
-  return presetRow() + roles + workers + limits
+  return presetRow() + roles + workers
 }
 
-/** Balanced, 3 workers at once, 1 retry; the user's saved presets stay. */
+/** Balanced; the user's saved presets stay. */
 const modelsAtDefault = () => same({ ...r(), presets: [] }, { ...DEFAULT_ROUTING, presets: [] })
 function resetModels(): void {
   naming = false
@@ -300,7 +289,6 @@ function focusKey(el: Element | null): string | null {
   const ds = (el as HTMLElement).dataset
   for (const k of ['handle', 'model', 'enable', 'rmfolder', 'reset', 'rmodel', 'reffort', 'kmodel', 'keffort', 'kfall', 'rmpreset']) if (ds[k]) return `[data-${k}="${ds[k]}"]`
   if (ds.step) return `[data-step="${ds.step}"][data-d="${ds.d}"]`
-  if (ds.rstep) return `[data-rstep="${ds.rstep}"][data-d="${ds.d}"]`
   return el.classList.contains('s-dot') ? `[data-writer="${el.closest<HTMLElement>('[data-writer]')?.dataset.writer}"] .s-dot` : null
 }
 
@@ -444,7 +432,6 @@ function onClick(e: MouseEvent): void {
   if (ds.reset) { void session.reset(PAGES.find((p) => p.id === ds.reset)!.keys); return }
   if (ds.rmpreset) { const id = ds.rmpreset; focusAfter = '#s-preset'; void session.change((x) => { x.routing = deletePreset(x.routing, id) }); return }
   if (ds.step) { const k = ds.step as 'marginGB' | 'warnHeadroomGB'; void session.change((x) => { x[k] = Math.min(16, Math.max(0, x[k] + Number(ds.d))) }); return }
-  if (ds.rstep) { const k = ds.rstep as 'maxParallel' | 'maxEscalations'; const [lo, hi] = k === 'maxParallel' ? [1, 6] : [0, 2]; void session.change((x) => { x.routing[k] = Math.min(hi, Math.max(lo, x.routing[k] + Number(ds.d))) }); return }
   if (ds.rmfolder) { void session.change((x) => { x.folders.splice(Number(ds.rmfolder), 1) }); return }
   switch (t.id) {
     case 's-x': close(); break

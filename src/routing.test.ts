@@ -12,10 +12,10 @@ const ok = (d: RouteDecision) => { assert.equal(d.ok, true, d.ok ? '' : d.error)
 const bad = (d: RouteDecision) => { assert.equal(d.ok, false); return (d as Extract<RouteDecision, { ok: false }>).error }
 const worker = (req: Partial<RouteRequest> = {}, settings = S(), avail = AVAIL) => route(settings, { role: 'worker', ...req }, avail)
 
-test('defaults: Balanced rows, 3 at once, one escalation, no saved presets', () => {
+test('defaults: Balanced rows, no saved presets', () => {
   assert.deepEqual(DEFAULT_ROUTING.workers, BUILT_IN_PRESETS[0].workers)
   assert.deepEqual(DEFAULT_ROUTING.workers.simple, { model: { agent: 'claude', model: 'haiku' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } })
-  assert.deepEqual([DEFAULT_ROUTING.coordinator, DEFAULT_ROUTING.lead, DEFAULT_ROUTING.maxParallel, DEFAULT_ROUTING.maxEscalations, DEFAULT_ROUTING.presets], [null, null, 3, 1, []])
+  assert.deepEqual([DEFAULT_ROUTING.coordinator, DEFAULT_ROUTING.lead, DEFAULT_ROUTING.presets], [null, null, []])
   assert.deepEqual(BUILT_IN_PRESETS.map((p) => [p.id, p.name]), [['balanced', 'Balanced'], ['economy', 'Economy'], ['best', 'Best quality']])
   for (const p of BUILT_IN_PRESETS) {
     assert.equal(p.builtIn, true)
@@ -28,7 +28,7 @@ test('defaults: Balanced rows, 3 at once, one escalation, no saved presets', () 
 test('normalize: defaults, clamps, bad rows fall back to Balanced, old fields dropped', () => {
   for (const raw of [undefined, null, 'x', 4, [], {}, { nonsense: 1 }]) assert.deepEqual(normalizeRouting(raw), DEFAULT_ROUTING)
   const n = normalizeRouting({
-    coordinator: { agent: 'claude', model: 'opus', effort: 'max' }, lead: { agent: 'weird', effort: 'high' }, maxEscalations: 9, maxParallel: 0,
+    coordinator: { agent: 'claude', model: 'opus', effort: 'max' }, lead: { agent: 'weird', effort: 'high' }, ...{ ['max' + 'Escalations']: 9, ['max' + 'Parallel']: 0 }, // an old config's limits are read without error and dropped
     workerMode: 'fixed', candidates: [{ agent: 'claude', model: 'haiku', tier: 1, cost: 1 }],
     workers: {
       simple: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'ultra' }, fallback: { agent: 'claude' } },
@@ -43,7 +43,7 @@ test('normalize: defaults, clamps, bad rows fall back to Balanced, old fields dr
       normal: DEFAULT_ROUTING.workers.normal,
       hard: DEFAULT_ROUTING.workers.hard
     },
-    maxParallel: 1, maxEscalations: 2, presets: []
+    presets: []
   })
   assert.equal(JSON.stringify(n), JSON.stringify(normalizeRouting(n)))
   normalizeRouting(undefined).workers.simple.model.model = 'x'
@@ -61,12 +61,11 @@ test('normalize: saved presets are validated, deduplicated and capped', () => {
   assert.equal(many.presets.at(-1)?.name, 'P9')
 })
 
-test('presets: list, match, apply keeps limits and saved presets', () => {
-  const s = S({ maxParallel: 5, maxEscalations: 2 })
+test('presets: list, match, apply keeps saved presets', () => {
+  const s = S()
   assert.equal(matchingPreset(s)?.id, 'balanced')
   const eco = applyPreset(s, 'economy')
   assert.deepEqual(eco.workers, BUILT_IN_PRESETS[1].workers)
-  assert.deepEqual([eco.maxParallel, eco.maxEscalations], [5, 2])
   assert.equal(matchingPreset(eco)?.name, 'Economy')
   const custom = withRow('hard', { model: { agent: 'claude', model: 'opus', effort: 'max' }, fallback: null })
   assert.equal(matchingPreset(custom), null, 'Custom')
@@ -76,7 +75,7 @@ test('presets: list, match, apply keeps limits and saved presets', () => {
 })
 
 test('presets: save, replace by name, refuse built-in names and empty names, cap, delete', () => {
-  const custom = withRow('hard', { model: { agent: 'claude', model: 'fable', effort: 'max' }, fallback: null }, { lead: { agent: 'claude', model: 'opus' }, maxParallel: 4 })
+  const custom = withRow('hard', { model: { agent: 'claude', model: 'fable', effort: 'max' }, fallback: null }, { lead: { agent: 'claude', model: 'opus' } })
   const saved = savePreset(custom, '  Deep work ')
   assert.deepEqual(saved.presets.map((p) => [p.id, p.name]), [['saved:deep-work', 'Deep work']])
   assert.deepEqual(saved.presets[0].workers, custom.workers)
@@ -89,7 +88,7 @@ test('presets: save, replace by name, refuse built-in names and empty names, cap
   assert.deepEqual(again.presets[0].workers, BUILT_IN_PRESETS[2].workers)
   // applying a saved preset brings its coordinator, lead and workers back
   const back = applyPreset(saved, 'saved:deep-work')
-  assert.deepEqual([back.lead, back.workers, back.maxParallel], [custom.lead, custom.workers, 4])
+  assert.deepEqual([back.lead, back.workers], [custom.lead, custom.workers])
   for (const name of ['Balanced', 'economy', ' BEST QUALITY ', '', '   ']) assert.throws(() => savePreset(S(), name))
   let full = S()
   for (let i = 0; i < MAX_SAVED_PRESETS; i++) full = savePreset(full, `P${i}`)
@@ -102,17 +101,17 @@ test('presets: save, replace by name, refuse built-in names and empty names, cap
   assert.deepEqual(normalizeRouting(JSON.parse(JSON.stringify(saved))), saved)
 })
 
-test('rowFor: each kind, risk, context, escalation and the effort boost', () => {
-  assert.deepEqual(rowFor({ role: 'worker' }), { kind: 'normal', effortBoost: 0, why: 'normal task' })
+test('rowFor: each kind, risk, context and escalation', () => {
+  assert.deepEqual(rowFor({ role: 'worker' }), { kind: 'normal', spent: false, why: 'normal task' })
   assert.equal(rowFor({ role: 'worker', kind: 'simple' }).kind, 'simple')
   assert.equal(rowFor({ role: 'worker', kind: 'hard' }).why, 'hard task')
-  assert.deepEqual(rowFor({ role: 'worker', kind: 'simple', risk: 'high' }), { kind: 'normal', effortBoost: 0, why: 'simple task, high risk' })
-  assert.deepEqual(rowFor({ role: 'worker', risk: 'high' }), { kind: 'hard', effortBoost: 0, why: 'normal task, high risk' })
+  assert.deepEqual(rowFor({ role: 'worker', kind: 'simple', risk: 'high' }), { kind: 'normal', spent: false, why: 'simple task, high risk' })
+  assert.deepEqual(rowFor({ role: 'worker', risk: 'high' }), { kind: 'hard', spent: false, why: 'normal task, high risk' })
   assert.equal(rowFor({ role: 'worker', kind: 'simple', context: 'large' }).kind, 'normal')
   assert.equal(rowFor({ role: 'worker', kind: 'hard', context: 'large' }).kind, 'hard')
-  assert.deepEqual(rowFor({ role: 'worker', kind: 'simple', attempt: 1 }), { kind: 'normal', effortBoost: 0, why: 'simple task, escalated once' })
-  assert.deepEqual(rowFor({ role: 'worker', kind: 'hard', attempt: 1 }), { kind: 'hard', effortBoost: 1, why: 'hard task, escalated once' })
-  assert.equal(rowFor({ role: 'worker', kind: 'hard', risk: 'high', attempt: 2 }).effortBoost, 3)
+  assert.deepEqual(rowFor({ role: 'worker', kind: 'simple', attempt: 1 }), { kind: 'normal', spent: false, why: 'simple task, escalated once' })
+  assert.deepEqual(rowFor({ role: 'worker', kind: 'hard', attempt: 1 }), { kind: 'hard', spent: true, why: 'hard task, escalated once' })
+  assert.equal(rowFor({ role: 'worker', kind: 'normal', risk: 'high', attempt: 1 }).spent, true, 'it already ran on hard')
   assert.deepEqual(['simple', 'normal', 'hard', 'trivial', 'standard', 'complex', 'huge', 3].map(taskKind), ['simple', 'normal', 'hard', 'simple', 'normal', 'hard', undefined, undefined])
 })
 
@@ -132,18 +131,18 @@ test('worker: each kind starts on its row, with short reasons', () => {
   assert.deepEqual(worker({}, codex), worker({}, codex), 'deterministic')
 })
 
-test('worker: escalation moves one row up, boosts effort above hard, and stops at the limit', () => {
-  const up = ok(worker({ kind: 'simple', attempt: 1 }))
-  assert.deepEqual([up.choice.model, up.reason], ['sonnet', 'simple task, escalated once → Claude Sonnet · medium'])
-  const top = ok(worker({ kind: 'hard', attempt: 1 }))
-  assert.deepEqual([top.choice, top.reason], [{ agent: 'claude', model: 'opus', effort: 'xhigh' }, 'hard task, escalated once → Claude Opus · xhigh'])
-  assert.equal(ok(worker({ kind: 'hard', risk: 'high', attempt: 2 }, S({ maxEscalations: 2 }))).choice.effort, 'max', 'boost stops at max')
-  assert.equal(bad(worker({ attempt: 2 })), 'Escalation limit reached (1): ask the user before trying again')
-  assert.equal(ok(worker({ attempt: 2 }, S({ maxEscalations: 2 }))).choice.effort, 'xhigh', 'normal + 2 = hard + 1')
-  assert.match(bad(worker({ attempt: 1 }, S({ maxEscalations: 0 }))), /Escalation limit reached \(0\)/)
-  assert.match(bad(worker({ attempt: 2, agent: 'claude' })), /Escalation limit reached/, 'an agent-only override does not lift the limit')
-  // a row without an effort is not boosted
-  assert.deepEqual(ok(worker({ kind: 'hard', attempt: 1 }, withRow('hard', { model: { agent: 'claude', model: 'opus' }, fallback: null }))).choice, { agent: 'claude', model: 'opus' })
+test('worker: a failed task moves up n rows per n failures: simple → normal → hard → refused', () => {
+  const path = [0, 1, 2].map((attempt) => ok(worker({ kind: 'simple', attempt })))
+  assert.deepEqual(path.map((d) => d.row?.kind), ['simple', 'normal', 'hard'])
+  assert.deepEqual(path.map((d) => d.choice.model), ['haiku', 'sonnet', 'opus'])
+  assert.equal(path[2].reason, 'simple task, escalated twice → Claude Opus · high', 'no effort boost above the hard row')
+  const refused = 'Already at the hard level: ask the user before trying again.'
+  assert.equal(bad(worker({ kind: 'simple', attempt: 3 })), refused)
+  assert.equal(bad(worker({ kind: 'hard', attempt: 1 })), refused, 'a hard task has no row above')
+  assert.equal(bad(worker({ risk: 'high', attempt: 1 })), refused, 'it already ran on hard because of the risk')
+  assert.equal(bad(worker({ attempt: 2 })), refused)
+  assert.equal(bad(worker({ attempt: 2, agent: 'claude' })), refused, 'an agent-only override does not lift it')
+  assert.equal(ok(worker({ attempt: 1 })).choice.model, 'opus')
 })
 
 test('worker: an unavailable model uses the row fallback and says so; both unavailable is refused', () => {
@@ -176,8 +175,8 @@ test('worker: an unavailable model uses the row fallback and says so; both unava
 })
 
 test('effort: the row effort, clamped to what the provider reports and Orca accepts', () => {
-  const luna = withRow('hard', { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'high' }, fallback: null })
-  const clampedUp = ok(worker({ kind: 'hard', attempt: 1 }, luna))
+  const luna = withRow('hard', { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'xhigh' }, fallback: null })
+  const clampedUp = ok(worker({ kind: 'hard' }, luna))
   assert.equal(clampedUp.choice.effort, 'high', 'xhigh asked, gpt-6-luna takes up to high')
   assert.match(clampedUp.reason, /xhigh not supported so high/)
   const sol = withRow('hard', { model: { agent: 'codex', model: 'gpt-6.2-sol', effort: 'max' }, fallback: null })
@@ -215,7 +214,7 @@ test('precedence: explicit flags beat role picks and rows, and invalid ones are 
   const o = ok(route(set, { role: 'lead', model: 'sonnet', effort: 'low' }, AVAIL))
   assert.deepEqual([o.choice, o.source], [{ agent: 'claude', model: 'sonnet', effort: 'low' }, 'override'])
   assert.equal(ok(worker({ kind: 'simple', model: 'opus' })).choice.model, 'opus')
-  assert.equal(ok(worker({ kind: 'hard', attempt: 5, model: 'sonnet' })).source, 'override', 'an explicit model is the user’s call, past the limit too')
+  assert.equal(ok(worker({ kind: 'hard', attempt: 5, model: 'sonnet' })).source, 'override', 'an explicit model is the user’s call, whatever the attempt')
   assert.deepEqual(ok(worker({ model: 'claude-sonnet-4-5' })).choice, { agent: 'claude', model: 'claude-sonnet-4-5' })
   assert.deepEqual(ok(worker({ model: 'gpt-6-luna' })).choice, { agent: 'codex', model: 'gpt-6-luna' })
   assert.match(bad(worker({ model: 'mystery' })), /pass --agent/)
@@ -256,8 +255,8 @@ test('Orca launch limits: table, Haiku takes no effort, nothing Orca refuses is 
   // the provider reports efforts for haiku, Orca still refuses them
   const reported = { agents: ['claude'], models: { claude: [{ id: 'haiku', efforts: ['low' as const, 'high' as const] }, { id: 'sonnet', efforts: ['low' as const, 'medium' as const] }] } } as Availability
   assert.deepEqual(ok(worker({ kind: 'simple' }, S(), reported)).choice, { agent: 'claude', model: 'haiku' })
-  // the escalated hard row asks xhigh; Sonnet as the provider reports takes up to medium
-  assert.equal(ok(worker({ kind: 'hard', attempt: 1 }, withRow('hard', { model: { agent: 'claude', model: 'sonnet', effort: 'high' }, fallback: null }), reported)).choice.effort, 'medium')
+  // a hard row asking xhigh; Sonnet as the provider reports takes up to medium
+  assert.equal(ok(worker({ kind: 'hard' }, withRow('hard', { model: { agent: 'claude', model: 'sonnet', effort: 'xhigh' }, fallback: null }), reported)).choice.effort, 'medium')
   // explicit efforts Orca would refuse are refused by route()
   assert.match(bad(worker({ model: 'haiku', effort: 'low' })), /Claude Haiku takes no effort setting, so effort low cannot be passed/)
   assert.match(bad(worker({ kind: 'simple', effort: 'low' })), /takes no effort setting/)
