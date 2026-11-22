@@ -20,7 +20,7 @@ import { recordedRole } from './roles.mjs'
 
 const LEAD = /your role: lead\b/i
 /** After a miss the agent rewrites only the frame: the user already read the detail above it. */
-export const FRAME_ONLY = 'Rewrite only the frame at the bottom, from the status line down. Do not repeat the detail above it: the user already read it.'
+export const FRAME_ONLY = 'Rewrite only the part from the status line down. Do not repeat what is above it: the user has read it.'
 
 const readJson = (path, fallback) => {
   try {
@@ -182,9 +182,9 @@ export function judge(input, { env = process.env, home = homedir(), script = pro
   if (blocking.length) {
     const silent = misses.filter((m) => m.tier === 'silent')
     const reason = [
-      'Your last message does not follow the agent message frame:',
+      'The end of your last message breaks the message format, so the sidebar cannot read it:',
       ...blocking.map((m) => `- ${m.rule}: ${m.detail}`),
-      ...(silent.length ? ['Fix these too while you rewrite:', ...silent.map((m) => `- ${m.rule}: ${m.detail}`)] : []),
+      ...(silent.length ? ['Fix these too:', ...silent.map((m) => `- ${m.rule}: ${m.detail}`)] : []),
       FRAME_ONLY,
       `The rules are in ${specOf(script)}.`
     ].join('\n')

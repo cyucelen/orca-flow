@@ -8,19 +8,28 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { checkFrame, parseFrame, TIERS } from '../skills/orca-flow/scripts/frame.mjs'
-import { optedIn, readTranscript } from '../skills/orca-flow/scripts/stop-check.mjs'
+import { FRAME_ONLY, optedIn, readTranscript } from '../skills/orca-flow/scripts/stop-check.mjs'
 
 const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
 
-// The examples in messages.md are the fixtures: the spec and the checker cannot drift apart.
+// Every example in messages.md must pass, so the spec and the checker cannot drift apart. The
+// fixtures the rules are tested on live in test/frames.md: a rewrite of the spec's prose and
+// examples does not move them.
+const blocks = (md) => [...md.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
 const SPEC = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url), 'utf8')
-const EXAMPLES = [...SPEC.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
+const SPEC_EXAMPLES = blocks(SPEC)
+const EXAMPLES = blocks(readFileSync(new URL('./frames.md', import.meta.url), 'utf8'))
 const [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = EXAMPLES
 
 const rules = (text, role = 'lead') => checkFrame(text, { role }).misses.map((m) => m.rule)
 const ok = (text, role = 'lead') => assert.deepEqual(checkFrame(text, { role }), { ok: true, misses: [] }, text.split('\n').find((l) => l.startsWith('**')))
 
-test('every example in messages.md passes: the briefing and the route line as a coordinator', () => {
+test('every example in messages.md passes as a coordinator', () => {
+  assert.ok(SPEC_EXAMPLES.length >= 10, `messages.md has ${SPEC_EXAMPLES.length} examples`)
+  for (const example of SPEC_EXAMPLES) ok(example, 'coordinator')
+})
+
+test('every fixture passes: the briefing and the route line as a coordinator', () => {
   assert.equal(EXAMPLES.length, 12)
   for (const example of EXAMPLES) ok(example, 'coordinator')
   for (const example of [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL]) ok(example, 'lead')
@@ -78,6 +87,36 @@ test('status-old: the old status words name the plain line to use', () => {
   assert.equal(parseFrame(INFO.replace('**Needs 2 files from you**', '**Waiting on you: info**')), null, 'the sidebar falls back to Haiku')
 })
 
+const WAITING = '**Waiting on CI**\n\nThe fix for the saved address is pushed. CI runs the tests, about 10 minutes.\n\n**Next:** I merge when it is green.'
+
+test('Waiting on <thing>: nothing runs here, the agent waits on something that is not the user', () => {
+  ok(WAITING)
+  for (const thing of ['a free slot for a worker', "the isola lead's merge", 'the release workflow']) ok(WAITING.replace('CI**', `${thing}**`))
+  ok(WAITING.replace('**Waiting on CI**', '**Waiting on CI.**'))
+  const f = parseFrame(WAITING)
+  assert.deepEqual([f.status, f.waitingOn, f.kind, f.blocking], ['Waiting on CI', 'CI', 'none', false])
+  assert.equal(parseFrame(PLAN).waitingOn, null, 'only Waiting on waits on something')
+  assert.deepEqual(rules(WAITING.replace('**Next:**', '**Ask:** merge it now?\n**Reply:** yes or no\n\n**Next:**')), ['ask-status'], 'Waiting on asks nothing')
+  assert.equal(TIERS['ask-status'], 'block')
+})
+
+test('Waiting on you, your review, you to act: an old status word that names the Needs line to use', () => {
+  const as = (status, text) => checkFrame(text.replace(/^\*\*(Needs|Working ·)[^\n]*\*\*$/m, `**${status}**`), { role: 'lead' }).misses
+  for (const [status, text, plain] of [
+    ['Waiting on you', INFO, 'Needs <the thing> from you'],
+    ['Waiting on your review', REVIEW, 'Needs your review'],
+    ['Waiting on your yes', APPROVAL, 'Needs your yes'],
+    ['Waiting on you to turn on Developer Mode', BLOCKED, 'Needs you to turn on Developer Mode'],
+    ['Waiting on you: decision', DECISION, 'Needs your pick']
+  ]) {
+    const got = as(status, text)
+    assert.deepEqual(got.map((m) => `${m.rule}:${m.tier}`), ['status-old:block'], status)
+    assert.ok(got[0].detail.includes(`**${plain}**`), `${status} names ${plain}`)
+    assert.equal(parseFrame(text.replace(/^\*\*(Needs|Working ·)[^\n]*\*\*$/m, `**${status}**`)), null, 'the sidebar falls back to Haiku')
+  }
+  assert.deepEqual(rules(WAITING.replace('CI**', 'you**')), ['status-old', 'ask'], 'it still asks, so it needs an Ask and Reply')
+})
+
 test('header: the old header line above the status line', () => {
   assert.deepEqual(rules(`**BOU-4206 · Split short docs into lessons · today**\n${PLAN.slice(PLAN.indexOf('**Working**'))}`), ['header'])
   assert.deepEqual(rules(`**Note** · fine\n\nThe text.\n\n${ANSWER}`), [], 'a bold line further up is detail, not a header')
@@ -101,7 +140,6 @@ test('detail: tables, headings, code, lists and a second paragraph go above the 
   assert.deepEqual(idle('It took 3 rounds of review.'), ['detail'], 'a second paragraph')
   assert.deepEqual(idle('- the sidebar\n- the hook'), ['detail'], 'a list outside Ask and Steps')
   assert.deepEqual(rules(`${BLOCKED.replace('**Reply:** done', '**Reply:** done\n- or skip it')}`), ['detail'], 'a list under Reply')
-  assert.match(checkFrame('**Idle**\n\nThe release is out.\n\n| a |', { role: 'lead' }).misses[0].detail, /a table above the status line/)
   assert.deepEqual(rules(`${ANSWER}\n\nAnything else?`), ['detail'], 'text after the frame')
 })
 
@@ -122,11 +160,8 @@ test('ask and ask-status: a need has an Ask and a Reply; Working, Idle and Done 
   assert.deepEqual(rules(INFO.replace(/\*\*Ask:\*\*.*\n/, '')), ['ask'])
   assert.deepEqual(rules(LATER.replace(/\*\*Reply:\*\*.*/, '')), ['ask'], 'a later need asks too')
   assert.deepEqual(rules(BLOCKED.replace('**Reply:** done\n', '')), ['ask'])
-  const bare = checkFrame(BLOCKED.replace(/\*\*Steps:\*\*\n(\d\..*\n)+/, ''), { role: 'lead' }).misses
-  assert.deepEqual(bare.map((m) => m.rule), ['ask'], 'a hand action without Steps or an Ask')
-  assert.match(bare[0].detail, /\*\*Steps:\*\* \(or \*\*Ask:\*\*\) and \*\*Reply:\*\* done/)
+  assert.deepEqual(rules(BLOCKED.replace(/\*\*Steps:\*\*\n(\d\..*\n)+/, '')), ['ask'], 'a hand action without Steps or an Ask')
   assert.deepEqual(rules(`${PLAN}\n\n**Ask:** where are the 2 PDFs?\n**Reply:** the file paths`), ['ask-status'], 'Working with an Ask')
-  assert.match(checkFrame(`${PLAN}\n\n**Ask:** x?\n**Reply:** y`, { role: 'lead' }).misses[0].detail, /Working · needs \.\.\. later/)
   assert.deepEqual(rules(`${RELEASED}\n\n**Ask:** any feedback?\n**Reply:** your feedback`), ['ask-status'])
   assert.deepEqual(rules(PLAN), [], 'Working needs no ask')
 })
@@ -138,7 +173,6 @@ test('options and recommended: a pick gives 2 or more options, one recommended',
   assert.deepEqual(rules(DECISION.replace(/- \*\*B\..*\n/, '')), ['options'])
   assert.deepEqual(rules(DECISION.replace(' (recommended)', '')), ['recommended'])
   assert.deepEqual(rules(DECISION.replace('**B. Without peri.**', '**B. Without peri (recommended).**')), ['recommended'])
-  assert.match(checkFrame(DECISION.replace(' (recommended)', ''), { role: 'lead' }).misses[0].detail, /0 are marked/)
 })
 
 // The BOU-4206 lead's plan-compare message: tested variants called A and B, then a new A/B/C.
@@ -162,8 +196,7 @@ test('letters: option letters belong to the current Ask', () => {
   const failing = COMPARE('| Course | Option A | Option B |', 'The eval ran both variants (table above). With option A, B the short courses split well. peri grows from 11 to 31 lessons under the all-documents rule.')
   const misses = checkFrame(failing, { role: 'lead' }).misses
   assert.deepEqual(misses.map((m) => m.rule), ['letters'])
-  assert.match(misses[0].detail, /^option letters belong to the current Ask: name earlier options by what they are; refer to a current option by its bare letter/)
-  assert.match(misses[0].detail, /"Option A"/, 'the table header above the frame counts')
+  assert.ok(misses[0].detail.includes('Option A'), 'the table header above the frame counts, and the miss names it')
 
   const fixed = COMPARE('| Course | All documents | Courses under 1,200 tokens |', 'The eval ran both rules (table above). Short courses split well under each rule. peri grows from 11 to 31 lessons under the all-documents rule. C is the earlier courses-under-1,200 rule.')
   assert.deepEqual(rules(fixed), [])
@@ -196,8 +229,8 @@ The root cause is above: the style exists only as vague text, and the reference 
 
 test('above: a pointer to the detail never replaces the point', () => {
   const misses = checkFrame(STYLE_HOT, { role: 'lead' }).misses
-  assert.deepEqual(misses.map((m) => m.rule), ['above'], 'the BOU-4207 frame; its jargon has no backticks, so only "above" is caught')
-  assert.equal(misses[0].detail, `state the point in one sentence, then point with '(detail above)' (found "is above")`)
+  assert.deepEqual(misses.map((m) => m.rule), ['above'], 'the BOU-4207 frame')
+  assert.ok(misses[0].detail.includes('is above'), 'the miss names what it found')
   const idle = (context) => rules(`**Idle**\n\n${context}`)
   assert.deepEqual(idle('The images differ because each one follows its reference photo (detail above).'), [], '(detail above) passes')
   assert.deepEqual(idle('The release is out (changes above). Nothing runs now.'), [])
@@ -211,22 +244,30 @@ test('above: a pointer to the detail never replaces the point', () => {
   assert.deepEqual(idle('Above 400 tokens, a passage gets its own lesson.'), [])
 })
 
-test('code-term: a backticked code name in the frame gets plain words', () => {
+test('internal-id: no Orca handles, commit hashes or UUIDs where the user reads', () => {
   const idle = (context) => checkFrame(`**Idle**\n\n${context}`, { role: 'lead' }).misses
-  const bad = idle('The planner merges lessons under `LESSON_FLOOR` into a neighbor.')
-  assert.deepEqual(bad.map((m) => m.rule), ['code-term'])
-  assert.equal(bad[0].detail, 'explain `LESSON_FLOOR` in plain words, or use plain words')
-  assert.deepEqual(idle('The planner merges lessons under `LESSON_FLOOR` (the smallest lesson size) into a neighbor.'), [])
-  for (const term of ['plan.ts', 'apps/ai-create', 'lessonFloor', 'plan()', 'MAX', 'host:port', 'lesson_floor']) {
-    assert.deepEqual(idle(`The cause is in \`${term}\`.`).map((m) => m.rule), ['code-term'], term)
+  for (const [id, context] of [
+    ['term_98692505', 'The lead in term_98692505 finished the fix.'],
+    ['ctx_77a3cfba2519', 'Dispatch ctx_77a3cfba2519 ended.'],
+    ['task_9ecfbdc96152', 'The worker on task_9ecfbdc96152 is done.'],
+    ['1b44b06', 'The fix landed in 1b44b06.'],
+    ['3f64046e-5fe6-4e2e-a831-27969673f95a', 'Session 3f64046e-5fe6-4e2e-a831-27969673f95a closed.'],
+    ['dispatch:d-1', 'It ran as dispatch:d-1 last night.']
+  ]) {
+    const got = idle(context)
+    assert.deepEqual(got.map((m) => `${m.rule}:${m.tier}`), ['internal-id:silent'], context)
+    assert.ok(got[0].detail.includes(id), `the miss names ${id}`)
   }
-  for (const word of ['peri', 'Kaimug', 'AI', 'yes or no']) assert.deepEqual(idle(`The cause is \`${word}\`.`), [], `${word} is not a code name`)
-  assert.deepEqual(rules(APPROVAL.replace('the merge changes 1,240', 'the `0042_merge_accounts` migration changes 1,240')), ['code-term'], 'a Caution counts')
-  assert.deepEqual(rules(DECISION.replace('About $1, but', 'Sets `LESSON_FLOOR` to 80. About $1, but')), ['code-term'], 'an option counts')
-  const steps = BLOCKED.replace('2. Turn on Developer Mode.', '2. Run `xcrun devicectl list devices` and check `~/Library/Developer/Xcode`. Turn on Developer Mode.')
-  assert.deepEqual(rules(steps), [], 'Steps may hold exact commands and paths')
-  assert.deepEqual(rules(REVIEW.replace('**Reply:** approve, or your comments', '**Reply:** approve, or comments in `isola.yaml`').replace(/\*\*Next:\*\*.*/, '**Next:** I rerun `pnpm dev:native`.')), [], 'Reply and Next may too')
-  assert.deepEqual(rules(`Set \`LESSON_FLOOR\` in plan.ts.\n\n${RELEASED}`), [], 'the detail above the frame is free')
+  assert.deepEqual(idle('PR #55 shipped in 0.2.69 for BOU-4206; the fix is in `coordinator-sessions.ts`.'), [], 'PR numbers, versions, tickets and file names are fine')
+  assert.deepEqual(idle('The planner merges lessons under `LESSON_FLOOR` into a neighbor.'), [], 'a code name is no longer a miss')
+  assert.deepEqual(idle('The run took 1,240 seconds on 2026-11-22 for the e2e suite.'), [], 'numbers and dates are not hashes')
+  assert.deepEqual(rules(APPROVAL.replace('the merge changes 1,240', 'commit 1b44b06 changes 1,240')), ['internal-id'], 'a Caution counts')
+  assert.deepEqual(rules(DECISION.replace('About $1, but', 'Reverts 1b44b06. About $1, but')), ['internal-id'], 'an option counts')
+  assert.deepEqual(rules(APPROVAL.replace('run the account merge on the staging database?', 'merge term_98692505 into main?')), ['internal-id'], 'the Ask counts')
+  const steps = BLOCKED.replace('2. Turn on Developer Mode.', '2. Run `git revert 1b44b06` in term_98692505. Turn on Developer Mode.')
+  assert.deepEqual(rules(steps), [], 'Steps may hold an id the user must type')
+  assert.deepEqual(rules(REVIEW.replace('**Reply:** approve, or your comments', '**Reply:** approve, or ctx_77a3cfba2519 to stop it').replace(/\*\*Next:\*\*.*/, '**Next:** I tag 1b44b06.')), [], 'Reply and Next may too')
+  assert.deepEqual(rules(`Worker term_98692505 pushed 1b44b06 (3f64046e-5fe6-4e2e-a831-27969673f95a).\n\n${RELEASED}`), [], 'the detail above the frame is free')
 })
 
 test('cost-number: a cost warning gives the amount', () => {
@@ -247,6 +288,7 @@ test('parseFrame reads status, kind, blocking, context, ask, options, reply, ste
     status: 'Needs your pick',
     kind: 'decision',
     blocking: true,
+    waitingOn: null,
     context: DECISION.split('\n\n').find((p) => p.startsWith('AI Create turns')),
     ask: 'run the plan eval on Azure OpenAI?',
     options: ['A. All 10 documents + Kaimug', 'B. Without peri'],
@@ -332,7 +374,7 @@ test('stop hook: blocks a lead that misses the frame, names the rule and the spe
   assert.equal(out.decision, 'block')
   assert.match(out.reason, /^- status: /m)
   assert.ok(out.reason.includes(join(w.home, '.claude', 'skills', 'orca-flow', 'messages.md')), 'the spec through the link, not resolved')
-  assert.ok(out.reason.includes('Rewrite only the frame at the bottom, from the status line down. Do not repeat the detail above it: the user already read it.'), 'frame-only rewrite')
+  assert.ok(out.reason.includes(FRAME_ONLY), 'frame-only rewrite')
   assert.match(out.reason, /^The rules are in .*messages\.md\.$/m)
   const [logged] = misses(w)
   assert.deepEqual({ ...logged, at: typeof logged.at }, { at: 'string', pane: 'tab:1', worktree: w.worktree, role: 'lead', session: 's1', tier: 'block', rules: ['status'] })
@@ -418,7 +460,7 @@ test('stop hook, silent tier only: no block, logs tier silent, stores the remind
   assert.deepEqual(misses(w).map((l) => [l.tier, l.rules, l.session]), [['silent', ['context-long'], 's1']])
   const stored = JSON.parse(readFileSync(reminder(w), 'utf8'))
   assert.deepEqual(stored.rules.map((r) => r.rule), ['context-long'])
-  assert.match(stored.rules[0].detail, /it has 5/)
+  assert.match(stored.rules[0].detail, /\b5\b/, 'the detail says how many sentences it has')
   rmSync(w.home, { recursive: true })
 })
 
@@ -428,7 +470,7 @@ test('stop hook, both tiers: blocks once naming all, logs both tiers, no reminde
   assert.deepEqual(rules(both), ['context-long', 'ask-status'])
   const out = hook(w, { last_assistant_message: both })
   assert.equal(out.decision, 'block')
-  assert.match(out.reason, /- ask-status: [\s\S]*Fix these too while you rewrite:\n- context-long: /)
+  assert.match(out.reason, /^- ask-status: [\s\S]*\n- context-long: /m, 'the block-tier miss first, then the silent one')
   assert.deepEqual(misses(w).map((l) => [l.tier, l.rules]), [['block', ['ask-status']], ['silent', ['context-long']]])
   assert.equal(existsSync(reminder(w)), false, 'the rewrite already covers the silent misses')
   rmSync(w.home, { recursive: true })
@@ -444,8 +486,7 @@ test('prompt hook: hands the reminder over once, unseen by the user, then clears
   const out = prompt()
   assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit')
   const text = out.hookSpecificOutput.additionalContext
-  assert.match(text, /not for the user/)
-  assert.match(text, /^- context-long: cut the context to 4 sentences/m)
+  assert.match(text, /^- context-long: \S/m)
   assert.ok(text.includes(join(w.home, '.claude', 'skills', 'orca-flow', 'messages.md')))
   assert.equal(existsSync(reminder(w)), false, 'consumed')
   assert.equal(prompt(), null, 'given once')

@@ -18,8 +18,8 @@ const haiku = (over: Partial<AgentSummary> = {}) => ({
 })
 const guessed = haiku({ needs: { type: 'decision', ask: 'Open item 1?', options: [] }, glance: 'Open item 1?' })
 
-// The examples in skills/orca-flow/messages.md, in its order.
-const spec = readFileSync(new URL('../skills/orca-flow/messages.md', import.meta.url).pathname, 'utf8')
+// The frame fixtures (test/frames.md), in their order.
+const spec = readFileSync(new URL('../test/frames.md', import.meta.url).pathname, 'utf8')
 const [DECISION, STYLE, INFO, PLAN, LATER, BLOCKED, REVIEW, RELEASED, ANSWER, APPROVAL, BRIEFING, ROUTE] = [...spec.matchAll(/```markdown\n([\s\S]*?)\n```/g)].map((m) => m[1])
 
 test('a framed pick: decision, the Ask, option labels, the Reply and the status line', () => {
@@ -77,9 +77,9 @@ test('Working, Idle, a Briefing and a route line ask nothing, whatever Haiku gue
   assert.equal(coordinator(BRIEFING).role, 'coordinator')
 })
 
-test("an invalid frame, the old shape, a worker, or a chat keeps Haiku's ask", () => {
-  const broken = lead(DECISION.replace(' (recommended)', ''))
-  assert.equal(frameAsk(broken), null, 'a pick with no recommended option is not a valid frame')
+test("an unreadable frame, the old shape, a worker, or a chat keeps Haiku's ask", () => {
+  const broken = lead(DECISION.replace('**Reply:** A, B or no', ''))
+  assert.equal(frameAsk(broken), null, 'a pick with no Reply is a block-tier miss')
   assert.deepEqual(withFrame(broken, guessed), { ...guessed, source: 'summarizer' })
   const old = '**BOU-4206 · Split · today**\n**Status:** Waiting on you: approval\n\n**Ask:** run the eval?\n**Reply:** yes or no\n**Next:** I run it.'
   assert.deepEqual(withFrame(lead(old), guessed), { ...guessed, source: 'summarizer' }, 'the old header + Status shape')
@@ -122,4 +122,25 @@ test('a lead the user recorded (orca-flow role lead) is a lead on the card; work
   assert.equal(roleOf(preamble, [], null, '/h/orca/coordinators', 'lead'), 'lead')
   assert.equal(roleOf(preamble, [], null, '/h/orca/coordinators', null), 'worker')
   assert.equal(roleOf('hi', [], '/h/orca/coordinators/x', '/h/orca/coordinators', 'lead'), 'coordinator')
+})
+
+test('a frame with only style misses still decides the ask', () => {
+  // No option marked (recommended), a 5-sentence context, a code hash: all silent misses.
+  const styled = DECISION.replace(' (recommended)', '').replace('Your decision on the fix itself is held until this test ends.', 'Your decision on the fix itself is held until this test ends. The fix sits in 1b44b06. It took 2 days.')
+  const framed = frameAsk(lead(styled))
+  assert.equal(framed?.needs.type, 'decision')
+  assert.deepEqual(framed?.needs.options, ['A. All 10 documents + Kaimug', 'B. Without peri'])
+  assert.equal(withFrame(lead(styled), guessed).source, 'frame')
+  const long = lead(PLAN.replace(/\n\n\*\*Working\*\*\n\n([^\n]+)/, (_, c) => `\n\n**Working**\n\n${c} One. Two. Three. Four.`))
+  assert.deepEqual(withFrame(long, guessed).needs, { type: 'none', ask: '', options: [] }, 'a long Working context still clears a guessed ask')
+})
+
+test('Waiting on <thing> asks nothing and names what the card watches', () => {
+  const waiting = (thing: string) => lead(`**Waiting on ${thing}**\n\nThe fix for the saved address is pushed. CI runs the tests, about 10 minutes.`)
+  assert.deepEqual(frameAsk(waiting('CI')), { needs: { type: 'none', ask: '', options: [] }, reply: '', status: 'Waiting on CI', waitingOn: 'CI' })
+  const card = withFrame(waiting('CI'), { ...guessed, watching: 'tests' })
+  assert.deepEqual([card.needs.type, card.glance, card.watching, card.status, card.source], ['none', '', 'CI', undefined, 'frame'])
+  assert.equal(withFrame(waiting('a free slot for a worker to start the eval run'), haiku()).watching, 'a free slot for a worker…', 'clipped to six words')
+  assert.equal(withFrame(lead(PLAN), haiku({ watching: 'its workers' })).watching, 'its workers', "Working keeps Haiku's watching")
+  assert.equal(frameAsk(lead('**Waiting on your review**\n\nPR #55 is up.\n\n**Ask:** review PR #55?\n**Reply:** approve, or your comments')), null, 'Waiting on your ... is an old status word')
 })

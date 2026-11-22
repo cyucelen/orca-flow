@@ -24,7 +24,7 @@ const AGENTS = join(DATA_DIR, 'agents')
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 9
+export const SUMMARIZER_VERSION = 10
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -34,7 +34,7 @@ export const SUMMARY_SCHEMA = {
     title: { type: 'string', description: 'The workstream in 2-5 words, stable across turns, never the latest step' },
     about: { type: 'string', description: 'One sentence on what this workstream is for, stable across turns' },
     goal: { type: 'string', description: 'One sentence: the outcome the user asked for' },
-    since: { type: 'string', description: 'At most 25 words: what concretely changed in the latest turn' },
+    since: { type: 'string', description: 'At most 25 words, in everyday words: the outcome or problem of the latest turn first, what changed for the user' },
     needs: {
       type: 'object',
       additionalProperties: false,
@@ -62,7 +62,7 @@ Rules:
 - "watching": when the turn ended waiting on something other than the user (tests, CI, a deploy, workers it started), name it in at most 4 words; otherwise empty.
 - Never put ids, hashes, terminal names, file paths or URLs in title, about, glance or watching.
 - Be concrete in "since": name PRs, tests, numbers. No filler, no "the agent".
-- "since" is what changed in the latest turn only.
+- "since" is what changed in the latest turn only, in plain everyday words: the outcome or the problem first ("Checkout no longer drops the saved address; PR #55 is up"), what changed for the user. Not the orchestration steps that got there ("started a worker", "sent a status note", "worker_done", dispatch or run ids).
 - "needs" and "glance" come ONLY from the agent's final message of the latest turn. An ask, action or question from the earlier turn, or from earlier in the latest turn, that the final message does not repeat is not current: needs.type "none" and glance "". The earlier turn is context for "title", "about" and "goal" only.
 - An optional invitation or offer is not an ask: "let me know if…", "tell me how", "if you'd rather…, tell me", "say the word if…", "happy to … if you want" means needs.type "none" and glance "". Only a question or to-do the agent actually waits on counts.
 - "needs": what the agent is waiting on from the user right now. "none" if the turn ended with work finished and nothing asked, and "none" when it is waiting on something else: workers it started, a background job, a long-running command, CI. Only a question, a decision or something for the user to do counts. "approval" = yes/no on something prepared; "decision" = choose between options; "review" = look at a diff/PR/result; "info" = a fact only the user has; "action" = something only the user can do outside the chat (change a setting, run a command, log in somewhere, rename a project), often with "tell me when done". Ask ONE question in at most 25 words; if the agent asked several, ask the most important and say "(+2 more)". Options are 1-5 word labels like "Merge", "Keep both", "Ask each time", never sentences.
@@ -214,14 +214,14 @@ function writeJson(path: string, value: unknown): void {
  * coordinator they show the same ask twice. So a coordinator's card asks only what the user must
  * answer to the coordinator itself.
  */
-export const COORDINATOR_ASKS = `This agent is a COORDINATOR: it routes work to leads and workers, which have their own cards. For "needs", count only a question the user must answer TO THE COORDINATOR ITSELF: which project or coordinator takes a request, approving a worktree removal, approving freeing memory or stopping a session, a conflict between two workstreams, or a fact it needs before it can start work; or an "action" the user must do for the coordinator itself outside the chat ("rename the project in Orca's settings, tell me when done"). Every decision about a workstream a lead owns (reviewing or merging its PR, picking an option, approving its release) is the lead's ask, on the lead's card, even when the coordinator repeats it. A question it relays or summarizes from a lead or worker (from a lead's status note, a "stopped without reporting" notice or the queue), or one that tells the user to answer, try or review something in another agent's chat, is NOT its ask: set needs.type "none" and glance "" (name what it waits on in "watching", e.g. "lead's review").`
+export const COORDINATOR_ASKS = `This agent is a COORDINATOR: it routes work to leads and workers, which have their own cards. For "needs", count only a question the user must answer TO THE COORDINATOR ITSELF: which project or coordinator takes a request, approving a worktree removal, approving freeing memory or stopping a session, a conflict between two workstreams, or a fact it needs before it can start work; or an "action" the user must do for the coordinator itself outside the chat ("rename the project in Orca's settings, tell me when done"). Every decision about a workstream a lead owns (reviewing or merging its PR, picking an option, approving its release) is the lead's ask, on the lead's card, even when the coordinator repeats it. A question it relays or summarizes from a lead or worker (from a lead's status note, a "stopped without reporting" notice or the queue), or one that tells the user to answer, try or review something in another agent's chat, is NOT its ask: set needs.type "none" and glance "" (name what it waits on in "watching", e.g. "lead's review"). In "since", say what changed in the workstreams in plain words (a PR merged, a lead found the cause), not which agents it started or messaged.`
 
 /**
  * A dispatched worker reports to the agent that dispatched it. Its report's "Decision for you",
  * question or review is for that lead (which shows it, or asks the user, itself); on the worker it
  * showed an ask nobody was waiting on.
  */
-export const WORKER_ASKS = `This agent is a dispatched WORKER: a lead or coordinator dispatched it and it reports to that lead, not to the user. A decision, question, review or to-do in its report ("Decision for you: …", "Left for you: …", "Should we …?") is addressed to its lead, which decides or asks the user itself: set needs.type "none" and glance "". Count a need only when the worker is genuinely blocked waiting in its own chat on the user before it can finish its task (a permission, a fact only the user has), not when its final message is its report.`
+export const WORKER_ASKS = `This agent is a dispatched WORKER: a lead or coordinator dispatched it and it reports to that lead, not to the user. A decision, question, review or to-do in its report ("Decision for you: …", "Left for you: …", "Should we …?") is addressed to its lead, which decides or asks the user itself: set needs.type "none" and glance "". Count a need only when the worker is genuinely blocked waiting in its own chat on the user before it can finish its task (a permission, a fact only the user has), not when its final message is its report. In "since", say what the worker found or changed, not that it reported.`
 
 /** Stated as a fact when the latest turn ran `orca orchestration send --type worker_done`. */
 export const WORKER_REPORTED = `FACT: in the latest turn this worker sent worker_done to its lead: its task is over and its final message is its report to that lead. needs.type is "none" and glance is "".`
@@ -256,15 +256,17 @@ const NO_ASK: Needs = { type: 'none', ask: '', options: [] }
  * (skills/orca-flow/messages.md); null for another role or a message without one. Its kind comes
  * from the frame's shape (frame.mjs), its status line is kept for Up next's label, and an ask
  * under `Working · needs ... later` is not blocking. Working, Idle, Done and a route line ask
- * nothing. A hand action without an Ask takes its ask from the status line ("Needs you to turn on
- * Developer Mode"), else from the context's first sentence, with "Done" as the button when the
- * Reply line is "done".
+ * nothing; `Waiting on <thing>` asks nothing and gives what it waits on. A hand action without an
+ * Ask takes its ask from the status line ("Needs you to turn on Developer Mode"), else from the
+ * context's first sentence, with "Done" as the button when the Reply line is "done".
+ * Only a block-tier miss (the status, ask or reply cannot be read) sets the frame aside: a style
+ * miss, such as a 5-sentence context, still reads exactly.
  */
-export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string; status: string } | null {
+export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Needs; reply: string; status: string; waitingOn?: string } | null {
   if ((d.role !== 'coordinator' && d.role !== 'lead') || !d.lastMessage.trim()) return null
-  if (!checkFrame(d.lastMessage, { role: d.role }).ok) return null
+  if (checkFrame(d.lastMessage, { role: d.role }).misses.some((m) => m.tier === 'block')) return null
   const f = parseFrame(d.lastMessage)
-  if (!f || f.kind === 'none') return { needs: NO_ASK, reply: '', status: f?.status ?? '' }
+  if (!f || f.kind === 'none') return { needs: NO_ASK, reply: '', status: f?.status ?? '', ...(f?.waitingOn ? { waitingOn: f.waitingOn } : {}) }
   const type = f.kind as Needs['type']
   const reply = f.reply ?? ''
   const options = type === 'action' && /^done\.?$/i.test(reply) ? ['Done'] : f.options
@@ -273,6 +275,12 @@ export function frameAsk(d: Pick<Digest, 'role' | 'lastMessage'>): { needs: Need
   const first = sentencesOf(f.context)[0]?.replace(/\s*\([^()]*\babove\)/g, '')
   const ask = f.ask ?? (type !== 'action' ? '' : todo ? `${todo.charAt(0).toUpperCase()}${todo.slice(1)}.` : first ? `${first}.` : '')
   return { needs: { type, ask, options, ...(f.blocking ? {} : { blocking: false }) }, reply, status: f.status }
+}
+
+/** At most n words, with … when some were cut. */
+const clipWords = (s: string, n: number) => {
+  const w = s.trim().split(/\s+/)
+  return w.length > n ? `${w.slice(0, n).join(' ')}…` : w.join(' ')
 }
 
 const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4))
@@ -290,16 +298,18 @@ export function shortAsk(ask: string): string {
  * A valid frame decides the ask, not Haiku: needs and reply come from the frame, and Haiku's glance
  * stays only when it is about the same ask (same type, a word in common), else the Ask's short
  * form. `source` says where the ask came from, so drift between the two shows on the card.
+ * `Waiting on <thing>` names what the card is watching, in at most six words.
  */
-export function withFrame<S extends { needs: Needs; glance?: string }>(d: Pick<Digest, 'role' | 'lastMessage'>, summary: S): S & { reply?: string; status?: string; source: 'frame' | 'summarizer' } {
+export function withFrame<S extends { needs: Needs; glance?: string; watching?: string }>(d: Pick<Digest, 'role' | 'lastMessage'>, summary: S): S & { reply?: string; status?: string; source: 'frame' | 'summarizer' } {
   const framed = frameAsk(d)
   if (!framed) return { ...summary, source: 'summarizer' }
-  const { needs, reply, status } = framed
+  const { needs, reply, status, waitingOn } = framed
   const theirs = summary.glance ?? ''
   const same = summary.needs?.type === needs.type && [...words(theirs)].some((w) => words(needs.ask).has(w))
   const glance = needs.type === 'none' ? '' : same ? theirs : shortAsk(needs.ask)
   const asks = needs.type !== 'none'
-  return { ...summary, needs, glance, ...(asks && reply ? { reply } : {}), ...(asks ? { status } : {}), source: 'frame' }
+  const watching = waitingOn ? clipWords(waitingOn, 6) : undefined
+  return { ...summary, needs, glance, ...(watching ? { watching } : {}), ...(asks && reply ? { reply } : {}), ...(asks ? { status } : {}), source: 'frame' }
 }
 
 /** Validate before facts/frame overrides and before any write; reject unknown metadata too. */

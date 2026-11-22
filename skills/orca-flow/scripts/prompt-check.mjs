@@ -32,9 +32,9 @@ export function remind(input, { env = process.env, home = homedir(), script = pr
   const rules = Array.isArray(entry?.rules) ? entry.rules.filter((r) => r && typeof r.rule === 'string') : []
   if (!rules.length) return null
   const text = [
-    'Orca Flow message-format note for you, not for the user (do not mention or answer it): your last message to the user missed these frame rules.',
+    'A note from Orca Flow for you, not for the user (do not mention or answer it). Your last message broke these format rules:',
     ...rules.map((r) => `- ${r.rule}: ${r.detail ?? ''}`.trimEnd()),
-    `Keep them in your next message. Do not rewrite the last one. The rules are in ${specOf(script)}.`
+    `Follow them in your next message. Leave the last one as it is. The rules are in ${specOf(script)}.`
   ].join('\n')
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }
 }

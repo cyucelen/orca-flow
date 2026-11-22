@@ -8,6 +8,8 @@ export type Frame = {
   kind: 'decision' | 'approval' | 'review' | 'info' | 'action' | 'none'
   /** False for an ask under `Working · needs ... later`, and for no ask. */
   blocking: boolean
+  /** What a `Waiting on <thing>` status waits on ('CI'); null for every other status. */
+  waitingOn: string | null
   context: string
   ask: string | null
   options: string[]
@@ -25,8 +27,7 @@ export const CONTEXT_SENTENCES: number
 export const COST: RegExp
 export const LETTERED: RegExp[]
 export const ABOVE: RegExp[]
-export const CODE_TERM: RegExp
-export function isCodeIdentifier(term: string): boolean
+export const INTERNAL_ID: RegExp[]
 export function sentencesOf(text: string): string[]
 export function checkFrame(text: string, options?: { role?: string }): { ok: boolean; misses: Miss[] }
 export function parseFrame(text: string): Frame | null

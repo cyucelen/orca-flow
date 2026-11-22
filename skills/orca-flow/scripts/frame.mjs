@@ -6,13 +6,15 @@
 // context paragraph that says why first, then the Ask with its options and Reply when there is an
 // ask. Steps for a hand action, Warning or Caution only when needed, Next last and only when
 // needed. Detail goes above the frame.
+// Each miss's detail is a short, plain instruction the agent can follow as it reads.
 
 /**
- * The status lines: Working, Idle and Done as they are; `Working · needs <thing> later` for an ask
- * that does not stop the work; `Needs <plain words>` for one that does (`Needs you to <action>` for
- * a hand action).
+ * The status lines: Working, Idle and Done as they are; `Waiting on <thing>` when nothing runs here
+ * and the agent waits on something that is not the user (CI, a free slot, another lead's merge);
+ * `Working · needs <thing> later` for an ask that does not stop the work; `Needs <plain words>` for
+ * one that does (`Needs you to <action>` for a hand action).
  */
-export const STATUS_WORDS = ['Working', 'Idle', 'Done', 'Working · needs <thing> later', 'Needs <plain words>']
+export const STATUS_WORDS = ['Working', 'Waiting on <thing>', 'Idle', 'Done', 'Working · needs <thing> later', 'Needs <plain words>']
 /** The ask kinds, derived from the frame's shape; the user never sees them. */
 export const ASK_TYPES = ['decision', 'approval', 'review', 'info', 'action']
 /** Status words from before round 4, and the plain line that replaces each. */
@@ -24,6 +26,16 @@ export const OLD_STATUS = {
   'Waiting on you': 'Needs <the thing> from you',
   Blocked: 'Needs you to <action>',
   'Ready for review': 'Needs your review'
+}
+/**
+ * `Waiting on you`, `Waiting on your review`, `Waiting on you to restart`: the user is never a thing
+ * the agent waits on; a need of the user's is a `Needs ...` line. The plain line for each, or null.
+ */
+function waitingOnYou(status) {
+  if (Object.hasOwn(OLD_STATUS, status)) return OLD_STATUS[status]
+  const m = /^Waiting on you(?:(r)\s+(\S.*)|\s+to\s+(\S.*)|\b.*)$/.exec(status)
+  if (!m) return null
+  return m[1] ? `Needs your ${m[2]}` : m[3] ? `Needs you to ${m[3]}` : 'Needs <the thing> from you'
 }
 /** Every bold label a frame line may start with. */
 export const LABELS = ['Ask', 'Reply', 'Steps', 'Warning', 'Caution', 'Next']
@@ -45,15 +57,21 @@ export const COST = /cost|credit|money|\$|€/i
 // Above a number is a comparison ("the cost is above $5"), not a pointer.
 export const ABOVE = [/^(?:as |see )?above\b(?!\s*[\d$€~])/i, /\b(?:is|are|see|as|shown|listed|described)\s+above\b(?!\s*[\d$€~])/i]
 /**
- * A backticked code identifier: it holds _ . / : or (), is camelCase, or is ALL_CAPS of 3+ letters.
- * Plain words in a parenthesis right after it explain it: `LESSON_FLOOR` (the smallest lesson size).
+ * Internal ids the user cannot use: Orca handles (term_…, ctx_…, task_…, run_…, msg_…,
+ * dispatch:<id>), UUIDs and commit hashes (7-40 lowercase hex with a digit and a letter). PR
+ * numbers, versions, ticket ids and file names have none of these shapes.
  */
-export const CODE_TERM = /`([^`\n]+)`(?!\s*\([^)]*[a-z][^)]*\))/g
-export const isCodeIdentifier = (term) => /[_./:]|\(\)|[a-z][A-Z]/.test(term) || /^[A-Z]{3,}$/.test(term)
+export const INTERNAL_ID = [
+  /\b(?:term|ctx|task|run|msg)_(?=[0-9a-z-]*\d)[0-9a-z-]{4,}/i,
+  /\bdispatch:\s*[\w-]+/i,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+  /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/
+]
 
-const PLAIN = /^(?:Working|Idle|Done|Working · needs \S.* later|Needs \S.*)$/
+const PLAIN = /^(?:Working|Idle|Done|Working · needs \S.* later|Needs \S.*|Waiting on \S.*)$/
 const LATER = /^Working · needs \S.* later$/
 const HAND = /^Needs you to /
+const WAITING = /^Waiting on (\S.*)$/
 /** A status phrase, new or old, without one trailing period; null when the text is none. */
 const phraseOf = (text) => {
   const phrase = text.trim().replace(/\.$/, '')
@@ -90,10 +108,12 @@ const oldStatusOf = (line) => (labelOf(line) === 'Status' ? phraseOf(valueOf(lin
 
 /** What a status line says about the ask: whether it stops the work, and whether it is a hand action. */
 function statusKind(status) {
-  const old = Object.hasOwn(OLD_STATUS, status)
-  const plain = old ? OLD_STATUS[status] : status
+  const replacement = waitingOnYou(status)
+  const old = replacement !== null
+  const plain = old ? replacement : status
   return {
     old,
+    replacement,
     asks: plain.startsWith('Needs ') || LATER.test(plain),
     blocking: plain.startsWith('Needs '),
     hand: HAND.test(plain),
@@ -187,7 +207,7 @@ export const TIERS = {
   label: 'silent',
   recommended: 'silent',
   above: 'silent',
-  'code-term': 'silent',
+  'internal-id': 'silent',
   'cost-number': 'silent',
   'next-last': 'silent'
 }
@@ -198,7 +218,7 @@ const miss = (rule, detail) => ({ rule, tier: TIERS[rule], detail })
  * Checks the last message of a turn against the frame. `role` is 'coordinator', 'lead' or another
  * role: only a coordinator may write route lines or a numbered list of waiting items.
  * Returns { ok, misses: [{ rule, tier, detail }] }; TIERS gives each rule's tier. Rules: status, header, context, context-long, detail,
- * label, ask, ask-status, options, recommended, letters, above, code-term, cost-number, next-last,
+ * label, ask, ask-status, options, recommended, letters, above, internal-id, cost-number, next-last,
  * status-old, status-label.
  */
 export function checkFrame(text, { role } = {}) {
@@ -208,23 +228,23 @@ export function checkFrame(text, { role } = {}) {
   if (coordinator && filled.length > 0 && filled.every((l) => ROUTE.test(l.line))) return { ok: true, misses: [] }
 
   const frame = findFrame(lines, { old: true })
-  if (!frame) return { ok: false, misses: [miss('status', `end with a bold status line that names the need in plain words: ${STATUS_WORDS.map((w) => `**${w}**`).join(', ')}`)] }
+  if (!frame) return { ok: false, misses: [miss('status', `End with a bold status line of its own that says in plain words what goes on or what you need, one of: ${STATUS_WORDS.map((w) => `**${w}**`).join(', ')}.`)] }
 
   const misses = []
   const before = lines.slice(0, frame.at).filter((l) => !l.fenced && l.line !== '').at(-1)?.line ?? ''
-  if (BOLD.test(before) && before.includes(' · ')) misses.push(miss('header', 'remove the header line (ticket · workstream · level) above the status'))
+  if (BOLD.test(before) && before.includes(' · ')) misses.push(miss('header', 'Remove the header line (ticket · workstream · level) above the status line.'))
 
   const status = frame.status
   const said = statusKind(status)
-  if (said.old) misses.push(miss('status-old', `write the need in plain words: **${OLD_STATUS[status]}**, not "${status}"`))
+  if (said.old) misses.push(miss('status-old', `Write **${said.replacement}** instead of "${status}".`))
 
-  if (frame.old) misses.push(miss('status-label', `write the status as a bold line of its own, **${said.old ? OLD_STATUS[status] : status}**, not after a **Status:** label`))
+  if (frame.old) misses.push(miss('status-label', `Put the status on a bold line of its own, **${said.old ? said.replacement : status}**, not after a **Status:** label.`))
 
   const parts = partsOf(frame)
-  if (parts.context.length === 0) misses.push(miss('context', 'add a context paragraph of 2-4 sentences under the status line'))
+  if (parts.context.length === 0) misses.push(miss('context', 'Add a short paragraph under the status line: 2 to 4 sentences, why it matters first.'))
   else {
     const n = sentencesOf(parts.context.join(' ')).length
-    if (n > CONTEXT_SENTENCES) misses.push(miss('context-long', `cut the context to ${CONTEXT_SENTENCES} sentences (it has ${n}); move detail above the frame`))
+    if (n > CONTEXT_SENTENCES) misses.push(miss('context-long', `Cut the paragraph under the status line to ${CONTEXT_SENTENCES} sentences (it has ${n}). Move the rest above the status line.`))
   }
 
   const lists = parts.before.filter((l) => LIST.test(l))
@@ -234,27 +254,28 @@ export function checkFrame(text, { role } = {}) {
   if (parts.fences || stray.length || parts.after.length || misplaced.length) {
     const what = [parts.fences && 'code', stray.some((l) => l.startsWith('|')) && 'a table', stray.some((l) => l.startsWith('#')) && 'a heading',
       (stray.some((l) => LIST.test(l)) || misplaced.length) && 'a list', (stray.some((l) => !LIST.test(l) && !/^[|#]/.test(l)) || parts.after.length) && 'a second paragraph'].filter(Boolean)
-    misses.push(miss('detail', `move ${what.join(', ')} above the status line; the frame only points to it ("table above")`))
+    misses.push(miss('detail', `Move ${what.join(', ')} above the status line. Below it, point there in a few words, for example: (table above).`))
   }
 
-  for (const b of parts.blocks) if (!LABELS.includes(b.label)) misses.push(miss('label', `drop the **${b.label}:** label; its content goes in the context paragraph`))
+  for (const b of parts.blocks) if (!LABELS.includes(b.label)) misses.push(miss('label', `Drop the **${b.label}:** label. Put what it says in the paragraph under the status line.`))
 
   const has = (label) => parts.blocks.some((b) => b.label === label)
   if (said.hand && (!has('Reply') || !(has('Steps') || has('Ask')))) {
-    misses.push(miss('ask', `"${status}" needs **Steps:** (or **Ask:**) and **Reply:** done`))
+    misses.push(miss('ask', `Under "${status}", list what to do as numbered **Steps:** (or write an **Ask:**), then add the line **Reply:** done.`))
   } else if (said.asks && !said.hand && (!has('Ask') || !has('Reply'))) {
-    misses.push(miss('ask', `"${status}" needs ${[!has('Ask') && '**Ask:**', !has('Reply') && '**Reply:**'].filter(Boolean).join(' and ')}`))
+    const add = [!has('Ask') && 'an **Ask:** line with the question', !has('Reply') && 'a **Reply:** line under it with the words to send back, for example: **Reply:** yes or no']
+    misses.push(miss('ask', `Add ${add.filter(Boolean).join(', and ')}.`))
   }
   if (!said.asks && has('Ask')) {
-    misses.push(miss('ask-status', `an **Ask:** needs a status that names the need: **Needs ...**, or **Working · needs ... later** while work goes on (not ${status})`))
+    misses.push(miss('ask-status', `"${status}" asks nothing, so the sidebar would not show the Ask. Change the status to **Needs ...**, or **Working · needs ... later** while work goes on, or remove the Ask.`))
   }
 
   const options = parts.blocks.filter((b) => b.label === 'Ask').flatMap((b) => b.items).filter((l) => OPTION.test(l))
   if (said.asks && (options.length > 0 || said.pick)) {
-    if (options.length < 2) misses.push(miss('options', 'a decision needs 2 or more options as bullets: - **A. ...**'))
+    if (options.length < 2) misses.push(miss('options', 'Give 2 or more options, one per line, for example: - **A. Keep the old rule.** ...'))
     else {
       const marked = options.filter((l) => /\(recommended\)/i.test(l)).length
-      if (marked !== 1) misses.push(miss('recommended', `mark exactly one option (recommended); ${marked} are marked`))
+      if (marked !== 1) misses.push(miss('recommended', `Mark exactly one option (recommended). Now ${marked} are marked.`))
     }
   }
 
@@ -264,7 +285,7 @@ export function checkFrame(text, { role } = {}) {
       .filter((l) => !l.fenced && !OPTION.test(l.line) && labelOf(l.line) !== 'Reply')
       .map((l) => LETTERED.map((re) => re.exec(l.line)?.[0]).find(Boolean))
       .find(Boolean)
-    if (found) misses.push(miss('letters', `option letters belong to the current Ask: name earlier options by what they are; refer to a current option by its bare letter (found "${found}")`))
+    if (found) misses.push(miss('letters', `Letters only name the options of this Ask. Call an earlier option by what it is, and an option here by its letter alone (found "${found}").`))
   }
 
   // Cold readable: someone who reads only the frame, after a week away, understands it.
@@ -272,20 +293,22 @@ export function checkFrame(text, { role } = {}) {
   const pointed = [parts.context.join(' '), ...asks.flatMap((b) => [b.value, ...b.items])]
   const bare = (text) => text.replace(/\([^()]*\babove\)/gi, '')
   const above = pointed.map(bare).map((t) => ABOVE.map((re) => re.exec(t.trim())?.[0]).find(Boolean)).find(Boolean)
-  if (above) misses.push(miss('above', `state the point in one sentence, then point with '(detail above)' (found "${above}")`))
+  if (above) misses.push(miss('above', `Say the point in one sentence, then point to the rest like this: (detail above). Found "${above}".`))
 
-  const termed = [...pointed, ...parts.blocks.filter((b) => b.label === 'Warning' || b.label === 'Caution').map((b) => b.value)]
-  const term = termed.flatMap((t) => [...t.matchAll(CODE_TERM)].map((m) => m[1])).find(isCodeIdentifier)
-  if (term) misses.push(miss('code-term', `explain \`${term}\` in plain words, or use plain words`))
+  // Ids are for machines: the user reads the context, the Ask and its options, Warning and Caution.
+  // Reply, Steps and Next may hold one the user must type; the detail above the frame may too.
+  const read = [...pointed, ...parts.blocks.filter((b) => b.label === 'Warning' || b.label === 'Caution').map((b) => b.value)]
+  const id = read.map((t) => INTERNAL_ID.map((re) => re.exec(t)?.[0]).find(Boolean)).find(Boolean)
+  if (id) misses.push(miss('internal-id', `Leave out "${id}": the user cannot use it. Say what it is in plain words (the lead in mono/isola, the merged fix). Put an id in Reply or Steps only when the user must type it.`))
 
   for (const b of parts.blocks) {
     if ((b.label === 'Warning' || b.label === 'Caution') && COST.test(b.value) && !/\d/.test(b.value)) {
-      misses.push(miss('cost-number', `give the cost in **${b.label}:** as a number (about $6)`))
+      misses.push(miss('cost-number', `Give the cost in **${b.label}:** as a number, for example: about $6.`))
     }
   }
 
   const last = parts.blocks.at(-1)
-  if (has('Next') && (last?.label !== 'Next' || last.items.length > 0)) misses.push(miss('next-last', 'put **Next:** last, or leave it out'))
+  if (has('Next') && (last?.label !== 'Next' || last.items.length > 0)) misses.push(miss('next-last', 'Put **Next:** last, or leave it out.'))
   return { ok: misses.length === 0, misses }
 }
 
@@ -297,7 +320,8 @@ const optionLabel = (line) => {
 
 /**
  * Reads the frame: status line, the ask's kind (derived, or 'none') and whether it stops the work,
- * context paragraph, ask, its option labels, reply, steps, next and the Warning or Caution text;
+ * what it waits on (`Waiting on CI` gives 'CI', else null), context paragraph, ask, its option
+ * labels, reply, steps, next and the Warning or Caution text;
  * null when the message has no plain status line (an old status word, or the old header and
  * **Status:** shape). It does not judge the frame: pair it with checkFrame.
  */
@@ -314,6 +338,7 @@ export function parseFrame(text) {
     status: frame.status,
     kind,
     blocking: kind !== 'none' && said.blocking,
+    waitingOn: WAITING.exec(frame.status)?.[1] ?? null,
     context: parts.context.join(' '),
     ask: ask?.value ?? null,
     options: (ask?.items ?? []).map(optionLabel).filter(Boolean),
