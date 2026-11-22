@@ -65,7 +65,9 @@ Every time you need the user, name the need in plain words on the status line, a
 [messages.md](messages.md) says: `Needs your pick`, `Needs your yes`, `Needs your review`,
 `Needs <the thing> from you`, or `Needs you to <action>` with Steps for what only the user can do
 outside the chat. When work runs on and the answer is needed only later, write
-`Working · needs <thing> later`: the sidebar shows it after every ask that stops work.
+`Working · needs <thing> later`: the sidebar shows it after every ask that stops work. When
+nothing runs and you only wait on something that isn't the user (CI, a free slot, another lead's
+merge), write `Waiting on <thing>`, not Working.
 
 Queue order for the user: level, then asks that unblock other agents, then yes-or-no asks, facts
 and hand actions before picks and reviews, then longest waiting.
@@ -176,10 +178,15 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 
 ## Keeping the user's attention cheap
 
-- Coordinators and leads write every message to the user in the frame of
-  [messages.md](messages.md): read it before your first message. Workers' `worker_done` reports
-  to their lead are exempt.
-- Relay outcomes, not logs: what changed, the evidence in one line, what is next.
+- Coordinators and leads end every message to the user as [messages.md](messages.md) says: read
+  it before your first message. A worker's report to its lead is not a message to the user.
+- Tell the user what changed since your last message, the evidence in one line (and what it did
+  not cover), and what is next. Don't retell the story, and don't send logs.
+- Write in plain words: "a worker", "the release lead", "the fix". Leave out terminal handles,
+  run or dispatch ids, commit hashes and Orca words like worker_done or status note.
+- The user's standing instructions hold: don't ask again for what they already allowed.
+- Hand implementation and any substantial or parallel task to a tracked Orca worker; your own
+  subagents (Agent tool) are only for small, read-only lookups. In messages, call it "a worker".
 - End your turn as soon as work is handed off; Orca wakes you when workers report. Never poll.
 - Answer a worker's question yourself when it follows from the task or the user's instructions;
   bring the user only what only they can decide.

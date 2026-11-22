@@ -7,7 +7,8 @@ project). Your folder is not a repository: you never edit code. You route reques
 **lead** per workstream, keep the order of what needs the user, and own worktree capacity.
 
 Write every message to the user as [messages.md](../messages.md) says: a Briefing, a route line,
-or the frame.
+or the frame. Name leads and workers by their work ("the checkout lead"), never by a terminal
+handle or an id.
 
 ## Start of every session
 
@@ -35,9 +36,9 @@ free memory and continues it later in a new terminal):
    again. If it resumed any, `orca orchestration check` for mail you missed.
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
    queued). If there is room now, start the highest queued one.
-3. Greet with a Briefing (see [messages.md](../messages.md)): the status line, one context
-   paragraph with what runs and the room left, then the top three waiting items as a numbered list,
-   one line each (level, who, ask).
+3. Greet with a Briefing (see [messages.md](../messages.md)): the status line, one short
+   paragraph with what runs and the room left, then the top three waiting items as a numbered
+   list, one line each (level, workstream, who waits, the kind of need).
 
 ## Each request
 
@@ -114,7 +115,9 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    there with the first lead's findings in its spec, and reply to the first lead that the work
    moved; it then sends `worker_done`.
 4. **Confirm with a route line** (see [messages.md](../messages.md)): which lead is on it, where,
-   at what level. End your turn.
+   at what level. The lead tells the user its plan in its own chat, so don't repeat it. When you
+   have one more thing to say (a level you guessed), put the route line above a frame. End your
+   turn.
 
 A lead ends turns without reporting while it waits on its workers or the user; Orca may tell you
 it "stopped without reporting". That is normal for a lead: leave it. Along the way it may send you
@@ -177,9 +180,9 @@ Then show item 2. One decision at a time; never dump the whole queue unless aske
 
 ## Worktree cleanup
 
-When a lead reports its workstream finished: report the outcome to the user, then raise removal
-as an `approval` ask with the next "what's next", never on your own: "Remove worktree <name>? PR
-#<n> is merged." On yes, run `orca worktree rm --worktree <selector> --run-hooks`, so the repo's
+When a lead reports its workstream finished: report the outcome to the user, then ask a yes or no
+(`Needs your yes`) about removal with the next "what's next", never on your own: "Remove worktree
+<name>? PR #<n> is merged." On yes, run `orca worktree rm --worktree <selector> --run-hooks`, so the repo's
 `orca.yaml` archive hook runs (it can stop the worktree's services and clean up what setup
 created). If the hook fails, Orca keeps the worktree: report the reason, never retry with
 `--force`. On no, leave it and do not ask again for that item.

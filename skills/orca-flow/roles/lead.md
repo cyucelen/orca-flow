@@ -33,11 +33,13 @@ one line, and end your turn.
    `orca orchestration worker-start --worktree current --agent claude --task-title "<outcome>"
    --spec-file -`. Workers running at the same time must touch different files; otherwise send the
    second task to the first worker, or start it after the first reports.
-6. **Confirm** who is on it in the frame of [messages.md](../messages.md): the status line
-   `**Working**` and a context paragraph that names the worker and its plan, then end your turn. Orca wakes you when a worker reports. When nothing
-   runs any more and nothing is asked (after a release, or while you wait for the user's
-   feedback), use the status line `**Idle**`, not Working or Done. When work runs on but you will
-   need something from the user later, ask now with `**Working · needs <thing> later**`.
+6. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
+   and a short paragraph that names the worker by its job ("a worker now fixes ...") and its plan,
+   then end your turn. Orca wakes you when a worker reports. Pick the status line from what is
+   true: `**Waiting on <thing>**` when nothing runs and you only wait (CI, a free slot, another
+   lead's merge); `**Idle**` when nothing runs and nothing is asked (after a release, or while you
+   wait for the user's feedback); `**Working · needs <thing> later**` when work runs on but you
+   will need the user later. Use `**Done**` only when the workstream is finished.
 
 **QA, live checks, a release or a review your project has a bot for?** Hand it to that bot (see
 "Bots" in [SKILL.md](../SKILL.md)) instead of a worker.
@@ -56,8 +58,9 @@ that proves it is done (tests, a screenshot, a command's output).
 ## When a worker reports
 
 - Check its evidence; rerun a check only for a gap or a contradiction.
-- Tell the user the outcome in the frame of [messages.md](../messages.md). When it is something
-  they will want to see, make it a `review` ask with how to look (a URL, a screenshot).
+- Tell the user the outcome as [messages.md](../messages.md) says: what changed, how you know,
+  and what was not tested. When it is something they will want to see, ask for their review
+  (`Needs your review`) and say how to look (a URL, a screenshot).
 - A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
   worker is running on those files.
 

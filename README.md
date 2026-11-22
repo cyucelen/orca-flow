@@ -244,8 +244,8 @@ unusable value) the writer behaves as before: Haiku, then GPT-6 Luna through Cod
 ## Message format
 
 Coordinators and leads end each message with a fixed frame: a bold status line that names what
-they need from you in plain words (Working, Idle, Done, "Needs your pick", "Working · needs 2 files
-later"), a context paragraph of 2-4 sentences that says why first, and an **Ask:** with its options
+they need from you in plain words (Working, "Waiting on CI", Idle, Done, "Needs your pick",
+"Working · needs 2 files later"), a context paragraph of 2-4 sentences that says why first, and an **Ask:** with its options
 and **Reply:** when they need you. Detail stays above the frame, and the frame points to it. The spec is
 [`skills/orca-flow/messages.md`](skills/orca-flow/messages.md); agents read it from the skill.
 
@@ -258,8 +258,8 @@ UserPromptSubmit hook. It checks the status line (and names the plain line for a
 no header line, a short context paragraph and no detail inside the frame, the labels, that an ask
 has a "Needs" status and a **Reply:** line, that a pick has options with one recommended, that
 option letters name only the current Ask's options, that "above" points to detail but never
-replaces the point, that a backticked code name is explained in plain words, and that a cost
-warning gives a number. A coordinator can also answer with route lines only. Workers and your own
+replaces the point, that no terminal handles, ids or commit hashes reach the part you read, and
+that a cost warning gives a number. A coordinator can also answer with route lines only. Workers and your own
 chats are never checked.
 
 The check is off until you turn it on in [Settings](#settings) (Message check) or in
