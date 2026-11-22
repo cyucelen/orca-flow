@@ -103,8 +103,11 @@ It prints one line: `Started <dispatch id> on <model> — <why>`. Every `worker-
 `--base-branch`, `--display-name`, `--comment`, `--setup`, `--deps`, `--parent`, `--run`,
 `--retry-of`) passes through unchanged. `--dry-run` prints the exact command and starts nothing.
 Exit 2: the capacity gate said no, so queue the task. Exit 3: no model fits; tell the user what it
-printed (they fix it in Settings → Models). Neither starts anything. Never run the task as a
-native subagent instead.
+printed (they fix it in Settings → Models). Neither starts anything. Exit 4: Orca did not confirm
+the start, so a worker may or may not run. Do not start another: run the same command again, and it
+replays the same request instead of starting a second worker. `--effort` without `--model` is
+refused. Model lists are cached for 10 minutes; `--refresh-models` looks again. Never run the task
+as a native subagent instead.
 
 ### Which model
 
@@ -143,7 +146,11 @@ fallback and why, without starting anything.
 
 Split only into independent, bounded tasks, each owning named files. Do not split trivial work:
 one worker does a handful of small edits faster than several workers start. Several tasks go in a
-plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/lead.md)). At most
+plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/lead.md)).
+`plan start` also finishes a partly started plan. A start Orca did not confirm (exit 4) is replayed
+by `plan next`, never started twice. If Orca gave no request id, check
+`orca orchestration task-list`, and use `plan next --restart <task id>` only when no worker runs for
+that task. At most
 `maxParallel` workers of one plan run at once (Settings → Models), and each start also passes the
 capacity gate.
 

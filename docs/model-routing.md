@@ -69,7 +69,10 @@ For a worker, the row is worked out first:
 - **Risk high** (`--risk high`) moves up one kind.
 - **Large context** (`--context large`) means at least `normal`.
 - **A retry** (`--retry-of`) moves up one kind per earlier failure, up to the limit above. Past
-  `hard` the kind stays `hard` and each extra step raises the effort one level.
+  `hard` the kind stays `hard` and each extra step raises the effort one level. The retry keeps the
+  earlier context, risk and explicit model. An explicit model is never swapped: the retry runs on
+  the same model at the next effort. If a retry would land on the model that failed, it is refused
+  with exit 3 and nothing starts.
 
 Then the model:
 
@@ -79,7 +82,8 @@ Then the model:
 - **A coordinator or lead pick whose model is unavailable:** that agent's default model starts, and
   the reason says so. If the agent itself is not installed, it is refused.
 - **Effort:** passed only where the provider reports it and Orca accepts it at launch. If the effort
-  asked for is not accepted, the nearest lower one is used. Orca 1.4.263 takes no effort for the
+  asked for is not accepted, the nearest lower one is used. `--effort` without `--model` is refused:
+  an effort needs a model to apply to. Orca 1.4.263 takes no effort for the
   `haiku` alias, so a Haiku start carries none.
 
 A decision applies to **new launches only**. A running session keeps its model, and a resumed
@@ -115,7 +119,14 @@ orca-flow route --role worker --kind hard --risk high --explain
 
 **Start a worker.** Runs the capacity gate, routes, then `orca orchestration worker-start` with the
 routed flags. Exit 2: capacity said no (queue it). Exit 3: no model fits. Neither starts anything.
-`--dry-run` prints the command and starts nothing.
+Exit 4: Orca did not confirm the start, so the outcome is unknown. `--dry-run` prints the command
+and starts nothing.
+
+Model lists are cached for 10 minutes in `~/.orca-flow/models-cache.json`. Add `--refresh-models` to
+look again.
+
+After exit 4, run the same dispatch again. It replays Orca's request (`--retry-request <id>`, which
+you can also pass yourself), so a worker is never started twice.
 
 ```sh
 orca-flow dispatch --role worker --kind normal --worktree current \
@@ -133,7 +144,18 @@ orca-flow plan next plan.json     # start what became ready
 orca-flow plan status plan.json   # the table
 ```
 
-A plan has at most 8 tasks. `kind` defaults to `normal`.
+A plan has at most 8 tasks. `kind` defaults to `normal`. Its state is kept in
+`~/.orca-flow/plans/<slug>-<hash>.json`: the title, and a hash of the plan file's path, so two plans
+with the same title do not share a file.
+
+`plan start` finishes a plan that only partly started, for example after a failure part way or after
+tasks were added. It creates only the tasks that are missing. A task whose start Orca did not
+confirm (exit 4) is replayed by `plan next`. If Orca gave no request id, check
+`orca orchestration task-list`. Only if no worker runs for that task, restart it:
+
+```sh
+orca-flow plan next plan.json --restart ui
+```
 
 ```json
 {
@@ -150,7 +172,8 @@ A plan has at most 8 tasks. `kind` defaults to `normal`.
 A task may also set `agent`, `model` and `effort`, which win as in the precedence above.
 
 **Escalate a failure.** After a worker reports `--outcome failed`, run the task again one kind up. It
-reads the last attempt from `routes.jsonl`, reuses the task and its kind, and refuses past the limit.
+reads the last attempt from `routes.jsonl`, reuses the task, its kind, context, risk and explicit
+model, and refuses past the limit or when it would land on the model that failed.
 
 ```sh
 orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current
