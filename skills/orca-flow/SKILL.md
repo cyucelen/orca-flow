@@ -137,8 +137,9 @@ fallback and why, without starting anything.
 - **Escalate only after a demonstrated failure:** the worker reported `--outcome failed`, or it
   could not fix its result after you sent it what was wrong. Then rerun the task one kind up:
   `orca-flow dispatch --role worker --retry-of <failed dispatch id> --worktree current`. It reads
-  the last attempt from `~/.orca-flow/routes.jsonl`, reuses the task and its kind, and refuses past
-  the user's escalation limit; then ask the user. A task Orca still shows as completed must first be
+  the last attempt from `~/.orca-flow/routes.jsonl` and reuses the task, its kind, risk and context.
+  A model the user chose is kept and retried at the next effort. It refuses past the user's
+  escalation limit, or when the retry would land on the model that failed; then ask the user. A task Orca still shows as completed must first be
   marked failed: `orca orchestration task-update --id <task> --status failed --result "<why>"`.
   Never escalate because a task looks hard, and never start on a stronger model "to be safe".
 
