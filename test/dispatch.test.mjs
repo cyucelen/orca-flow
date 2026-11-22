@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fakeDeps } from './fake-orca.mjs'
-import { dispatchCommand, readRoutes, Refused, routeCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
+import { cachedDiscover, dispatchCommand, MODELS_CACHE_MS, readRoutes, Refused, routeCommand, startOutcome, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
 
 const argsOf = (flags, ...positional) => ({ _: positional, ...flags })
 const starts = (deps) => deps.calls.filter((c) => c.args[1] === 'worker-start')
@@ -24,10 +24,11 @@ test('route prints the label, the reason and, with --explain, what it passed ove
   ].join('\n'))
   assert.equal(deps.calls.length, 0)
   // the row's model is gone: the fallback, and what was passed over
-  const fb = fakeDeps({ avail: { agents: ['claude'], models: { claude: [{ id: 'sonnet' }, { id: 'opus' }] } } })
+  // (Claude aliases stay valid even when Claude's list omits them, so the row names an agent that is not installed.)
+  const fb = fakeDeps({ routing: { workers: { simple: { model: { agent: 'codex', model: 'gpt-mini', effort: 'low' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } } } } })
   await routeCommand(argsOf({ role: 'worker', kind: 'simple', explain: true }, 'route'), fb)
-  assert.match(fb.output[0], /^Claude Sonnet · low \(fallback\)\n {2}why: simple task → Claude Sonnet · low: Haiku unavailable/)
-  assert.match(fb.output[0], /passed over:\n {4}Claude Haiku: not in Claude's model list$/)
+  assert.match(fb.output[0], /^Claude Sonnet · low \(fallback\)\n {2}why: simple task → Claude Sonnet · low: .*gpt-mini unavailable \(codex not installed\)/)
+  assert.match(fb.output[0], /passed over:\n {4}Codex gpt-mini · low: codex not installed$/)
   // --class and the old names still work
   const json = fakeDeps()
   await routeCommand(argsOf({ role: 'worker', class: 'complex', json: true }, 'route'), json)
@@ -51,7 +52,7 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
   assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku — simple task → Claude Haiku$/m)
   assert.match(deps.output[0], /task task_new1 · run run_1 · state ready · workspace repo1::\/work\/tree/)
   const [entry] = readRoutes(deps.dir)
-  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'kind', 'class', 'risk', 'attempt'])
+  assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'kind', 'class', 'risk', 'context', 'explicit', 'attempt'])
   assert.deepEqual(entry, {
     at: '2026-11-22T10:00:00.000Z',
     role: 'worker',
@@ -64,6 +65,8 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
     kind: 'simple',
     class: 'trivial',
     risk: null,
+    context: null,
+    explicit: null,
     attempt: 0
   })
 })
@@ -76,11 +79,29 @@ test("dispatch passes the user's explicit agent, model and effort straight throu
   assert.deepEqual(argv.slice(-6), ['--agent', 'codex', '--model', 'gpt-6-luna', '--effort', 'high'])
   assert.equal(argv.filter((a) => a === '--agent').length, 1, 'never passed twice')
   assert.equal(readRoutes(deps.dir)[0].source, 'override')
+  assert.deepEqual(readRoutes(deps.dir)[0].explicit, { agent: 'codex', model: 'gpt-6-luna', effort: 'high' }, 'what the user chose is logged')
 
   const lead = fakeDeps({ routing: { lead: { agent: 'claude', model: 'opus', effort: 'max' } } })
   await dispatchCommand(argsOf({ role: 'lead', worktree: 'new-top-level', repo: 'id:r1', name: 'checkout', 'keep-open': true, spec: 'lead it' }, 'dispatch'), lead)
   assert.deepEqual(starts(lead)[0].args.slice(-6), ['--agent', 'claude', '--model', 'opus', '--effort', 'max'])
-  assert.deepEqual(lead.capacityCalls, [{ repo: 'id:r1' }], 'a new worktree is priced for its project')
+  assert.deepEqual(lead.capacityCalls, [{ repo: 'id:r1' }], 'an unknown selector is priced as given')
+})
+
+test('the capacity gate prices a new worktree by the repo name its --repo selector names', async () => {
+  const byId = fakeDeps({ repos: { 'id:r1': 'mono' } })
+  await dispatchCommand(argsOf({ role: 'lead', worktree: 'new-top-level', repo: 'id:r1', name: 'x', spec: 's' }, 'dispatch'), byId)
+  assert.deepEqual(byId.capacityCalls, [{ repo: 'mono' }], 'id: is looked up with orca repo show')
+  assert.equal(after(starts(byId)[0].args, '--repo'), 'id:r1', 'worker-start still gets the selector')
+  const byPath = fakeDeps({ repos: { 'path:/src/mono': 'mono' } })
+  await dispatchCommand(argsOf({ role: 'lead', worktree: 'new-child', repo: 'path:/src/mono', spec: 's' }, 'dispatch'), byPath)
+  assert.deepEqual(byPath.capacityCalls, [{ repo: 'mono' }])
+  const byName = fakeDeps()
+  await dispatchCommand(argsOf({ role: 'lead', worktree: 'new-top-level', repo: 'name:mono', spec: 's' }, 'dispatch'), byName)
+  assert.deepEqual(byName.capacityCalls, [{ repo: 'mono' }], 'name: needs no lookup')
+  assert.equal(byName.calls.filter((c) => c.args[0] === 'repo').length, 0)
+  const bare = fakeDeps()
+  await dispatchCommand(argsOf({ role: 'lead', worktree: 'new-top-level', repo: 'mono', spec: 's' }, 'dispatch'), bare)
+  assert.deepEqual(bare.capacityCalls, [{ repo: 'mono' }])
 })
 
 test('capacity refusal launches nothing and logs nothing', async () => {
@@ -88,7 +109,7 @@ test('capacity refusal launches nothing and logs nothing', async () => {
     const deps = fakeDeps({ verdict })
     const run = dispatchCommand(argsOf({ role: 'worker', worktree, repo: 'id:r1', name: 'x', 'task-title': 'Add totals', spec: 's' }, 'dispatch'), deps)
     await assert.rejects(run, (e) => e instanceof Refused && e.code === 2 && new RegExp(`capacity says ${verdict}`).test(e.message) && /Queue it: orca orchestration task-create --task-title 'Add totals'/.test(e.message))
-    assert.equal(deps.calls.length, 0, `${verdict}: no Orca call`)
+    assert.equal(starts(deps).length, 0, `${verdict}: nothing started`)
     assert.equal(existsSync(join(deps.dir, 'routes.jsonl')), false)
   }
   const queued = fakeDeps({ verdict: 'full' })
@@ -148,4 +169,140 @@ test('dispatch refuses a start with no spec or task, and coordinators', async ()
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current' }, 'dispatch'), fakeDeps()), /needs --task <id>, --spec/)
   await assert.rejects(dispatchCommand(argsOf({ role: 'coordinator', spec: 's' }, 'dispatch'), fakeDeps()), /--role is worker or lead/)
   assert.ok(readFileSync(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url), 'utf8').includes('orca-flow dispatch --role worker|lead'), 'the header documents it')
+})
+
+const logLine = (deps, entry) => writeFileSync(join(deps.dir, 'routes.jsonl'), `${JSON.stringify({ at: 'x', role: 'worker', taskId: 'task_a', dispatchId: 'ctx_old', workspace: 'w', risk: null, attempt: 0, ...entry })}\n`)
+
+test('--retry-of keeps the context: a large-context simple task moves up from normal, not onto the row that failed', async () => {
+  const deps = fakeDeps()
+  await dispatchCommand(argsOf({ role: 'worker', kind: 'simple', context: 'large', worktree: 'current', spec: 's' }, 'dispatch'), deps)
+  const first = readRoutes(deps.dir)[0]
+  assert.deepEqual([first.choice.model, first.context], ['sonnet', 'large'], 'large context raises simple to normal, and is logged')
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
+  const retry = readRoutes(deps.dir).at(-1)
+  assert.equal(retry.choice.model, 'opus', 'normal + one escalation = hard')
+  assert.equal(retry.context, 'large')
+  assert.match(retry.reason, /simple task, large context, escalated once/)
+})
+
+test("--retry-of retries the user's explicit model on that same model at the next effort, never another one", async () => {
+  const deps = fakeDeps({ routing: { maxEscalations: 2 } })
+  await dispatchCommand(argsOf({ role: 'worker', model: 'opus', effort: 'medium', worktree: 'current', spec: 's' }, 'dispatch'), deps)
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
+  let argv = starts(deps)[1].args
+  assert.deepEqual(argv.slice(-6), ['--agent', 'claude', '--model', 'opus', '--effort', 'high'])
+  const logged = readRoutes(deps.dir).at(-1)
+  assert.deepEqual([logged.source, logged.attempt, logged.explicit], ['override', 1, { agent: 'claude', model: 'opus', effort: 'high' }])
+  assert.match(logged.reason, /chosen explicitly, so the retry keeps it: effort medium → high/)
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_2', worktree: 'current' }, 'dispatch'), deps)
+  argv = starts(deps)[2].args
+  assert.equal(after(argv, '--model'), 'opus')
+  assert.notEqual(after(argv, '--effort'), 'high', 'one more step up')
+
+  // Already at the top effort: said clearly, nothing substituted, nothing started.
+  const top = fakeDeps()
+  logLine(top, { choice: { agent: 'claude', model: 'opus', effort: 'max' }, source: 'override', reason: 'r', kind: 'normal', explicit: { agent: 'claude', model: 'opus', effort: 'max' } })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), top), (e) => e.code === 3 && /Cannot escalate Claude Opus: it was chosen explicitly.*Nothing was substituted/s.test(e.message))
+  assert.equal(starts(top).length, 0)
+
+  // An older line with no `explicit`: an override with a model counts as the user's choice.
+  const old = fakeDeps()
+  logLine(old, { choice: { agent: 'claude', model: 'sonnet', effort: 'low' }, source: 'override', reason: 'r', class: 'trivial' })
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), old)
+  assert.deepEqual(starts(old)[0].args.slice(-4), ['--model', 'sonnet', '--effort', 'medium'])
+
+  // A model passed on the retry itself wins.
+  const mine = fakeDeps()
+  logLine(mine, { choice: { agent: 'claude', model: 'sonnet', effort: 'low' }, source: 'override', reason: 'r', kind: 'normal', explicit: { model: 'sonnet' } })
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', model: 'haiku', worktree: 'current' }, 'dispatch'), mine)
+  assert.equal(after(starts(mine)[0].args, '--model'), 'haiku')
+})
+
+test('--retry-of that would land on the model that just failed says so and starts nothing', async () => {
+  const same = { agent: 'claude', model: 'sonnet', effort: 'medium' }
+  const deps = fakeDeps({ routing: { workers: { normal: { model: same, fallback: null }, hard: { model: same, fallback: null } } } })
+  logLine(deps, { choice: same, source: 'kind', reason: 'r', kind: 'normal' })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), deps), (e) => e.code === 3 && /Escalation could not move up: attempt 1 routes to Claude Sonnet · medium again/.test(e.message))
+  assert.equal(starts(deps).length, 0)
+})
+
+const REQ = '0b8f3c1e-2d4a-4e6f-8a9b-1c2d3e4f5a6b'
+const unknownStart = () => Object.assign(new Error('start: timed out waiting for the agent'), { result: { state: 'outcome_unknown', dispatchId: 'ctx_u', taskId: 'task_u' }, data: { orchestrationRequestId: REQ } })
+
+test('a worker-start with an unknown outcome is not a failure: exit 4, and the same command replays it by its request id', async () => {
+  let first = true
+  const deps = fakeDeps({ stdin: 'the spec', orca: async (args) => {
+    if (args[1] === 'worker-start' && first) {
+      first = false
+      throw unknownStart()
+    }
+  } })
+  const cmd = () => dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', 'task-title': 'T', 'spec-file': '-' }, 'dispatch'), deps)
+  await assert.rejects(cmd(), (e) => e instanceof Refused && e.code === 4 && /Start outcome unknown.*Do not start it again/s.test(e.message) && new RegExp(`--retry-request ${REQ}`).test(e.message) && /worker-show --dispatch ctx_u/.test(e.message))
+  assert.equal(readRoutes(deps.dir).length, 0, 'not logged as a start')
+  assert.ok(JSON.parse(readFileSync(join(deps.dir, 'pending-starts.json'), 'utf8'))[REQ])
+
+  // Settings change in between: the replay still sends the recorded command, ungated.
+  writeFileSync(join(deps.dir, 'config.json'), JSON.stringify({ routing: { workers: { simple: { model: { agent: 'claude', model: 'opus', effort: 'low' }, fallback: null } } } }))
+  deps.verdict = 'full'
+  assert.equal(await cmd(), 0)
+  const [orig, replay] = starts(deps)
+  assert.deepEqual(replay.args, [...orig.args, '--retry-request', REQ], 'the same command, replayed by its id: never a second fresh start')
+  assert.equal(replay.input, 'the spec')
+  assert.equal(deps.capacityCalls.length, 1, 'the replay is not gated again')
+  assert.match(deps.output.at(-1), new RegExp(`^Replayed request ${REQ}`))
+  assert.equal(readRoutes(deps.dir)[0].choice.model, 'haiku')
+  assert.deepEqual(JSON.parse(readFileSync(join(deps.dir, 'pending-starts.json'), 'utf8')), {})
+})
+
+test('an unknown start without a request id, and a start Orca never sent, are told apart', async () => {
+  const timeout = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw Object.assign(new Error('orca timed out'), { timedOut: true }) } })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), timeout), (e) => e.code === 4 && /no request id/.test(e.message))
+  assert.equal(existsSync(join(timeout.dir, 'pending-starts.json')), false)
+  const unsent = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw Object.assign(new Error('Orca did not answer'), { code: 'runtime_unavailable', data: { orchestrationRequestId: REQ, recovery: { disposition: 'not_sent' } } }) } })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), unsent), (e) => !(e instanceof Refused) && /did not answer/.test(e.message))
+  const plain = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw new Error('worktree is busy') } })
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), plain), /worktree is busy/)
+})
+
+test('startOutcome reads the request id wherever Orca puts it', () => {
+  assert.deepEqual(startOutcome({ result: { state: 'outcome_unknown', nextCommands: [`orca orchestration worker-start --task t --retry-request ${REQ}`] } }), { unknown: true, requestId: REQ, dispatchId: null })
+  assert.equal(startOutcome({ code: 'runtime_timeout', data: { recovery: { orchestrationRequestId: REQ, disposition: 'outcome_unknown' } } }).requestId, REQ)
+  assert.equal(startOutcome({ result: { state: 'failed' } }).unknown, false)
+  assert.equal(startOutcome({ result: { state: 'outcome_unknown' }, data: { orchestrationRequestId: 'not-a-uuid' } }).requestId, null)
+})
+
+test('model discovery is cached for 10 minutes; refresh bypasses it; a failed agent lookup is not cached', async () => {
+  const deps = fakeDeps()
+  let n = 0
+  const live = async () => ({ agents: ['claude'], models: { claude: null }, n: ++n })
+  const t0 = Date.parse('2026-11-22T10:00:00Z')
+  assert.equal((await cachedDiscover(deps.dir, live, { now: t0 })).n, 1)
+  assert.equal((await cachedDiscover(deps.dir, live, { now: t0 + MODELS_CACHE_MS - 1 })).n, 1, 'cached')
+  assert.equal((await cachedDiscover(deps.dir, live, { now: t0 + 1000, refresh: true })).n, 2, '--refresh-models')
+  assert.equal((await cachedDiscover(deps.dir, live, { now: t0 + 1000 + MODELS_CACHE_MS })).n, 3, 'expired')
+  assert.ok(existsSync(join(deps.dir, 'models-cache.json')))
+  const other = fakeDeps()
+  await cachedDiscover(other.dir, async () => ({ agents: null, models: {} }), { now: t0 })
+  assert.equal(existsSync(join(other.dir, 'models-cache.json')), false)
+  assert.match(readFileSync(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url), 'utf8'), /cachedDiscover\(DIR, .*refresh: !!args\['refresh-models'\]/, 'orca-flow wires the cache into ORCA_FLOW_DIR')
+})
+
+test('dispatch runs model discovery and the capacity scan side by side', async () => {
+  const deps = fakeDeps()
+  const events = []
+  const capacity = deps.capacity
+  deps.capacity = async (a) => {
+    events.push('capacity start')
+    await new Promise((r) => setTimeout(r, 5))
+    events.push('capacity end')
+    return capacity(a)
+  }
+  const discover = deps.discover
+  deps.discover = async () => {
+    events.push('discover start')
+    return discover()
+  }
+  await dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), deps)
+  assert.ok(events.indexOf('discover start') < events.indexOf('capacity end'), events.join(', '))
 })

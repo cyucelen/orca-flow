@@ -6,14 +6,18 @@ import { join } from 'node:path'
 
 export const CLAUDE_ONLY = { agents: ['claude'], models: { claude: null } }
 
-/** A fake machine: `calls` records every Orca command with its stdin. */
-export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin = '', orca } = {}) {
+/**
+ * A fake machine: `calls` records every Orca command with its stdin. `repos` answers `repo show`
+ * ({ 'id:r1': 'mono' }); `freeGB` and `agentGB` shape the capacity answer.
+ */
+export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin = '', orca, repos = {}, freeGB, agentGB = 0.5 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'orca-flow-dispatch-'))
   if (routing) writeFileSync(join(dir, 'config.json'), JSON.stringify({ routing }))
   const calls = []
   const capacityCalls = []
   const output = []
   let n = 0
+  let discoveries = 0
   const deps = {
     dir,
     cwd: dir,
@@ -29,6 +33,11 @@ export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin =
         const r = await orca(args, opts)
         if (r !== undefined) return r
       }
+      if (args[0] === 'repo' && args[1] === 'show') {
+        const sel = args[args.indexOf('--repo') + 1]
+        if (!repos[sel]) throw new Error(`no repo ${sel}`)
+        return { repo: { id: sel.slice(3), displayName: repos[sel] } }
+      }
       if (args[1] === 'worker-start') {
         n++
         const task = args[args.indexOf('--task') + 1]
@@ -36,10 +45,15 @@ export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin =
       }
       throw new Error(`unexpected orca ${args.join(' ')}`)
     },
-    discover: async () => deps.avail,
+    discover: async () => {
+      discoveries++
+      deps.discoveries = discoveries
+      return deps.avail
+    },
+    discoveries,
     capacity: async (a) => {
       capacityCalls.push(a)
-      return { verdict: deps.verdict, freeGB: deps.verdict === 'ok' ? 9 : 0.3, reclaimable: { idleEnvironments: [{ worktree: 'mono/old', process: 'next dev', gb: 3.1 }], finishedSessions: [] } }
+      return { verdict: deps.verdict, freeGB: freeGB ?? (deps.verdict === 'ok' ? 9 : 0.3), costs: { agentGB }, reclaimable: { idleEnvironments: [{ worktree: 'mono/old', process: 'next dev', gb: 3.1 }], finishedSessions: [] } }
     },
     readStdin: () => stdin,
     out: (s) => output.push(s),

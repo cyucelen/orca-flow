@@ -26,9 +26,13 @@ export type PlanTask = {
 }
 export type Plan = { title: string; tasks: PlanTask[] }
 export type PlanCheck = { ok: boolean; errors: string[]; warnings: string[]; waves: string[][] }
-/** A plan task as Orca sees it now. */
-/** `failed-start`: Orca refused to start the worker; the task is still startable (`plan next`). */
-export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'failed-start'
+/**
+ * A plan task as Orca sees it now. `failed-start`: Orca refused to start the worker; the task is
+ * still startable (`plan next`). `unknown`: the start timed out or Orca could not tell whether it
+ * took effect; the worker may be running, so it holds a slot and is replayed (`--retry-request`),
+ * never started a second time. `missing`: the plan names it but its Orca task was never created.
+ */
+export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'failed-start' | 'unknown' | 'missing'
 
 /** More tasks than this is not a split anyone can review: error. */
 export const MAX_TASKS = 8
@@ -247,10 +251,11 @@ function covers(outer: string, inner: string): boolean {
 
 /**
  * The tasks to start now, in wave order: queued, every dependency done, and no more than
- * `maxParallel` of this plan running at once. Failed dependencies hold their dependents back.
+ * `maxParallel` of this plan running at once (a start whose outcome is unknown counts as running).
+ * Failed dependencies hold their dependents back.
  */
 export function startable(plan: Plan, states: Record<string, TaskState>, maxParallel: number): string[] {
-  const running = plan.tasks.filter((t) => states[t.id] === 'running').length
+  const running = plan.tasks.filter((t) => states[t.id] === 'running' || states[t.id] === 'unknown').length
   const slots = Math.max(0, maxParallel - running)
   const order = (waves(plan.tasks) ?? []).flat()
   const byId = new Map(plan.tasks.map((t) => [t.id, t]))

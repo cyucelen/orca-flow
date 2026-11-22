@@ -15,17 +15,21 @@
 //                                             Which model a start would use, and why. Launches nothing
 //   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task
 //       --task-title --spec --spec-file --keep-open --repo --name --base-branch --display-name
-//       --comment --setup --deps --parent --run --retry-of] [--dry-run] [--json]
+//       --comment --setup --deps --parent --run --retry-of --retry-request] [--dry-run] [--json]
 //                                             Capacity gate, route, then `orca orchestration worker-start`
-//                                             on the routed model. Exit 2: capacity said no; 3: no model
+//                                             on the routed model. Exit 2: capacity said no; 3: no model;
+//                                             4: start outcome unknown (the same command replays it)
 //   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
-//                                             A lead's parallel plan: checked file ownership and deps,
+//       [--restart <id>]                      A lead's parallel plan: checked file ownership and deps,
 //                                             one Orca task each, started in waves within maxParallel
+//   route, dispatch and plan cache model discovery for 10 minutes (models-cache.json);
+//   --refresh-models looks again.
 //
 // Data lives in ~/.orca-flow (ORCA_FLOW_DIR overrides): cards/<worktree>.json written by
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
 // limits and `routing` (Settings → Models), roles.json for leads the user named (roles.mjs),
-// routes.jsonl (one line per routed start), plans/<slug>.json (plan state). The Orca plugin reads
+// routes.jsonl (one line per routed start), plans/<slug>-<path hash>.json (plan state),
+// pending-starts.json (dispatches whose outcome is unknown), models-cache.json. The Orca plugin reads
 // them too. No dependencies.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'
@@ -442,13 +446,14 @@ const flow = await import('./dispatch.mjs')
 const { discover } = await import(new URL('../../../src/model-discovery.ts', import.meta.url).href)
 
 /** The real machine: Orca's CLI, model discovery and the memory gate. Tests pass fakes instead. */
-function liveDeps() {
+function liveDeps(args = {}) {
   return {
     dir: DIR,
     cwd: process.cwd(),
     orcaBin: ORCA_BIN,
     orca: flow.orcaRunner(ORCA_BIN),
-    discover: () => discover(flow.execCommand, { orcaBin: ORCA_BIN }),
+    // Cached 10 minutes in models-cache.json; --refresh-models looks again.
+    discover: () => flow.cachedDiscover(DIR, () => discover(flow.execCommand, { orcaBin: ORCA_BIN }), { refresh: !!args['refresh-models'] }),
     capacity,
     readStdin: () => readFileSync(0, 'utf8'),
     out: (s) => console.log(s),
@@ -497,7 +502,7 @@ async function main() {
     case 'plan': {
       const run = { route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command]
       try {
-        process.exitCode = await run(args, liveDeps())
+        process.exitCode = await run(args, liveDeps(args))
       } catch (e) {
         if (!(e instanceof flow.Refused || e instanceof flow.UsageError)) throw e
         console.error(e.message)

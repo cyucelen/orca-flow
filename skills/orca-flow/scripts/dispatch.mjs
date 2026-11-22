@@ -4,10 +4,17 @@
 //
 // The routing decision is src/routing.ts and the plan checks src/plan.ts (Node strips their types).
 // Every start appends one line to ~/.orca-flow/routes.jsonl:
-//   {at, role, taskId, dispatchId, workspace, choice, source, reason, kind, class, risk, attempt}
-// `class` repeats `kind` in its old name (trivial, standard, complex) for older readers.
-// The sidebar reads it to show the model on each row; `--retry-of` reads it to escalate.
+//   {at, role, taskId, dispatchId, workspace, choice, source, reason, kind, class, risk, context,
+//    explicit, attempt}
+// `class` repeats `kind` in its old name (trivial, standard, complex) for older readers. `explicit`
+// is what the caller chose itself ({agent, model, effort}, or null). The sidebar reads it to show
+// the model on each row; `--retry-of` reads it to rebuild the request and escalate.
+//
+// A worker-start that times out or comes back outcome_unknown may have started the worker. It is
+// never started again: dispatch keeps it in pending-starts.json and plan in its state ('unknown'),
+// and the next identical dispatch (or `plan next`) replays it with Orca's `--retry-request <id>`.
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -15,12 +22,12 @@ const routing = await import(new URL('../../../src/routing.ts', import.meta.url)
 const planLib = await import(new URL('../../../src/plan.ts', import.meta.url).href)
 
 /** worker-start flags `dispatch` passes through unchanged. Routing flags are not among them. */
-const PASSTHROUGH = ['worktree', 'task', 'task-title', 'spec', 'spec-file', 'repo', 'name', 'base-branch', 'display-name', 'comment', 'setup', 'deps', 'parent', 'run', 'retry-of']
+const PASSTHROUGH = ['worktree', 'task', 'task-title', 'spec', 'spec-file', 'repo', 'name', 'base-branch', 'display-name', 'comment', 'setup', 'deps', 'parent', 'run', 'retry-of', 'retry-request']
 const BOOLEAN_PASSTHROUGH = ['keep-open']
 const NEW_WORKTREE = ['new-top-level', 'new-child']
 
 export class UsageError extends Error {}
-/** An error with the exit code main() uses: 2 capacity said no, 3 routing found no model. */
+/** An error with the exit code main() uses: 2 capacity said no, 3 routing found no model, 4 the start's outcome is unknown. */
 export class Refused extends Error {
   constructor(message, code) {
     super(message)
@@ -42,6 +49,11 @@ export function orcaRunner(bin, { timeoutMs = 300_000 } = {}) {
         if (parsed?.ok) return res(parsed.result)
         const e = new Error(parsed?.error?.message ?? (String(stderr).trim() || err?.message || `orca ${args.join(' ')} failed`))
         e.data = parsed?.error?.data
+        e.code = parsed?.error?.code
+        // A failed outcome (worker-start outcome_unknown) is ok:false with the receipt as `result`.
+        e.result = parsed?.result
+        // Killed by our own timeout: Orca may still have applied it.
+        e.timedOut = !!err?.killed
         rej(e)
       })
       child.stdin?.end(input ?? '')
@@ -58,6 +70,77 @@ export function execCommand(cmd, args, opts = {}) {
 }
 
 // ---------- shared ----------
+
+const MODELS_CACHE = (dir) => join(dir, 'models-cache.json')
+export const MODELS_CACHE_MS = 10 * 60_000
+
+/**
+ * Model discovery through a 10-minute cache in `dir` (models-cache.json): discovery starts a whole
+ * `claude -p` process. `refresh` (--refresh-models) bypasses the cache. A discovery that could not
+ * read the installed agents is not cached.
+ */
+export async function cachedDiscover(dir, discover, { refresh = false, now = Date.now() } = {}) {
+  if (!refresh) {
+    const c = readJson(MODELS_CACHE(dir), null)
+    if (c && typeof c.at === 'number' && now >= c.at && now - c.at < MODELS_CACHE_MS && c.avail) return c.avail
+  }
+  const avail = await discover()
+  if (Array.isArray(avail?.agents)) {
+    try {
+      writeJson(MODELS_CACHE(dir), { at: now, avail })
+    } catch {}
+  }
+  return avail
+}
+
+/**
+ * The repo name capacity prices a new worktree by (envCost keys on the name `worktree ps` shows):
+ * `name:x` is x; `id:` and `path:` selectors are looked up with `orca repo show`; otherwise, or when
+ * the lookup fails, the value as given.
+ */
+export async function repoName(selector, deps) {
+  if (typeof selector !== 'string' || !selector) return undefined
+  if (selector.startsWith('name:')) return selector.slice(5)
+  if (!/^(id|path):/.test(selector)) return selector
+  try {
+    const r = await deps.orca(['repo', 'show', '--repo', selector])
+    const repo = r?.repo ?? r
+    const name = repo?.displayName ?? repo?.name
+    return typeof name === 'string' && name ? name : selector
+  } catch {
+    return selector
+  }
+}
+
+/** The capacity verdict after one more agent started here, priced locally instead of a new scan. */
+export function afterStart(cap) {
+  const agentGB = cap?.costs?.agentGB
+  if (cap?.freeGB === null || cap?.freeGB === undefined || typeof agentGB !== 'number') return cap
+  const freeGB = Math.round((cap.freeGB - agentGB) * 10) / 10
+  return { ...cap, freeGB, verdict: cap.verdict === 'pressure' ? 'pressure' : freeGB < agentGB ? 'full' : cap.verdict }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UNKNOWN_CODES = ['start_outcome_unknown', 'runtime_timeout', 'runtime_unavailable', 'remote_runtime_unavailable', 'invalid_runtime_response', 'operation_unknown']
+
+/**
+ * Whether a rejected worker-start may still have started the worker, and the request id Orca
+ * replays it by. Nothing sent (`not_sent`) and plain refusals are definite failures.
+ */
+export function startOutcome(e) {
+  const data = e?.data && typeof e.data === 'object' ? e.data : {}
+  const result = e?.result && typeof e.result === 'object' ? e.result : {}
+  if (data.recovery?.disposition === 'not_sent') return { unknown: false }
+  const unknown = result.state === 'outcome_unknown' || data.recovery?.disposition === 'outcome_unknown' || UNKNOWN_CODES.includes(e?.code) || e?.timedOut === true
+  if (!unknown) return { unknown: false }
+  const texts = [...(Array.isArray(result.nextCommands) ? result.nextCommands : []), ...(Array.isArray(data.nextSteps) ? data.nextSteps : []), ...(Array.isArray(data.recovery?.retryCommand) ? [data.recovery.retryCommand.join(' ')] : []), String(e?.message ?? '')]
+  const fromText = texts.map((t) => /--retry-request\s+([0-9a-f-]{36})/i.exec(String(t))?.[1]).find(Boolean)
+  const requestId = [data.orchestrationRequestId, data.recovery?.orchestrationRequestId, result.mutation?.requestId, result.requestId, fromText].find((v) => typeof v === 'string' && UUID.test(v)) ?? null
+  const dispatchId = [result.dispatchId, data.dispatchId, data.recovery?.dispatchId].find((v) => typeof v === 'string' && v) ?? null
+  return { unknown: true, requestId, dispatchId }
+}
+
+const firstLine = (e) => String(e?.message ?? e).split('\n')[0]
 
 function readJson(path, fallback = null) {
   try {
@@ -97,6 +180,12 @@ function appendRoute(dir, entry) {
   appendFileSync(ROUTES(dir), `${JSON.stringify(entry)}\n`)
 }
 
+/** What the caller chose itself: the agent, model and effort it named, or null. */
+const explicitOf = (req) => {
+  const e = { ...(req.agent && { agent: req.agent }), ...(req.model && { model: req.model }), ...(req.effort && { effort: req.effort }) }
+  return Object.keys(e).length ? e : null
+}
+
 /** The routes.jsonl line for one start; the settings UI reads these exact field names. */
 function routeEntry({ at, role, receipt, decision, req }) {
   return {
@@ -111,6 +200,8 @@ function routeEntry({ at, role, receipt, decision, req }) {
     kind: req.kind ?? null,
     class: req.kind ? OLD_CLASS[req.kind] : null,
     risk: req.risk ?? null,
+    context: req.context ?? null,
+    explicit: explicitOf(req),
     attempt: req.attempt ?? 0
   }
 }
@@ -209,6 +300,33 @@ function previousAttempt(dir, dispatchId) {
   return { ...hit, attempt }
 }
 
+/** What a logged start's caller chose itself. Lines before `explicit` was logged: an override with a model. */
+function explicitOfEntry(entry) {
+  if (entry.explicit !== undefined) return entry.explicit
+  return entry.source === 'override' && entry.choice?.model ? { agent: entry.choice.agent, model: entry.choice.model, ...(entry.choice.effort && { effort: entry.choice.effort }) } : null
+}
+
+const sameChoice = (a, b) => !!a && !!b && a.agent === b.agent && (a.model ?? null) === (b.model ?? null) && (a.effort ?? null) === (b.effort ?? null)
+
+/**
+ * A retry of a model the user chose: the same model, one effort step above the one that failed
+ * (above medium when it ran on its default effort). Never another model; ok:false when it has no
+ * higher effort, or past maxEscalations.
+ */
+function retrySameModel(settings, req, prevChoice, avail) {
+  const name = routing.choiceLabel({ agent: req.agent, model: req.model })
+  if (req.role === 'worker' && (req.attempt ?? 0) > settings.maxEscalations) return { ok: false, error: `Escalation limit reached (${settings.maxEscalations}): ask the user before trying again`, skipped: [] }
+  const from = routing.EFFORTS.indexOf(prevChoice?.effort ?? 'medium')
+  const tried = []
+  for (const effort of routing.EFFORTS.slice(from + 1)) {
+    const d = routing.route(settings, { ...req, effort }, avail)
+    if (d.ok) return { ...d, reason: `${name} was chosen explicitly, so the retry keeps it: effort ${prevChoice?.effort ?? 'default'} → ${effort}` }
+    tried.push(d.error)
+  }
+  const why = tried.length ? ` (${tried.at(-1)})` : ''
+  return { ok: false, error: `Cannot escalate ${name}: it was chosen explicitly, so the retry keeps it, and it has no effort above ${prevChoice?.effort ?? 'its default'}${why}. Nothing was substituted: retry with --model <another>, or ask the user.`, skipped: [] }
+}
+
 // ---------- route ----------
 
 /** `orca-flow route`: the decision only, nothing launched. Returns the exit code. */
@@ -219,45 +337,95 @@ export async function routeCommand(args, deps) {
   return decision.ok ? 0 : 3
 }
 
+// ---------- pending starts ----------
+
+const PENDING = (dir) => join(dir, 'pending-starts.json')
+const readPending = (dir) => readJson(PENDING(dir), {}) ?? {}
+function writePending(dir, pending) {
+  if (Object.keys(pending).length || existsSync(PENDING(dir))) writeJson(PENDING(dir), pending)
+}
+
+function unknownMessage(outcome, e, replay) {
+  const lines = [`Start outcome unknown: Orca could not tell whether the worker started (${firstLine(e)}). Do not start it again.`]
+  if (outcome.dispatchId) lines.push(`Check it: orca orchestration worker-show --dispatch ${outcome.dispatchId}`)
+  if (outcome.requestId) lines.push(`Run the same command again (or add --retry-request ${outcome.requestId}): it replays request ${outcome.requestId} instead of starting a second worker.`, replay ? `Replay: ${replay}` : '')
+  else lines.push('Orca gave no request id to replay it by: check `orca orchestration task-list` and worker-show before starting it again.')
+  return lines.filter(Boolean).join('\n')
+}
+
 // ---------- dispatch ----------
 
 /**
  * `orca-flow dispatch`: capacity gate, route, `orca orchestration worker-start` with the routed
  * flags, one routes.jsonl line. Exit 2 when capacity says no, 3 when no model fits; neither
- * launches anything. `--dry-run` stops before worker-start and the log line.
+ * launches anything. Exit 4 when the start's outcome is unknown: the same command replays it.
+ * `--dry-run` stops before worker-start and the log line.
  */
 export async function dispatchCommand(args, deps) {
   const req = routeRequest(args, ['worker', 'lead'])
+  const asked = explicitOf(req)
   const flags = { ...args }
   if (flags['retry-of'] === true) throw new UsageError('--retry-of needs the failed dispatch id')
+  if (flags['retry-request'] === true) throw new UsageError('--retry-request needs the request id Orca printed')
+  let prev = null
+  let keepModel = false
   if (flags['retry-of']) {
-    const prev = previousAttempt(deps.dir, flags['retry-of'])
+    prev = previousAttempt(deps.dir, flags['retry-of'])
     if (req.attempt === undefined) {
       if (!prev) throw new UsageError(`no route recorded for ${flags['retry-of']} in ${ROUTES(deps.dir)}: pass --attempt <n>`)
       req.attempt = prev.attempt + 1
     }
-    // The same task, judged the same way, unless this call says otherwise.
+    // The same task, the same request, unless this call says otherwise.
     if (prev) {
       if (!flags.task && prev.taskId) flags.task = prev.taskId
       const prevKind = routing.taskKind(prev.kind ?? prev.class)
       if (req.kind === undefined && prevKind) req.kind = prevKind
       if (req.risk === undefined && prev.risk) req.risk = prev.risk
+      if (req.context === undefined && prev.context) req.context = prev.context
+      const was = explicitOfEntry(prev)
+      if (!asked?.agent && !asked?.model) {
+        // The user's model is never swapped: it is retried at the next effort.
+        if (was?.model) {
+          req.agent = was.agent ?? prev.choice?.agent
+          req.model = was.model
+          keepModel = !asked?.effort
+        } else if (was?.agent) req.agent = was.agent
+      }
+      if (!asked?.effort && !keepModel && was?.effort) req.effort = was.effort
     }
     if (!flags.task) throw new UsageError('--retry-of needs --task <the failed task id>')
   }
   if (!flags.task && !flags.spec && !flags['spec-file']) throw new UsageError('dispatch needs --task <id>, --spec <text> or --spec-file <path|->')
   const newWorktree = NEW_WORKTREE.includes(flags.worktree)
 
-  const cap = await deps.capacity(newWorktree && typeof flags.repo === 'string' ? { repo: flags.repo } : {})
+  const base = ['orchestration', 'worker-start']
+  for (const k of PASSTHROUGH) if (k !== 'retry-request' && flags[k] !== undefined && flags[k] !== true) base.push(`--${k}`, String(flags[k]))
+  for (const k of BOOLEAN_PASSTHROUGH) if (flags[k]) base.push(`--${k}`)
+  let input
+  const stdin = () => (input ??= flags['spec-file'] === '-' ? deps.readStdin() : undefined)
+
+  // A start whose outcome was unknown: this same command replays it, and never starts a second worker.
+  const pending = readPending(deps.dir)
+  const given = typeof flags['retry-request'] === 'string' ? flags['retry-request'] : null
+  const replayId = given && pending[given] ? given : given ? null : Object.keys(pending).find((id) => JSON.stringify(pending[id].base) === JSON.stringify(base) && (pending[id].input ?? null) === (stdin() ?? null))
+  if (replayId) return replayStart(replayId, pending, args, deps)
+
+  const [cap, avail] = await Promise.all([
+    newWorktree && typeof flags.repo === 'string' ? repoName(flags.repo, deps).then((repo) => deps.capacity({ repo })) : deps.capacity({}),
+    deps.discover()
+  ])
   if (!capacityAllows(cap.verdict, newWorktree)) throw new Refused(refusal(cap, { newWorktree, taskId: flags.task, title: flags['task-title'] }), 2)
 
-  const decision = routing.route(readRouting(deps.dir), req, await deps.discover())
+  const settings = readRouting(deps.dir)
+  const decision = keepModel ? retrySameModel(settings, req, prev.choice, avail) : routing.route(settings, req, avail)
   if (!decision.ok) throw new Refused(formatDecision(decision, { explain: true }), 3)
+  if (keepModel) req.effort = decision.choice.effort
+  // An escalation must land somewhere else; a worker retried on the model that just failed is not one.
+  if (prev && req.role === 'worker' && !asked && sameChoice(decision.choice, prev.choice)) {
+    throw new Refused(`Escalation could not move up: attempt ${req.attempt} routes to ${label(decision)} again, the model that failed (${decision.reason}). Nothing was started. Change the rows in Settings → Models, pass --model, or ask the user.`, 3)
+  }
 
-  const argv = ['orchestration', 'worker-start']
-  for (const k of PASSTHROUGH) if (flags[k] !== undefined && flags[k] !== true) argv.push(`--${k}`, String(flags[k]))
-  for (const k of BOOLEAN_PASSTHROUGH) if (flags[k]) argv.push(`--${k}`)
-  argv.push(...routing.launchArgs(decision.choice))
+  const argv = [...base, ...(given ? ['--retry-request', given] : []), ...routing.launchArgs(decision.choice)]
   const capacityView = { verdict: cap.verdict, freeGB: cap.freeGB ?? null }
 
   if (args['dry-run']) {
@@ -267,11 +435,48 @@ export async function dispatchCommand(args, deps) {
     return 0
   }
 
-  const input = flags['spec-file'] === '-' ? deps.readStdin() : undefined
-  const receipt = await deps.orca(argv, { input })
+  let receipt
+  try {
+    receipt = await deps.orca(argv, { input: stdin() })
+  } catch (e) {
+    const outcome = startOutcome(e)
+    if (!outcome.unknown) throw e
+    if (outcome.requestId) {
+      pending[outcome.requestId] = { at: deps.now().toISOString(), base, argv, input: stdin() ?? null, role: req.role, req, decision: pick(decision), dispatchId: outcome.dispatchId }
+      writePending(deps.dir, pending)
+    }
+    throw new Refused(unknownMessage(outcome, e), 4)
+  }
   appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: req.role, receipt, decision, req }))
   if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, receipt }, null, 2))
   else deps.out(formatStart(receipt, decision))
+  return 0
+}
+
+/** Replays a start whose outcome was unknown, by its request id: the recorded command, no gate, no new route. */
+async function replayStart(id, pending, args, deps) {
+  const rec = pending[id]
+  const argv = [...rec.argv, '--retry-request', id]
+  if (args['dry-run']) {
+    deps.out(`Would replay request ${id} (its outcome was unknown; nothing new starts):\n${shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])}`)
+    return 0
+  }
+  let receipt
+  try {
+    receipt = await deps.orca(argv, { input: rec.input ?? undefined })
+  } catch (e) {
+    const outcome = startOutcome(e)
+    if (outcome.unknown) throw new Refused(unknownMessage({ ...outcome, requestId: outcome.requestId ?? id }, e), 4)
+    delete pending[id]
+    writePending(deps.dir, pending)
+    throw e
+  }
+  delete pending[id]
+  writePending(deps.dir, pending)
+  const decision = { ...rec.decision, ok: true, skipped: [] }
+  appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: rec.role, receipt, decision, req: rec.req }))
+  if (args.json) deps.out(JSON.stringify({ route: decision, replayed: id, receipt }, null, 2))
+  else deps.out(`Replayed request ${id} (its outcome was unknown).\n${formatStart(receipt, decision)}`)
   return 0
 }
 
@@ -324,7 +529,22 @@ function formatCheck(plan, check) {
   return lines.join('\n')
 }
 
-const statePath = (dir, plan) => join(PLANS(dir), `${planLib.planSlug(plan.title)}.json`)
+/**
+ * The plan's state file: its title slug plus a hash of the plan file's absolute path, so two plans
+ * with the same title never share one. A state file from before the hash (`<slug>.json`) that
+ * belongs to this plan file is moved to the new name.
+ */
+function stateFile(dir, plan, path) {
+  const slug = planLib.planSlug(plan.title)
+  const where = join(PLANS(dir), `${slug}-${createHash('sha256').update(path).digest('hex').slice(0, 8)}.json`)
+  const legacy = join(PLANS(dir), `${slug}.json`)
+  if (!existsSync(where) && existsSync(legacy) && readJson(legacy, null)?.plan === path) {
+    try {
+      renameSync(legacy, where)
+    } catch {}
+  }
+  return where
+}
 
 const taskRequest = (t) => ({
   role: 'worker',
@@ -335,6 +555,9 @@ const taskRequest = (t) => ({
   ...(t.model && { model: t.model }),
   ...(t.effort && { effort: t.effort })
 })
+
+/** What the plan state keeps of a task's request: how it was judged, and what the plan chose itself. */
+const requestRecord = (t) => ({ kind: t.kind, risk: t.risk ?? null, context: t.context ?? null, explicit: explicitOf(t) })
 
 /** Orca's task status as a plan state. A dispatched task that Orca put back to ready is queued again. */
 function stateOf(status) {
@@ -350,30 +573,108 @@ async function refreshStates(state, deps) {
   const byId = new Map((listed?.tasks ?? []).map((t) => [t.id, t.status]))
   for (const t of Object.values(state.tasks)) {
     const status = byId.get(t.taskId)
-    if (status) {
-      t.status = status
-      const next = stateOf(status)
-      // Orca still has it ready: a start that failed stays failed-start until it starts.
-      t.state = t.state === 'failed-start' && next === 'queued' ? 'failed-start' : next
+    if (!status) continue
+    t.status = status
+    const next = stateOf(status)
+    if (t.state === 'unknown') {
+      // Replayed by its request id (startReady) unless Orca has settled it, or it runs and there is no id to replay.
+      if (next === 'done' || next === 'failed' || (next === 'running' && !t.requestId)) {
+        t.state = next
+        delete t.requestId
+        delete t.startArgv
+      }
+      continue
     }
+    // Orca still has it ready: a start that failed stays failed-start until it starts.
+    t.state = t.state === 'failed-start' && next === 'queued' ? 'failed-start' : next
   }
 }
 
+/** Plan task ids as plan states; a task with no entry in the state file is `missing`. */
+const statesOf = (plan, state) => Object.fromEntries(plan.tasks.map((t) => [t.id, state.tasks[t.id]?.state ?? 'missing']))
+
 /**
- * Starts what may start now: ready tasks (deps done) up to maxParallel minus this plan's running
- * workers, each behind the capacity gate and on its recorded route. A recorded model that is no
- * longer available is routed again and said so; an explicit one is never swapped.
+ * Starts one worker for a plan task. A definite refusal marks it failed-start (startable again); an
+ * unknown outcome marks it unknown with the request id to replay, so it is never started twice.
+ * Returns 'started', 'failed' or 'unknown'.
  */
-async function startReady({ plan, state, settings, avail, deps, worktree, dryRun, lines }) {
-  const failures = []
-  const states = Object.fromEntries(Object.entries(state.tasks).map(([id, t]) => [id, t.state]))
-  const queued = planLib.startable(plan, states, settings.maxParallel)
-  const running = Object.values(state.tasks).filter((t) => t.state === 'running').length
-  if (!queued.length) {
-    const waiting = plan.tasks.filter((t) => state.tasks[t.id].state === 'queued').length
-    if (waiting) lines.push(running >= settings.maxParallel ? `Nothing started: ${running} of this plan's workers run (limit ${settings.maxParallel}).` : `Nothing started: ${waiting} task${waiting === 1 ? ' waits' : 's wait'} on dependencies.`)
-    return failures
+async function startTask({ id, t, argv, decision, task, deps, lines, failures, unknowns, replay = null }) {
+  let receipt
+  try {
+    receipt = await deps.orca(replay ? [...argv, '--retry-request', replay] : argv)
+  } catch (e) {
+    const message = firstLine(e)
+    const outcome = startOutcome(e)
+    if (outcome.unknown) {
+      t.state = 'unknown'
+      t.requestId = outcome.requestId ?? replay ?? null
+      t.startArgv = argv
+      if (outcome.dispatchId) t.dispatchId = outcome.dispatchId
+      t.error = message
+      const how = t.requestId ? `\`orca-flow plan next\` replays request ${t.requestId}` : 'Orca gave no request id: check `orca orchestration task-list`, then `orca-flow plan next --restart ' + id + '` only if no worker runs'
+      unknowns.push(`${id}: ${message} (${how})`)
+      lines.push(`${id}: start outcome unknown on ${label(decision)}: ${message}. Not started again: ${how}.`)
+      return 'unknown'
+    }
+    // Only this task failed to start; it stays startable (`plan next`) and the others are still tried.
+    t.state = 'failed-start'
+    t.error = message
+    delete t.requestId
+    delete t.startArgv
+    failures.push(`${id}: ${message}`)
+    lines.push(`${id}: failed to start on ${label(decision)}: ${message}`)
+    return 'failed'
   }
+  delete t.error
+  delete t.requestId
+  delete t.startArgv
+  t.dispatchId = receipt?.dispatchId ?? null
+  t.state = 'running'
+  t.status = 'dispatched'
+  appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: 'worker', receipt: { ...receipt, taskId: receipt?.taskId ?? t.taskId }, decision, req: taskRequest(task) }))
+  lines.push(`${id}: ${replay ? `replayed request ${replay}: started` : 'started'} ${t.dispatchId ?? t.taskId} on ${label(decision)} — ${decision.reason}`)
+  return 'started'
+}
+
+/**
+ * Replays starts whose outcome was unknown, then starts what may start now: ready tasks (deps
+ * done) up to maxParallel minus this plan's running workers, each behind the capacity gate and on
+ * its recorded route. Capacity is scanned once (`capacity`, a promise) and each start's agent is
+ * priced locally for the next. A recorded model that is no longer available is routed again and
+ * said so; an explicit one is never swapped.
+ */
+async function startReady({ plan, state, settings, avail, deps, worktree, dryRun, lines, capacity, restart = [] }) {
+  const failures = []
+  const unknowns = []
+  for (const id of restart) {
+    const t = state.tasks[id]
+    if (!t) throw new UsageError(`--restart ${id}: the plan state has no task "${id}"`)
+    if (t.state !== 'unknown') throw new UsageError(`--restart ${id}: it is ${t.state}, not unknown`)
+    lines.push(`${id}: restarted on your word that no worker runs for it (--restart); its earlier start is forgotten.`)
+    t.state = 'failed-start'
+    delete t.requestId
+    delete t.startArgv
+  }
+  for (const t of plan.tasks) {
+    const s = state.tasks[t.id]
+    if (!s) lines.push(`${t.id}: in the plan but has no Orca task (a partial start, or the plan was edited): run \`orca-flow plan start\` on this file to create it.`)
+    else if (s.state === 'unknown') {
+      if (!s.requestId) lines.push(`${t.id}: start outcome unknown and no request id to replay: check \`orca orchestration task-list\`; \`orca-flow plan next --restart ${t.id}\` only if no worker runs.`)
+      else if (dryRun) lines.push(`${t.id}: would replay request ${s.requestId}: ${shellLine([deps.orcaBin ?? 'orca', ...s.startArgv, '--retry-request', s.requestId, '--json'])}`)
+      else await startTask({ id: t.id, t: s, argv: s.startArgv, decision: s.route, task: t, deps, lines, failures, unknowns, replay: s.requestId })
+    }
+  }
+  for (const id of Object.keys(state.tasks)) if (!plan.tasks.some((t) => t.id === id)) lines.push(`${id}: in the plan state but no longer in the plan file; left as it is.`)
+
+  const states = statesOf(plan, state)
+  const queued = planLib.startable(plan, states, settings.maxParallel)
+  const running = Object.values(state.tasks).filter((t) => t.state === 'running' || t.state === 'unknown').length
+  if (!queued.length) {
+    const waiting = plan.tasks.filter((t) => states[t.id] === 'queued').length
+    if (waiting) lines.push(running >= settings.maxParallel ? `Nothing started: ${running} of this plan's workers run (limit ${settings.maxParallel}).` : `Nothing started: ${waiting} task${waiting === 1 ? ' waits' : 's wait'} on dependencies.`)
+    return { failures, unknowns }
+  }
+  let cap = await capacity()
   for (const id of queued) {
     const t = state.tasks[id]
     const task = plan.tasks.find((x) => x.id === id)
@@ -394,7 +695,6 @@ async function startReady({ plan, state, settings, avail, deps, worktree, dryRun
       decision = fresh
       t.route = pick(fresh)
     }
-    const cap = await deps.capacity({})
     if (!capacityAllows(cap.verdict, false)) {
       lines.push(`${id}: queued: capacity says ${cap.verdict}${cap.freeGB == null ? '' : ` (${cap.freeGB} GB free)`}. Run \`orca-flow plan next\` when there is room.`)
       break
@@ -403,28 +703,13 @@ async function startReady({ plan, state, settings, avail, deps, worktree, dryRun
     if (dryRun) {
       lines.push(`${id}: would run ${shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])}`)
       t.state = 'running'
+      cap = afterStart(cap)
       continue
     }
-    let receipt
-    try {
-      receipt = await deps.orca(argv)
-    } catch (e) {
-      // Only this task failed to start; it stays startable (`plan next`) and the others are still tried.
-      const message = String(e?.message ?? e).split('\n')[0]
-      t.state = 'failed-start'
-      t.error = message
-      failures.push(`${id}: ${message}`)
-      lines.push(`${id}: failed to start on ${label(decision)}: ${message}`)
-      continue
-    }
-    delete t.error
-    t.dispatchId = receipt?.dispatchId ?? null
-    t.state = 'running'
-    t.status = 'dispatched'
-    appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: 'worker', receipt: { ...receipt, taskId: receipt?.taskId ?? t.taskId }, decision, req: taskRequest(task) }))
-    lines.push(`${id}: started ${t.dispatchId ?? t.taskId} on ${label(decision)} — ${decision.reason}`)
+    // A worker that may be running costs memory too: only a definite refusal leaves the budget as it was.
+    if ((await startTask({ id, t, argv, decision, task, deps, lines, failures, unknowns })) !== 'failed') cap = afterStart(cap)
   }
-  return failures
+  return { failures, unknowns }
 }
 
 /** `--run <id>` when the plan knows its run; otherwise Orca uses the caller's own run. */
@@ -443,6 +728,12 @@ function unavailable(choice, settings, avail) {
 /** Ids from Orca receipts, whatever envelope they come in. */
 const idOf = (r, kind) => r?.[`${kind}Id`] ?? r?.[kind]?.id ?? r?.id ?? null
 
+/** A capacity scan started now and awaited only when a start needs it (never an unhandled rejection). */
+function lazyCapacity(deps) {
+  let p = null
+  return () => (p ??= deps.capacity({}))
+}
+
 /** `orca-flow plan check|start|next|status <file>`. Returns the exit code. */
 export async function planCommand(args, deps) {
   const [, sub, file] = args._
@@ -455,18 +746,27 @@ export async function planCommand(args, deps) {
   const worktree = typeof args.worktree === 'string' ? args.worktree : 'current'
   if (NEW_WORKTREE.includes(worktree)) throw new UsageError('a plan runs in one existing worktree: --worktree current (or a selector); new worktrees are your coordinator\'s')
   const settings = readRouting(deps.dir)
-  const where = statePath(deps.dir, plan)
+  const where = stateFile(deps.dir, plan, path)
   const lines = []
+  const restart = args.restart === undefined ? [] : String(args.restart).split(',').filter(Boolean)
+  if (args.restart === true) throw new UsageError('--restart needs the plan task id(s)')
 
   if (sub === 'start') {
     const dryRun = !!args['dry-run']
-    if (!dryRun && existsSync(where)) throw new UsageError(`plan "${plan.title}" was already started (${where}): use \`orca-flow plan next\``)
+    // A partial start (task-create failed part way, or tasks added to the plan since) is finished, not refused.
+    const earlier = dryRun ? null : readJson(where, null)
+    if (earlier && plan.tasks.every((t) => earlier.tasks?.[t.id])) throw new UsageError(`plan "${plan.title}" was already started (${where}): use \`orca-flow plan next\``)
     for (const w of check.warnings) lines.push(`warning: ${w}`)
+    // Discovery and the capacity scan run side by side; capacity is awaited only if something starts.
+    const capacity = lazyCapacity(deps)
+    const capP = capacity()
+    capP.catch(() => {})
     const avail = await deps.discover()
+    const toCreate = plan.tasks.filter((t) => !earlier?.tasks?.[t.id])
     // Route every task once, now: later settings changes never switch pending work.
     const routes = {}
     const failed = []
-    for (const t of plan.tasks) {
+    for (const t of toCreate) {
       const d = routing.route(settings, taskRequest(t), avail)
       if (d.ok) routes[t.id] = pick(d)
       else failed.push(`${t.id}: ${d.error}`)
@@ -480,11 +780,11 @@ export async function planCommand(args, deps) {
     // (`run-current`), else none: task-create and worker-start without --run join the caller's own
     // Run, and the Run id is read back from the first task. `--new-run` is the explicit opt-in to
     // `run-create` (a home coordinator with no Run), and the output says it was created.
-    let runId = typeof args.run === 'string' ? args.run : null
-    let runNote = null
+    let runId = typeof args.run === 'string' ? args.run : earlier?.runId && earlier.runId !== UNKNOWN_RUN ? earlier.runId : null
+    let runNote = earlier ? `Finishing the partial start of ${where}: creating ${toCreate.map((t) => t.id).join(', ')}.` : null
     if (!runId && !dryRun) {
       runId = idOf(await deps.orca(['orchestration', 'run-current']), 'run')
-      if (runId) runNote = `Run ${runId}: the one bound to this terminal.`
+      if (runId && !earlier) runNote = `Run ${runId}: the one bound to this terminal.`
     }
     if (!runId && !dryRun && args['new-run']) {
       runId = idOf(await deps.orca(['orchestration', 'run-create', '--objective', plan.title]), 'run')
@@ -492,8 +792,10 @@ export async function planCommand(args, deps) {
       runNote = `Created Run ${runId} (--new-run) and bound it to this terminal as its coordinator.`
     }
     if (runNote) lines.push(runNote)
-    const state = { title: plan.title, plan: path, runId: runId ?? (dryRun ? '<run>' : UNKNOWN_RUN), worktree, createdAt: deps.now().toISOString(), dryRun, tasks: {} }
+    const state = earlier ?? { title: plan.title, plan: path, runId: null, worktree, createdAt: deps.now().toISOString(), dryRun, tasks: {} }
+    state.runId = runId ?? (dryRun ? '<run>' : UNKNOWN_RUN)
     for (const id of check.waves.flat()) {
+      if (state.tasks[id]) continue
       const t = plan.tasks.find((x) => x.id === id)
       const depIds = t.deps.map((d) => state.tasks[d].taskId)
       const argv = ['orchestration', 'task-create', '--task-title', t.title, '--spec-file', '-', ...runFlag(state), ...(depIds.length ? ['--deps', JSON.stringify(depIds)] : [])]
@@ -510,32 +812,39 @@ export async function planCommand(args, deps) {
         }
       }
       if (!taskId) throw new Error(`Orca returned no task id for "${id}"`)
-      state.tasks[id] = { taskId, route: routes[id], dispatchId: null, state: 'queued', status: dep(depIds) }
+      state.tasks[id] = { taskId, route: routes[id], request: requestRecord(t), dispatchId: null, state: 'queued', status: dep(depIds) }
       if (!dryRun) writeJson(where, state)
     }
-    const failures = await startReady({ plan, state, settings, avail, deps, worktree: state.worktree, dryRun, lines })
+    const { failures, unknowns } = await startReady({ plan, state, settings, avail, deps, worktree: state.worktree, dryRun, lines, capacity, restart })
     if (!dryRun) writeJson(where, state)
-    return finish({ plan, state, lines, failures, args, deps })
+    return finish({ plan, state, lines, failures, unknowns, args, deps })
   }
 
   const state = readJson(where, null)
   if (!state) throw new UsageError(`plan "${plan.title}" has not started: \`orca-flow plan start ${file}\``)
-  await refreshStates(state, deps)
+  state.tasks ??= {}
   let failures = []
+  let unknowns = []
   if (sub === 'next') {
-    failures = await startReady({ plan, state, settings, avail: await deps.discover(), deps, worktree: state.worktree, dryRun: !!args['dry-run'], lines })
+    const capacity = lazyCapacity(deps)
+    capacity().catch(() => {})
+    const [avail] = await Promise.all([deps.discover(), refreshStates(state, deps)])
+    ;({ failures, unknowns } = await startReady({ plan, state, settings, avail, deps, worktree: state.worktree, dryRun: !!args['dry-run'], lines, capacity, restart }))
     if (!args['dry-run']) writeJson(where, state)
-  } else if (sub === 'status') writeJson(where, state)
-  else throw new UsageError('usage: orca-flow plan check|start|next|status <plan.json>')
-  return finish({ plan, state, lines, failures, args, deps })
+  } else if (sub === 'status') {
+    await refreshStates(state, deps)
+    writeJson(where, state)
+  } else throw new UsageError('usage: orca-flow plan check|start|next|status <plan.json>')
+  return finish({ plan, state, lines, failures, unknowns, args, deps })
 }
 
-/** Prints the status table; exits 1 when a start failed, naming each failure. */
-function finish({ plan, state, lines, failures, args, deps }) {
+/** Prints the status table; exits 1 when a start failed or its outcome is unknown, naming each. */
+function finish({ plan, state, lines, failures, unknowns = [], args, deps }) {
   lines.push(...statusLines(plan, state))
   if (failures.length) lines.push(`${failures.length} start${failures.length === 1 ? '' : 's'} failed (state failed-start, \`orca-flow plan next\` retries):`, ...failures.map((f) => `  ${f}`))
+  if (unknowns.length) lines.push(`${unknowns.length} start${unknowns.length === 1 ? '' : 's'} with an unknown outcome (state unknown, never started twice):`, ...unknowns.map((f) => `  ${f}`))
   deps.out(args.json ? JSON.stringify(state, null, 2) : lines.join('\n'))
-  return failures.length ? 1 : 0
+  return failures.length || unknowns.length ? 1 : 0
 }
 
 const dep = (depIds) => (depIds.length ? 'pending' : 'ready')
@@ -546,8 +855,11 @@ function statusLines(plan, state) {
     `Plan "${plan.title}" (run ${state.runId}):`,
     ...plan.tasks.map((t) => {
       const s = state.tasks[t.id]
+      if (!s) return `  ${t.id.padEnd(width)}  ${'missing'.padEnd(12)}  no Orca task: \`orca-flow plan start\` creates it`
       const who = s.dispatchId ? ` ${s.dispatchId}` : ''
-      return `  ${t.id.padEnd(width)}  ${s.state.padEnd(12)}  ${routing.choiceLabel(s.route.choice)} — ${s.route.reason}  [${s.taskId}${who}]${s.error ? ` start failed: ${s.error}` : ''}`
+      const choice = s.route?.choice ? routing.choiceLabel(s.route.choice) : '(no route)'
+      const problem = s.error ? (s.state === 'unknown' ? ` start outcome unknown: ${s.error}${s.requestId ? ` (replays ${s.requestId})` : ''}` : ` start failed: ${s.error}`) : ''
+      return `  ${t.id.padEnd(width)}  ${String(s.state).padEnd(12)}  ${choice} — ${s.route?.reason ?? ''}  [${s.taskId}${who}]${problem}`
     })
   ]
 }

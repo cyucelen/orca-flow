@@ -3,7 +3,7 @@
 // no real workers.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fakeDeps } from './fake-orca.mjs'
 import { planCommand, readRoutes } from '../skills/orca-flow/scripts/dispatch.mjs'
@@ -33,8 +33,16 @@ function withTasks(options = {}) {
   return deps
 }
 
-function writePlan(deps, tasks, title = 'Totals feature') {
-  const file = join(deps.dir, 'plan.json')
+/** The plan's state file (plans/<slug>-<hash of the plan path>.json); there is one per test. */
+const stateFileOf = (deps) => {
+  const files = readdirSync(join(deps.dir, 'plans')).filter((f) => f.endsWith('.json'))
+  assert.equal(files.length, 1, files.join(', '))
+  return join(deps.dir, 'plans', files[0])
+}
+const readState = (deps) => JSON.parse(readFileSync(stateFileOf(deps), 'utf8'))
+
+function writePlan(deps, tasks, title = 'Totals feature', name = 'plan.json') {
+  const file = join(deps.dir, name)
   writeFileSync(file, JSON.stringify({ title, tasks }))
   return file
 }
@@ -102,9 +110,11 @@ test('plan start creates one Orca task per plan task with deps, routes each once
   assert.deepEqual(startsNow[1].args.slice(-6), ['--agent', 'claude', '--model', 'sonnet', '--effort', 'medium'])
   assert.equal(after(startsNow[0].args, '--worktree'), 'current')
   assert.equal(after(startsNow[0].args, '--run'), 'run_7', 'the Run read back from the first task is passed on')
-  assert.equal(deps.capacityCalls.length, 2)
+  assert.equal(deps.capacityCalls.length, 1, 'one capacity scan; each start is priced locally')
 
-  const state = JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8'))
+  assert.match(stateFileOf(deps), /plans\/totals-feature-[0-9a-f]{8}\.json$/)
+  const state = readState(deps)
+  assert.deepEqual(state.tasks.e2e.request, { kind: 'hard', risk: 'high', context: null, explicit: null }, 'how each task was judged is kept')
   assert.equal(state.runId, 'run_7', 'read back from the first task')
   assert.deepEqual(Object.fromEntries(Object.entries(state.tasks).map(([id, t]) => [id, [t.taskId, t.state, t.route.choice.model]])), {
     api: ['task_1', 'running', 'haiku'],
@@ -234,7 +244,7 @@ test('a failed worker-start marks only that task failed-start, tries the rest, p
   assert.match(out, /a +failed-start +Claude Sonnet/)
   assert.match(out, /b +running/)
   assert.match(out, /1 start failed .*plan next.*\n {2}a: worktree is busy/)
-  const state = JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8'))
+  const state = readState(deps)
   assert.deepEqual([state.tasks.a.state, state.tasks.a.error, state.tasks.b.state, state.tasks.c.state], ['failed-start', 'worktree is busy', 'running', 'queued'])
 
   // The task is still ready in Orca; plan next keeps it failed-start, retries it, and succeeds.
@@ -243,13 +253,145 @@ test('a failed worker-start marks only that task failed-start, tries the rest, p
   assert.equal(await run(deps, 'next', file), 0)
   assert.equal(verbs(deps, 'worker-start').filter((c) => after(c.args, '--task') === 'task_1').length, 2)
   assert.match(deps.output.join('\n'), /a +running/)
-  assert.equal(JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8')).tasks.a.error, undefined)
+  assert.equal(readState(deps).tasks.a.error, undefined)
 })
 
 test('a failed start does not bypass the capacity gate for the tasks after it', async () => {
-  const deps = withTasks({ routing: { maxParallel: 3 }, orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_1')) throw new Error('nope') } })
-  assert.equal(await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b'])])), 1)
-  assert.equal(deps.capacityCalls.length, 2, 'each start is gated, including the one after the failure')
+  const deps = withTasks({ routing: { maxParallel: 3 }, verdict: 'full', orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_1')) throw new Error('nope') } })
+  assert.equal(await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b'])])), 0)
+  assert.equal(verbs(deps, 'worker-start').length, 0, 'the gate holds every task')
+})
+
+test('capacity is scanned once per plan start or next, and each started agent is priced locally for the next', async () => {
+  // 1.2 GB free, 0.5 GB an agent: two fit (1.2 → 0.7 → 0.2), the third waits.
+  const deps = withTasks({ routing: { maxParallel: 4 }, freeGB: 1.2, agentGB: 0.5, orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_2')) throw new Error('nope') } })
+  await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c']), T('d', ['d'])]))
+  assert.equal(deps.capacityCalls.length, 1)
+  assert.deepEqual(verbs(deps, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2', 'task_3'], 'a refused start costs nothing')
+  assert.match(deps.output.join('\n'), /d: queued: capacity says full \(0\.2 GB free\)/)
+  deps.output.length = 0
+  await run(deps, 'next', writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c']), T('d', ['d'])]))
+  assert.equal(deps.capacityCalls.length, 2, 'plan next scans once')
+  // Nothing to start: no scan at all.
+  const idle = withTasks({ routing: { maxParallel: 1 } })
+  const file = writePlan(idle, [T('a', ['a']), T('b', ['b'], ['a'])])
+  await run(idle, 'start', file)
+  const scans = idle.capacityCalls.length
+  await run(idle, 'next', file)
+  assert.ok(idle.capacityCalls.length <= scans + 1)
+})
+
+test('two plans with the same title keep separate state', async () => {
+  const deps = withTasks()
+  const one = writePlan(deps, [T('a', ['a'])], 'Same', 'one.json')
+  const two = writePlan(deps, [T('a', ['a'])], 'Same', 'two.json')
+  assert.equal(await run(deps, 'start', one), 0)
+  assert.equal(await run(deps, 'start', two), 0, 'not "already started"')
+  assert.equal(verbs(deps, 'task-create').length, 2)
+  assert.equal(readdirSync(join(deps.dir, 'plans')).filter((f) => f.endsWith('.json')).length, 2)
+})
+
+test('a state file from before the path hash is moved to the new name when it belongs to this plan', async () => {
+  const deps = withTasks()
+  const file = writePlan(deps, [T('a', ['a'])])
+  mkdirSync(join(deps.dir, 'plans'), { recursive: true })
+  writeFileSync(join(deps.dir, 'plans', 'totals-feature.json'), JSON.stringify({ title: 'Totals feature', plan: file, runId: 'run_7', worktree: 'current', tasks: { a: { taskId: 'task_9', route: { choice: { agent: 'claude', model: 'sonnet' }, source: 'kind', reason: 'r' }, dispatchId: 'ctx_9', state: 'running' } } }))
+  await run(deps, 'status', file)
+  assert.match(stateFileOf(deps), /totals-feature-[0-9a-f]{8}\.json$/)
+  assert.match(deps.output.join('\n'), /a +running .*\[task_9 ctx_9\]/)
+})
+
+test('plan next and status never crash on a task missing from the state, and plan start finishes a partial start', async () => {
+  let failCreate = true
+  const deps = withTasks({ orca: async (args) => { if (args[1] === 'task-create' && failCreate && args.includes('Do b')) throw new Error('Orca timed out') } })
+  const file = writePlan(deps, [T('a', ['a']), T('b', ['b'], ['a']), T('c', ['c'])])
+  await assert.rejects(run(deps, 'start', file), /Orca timed out/)
+  assert.deepEqual(Object.keys(readState(deps).tasks), ['a', 'c'], 'wave 1 was created before b failed')
+
+  deps.output.length = 0
+  assert.equal(await run(deps, 'status', file), 0)
+  assert.match(deps.output.join('\n'), /b +missing +no Orca task/)
+  deps.output.length = 0
+  assert.equal(await run(deps, 'next', file), 0)
+  assert.match(deps.output.join('\n'), /b: in the plan but has no Orca task .*plan start/)
+
+  // plan start creates only what is missing, then starts what is ready.
+  failCreate = false
+  deps.output.length = 0
+  const before = verbs(deps, 'task-create').length
+  assert.equal(await run(deps, 'start', file), 0)
+  const created = verbs(deps, 'task-create').slice(before)
+  assert.deepEqual(created.map((c) => after(c.args, '--task-title')), ['Do b'])
+  assert.equal(after(created[0].args, '--deps'), '["task_1"]')
+  assert.match(deps.output.join('\n'), /Finishing the partial start .*: creating b\./)
+  assert.deepEqual(Object.keys(readState(deps).tasks).sort(), ['a', 'b', 'c'])
+  await assert.rejects(run(deps, 'start', file), /already started/)
+
+  // A task added to the plan file after start: reported, then created by plan start.
+  const grown = writePlan(deps, [T('a', ['a']), T('b', ['b'], ['a']), T('c', ['c']), T('d', ['d'])])
+  deps.output.length = 0
+  assert.equal(await run(deps, 'status', grown), 0)
+  assert.match(deps.output.join('\n'), /d +missing/)
+  assert.equal(await run(deps, 'start', grown), 0)
+  assert.equal(readState(deps).tasks.d.taskId, 'task_4')
+})
+
+const REQ = '0b8f3c1e-2d4a-4e6f-8a9b-1c2d3e4f5a6b'
+
+test('a start with an unknown outcome is marked unknown, holds its slot, and plan next replays it by request id instead of starting it again', async () => {
+  let unknown = true
+  const deps = withTasks({
+    routing: { maxParallel: 2 },
+    orca: async (args) => {
+      if (args[1] === 'worker-start' && args.includes('task_1') && unknown) throw Object.assign(new Error('start: timed out\nmore'), { result: { state: 'outcome_unknown', dispatchId: 'ctx_u' }, data: { orchestrationRequestId: REQ } })
+    }
+  })
+  const file = writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c'])])
+  assert.equal(await run(deps, 'start', file), 1)
+  const out = deps.output.join('\n')
+  assert.match(out, new RegExp(`a: start outcome unknown on Claude Sonnet · medium: start: timed out\\. Not started again: \`orca-flow plan next\` replays request ${REQ}`))
+  assert.match(out, /a +unknown /)
+  assert.match(out, /1 start with an unknown outcome/)
+  assert.deepEqual(verbs(deps, 'worker-start').map((c) => after(c.args, '--task')), ['task_1', 'task_2'], 'c waits: a may be running and holds its slot')
+  const state = readState(deps)
+  assert.deepEqual([state.tasks.a.state, state.tasks.a.requestId, state.tasks.a.dispatchId], ['unknown', REQ, 'ctx_u'])
+
+  // plan next: Orca still says ready. a is replayed (not started fresh), with the same command.
+  unknown = false
+  deps.output.length = 0
+  assert.equal(await run(deps, 'next', file), 0)
+  const aStarts = verbs(deps, 'worker-start').filter((c) => c.args.includes('task_1'))
+  assert.equal(aStarts.length, 2)
+  assert.deepEqual(aStarts[1].args, [...aStarts[0].args, '--retry-request', REQ])
+  assert.match(deps.output.join('\n'), new RegExp(`a: replayed request ${REQ}: started ctx_\\d+`))
+  assert.equal(readState(deps).tasks.a.state, 'running')
+  assert.equal(readState(deps).tasks.a.requestId, undefined)
+})
+
+test('an unknown start with no request id is held, never restarted, until --restart', async () => {
+  let unknown = true
+  const deps = withTasks({ orca: async (args) => { if (args[1] === 'worker-start' && unknown) throw Object.assign(new Error('orca timed out'), { timedOut: true }) } })
+  const file = writePlan(deps, [T('a', ['a'])])
+  assert.equal(await run(deps, 'start', file), 1)
+  unknown = false
+  deps.output.length = 0
+  await run(deps, 'next', file)
+  assert.equal(verbs(deps, 'worker-start').length, 1, 'not started a second time')
+  assert.match(deps.output.join('\n'), /a: start outcome unknown and no request id to replay.*--restart a/)
+  // Orca shows the worker started after all: it follows Orca.
+  deps.status.task_1 = 'dispatched'
+  deps.output.length = 0
+  await run(deps, 'status', file)
+  assert.match(deps.output.join('\n'), /a +running/)
+
+  const held = withTasks({ orca: async (args) => { if (args[1] === 'worker-start' && unknown) throw Object.assign(new Error('orca timed out'), { timedOut: true }) } })
+  unknown = true
+  const f2 = writePlan(held, [T('a', ['a'])])
+  await run(held, 'start', f2)
+  unknown = false
+  assert.equal(await run(held, 'next', f2, { restart: 'a' }), 0)
+  assert.equal(verbs(held, 'worker-start').length, 2)
+  assert.equal(readState(held).tasks.a.state, 'running')
 })
 
 test('plan next re-routes a failed-start task whose recorded model is gone, and says so', async () => {

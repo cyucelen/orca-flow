@@ -83,6 +83,8 @@ test('startable: deps done, queued only, bounded by maxParallel minus running', 
   assert.deepEqual(startable(p, { a: 'failed' }, 3), ['b', 'c'], 'a failed dependency holds d back')
   assert.deepEqual(startable(p, { a: 'running', b: 'running', c: 'running' }, 2), [])
   assert.deepEqual(startable(p, { a: 'failed-start' }, 3), ['a', 'b', 'c'], 'a failed start can be started again')
+  assert.deepEqual(startable(p, { a: 'unknown' }, 2), ['b'], 'a start whose outcome is unknown is never started again, and holds a slot')
+  assert.deepEqual(startable(p, { a: 'missing' }, 3), ['b', 'c'], 'a task with no Orca task is not started')
 })
 
 test('slug and ownership note', () => {
