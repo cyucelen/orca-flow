@@ -39,7 +39,7 @@ const settings = {
         normal: { model: { agent: 'codex', model: 'gpt-retired', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'medium' } },
         hard: { model: { agent: 'claude', model: 'opus', effort: 'high' }, fallback: null }
       },
-      presets: []
+      types: [], presets: []
     }
   },
   // What the worker discovered: installed agents and the Codex catalog (`codex debug models`).
@@ -70,10 +70,17 @@ const CHECKS = {
 const upd = q.get('update');
 settings.updateCheck = CHECKS[upd] ?? null;
 if (upd === 'available') settings.update = { kind: 'available', version: '0.2.65' };
+// ?fixture=types: two task types (Browser checks on Gemini-like Codex, Images unavailable), as in the approved design.
+if (q.get('fixture') === 'types') { const r = settings.settings.routing; r.types = [
+  { id: 'browser-checks', name: 'Browser checks', description: 'Open pages, click through flows, take screenshots', route: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'low' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } } },
+  { id: 'images', name: 'Images', description: 'Make or edit images, icons and illustrations', route: { model: { agent: 'codex', model: 'gpt-6-astra' }, fallback: null } }
+]; }
 // ?fixture=saved: the setup equals the saved preset "Mine", so it is selected and removable.
 if (q.get('fixture') === 'saved') { const r = settings.settings.routing; r.workers.normal.model = { agent: 'claude', model: 'sonnet', effort: 'medium' }; r.presets = [{ id: 'saved:mine', name: 'Mine', builtIn: false, coordinator: r.coordinator, lead: r.lead, workers: JSON.parse(JSON.stringify(r.workers)) }]; }
 // ?click=<selector>: click that element (for screenshots), after the page shows.
-if (q.get('click')) setTimeout(() => document.querySelector(q.get('click'))?.click(), 500);
+if (q.get('click')) setTimeout(() => { const el = document.querySelector(q.get('click')); el?.scrollIntoView({ block: 'center' }); setTimeout(() => el?.click(), 100); }, 500);
+// ?eval=<js>: run it after the page shows and put its result in document.title (for checks with --dump-dom).
+if (q.get('eval')) setTimeout(async () => { try { document.title = 'EVAL ' + JSON.stringify(await (0, eval)(q.get('eval'))); } catch (e) { document.title = 'EVAL ERROR ' + e.message; } }, 1500);
 // ?avail=none: the first model lookup has not landed yet.
 if (q.get('avail') === 'none') delete settings.availability;
 if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
@@ -133,16 +140,21 @@ server.listen(0, '127.0.0.1', () => {
     for (const update of ['idle', 'checking', 'current', 'available', 'failed', 'cannot']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'about', theme, w, width, height, update, name: `about-${update}` })
     for (const [update, theme, w] of [['cannot', 'dark', 'wide'], ['failed', 'light', '360'], ['current', 'dark', '360']]) jobs.push({ page: 'about', theme, w, width: sizes[w][0], height: sizes[w][1], update, tip: '#s-page .s-value[data-tip]', name: `about-${update}-tooltip` })
   }
-  // --models: only the Models page, dark and light, wide and narrow, plus a tooltip.
+  // --models: only the Models page (the routing map), dark and light, wide and narrow, with its popover and forms.
   if (process.argv.includes('--models')) {
     jobs.length = 0
-    for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'models', theme, w, width, height })
-    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-krow:nth-child(2) .s-tipwrap[data-tip]', name: 'models-unavailable-tooltip' })
-    jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, tip: '.s-krow:nth-child(1) .s-tipwrap[data-tip]', name: 'models-haiku-effort-tooltip' })
+    const card = (row, slot = 'model') => `[data-card="${row}"][data-slot="${slot}"]`
+    for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'models', theme, w, width, height, fixture: 'types', name: 'models-map' })
+    for (const theme of ['dark', 'light']) jobs.push({ page: 'models', theme, w: 'wide', width: 1180, height: 780, fixture: 'types', click: card('kind:normal'), name: 'models-popover' })
+    jobs.push({ page: 'models', theme: 'dark', w: '360', width: 360, height: 820, fixture: 'types', click: card('kind:normal'), name: 'models-popover' })
+    jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, fixture: 'types', click: card('kind:normal', 'fallback'), name: 'models-popover-fallback' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, fixture: 'types', click: card('kind:simple'), name: 'models-popover-haiku' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, fixture: 'types', click: '#m-addtype', name: 'models-add-type' })
+    jobs.push({ page: 'models', theme: 'light', w: '360', width: 360, height: 820, fixture: 'types', click: '[data-edit="images"]', name: 'models-edit-type' })
     jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, fixture: 'saved', name: 'models-saved-preset' })
     jobs.push({ page: 'models', theme: 'light', w: '360', width: 360, height: 820, fixture: 'saved', click: '#s-saveas', name: 'models-saving' })
-    jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, scroll: true, name: 'models-bottom' })
     jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, avail: 'none', name: 'models-checking' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, fixture: 'types', tip: card('kind:normal'), name: 'models-unavailable-tooltip' })
   }
   if (process.argv.includes('--tips')) {
     jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-gh .s-label', name: 'tooltip-writers' })
@@ -154,7 +166,7 @@ server.listen(0, '127.0.0.1', () => {
       const file = join(out, `${j.name ? `${j.name}-${j.theme}-${j.w}` : `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}`}.png`)
       await new Promise((resolve, reject) => {
         const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}${j.scroll ? '&scroll=1' : ''}${j.avail ? `&avail=${j.avail}` : ''}${j.fixture ? `&fixture=${j.fixture}` : ''}${j.click ? `&click=${encodeURIComponent(j.click)}` : ''}`
-        const framed = j.width < 600 || !!j.tip
+        const framed = j.width < 600 || !!j.tip || !!j.click
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
           framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]
         execFile(chrome, args, { timeout: 60_000 }, (e, _out, stderr) => {
