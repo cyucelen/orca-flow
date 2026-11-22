@@ -8,9 +8,11 @@ export const CLAUDE_ONLY = { agents: ['claude'], models: { claude: null } }
 
 /**
  * A fake machine: `calls` records every Orca command with its stdin. `repos` answers `repo show`
- * ({ 'id:r1': 'mono' }); `freeGB` and `agentGB` shape the capacity answer.
+ * ({ 'id:r1': 'mono' }); `freeGB` and `agentGB` shape the capacity answer. `dispatches`
+ * ({ ctx_u: 'dispatched' }) answers `worker-show --full` and `tasks` ({ task_u: 'completed' })
+ * `task-list`; both can change during a test (deps.dispatches, deps.tasks).
  */
-export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin = '', orca, repos = {}, freeGB, agentGB = 0.5 } = {}) {
+export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin = '', orca, repos = {}, freeGB, agentGB = 0.5, dispatches = {}, tasks = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'orca-flow-dispatch-'))
   if (routing) writeFileSync(join(dir, 'config.json'), JSON.stringify({ routing }))
   const calls = []
@@ -27,6 +29,8 @@ export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin =
     output,
     avail,
     verdict,
+    dispatches,
+    tasks,
     orca: async (args, opts = {}) => {
       calls.push({ args, input: opts.input })
       if (orca) {
@@ -38,6 +42,13 @@ export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin =
         if (!repos[sel]) throw new Error(`no repo ${sel}`)
         return { repo: { id: sel.slice(3), displayName: repos[sel] } }
       }
+      if (args[1] === 'worker-show') {
+        const id = args[args.indexOf('--dispatch') + 1]
+        const status = deps.dispatches[id]
+        if (!status) throw new Error(`no dispatch ${id}`)
+        return { dispatch: { id, taskId: `task_of_${id}`, status, completedAt: ['completed', 'failed'].includes(status) ? '2026-11-22 10:30:00' : null }, worker: { dispatchId: id, worktreeId: 'repo1::/work/tree' } }
+      }
+      if (args[1] === 'task-list') return { tasks: Object.entries(deps.tasks).map(([id, status]) => ({ id, status, title: id })) }
       if (args[1] === 'worker-start') {
         n++
         const task = args[args.indexOf('--task') + 1]

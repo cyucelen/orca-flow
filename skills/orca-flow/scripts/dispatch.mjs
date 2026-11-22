@@ -12,8 +12,11 @@
 // the model on each row; `--retry-of` reads it to rebuild the request and escalate.
 //
 // A worker-start that times out or comes back outcome_unknown may have started the worker. It is
-// never started again: dispatch keeps it in pending-starts.json and plan in its state ('unknown'),
-// and the next identical dispatch (or `plan next`) replays it with Orca's `--retry-request <id>`.
+// never started again: dispatch keeps it in pending-starts.json and plan in its state ('unknown').
+// The next identical dispatch (or `plan next`) first asks Orca: running, it is reported and nothing
+// starts; settled, the record is dropped; still unknown, it is replayed with Orca's
+// `--retry-request <id>`, or, with no id to replay it by, refused (exit 4) until the user checks it
+// or passes `--restart`. Records older than 24 hours are dropped.
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -21,6 +24,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 const routing = await import(new URL('../../../src/routing.ts', import.meta.url).href)
 const planLib = await import(new URL('../../../src/plan.ts', import.meta.url).href)
+const { codexHomeFromAccounts } = await import(new URL('../../../src/writer.ts', import.meta.url).href)
 
 /** worker-start flags `dispatch` passes through unchanged. Routing flags are not among them. */
 const PASSTHROUGH = ['worktree', 'task', 'task-title', 'spec', 'spec-file', 'repo', 'name', 'base-branch', 'display-name', 'comment', 'setup', 'deps', 'parent', 'run', 'retry-of', 'retry-request']
@@ -78,20 +82,46 @@ export const MODELS_CACHE_MS = 10 * 60_000
 /**
  * Model discovery through a 10-minute cache in `dir` (models-cache.json): discovery starts a whole
  * `claude -p` process. `refresh` (--refresh-models) bypasses the cache. A discovery that could not
- * read the installed agents is not cached.
+ * read the installed agents is not cached. `key` is what the answer depends on (the Codex home): a
+ * cache written under another key is not used. A cache from before keys counts as key null.
  */
-export async function cachedDiscover(dir, discover, { refresh = false, now = Date.now() } = {}) {
+export async function cachedDiscover(dir, discover, { refresh = false, now = Date.now(), key = null } = {}) {
   if (!refresh) {
     const c = readJson(MODELS_CACHE(dir), null)
-    if (c && typeof c.at === 'number' && now >= c.at && now - c.at < MODELS_CACHE_MS && c.avail) return c.avail
+    if (c && typeof c.at === 'number' && now >= c.at && now - c.at < MODELS_CACHE_MS && c.avail && (c.key ?? null) === key) return c.avail
   }
   const avail = await discover()
   if (Array.isArray(avail?.agents)) {
     try {
-      writeJson(MODELS_CACHE(dir), { at: now, avail })
+      writeJson(MODELS_CACHE(dir), { at: now, key, avail })
     } catch {}
   }
   return avail
+}
+
+/**
+ * The Codex home of Orca's selected Codex account, resolved as the plugin resolves it (src/writer.ts
+ * codexHomeFromAccounts, as src/worker.ts discoverHere uses it), or null when Orca cannot say.
+ * `orca` resolves to the command's `result`.
+ */
+export async function codexHome(orca) {
+  try {
+    return codexHomeFromAccounts({ ok: true, result: await orca(['account', 'list', '--agent', 'codex']) })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Discovery as Settings sees it: Codex lists its models from the selected account's home. The home
+ * keys the cache, so switching accounts looks again. `discover(opts)` gets `{ env: { CODEX_HOME } }`
+ * when the home is known, `{}` otherwise.
+ */
+export function accountDiscovery(dir, { orca, discover, refresh = false }) {
+  return async () => {
+    const home = await codexHome(orca)
+    return cachedDiscover(dir, () => discover(home ? { env: { CODEX_HOME: home } } : {}), { refresh, key: home })
+  }
 }
 
 /**
@@ -138,7 +168,8 @@ export function startOutcome(e) {
   const fromText = texts.map((t) => /--retry-request\s+([0-9a-f-]{36})/i.exec(String(t))?.[1]).find(Boolean)
   const requestId = [data.orchestrationRequestId, data.recovery?.orchestrationRequestId, result.mutation?.requestId, result.requestId, fromText].find((v) => typeof v === 'string' && UUID.test(v)) ?? null
   const dispatchId = [result.dispatchId, data.dispatchId, data.recovery?.dispatchId].find((v) => typeof v === 'string' && v) ?? null
-  return { unknown: true, requestId, dispatchId }
+  const taskId = [result.taskId, data.taskId, data.recovery?.taskId].find((v) => typeof v === 'string' && v) ?? null
+  return { unknown: true, requestId, dispatchId, taskId }
 }
 
 const firstLine = (e) => String(e?.message ?? e).split('\n')[0]
@@ -378,17 +409,82 @@ export async function routeCommand(args, deps) {
 // ---------- pending starts ----------
 
 const PENDING = (dir) => join(dir, 'pending-starts.json')
+export const PENDING_MAX_MS = 24 * 3600_000
 const readPending = (dir) => readJson(PENDING(dir), {}) ?? {}
 function writePending(dir, pending) {
   if (Object.keys(pending).length || existsSync(PENDING(dir))) writeJson(PENDING(dir), pending)
+}
+
+/**
+ * pending-starts.json is keyed by Orca's request id. A start Orca gave no id for is keyed by a hash
+ * of its command (`unknown-<hash>`) and records `requestId: null`; older records have no
+ * `requestId` field, their key is the id.
+ */
+const requestIdOf = (key, rec) => (rec.requestId !== undefined ? rec.requestId : key)
+const pendingKey = (outcome, base, input) => outcome.requestId ?? `unknown-${createHash('sha256').update(JSON.stringify([base, input ?? null])).digest('hex').slice(0, 16)}`
+
+/** Drops records older than 24 hours; returns a note for each. */
+function expirePending(pending, now) {
+  const notes = []
+  for (const [key, rec] of Object.entries(pending)) {
+    const at = Date.parse(rec?.at)
+    if (Number.isFinite(at) && now.getTime() - at <= PENDING_MAX_MS) continue
+    delete pending[key]
+    notes.push(`Dropped the unknown start ${rec?.dispatchId ?? requestIdOf(key, rec ?? {}) ?? key} recorded ${rec?.at ?? 'at an unknown time'}: older than 24 hours, it is not replayed. Check it in Orca (orca orchestration task-list) if it matters.`)
+  }
+  return notes
+}
+
+/** Orca's dispatch or task status as a pending start's state: running, settled, or unknown. */
+const SETTLED = ['completed', 'failed', 'cancelled', 'canceled', 'abandoned', 'stopped', 'superseded', 'terminated']
+const RUNNING = ['dispatched', 'running', 'blocked']
+function stateOfStatus(status, completedAt) {
+  if (SETTLED.includes(status) || completedAt) return 'settled'
+  if (RUNNING.includes(status)) return 'running'
+  return 'unknown'
+}
+
+/**
+ * What Orca says now about a start whose outcome was unknown: its dispatch (worker-show), else its
+ * task (task-list). A lookup that fails, or a task Orca still has ready, is unknown, as in plan.
+ */
+async function pendingState(rec, deps) {
+  if (rec.dispatchId) {
+    try {
+      const r = await deps.orca(['orchestration', 'worker-show', '--dispatch', rec.dispatchId, '--full'])
+      const d = r?.dispatch ?? r
+      const status = d?.status ?? null
+      const state = stateOfStatus(status, d?.completedAt)
+      if (state !== 'unknown') return { state, status, dispatchId: rec.dispatchId, taskId: d?.taskId ?? rec.taskId ?? null, workspace: r?.worker?.worktreeId ?? null }
+    } catch {}
+  }
+  if (rec.taskId) {
+    try {
+      const listed = await deps.orca(['orchestration', 'task-list', ...(rec.run ? ['--run', rec.run] : [])])
+      const status = (listed?.tasks ?? []).find((t) => t.id === rec.taskId)?.status ?? null
+      const state = stateOfStatus(status)
+      if (state !== 'unknown') return { state, status, dispatchId: rec.dispatchId ?? null, taskId: rec.taskId, workspace: null }
+    } catch {}
+  }
+  return { state: 'unknown' }
 }
 
 function unknownMessage(outcome, e, replay) {
   const lines = [`Start outcome unknown: Orca could not tell whether the worker started (${firstLine(e)}). Do not start it again.`]
   if (outcome.dispatchId) lines.push(`Check it: orca orchestration worker-show --dispatch ${outcome.dispatchId}`)
   if (outcome.requestId) lines.push(`Run the same command again (or add --retry-request ${outcome.requestId}): it replays request ${outcome.requestId} instead of starting a second worker.`, replay ? `Replay: ${replay}` : '')
-  else lines.push('Orca gave no request id to replay it by: check `orca orchestration task-list` and worker-show before starting it again.')
+  else lines.push('Orca gave no request id to replay it by. Running the same command again asks Orca first and starts nothing while the outcome is still unknown; check `orca orchestration task-list` and worker-show, and add --restart only when no worker runs for it.')
   return lines.filter(Boolean).join('\n')
+}
+
+/** The refusal for an identical re-run of a start that is still unknown and has no request id. */
+function stillUnknown(rec) {
+  const check = [rec.dispatchId && `orca orchestration worker-show --dispatch ${rec.dispatchId}`, rec.taskId && `orca orchestration task-list (task ${rec.taskId})`].filter(Boolean)
+  return [
+    `Not started: this same command started a worker at ${rec.at} whose outcome is still unknown, and Orca gave no request id to replay it by.`,
+    `Check it: ${check.length ? check.join(', or ') : 'orca orchestration task-list and worker-show (Orca named no dispatch or task)'}.`,
+    'If no worker runs for it, run the command again with --restart to start fresh on purpose.'
+  ].join('\n')
 }
 
 // ---------- dispatch ----------
@@ -405,6 +501,8 @@ export async function dispatchCommand(args, deps) {
   const flags = { ...args }
   if (flags['retry-of'] === true) throw new UsageError('--retry-of needs the failed dispatch id')
   if (flags['retry-request'] === true) throw new UsageError('--retry-request needs the request id Orca printed')
+  // An escalation needs a recorded failure: --attempt only with --retry-of (route keeps it as a what-if).
+  if (req.attempt !== undefined && !flags['retry-of']) throw new UsageError('dispatch --attempt goes with --retry-of <the failed dispatch id>: an escalation starts from a recorded failure. `orca-flow route --attempt n` shows what an attempt would use.')
   let prev = null
   let keepModel = false
   if (flags['retry-of']) {
@@ -443,11 +541,44 @@ export async function dispatchCommand(args, deps) {
   let input
   const stdin = () => (input ??= flags['spec-file'] === '-' ? deps.readStdin() : undefined)
 
-  // A start whose outcome was unknown: this same command replays it, and never starts a second worker.
+  // A start whose outcome was unknown: this same command asks Orca first, and never starts a second worker.
+  const dryRun = !!args['dry-run']
   const pending = readPending(deps.dir)
+  const before = Object.keys(pending).length
+  const notes = expirePending(pending, deps.now())
   const given = typeof flags['retry-request'] === 'string' ? flags['retry-request'] : null
-  const replayId = given && pending[given] ? given : given ? null : Object.keys(pending).find((id) => JSON.stringify(pending[id].base) === JSON.stringify(base) && (pending[id].input ?? null) === (stdin() ?? null))
-  if (replayId) return replayStart(replayId, pending, args, deps)
+  const pendingKeyOf = given && pending[given] ? given : given ? null : Object.keys(pending).find((id) => JSON.stringify(pending[id].base) === JSON.stringify(base) && (pending[id].input ?? null) === (stdin() ?? null))
+  const save = () => {
+    if (!dryRun && Object.keys(pending).length !== before) writePending(deps.dir, pending)
+  }
+  if (pendingKeyOf && flags.restart) {
+    const rec = pending[pendingKeyOf]
+    delete pending[pendingKeyOf]
+    notes.push(`--restart: forgot the earlier start of this command (${rec.dispatchId ?? requestIdOf(pendingKeyOf, rec) ?? 'no dispatch id'}, outcome unknown) on your word that no worker runs for it; starting fresh.`)
+  } else if (pendingKeyOf) {
+    const rec = pending[pendingKeyOf]
+    const seen = await pendingState(rec, deps)
+    if (seen.state === 'running') {
+      delete pending[pendingKeyOf]
+      save()
+      if (!dryRun) appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: rec.role, receipt: seen, decision: rec.decision, req: rec.req }))
+      const text = `Already started: the earlier start of this command (outcome unknown at ${rec.at}) runs in Orca as ${seen.dispatchId ?? seen.taskId} (${seen.status}). Nothing new started${dryRun ? '' : '; its pending record is dropped'}.`
+      deps.out(args.json ? JSON.stringify({ alreadyStarted: seen, route: rec.decision, notes }, null, 2) : [...notes, text].join('\n'))
+      return 0
+    }
+    if (seen.state === 'settled') {
+      delete pending[pendingKeyOf]
+      if (!dryRun) appendRoute(deps.dir, routeEntry({ at: rec.at, role: rec.role, receipt: seen, decision: rec.decision, req: rec.req }))
+      notes.push(`The earlier start of this command (outcome unknown at ${rec.at}) did run and Orca has settled it: ${seen.dispatchId ?? seen.taskId} is ${seen.status}. Its pending record is dropped; this is a new start.`)
+    } else if (requestIdOf(pendingKeyOf, rec)) {
+      save()
+      return replayStart(pendingKeyOf, pending, args, deps, notes)
+    } else {
+      save()
+      throw new Refused([...notes, stillUnknown(rec)].join('\n'), 4)
+    }
+  }
+  save()
 
   const [cap, avail] = await Promise.all([
     newWorktree && typeof flags.repo === 'string' ? repoName(flags.repo, deps).then((repo) => deps.capacity({ repo })) : deps.capacity({}),
@@ -470,10 +601,10 @@ export async function dispatchCommand(args, deps) {
   const argv = [...base, ...(given ? ['--retry-request', given] : []), ...routing.launchArgs(decision.choice)]
   const capacityView = { verdict: cap.verdict, freeGB: cap.freeGB ?? null }
 
-  if (args['dry-run']) {
+  if (dryRun) {
     const command = shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])
-    if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, command }, null, 2))
-    else deps.out([`Would start on ${label(decision)} — ${decision.reason}`, `capacity: ${cap.verdict}`, command].join('\n'))
+    if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, command, ...(notes.length && { notes }) }, null, 2))
+    else deps.out([...notes, `Would start on ${label(decision)} — ${decision.reason}`, `capacity: ${cap.verdict}`, command].join('\n'))
     return 0
   }
 
@@ -483,24 +614,28 @@ export async function dispatchCommand(args, deps) {
   } catch (e) {
     const outcome = startOutcome(e)
     if (!outcome.unknown) throw e
-    if (outcome.requestId) {
-      pending[outcome.requestId] = { at: deps.now().toISOString(), base, argv, input: stdin() ?? null, role: req.role, req, decision: pick(decision), dispatchId: outcome.dispatchId }
-      writePending(deps.dir, pending)
-    }
-    throw new Refused(unknownMessage(outcome, e), 4)
+    // Recorded with or without a request id: an identical re-run asks Orca before anything starts.
+    const taskId = outcome.taskId ?? (typeof flags.task === 'string' ? flags.task : null)
+    pending[pendingKey(outcome, base, stdin())] = { at: deps.now().toISOString(), requestId: outcome.requestId, base, argv, input: stdin() ?? null, role: req.role, req, decision: pick(decision), dispatchId: outcome.dispatchId, taskId, run: typeof flags.run === 'string' ? flags.run : null }
+    writePending(deps.dir, pending)
+    throw new Refused([...notes, unknownMessage(outcome, e)].join('\n'), 4)
   }
   appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: req.role, receipt, decision, req }))
-  if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, receipt }, null, 2))
-  else deps.out(formatStart(receipt, decision))
+  if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, receipt, ...(notes.length && { notes }) }, null, 2))
+  else deps.out([...notes, formatStart(receipt, decision)].join('\n'))
   return 0
 }
 
-/** Replays a start whose outcome was unknown, by its request id: the recorded command, no gate, no new route. */
-async function replayStart(id, pending, args, deps) {
-  const rec = pending[id]
+/**
+ * Replays a start whose outcome was unknown, by its request id: the recorded command, no gate, no
+ * new route. `key` is its pending-starts.json key.
+ */
+async function replayStart(key, pending, args, deps, notes = []) {
+  const rec = pending[key]
+  const id = requestIdOf(key, rec)
   const argv = [...rec.argv, '--retry-request', id]
   if (args['dry-run']) {
-    deps.out(`Would replay request ${id} (its outcome was unknown; nothing new starts):\n${shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])}`)
+    deps.out([...notes, `Would replay request ${id} (its outcome was unknown and Orca does not show it running or settled; nothing new starts):`, shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])].join('\n'))
     return 0
   }
   let receipt
@@ -508,17 +643,17 @@ async function replayStart(id, pending, args, deps) {
     receipt = await deps.orca(argv, { input: rec.input ?? undefined })
   } catch (e) {
     const outcome = startOutcome(e)
-    if (outcome.unknown) throw new Refused(unknownMessage({ ...outcome, requestId: outcome.requestId ?? id }, e), 4)
-    delete pending[id]
+    if (outcome.unknown) throw new Refused([...notes, unknownMessage({ ...outcome, requestId: outcome.requestId ?? id }, e)].join('\n'), 4)
+    delete pending[key]
     writePending(deps.dir, pending)
     throw e
   }
-  delete pending[id]
+  delete pending[key]
   writePending(deps.dir, pending)
   const decision = { ...rec.decision, ok: true, skipped: [] }
   appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: rec.role, receipt, decision, req: rec.req }))
-  if (args.json) deps.out(JSON.stringify({ route: decision, replayed: id, receipt }, null, 2))
-  else deps.out(`Replayed request ${id} (its outcome was unknown).\n${formatStart(receipt, decision)}`)
+  if (args.json) deps.out(JSON.stringify({ route: decision, replayed: id, receipt, ...(notes.length && { notes }) }, null, 2))
+  else deps.out([...notes, `Replayed request ${id} (its outcome was unknown).`, formatStart(receipt, decision)].join('\n'))
   return 0
 }
 

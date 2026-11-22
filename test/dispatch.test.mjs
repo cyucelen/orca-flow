@@ -6,7 +6,8 @@ import { test } from 'node:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLAUDE_ONLY, fakeDeps } from './fake-orca.mjs'
-import { cachedDiscover, dispatchCommand, MODELS_CACHE_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
+import { accountDiscovery, cachedDiscover, dispatchCommand, MODELS_CACHE_MS, PENDING_MAX_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
+import { codexHomeFromAccounts } from '../src/writer.ts'
 
 const argsOf = (flags, ...positional) => ({ _: positional, ...flags })
 const starts = (deps) => deps.calls.filter((c) => c.args[1] === 'worker-start')
@@ -259,7 +260,8 @@ test('a worker-start with an unknown outcome is not a failure: exit 4, and the s
 test('an unknown start without a request id, and a start Orca never sent, are told apart', async () => {
   const timeout = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw Object.assign(new Error('orca timed out'), { timedOut: true }) } })
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), timeout), (e) => e.code === 4 && /no request id/.test(e.message))
-  assert.equal(existsSync(join(timeout.dir, 'pending-starts.json')), false)
+  const [rec] = Object.values(JSON.parse(readFileSync(join(timeout.dir, 'pending-starts.json'), 'utf8')))
+  assert.equal(rec.requestId, null, 'recorded without an id, so a re-run does not start it again')
   const unsent = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw Object.assign(new Error('Orca did not answer'), { code: 'runtime_unavailable', data: { orchestrationRequestId: REQ, recovery: { disposition: 'not_sent' } } }) } })
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), unsent), (e) => !(e instanceof Refused) && /did not answer/.test(e.message))
   const plain = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start') throw new Error('worktree is busy') } })
@@ -267,7 +269,8 @@ test('an unknown start without a request id, and a start Orca never sent, are to
 })
 
 test('startOutcome reads the request id wherever Orca puts it', () => {
-  assert.deepEqual(startOutcome({ result: { state: 'outcome_unknown', nextCommands: [`orca orchestration worker-start --task t --retry-request ${REQ}`] } }), { unknown: true, requestId: REQ, dispatchId: null })
+  assert.deepEqual(startOutcome({ result: { state: 'outcome_unknown', nextCommands: [`orca orchestration worker-start --task t --retry-request ${REQ}`] } }), { unknown: true, requestId: REQ, dispatchId: null, taskId: null })
+  assert.equal(startOutcome(unknownStart()).taskId, 'task_u')
   assert.equal(startOutcome({ code: 'runtime_timeout', data: { recovery: { orchestrationRequestId: REQ, disposition: 'outcome_unknown' } } }).requestId, REQ)
   assert.equal(startOutcome({ result: { state: 'failed' } }).unknown, false)
   assert.equal(startOutcome({ result: { state: 'outcome_unknown' }, data: { orchestrationRequestId: 'not-a-uuid' } }).requestId, null)
@@ -286,7 +289,7 @@ test('model discovery is cached for 10 minutes; refresh bypasses it; a failed ag
   const other = fakeDeps()
   await cachedDiscover(other.dir, async () => ({ agents: null, models: {} }), { now: t0 })
   assert.equal(existsSync(join(other.dir, 'models-cache.json')), false)
-  assert.match(readFileSync(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url), 'utf8'), /cachedDiscover\(DIR, .*refresh: !!args\['refresh-models'\]/, 'orca-flow wires the cache into ORCA_FLOW_DIR')
+  assert.match(readFileSync(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url), 'utf8'), /accountDiscovery\(DIR, .*refresh: !!args\['refresh-models'\]/, 'orca-flow wires the cache into ORCA_FLOW_DIR')
 })
 
 test('dispatch runs model discovery and the capacity scan side by side', async () => {
@@ -384,4 +387,130 @@ test('--retry-of a typed task runs on its fallback once, then is refused; never 
   logLine(fbRan, { choice: { agent: 'claude', model: 'sonnet', effort: 'low' }, source: 'fallback', reason: 'r', type: 'images', kind: null })
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', worktree: 'current' }, 'dispatch'), fbRan), (e) => e.code === 3 && /^No stronger model for Images: ask the user before trying again\. Attempt 1 routes to Claude Sonnet · low again/.test(e.message))
   assert.equal(starts(fbRan).length, 0)
+})
+
+// ---------- never twice, never without a failure, the same models as Settings ----------
+
+const pendingOf = (deps) => (existsSync(join(deps.dir, 'pending-starts.json')) ? JSON.parse(readFileSync(join(deps.dir, 'pending-starts.json'), 'utf8')) : {})
+
+test('an unknown start without a request id is recorded; the same command again starts nothing until Orca knows it or --restart', async () => {
+  // No request id, no dispatch, no task: Orca named nothing to check.
+  let fail = true
+  const deps = fakeDeps({ orca: async (args) => { if (args[1] === 'worker-start' && fail) throw Object.assign(new Error('orca timed out'), { timedOut: true }) } })
+  const cmd = (extra = {}) => dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 'do it', ...extra }, 'dispatch'), deps)
+  await assert.rejects(cmd(), (e) => e.code === 4)
+  fail = false
+  await assert.rejects(cmd(), (e) => e instanceof Refused && e.code === 4 && /Not started: this same command started a worker .* still unknown/s.test(e.message) && /--restart/.test(e.message))
+  assert.equal(starts(deps).length, 1, 'the re-run started nothing')
+  assert.equal(Object.keys(pendingOf(deps)).length, 1, 'still recorded')
+  // --restart: the user says no worker runs; a fresh start, the record gone.
+  assert.equal(await cmd({ restart: true }), 0)
+  assert.equal(starts(deps).length, 2)
+  assert.ok(!starts(deps)[1].args.includes('--retry-request'))
+  assert.match(deps.output.at(-1), /^--restart: forgot the earlier start/)
+  assert.deepEqual(pendingOf(deps), {})
+
+  // With a dispatch id: once Orca shows it running, the re-run reports it and starts nothing.
+  let first = true
+  const known = fakeDeps({ orca: async (args) => {
+    if (args[1] === 'worker-start' && first) {
+      first = false
+      throw Object.assign(new Error('start: runtime timeout'), { code: 'runtime_timeout', result: { state: 'outcome_unknown', dispatchId: 'ctx_n', taskId: 'task_n' } })
+    }
+  } })
+  const again = () => dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', spec: 'do it' }, 'dispatch'), known)
+  await assert.rejects(again(), (e) => e.code === 4)
+  await assert.rejects(again(), (e) => e.code === 4, 'Orca does not know it yet: still refused')
+  known.dispatches.ctx_n = 'dispatched'
+  assert.equal(await again(), 0)
+  assert.equal(starts(known).length, 1, 'never a second start')
+  assert.match(known.output.at(-1), /^Already started: .* runs in Orca as ctx_n \(dispatched\)\. Nothing new started/)
+  assert.deepEqual(pendingOf(known), {})
+  const [logged] = readRoutes(known.dir)
+  assert.deepEqual([logged.dispatchId, logged.taskId, logged.choice.model], ['ctx_n', 'task_of_ctx_n', 'haiku'], 'the start is logged, so --retry-of finds it')
+})
+
+test('dispatch --attempt needs --retry-of; route keeps --attempt as a what-if', async () => {
+  const deps = fakeDeps()
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', attempt: '2', worktree: 'current', spec: 's' }, 'dispatch'), deps), (e) => e instanceof UsageError && /--attempt goes with --retry-of/.test(e.message))
+  assert.equal(deps.calls.length + deps.capacityCalls.length, 0, 'nothing checked, nothing started')
+  const what = fakeDeps()
+  assert.equal(await routeCommand(argsOf({ role: 'worker', kind: 'normal', attempt: '1' }, 'route'), what), 0)
+  assert.match(what.output[0], /^Claude Opus · high/)
+  // with --retry-of it still overrides the logged attempt
+  const retry = fakeDeps()
+  logLine(retry, { choice: { agent: 'claude', model: 'haiku' }, source: 'kind', reason: 'r', kind: 'simple' })
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_old', attempt: '2', worktree: 'current' }, 'dispatch'), retry)
+  assert.equal(readRoutes(retry.dir).at(-1).attempt, 2)
+})
+
+test('a pending start Orca has settled is dropped and the command starts fresh; running, nothing starts; older than 24 h, dropped', async () => {
+  let first = true
+  const deps = fakeDeps({ stdin: 'the spec', orca: async (args) => {
+    if (args[1] === 'worker-start' && first) {
+      first = false
+      throw unknownStart()
+    }
+  } })
+  const cmd = () => dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', 'task-title': 'T', 'spec-file': '-' }, 'dispatch'), deps)
+  await assert.rejects(cmd(), (e) => e.code === 4)
+  assert.ok(pendingOf(deps)[REQ])
+  deps.dispatches.ctx_u = 'completed'
+  assert.equal(await cmd(), 0)
+  const [, fresh] = starts(deps)
+  assert.ok(!fresh.args.includes('--retry-request'), 'a new start, not a replay of the settled request')
+  assert.match(deps.output.at(-1), /^The earlier start of this command .* did run and Orca has settled it: ctx_u is completed\. Its pending record is dropped; this is a new start\.\nStarted ctx_1 /)
+  assert.deepEqual(pendingOf(deps), {})
+  assert.deepEqual(readRoutes(deps.dir).map((r) => r.dispatchId), ['ctx_u', 'ctx_1'], 'the settled start is logged too')
+
+  // Running (by its task, when Orca named no dispatch): reported, nothing replayed or started.
+  const running = fakeDeps({ tasks: { task_r: 'dispatched' } })
+  writeFileSync(join(running.dir, 'pending-starts.json'), JSON.stringify({ [REQ]: { at: '2026-11-22T09:00:00.000Z', base: ['orchestration', 'worker-start', '--worktree', 'current', '--task', 'task_r'], argv: ['orchestration', 'worker-start', '--worktree', 'current', '--task', 'task_r', '--agent', 'claude', '--model', 'sonnet'], input: null, role: 'worker', req: { role: 'worker' }, decision: { choice: { agent: 'claude', model: 'sonnet' }, source: 'kind', reason: 'r' }, dispatchId: null, taskId: 'task_r' } }))
+  assert.equal(await dispatchCommand(argsOf({ role: 'worker', worktree: 'current', task: 'task_r' }, 'dispatch'), running), 0)
+  assert.equal(starts(running).length, 0)
+  assert.match(running.output[0], /^Already started: .* task_r \(dispatched\)/)
+  assert.deepEqual(pendingOf(running), {})
+
+  // Older than 24 hours: dropped with a note, never replayed.
+  const old = fakeDeps()
+  const at = new Date(old.now().getTime() - PENDING_MAX_MS - 60_000).toISOString()
+  writeFileSync(join(old.dir, 'pending-starts.json'), JSON.stringify({ [REQ]: { at, base: ['orchestration', 'worker-start', '--worktree', 'current', '--spec', 's'], argv: ['orchestration', 'worker-start', '--worktree', 'current', '--spec', 's'], input: null, role: 'worker', req: { role: 'worker' }, decision: { choice: { agent: 'claude', model: 'sonnet' }, source: 'kind', reason: 'r' }, dispatchId: 'ctx_old' } }))
+  assert.equal(await dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), old), 0)
+  assert.equal(starts(old).length, 1)
+  assert.ok(!starts(old)[0].args.includes('--retry-request'))
+  assert.equal(old.calls.filter((c) => c.args[1] === 'worker-show').length, 0, 'not even looked up')
+  assert.match(old.output[0], /^Dropped the unknown start ctx_old recorded .*: older than 24 hours/)
+  assert.deepEqual(pendingOf(old), {})
+})
+
+test("discovery lists Codex models from the selected account's CODEX_HOME, and the home keys the cache", async () => {
+  const deps = fakeDeps()
+  const accounts = (id) => ({ activeAccountId: id, activeAccountIdsByRuntime: { host: id }, accounts: [{ id: 'acct-1', managedHomeRuntime: 'host' }, { id: 'acct-2', managedHomeRuntime: 'host' }] })
+  let active = 'acct-1'
+  const orcaCalls = []
+  const orca = async (args) => {
+    orcaCalls.push(args)
+    if (active === 'broken') throw new Error('orca down')
+    return accounts(active)
+  }
+  const seen = []
+  const discover = async (opts) => {
+    seen.push(opts)
+    return { agents: ['claude', 'codex'], models: { claude: null, codex: [] } }
+  }
+  const run = (refresh = false) => accountDiscovery(deps.dir, { orca, discover, refresh })()
+  await run()
+  const home1 = codexHomeFromAccounts({ ok: true, result: accounts('acct-1') })
+  assert.match(home1, /codex-accounts\/acct-1\/home$/)
+  assert.deepEqual(seen, [{ env: { CODEX_HOME: home1 } }], 'the same home the plugin resolves')
+  assert.deepEqual(orcaCalls[0], ['account', 'list', '--agent', 'codex'])
+  await run()
+  assert.equal(seen.length, 1, 'same account: cached')
+  active = 'acct-2'
+  await run()
+  assert.deepEqual(seen.at(-1), { env: { CODEX_HOME: codexHomeFromAccounts({ ok: true, result: accounts('acct-2') }) } }, 'another account: looked up again')
+  active = 'broken'
+  await run()
+  assert.deepEqual(seen.at(-1), {}, 'Orca cannot say: the default home')
+  assert.equal(JSON.parse(readFileSync(join(deps.dir, 'models-cache.json'), 'utf8')).key, null)
 })
