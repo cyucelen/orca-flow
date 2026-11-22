@@ -6,9 +6,12 @@
 // Honest limits, kept in the words this module writes:
 // - `tier` (Light / Standard / Strong) and `cost` (1-5) are the user's own relative ratings, not
 //   measured capability, token prices or plan usage. Defaults are editable starting points.
-// - Availability is what this machine can verify: `orca agent installed` for agents, and the Codex
-//   CLI's own catalog (`codex debug models`) for Codex model ids. Claude Code lists no models, so a
-//   Claude alias (haiku, sonnet, opus, fable) or a full `claude-*` id is accepted unverified.
+// - Availability is what this machine can verify: `orca agent installed` for agents, the Codex
+//   CLI's own catalog (`codex debug models`) and Claude Code's `list_models` control request for
+//   model ids. When a catalog cannot be read, a Claude alias (haiku, sonnet, opus, fable) or a full
+//   `claude-*` id is accepted unverified.
+// - Efforts: only an effort the provider reports AND Orca accepts at launch (ORCA_LAUNCH_EFFORTS)
+//   is ever passed. When none is left (Claude Haiku), the launch carries no --effort.
 // - A decision only applies to a new launch. Running sessions and resumed conversations keep
 //   their model; nothing here relaunches anything.
 //
@@ -77,6 +80,35 @@ export const DEFAULT_ROUTING: RoutingSettings = {
   ],
   maxEscalations: 1,
   maxParallel: 3
+}
+
+/**
+ * The efforts Orca accepts at launch (`--effort` of `orca orchestration worker-start` and
+ * `orca agent launch`), per agent and model. Orca checks --effort against its OWN static catalog,
+ * not what the provider reports, so a provider-reported effort Orca refuses must never be passed.
+ * Source: Orca 1.4.263, out/shared/agent-session/options/catalog-providers/
+ * agent-session-option-catalog-claude-codex.js (seed models and `unknownModelOptions`), checked by
+ * out/shared/agent-launch/choices/agent-launch-model-preferences.js. Re-check on an Orca update.
+ * Codex's `minimal` and `ultra` are Orca-valid but outside `Effort`, so they are not listed.
+ * An empty list: the model has no effort option, and Orca refuses any --effort for it.
+ */
+export const ORCA_LAUNCH_EFFORTS: Record<string, { models: Record<string, readonly Effort[]>; unknown: readonly Effort[] }> = {
+  claude: {
+    models: { fable: EFFORTS, opus: EFFORTS, sonnet: EFFORTS, haiku: [] },
+    unknown: EFFORTS // full claude-* ids: unknownModelOptions, low..max
+  },
+  codex: {
+    models: {
+      'gpt-5.6-sol': EFFORTS, 'gpt-5.6-terra': EFFORTS, 'gpt-5.6-luna': EFFORTS,
+      'gpt-5.5': ['low', 'medium', 'high', 'xhigh'], 'gpt-5.2-codex': ['low', 'medium', 'high', 'xhigh']
+    },
+    unknown: EFFORTS // unknown ids: minimal..ultra, of which Effort covers low..max
+  }
+}
+/** What Orca accepts for this model, or null for an agent not in the table (not checked). */
+export function orcaLaunchEfforts(agent: string, model: string): readonly Effort[] | null {
+  const t = ORCA_LAUNCH_EFFORTS[agent]
+  return t ? (t.models[model] ?? t.unknown) : null
 }
 
 /** One discovered model: its id and, when the provider says, the efforts it takes. */
@@ -225,16 +257,29 @@ function modelProblem(agent: string, model: string, avail: Availability): string
 }
 const agentProblem = (agent: string, avail: Availability): string | null =>
   avail.agents && !avail.agents.includes(agent) ? `${agent} not installed` : null
+/** The efforts a launch may pass: what the provider reports (when it does) that Orca also accepts. Empty: none. */
 const supportedEfforts = (agent: string, model: string | undefined, avail: Availability): readonly Effort[] => {
-  const info = model ? avail.models[agent]?.find((m) => m.id === model) : undefined
-  return info?.efforts?.length ? info.efforts : EFFORTS
+  if (!model) return []
+  const info = avail.models[agent]?.find((m) => m.id === model)
+  const reported = info?.efforts ?? EFFORTS
+  const orca = orcaLaunchEfforts(agent, model)
+  return orca ? reported.filter((e) => orca.includes(e)) : reported
 }
-/** The effort itself when supported, else the nearest lower one, else the lowest supported. */
-function clampEffort(effort: Effort, supported: readonly Effort[]): Effort {
+/** The effort itself when supported, else the nearest lower one, else the lowest supported; none when nothing is supported. */
+function clampEffort(effort: Effort, supported: readonly Effort[]): Effort | undefined {
   if (supported.includes(effort)) return effort
   for (let i = EFFORTS.indexOf(effort) - 1; i >= 0; i--) if (supported.includes(EFFORTS[i])) return EFFORTS[i]
-  return EFFORTS.find((e) => supported.includes(e)) ?? effort
+  return EFFORTS.find((e) => supported.includes(e))
 }
+/** Why an explicit effort cannot be launched with this model, or null. */
+function effortProblem(choice: ModelChoice, effort: Effort, avail: Availability): string | null {
+  const supported = supportedEfforts(choice.agent, choice.model, avail)
+  if (supported.includes(effort)) return null
+  const name = choiceLabel({ agent: choice.agent, model: choice.model })
+  return supported.length ? `${name} does not support effort ${effort} (it takes ${supported.join(', ')}).` : `${name} takes no effort setting, so effort ${effort} cannot be passed.`
+}
+/** choiceLabel, plus "(default effort)" when a model is named but no effort is passed. */
+const decisionLabel = (c: ModelChoice) => (c.model && !c.effort ? `${choiceLabel(c)} (default effort)` : choiceLabel(c))
 const fail = (error: string, skipped: Skip[] = []): RouteDecision => ({ ok: false, error, skipped })
 
 /** A set role pick (coordinator, lead, fixed worker) checked against availability, effort clamped. */
@@ -249,9 +294,12 @@ function pickChoice(pick: ModelChoice | null, who: string, source: 'role' | 'fix
   let note = ''
   if (pick.model && pick.effort) {
     const effort = clampEffort(pick.effort, supportedEfforts(pick.agent, pick.model, avail))
-    if (effort !== pick.effort) { choice = { ...pick, effort }; note = `, ${pick.effort} not supported so ${effort}` }
+    if (effort !== pick.effort) {
+      choice = { agent: pick.agent, model: pick.model, ...(effort ? { effort } : {}) }
+      note = `, ${pick.effort} not supported so ${effort ?? 'default effort'}`
+    }
   }
-  return { ok: true, choice, source, reason: `${who} set in Settings → ${choiceLabel(choice)}${note}`, skipped: [] }
+  return { ok: true, choice, source, reason: `${who} set in Settings → ${decisionLabel(choice)}${note}`, skipped: [] }
 }
 
 /**
@@ -283,8 +331,10 @@ export function route(settings: RoutingSettings, req: RouteRequest, avail: Avail
   else if (settings.workerMode === 'fixed') d = pickChoice(settings.worker, 'the fixed worker', 'fixed', req, avail)
   else d = routeWorker(settings, req, avail, agentOnly)
   if (!d.ok || !req.effort) return d
-  const supported = supportedEfforts(d.choice.agent, d.choice.model, avail)
-  if (!supported.includes(req.effort)) return fail(`${choiceLabel(d.choice)} does not support effort ${req.effort} (it takes ${supported.join(', ')}).`, d.skipped)
+  if (d.choice.model) {
+    const problem = effortProblem(d.choice, req.effort, avail)
+    if (problem) return fail(problem, d.skipped)
+  }
   const choice = { ...d.choice, effort: req.effort }
   return { ...d, choice, reason: `${d.reason}; effort ${req.effort} set explicitly` }
 }
@@ -300,8 +350,8 @@ function overrideWithModel(req: RouteRequest, avail: Availability): RouteDecisio
   const bad = agentProblem(agent, avail) ?? modelProblem(agent, model, avail)
   if (bad) return fail(`Cannot use ${agent} ${model}: ${bad}. Nothing was substituted.`)
   if (req.effort) {
-    const supported = supportedEfforts(agent, model, avail)
-    if (!supported.includes(req.effort)) return fail(`${choiceLabel({ agent, model })} does not support effort ${req.effort} (it takes ${supported.join(', ')}). Nothing was substituted.`)
+    const problem = effortProblem({ agent, model }, req.effort, avail)
+    if (problem) return fail(`${problem} Nothing was substituted.`)
   }
   const choice: ModelChoice = { agent, model, ...(req.effort ? { effort: req.effort } : {}) }
   return { ok: true, choice, source: 'override', reason: `${choiceLabel(choice)} chosen explicitly`, skipped: [] }
@@ -331,7 +381,7 @@ function routeWorker(settings: RoutingSettings, req: RouteRequest, avail: Availa
   const base = best.effort ?? CLASS_EFFORT[req.taskClass ?? 'standard']
   const boosted = EFFORTS[Math.min(EFFORTS.length - 1, EFFORTS.indexOf(base) + need.effortBoost)]
   const effort = clampEffort(boosted, supportedEfforts(best.agent, best.model, avail))
-  const choice: ModelChoice = { agent: best.agent, model: best.model, effort }
+  const choice: ModelChoice = { agent: best.agent, model: best.model, ...(effort ? { effort } : {}) }
   const kind = best.tier === need.tier ? `cheapest enabled ${TIER_NAMES[need.tier]} model` : `cheapest capable model (rated ${TIER_NAMES[best.tier]}, task needs ${TIER_NAMES[need.tier]})`
-  return { ok: true, choice, source: 'auto', requiredTier: need.tier, tier: best.tier, reason: `${need.why} → ${choiceLabel(choice)}: ${kind} (relative cost ${best.cost})`, skipped }
+  return { ok: true, choice, source: 'auto', requiredTier: need.tier, tier: best.tier, reason: `${need.why} → ${decisionLabel(choice)}: ${kind} (relative cost ${best.cost})`, skipped }
 }

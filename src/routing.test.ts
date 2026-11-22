@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { choiceLabel, type Candidate, DEFAULT_ROUTING, launchArgs, normalizeRouting, requiredTier, route, type Availability, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
+import { choiceLabel, type Candidate, DEFAULT_ROUTING, launchArgs, normalizeRouting, orcaLaunchEfforts, requiredTier, route, type Availability, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
 
 const CODEX = [
   { id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] as const },
@@ -52,7 +52,8 @@ test('requiredTier: each class, risk, context, escalation and the effort boost',
 
 test('worker auto: cheapest capable per class, with explained reasons', () => {
   const light = ok(worker({ taskClass: 'trivial' }))
-  assert.deepEqual(light.choice, { agent: 'claude', model: 'haiku', effort: 'low' })
+  assert.deepEqual(light.choice, { agent: 'claude', model: 'haiku' })
+  assert.equal(light.reason, 'trivial task → Claude Haiku (default effort): cheapest enabled Light model (relative cost 1)')
   assert.equal(light.source, 'auto')
   const std = ok(worker())
   assert.deepEqual(std.choice, { agent: 'claude', model: 'sonnet', effort: 'medium' })
@@ -144,9 +145,12 @@ test('coordinator and lead: default, set pick, unavailable pick, effort clamp', 
 })
 
 test('worker fixed mode uses the worker pick; null is the provider default', () => {
-  const fixed = S({ workerMode: 'fixed', worker: { agent: 'claude', model: 'haiku', effort: 'low' } })
+  const fixed = S({ workerMode: 'fixed', worker: { agent: 'claude', model: 'sonnet', effort: 'low' } })
   const d = ok(worker({ taskClass: 'complex' }, fixed))
-  assert.deepEqual([d.choice, d.source], [{ agent: 'claude', model: 'haiku', effort: 'low' }, 'fixed'])
+  assert.deepEqual([d.choice, d.source], [{ agent: 'claude', model: 'sonnet', effort: 'low' }, 'fixed'])
+  const hk = ok(worker({}, S({ workerMode: 'fixed', worker: { agent: 'claude', model: 'haiku', effort: 'low' } })))
+  assert.deepEqual(hk.choice, { agent: 'claude', model: 'haiku' })
+  assert.match(hk.reason, /Claude Haiku \(default effort\), low not supported so default effort/)
   assert.deepEqual(ok(worker({}, S({ workerMode: 'fixed' }))).choice, { agent: 'claude' })
   // fixed mode never escalates by itself
   assert.equal(ok(worker({ attempt: 5 }, fixed)).source, 'fixed')
@@ -154,8 +158,8 @@ test('worker fixed mode uses the worker pick; null is the provider default', () 
 
 test('overrides win over role and auto, and invalid ones are refused, not substituted', () => {
   const set = S({ lead: { agent: 'claude', model: 'opus' } })
-  const o = ok(route(set, { role: 'lead', model: 'haiku', effort: 'low' }, AVAIL))
-  assert.deepEqual([o.choice, o.source], [{ agent: 'claude', model: 'haiku', effort: 'low' }, 'override'])
+  const o = ok(route(set, { role: 'lead', model: 'sonnet', effort: 'low' }, AVAIL))
+  assert.deepEqual([o.choice, o.source], [{ agent: 'claude', model: 'sonnet', effort: 'low' }, 'override'])
   assert.equal(ok(worker({ taskClass: 'trivial', model: 'opus' })).choice.model, 'opus')
   assert.deepEqual(ok(worker({ model: 'claude-sonnet-4-5' })).choice, { agent: 'claude', model: 'claude-sonnet-4-5' })
   assert.deepEqual(ok(worker({ model: 'gpt-6-luna' })).choice, { agent: 'codex', model: 'gpt-6-luna' })
@@ -188,4 +192,24 @@ test('launchArgs drops effort without a model; labels read plainly', () => {
   assert.equal(choiceLabel({ agent: 'codex', model: 'gpt-6-luna', effort: 'low' }), 'Codex gpt-6-luna · low')
   assert.equal(choiceLabel({ agent: 'claude' }), 'Claude (default model)')
   assert.equal(choiceLabel({ agent: 'claude', model: 'claude-opus-4-1' }), 'Claude claude-opus-4-1')
+})
+
+test('Orca launch limits: table, Haiku takes no effort, nothing Orca refuses is passed or accepted', () => {
+  assert.deepEqual(orcaLaunchEfforts('claude', 'haiku'), [])
+  assert.deepEqual(orcaLaunchEfforts('claude', 'sonnet'), ['low', 'medium', 'high', 'xhigh', 'max'])
+  assert.equal(orcaLaunchEfforts('claude', 'claude-opus-5-5')?.length, 5)
+  assert.deepEqual(orcaLaunchEfforts('codex', 'gpt-5.5'), ['low', 'medium', 'high', 'xhigh'])
+  assert.equal(orcaLaunchEfforts('codex', 'gpt-9-new')?.length, 5)
+  assert.equal(orcaLaunchEfforts('cursor', 'x'), null)
+  // the provider reports efforts for haiku, Orca still refuses them
+  const reported = { agents: ['claude'], models: { claude: [{ id: 'haiku', efforts: ['low' as const, 'high' as const] }, { id: 'sonnet', efforts: ['low' as const, 'medium' as const] }] } }
+  assert.deepEqual(worker({ taskClass: 'trivial' }, S(), reported as Availability), worker({ taskClass: 'trivial' }, S(), reported as Availability))
+  assert.deepEqual(ok(worker({ taskClass: 'trivial' }, S(), reported as Availability)).choice, { agent: 'claude', model: 'haiku' })
+  // explicit efforts Orca would refuse are refused by route()
+  assert.match(bad(worker({ model: 'haiku', effort: 'low' })), /Claude Haiku takes no effort setting, so effort low cannot be passed/)
+  assert.match(bad(worker({ taskClass: 'trivial', effort: 'low' })), /takes no effort setting/)
+  assert.match(bad(route(S({ lead: { agent: 'claude', model: 'haiku' } }), { role: 'lead', effort: 'high' }, AVAIL)), /takes no effort setting/)
+  assert.match(bad(worker({ model: 'sonnet', effort: 'max' }, S(), reported as Availability)), /it takes low, medium/)
+  assert.equal(ok(worker({ model: 'sonnet', effort: 'max' })).choice.effort, 'max')
+  assert.deepEqual(launchArgs(ok(worker({ taskClass: 'trivial' })).choice), ['--agent', 'claude', '--model', 'haiku'])
 })
