@@ -613,6 +613,8 @@ export type SpeedSeries = {
   /** Agent traffic in bit/s per bucket; null where nettop covered none of it. */
   up: (number | null)[]
   down: (number | null)[]
+  /** Seconds of traffic samples in the window: under a few minutes there is no line to draw yet. */
+  netSecs: number
 }
 export type SpeedModel = { id: string; label: string; slot: number; median1h: number | null; median24h: number | null; count1h: number; count24h: number; tokens24h: number }
 export type SpeedRange = '1h' | '24h'
@@ -677,7 +679,7 @@ function series(h: History, now: number, span: number, step: number): SpeedSerie
       down[k] = Math.round((downB[k] * 8) / secs[k])
     }
   }
-  return { start, step, tok, up, down }
+  return { start, step, tok, up, down, netSecs: Math.round(secs.reduce((a, b) => a + b, 0)) }
 }
 
 /** The panel's view of the history at `now` (a few KB: 60 one-minute and 96 quarter-hour buckets). */
@@ -695,7 +697,7 @@ export function speedView(h: History, now: number, state: { ready: boolean; test
       if (m.t >= cur - HOUR + MINUTE) count1h += m.n[i] ?? 0
     }
     const m1 = histogramMedian(binsSince(h.recent, i, cur - HOUR + MINUTE))
-    const m24 = histogramMedian(binsSince(h.hours, i, Math.floor((now - DAY) / HOUR) * HOUR + HOUR))
+    const m24 = histogramMedian(binsSince(h.hours, i, Math.floor((now - DAY) / HOUR) * HOUR)) // the oldest hour whole, as the counts include it
     return { id, label: modelLabel(id), slot: i, median1h: m1 == null ? null : Math.round(m1), median24h: m24 == null ? null : Math.round(m24), count1h, count24h, tokens24h: Math.round(tokens24h) }
   }).filter((m) => m.count24h > 0).sort((a, b) => b.tokens24h - a.tokens24h)
   const net = h.net && h.net.secs > 0 ? { at: h.net.at, up: Math.round((h.net.up * 8) / h.net.secs), down: Math.round((h.net.down * 8) / h.net.secs), procs: h.net.procs } : null
