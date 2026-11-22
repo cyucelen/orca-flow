@@ -2,7 +2,7 @@
 import { assert, test } from 'orca/testing'
 import { agentsShown, choiceFrom, choiceText, choiceValue, effortsFor, effortView, fallbackPairs, missingTip, modelOptions, pairFrom, pairValue, pickPreset, presetView, saveNamed, unavailable, UNKNOWN } from './models.ts'
 import { DEFAULT_SETTINGS, fromDraft, settingsSession, toDraft, type FlowSettings } from '../settings.ts'
-import { DEFAULT_ROUTING, deletePreset, type Availability } from '../routing.ts'
+import { DEFAULT_ROUTING, deletePreset, supportedEfforts, type Availability } from '../routing.ts'
 
 const avail: Availability = { agents: ['opencode', 'codex', 'claude'], models: { claude: null, codex: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna', efforts: ['low', 'medium'] }, { id: 'gpt-6-astra', efforts: ['medium', 'high', 'xhigh'] }] } }
 
@@ -124,4 +124,13 @@ test('routing changes round-trip through the draft and are saved instantly', asy
   await session.reset(['routing'])
   assert.deepEqual(saved.at(-1)!.routing, DEFAULT_ROUTING)
   assert.deepEqual(saved.at(-1)!.writers, DEFAULT_SETTINGS.writers, 'resetting Models leaves other pages alone')
+})
+
+test('the panel uses routing’s availability rules', () => {
+  const listed: Availability = { agents: ['claude'], models: { claude: [{ id: 'claude-opus-5-5' }] } }
+  assert.equal(unavailable('claude', 'sonnet', listed), null)
+  assert.equal(unavailable('claude', 'claude-unlisted-1', listed), null)
+  assert.equal(unavailable('claude', 'gpt-x', listed), 'Claude doesn’t list this model')
+  assert.deepEqual(effortsFor('claude', 'haiku', listed), supportedEfforts('claude', 'haiku', listed))
+  assert.deepEqual(effortsFor('claude', undefined, listed), [])
 })

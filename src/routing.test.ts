@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { applyPreset, BUILT_IN_PRESETS, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
+import { applyPreset, BUILT_IN_PRESETS, choiceLabel, DEFAULT_ROUTING, deletePreset, launchArgs, matchingPreset, MAX_SAVED_PRESETS, normalizeRouting, orcaLaunchEfforts, presetsOf, route, rowFor, savePreset, supportedEfforts, modelProblem, taskKind, type Availability, type KindRoute, type RouteDecision, type RouteRequest, type RoutingSettings } from './routing.ts'
 
 const CODEX = [
   { id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] as const },
@@ -148,10 +148,14 @@ test('worker: escalation moves one row up, boosts effort above hard, and stops a
 
 test('worker: an unavailable model uses the row fallback and says so; both unavailable is refused', () => {
   const claudeList = { agents: ['claude'], models: { claude: [{ id: 'sonnet', efforts: ['low' as const, 'medium' as const, 'high' as const] }, { id: 'opus' }] } }
-  const fb = ok(worker({ kind: 'simple' }, S(), claudeList))
+  // Claude aliases and claude-* ids stay usable when absent from the list; a non-Claude name does not
+  const aliasRow = ok(worker({ kind: 'simple' }, S(), claudeList))
+  assert.deepEqual([aliasRow.choice, aliasRow.source], [{ agent: 'claude', model: 'haiku' }, 'kind'])
+  const ghostRow = withRow('simple', { model: { agent: 'claude', model: 'gpt-ghost' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } })
+  const fb = ok(worker({ kind: 'simple' }, ghostRow, claudeList))
   assert.deepEqual([fb.choice, fb.source], [{ agent: 'claude', model: 'sonnet', effort: 'low' }, 'fallback'])
-  assert.equal(fb.reason, "simple task → Claude Sonnet · low: Haiku unavailable (not in Claude's model list), used the fallback")
-  assert.deepEqual(fb.skipped, [{ model: 'Claude Haiku', why: "not in Claude's model list" }])
+  assert.equal(fb.reason, "simple task → Claude Sonnet · low: gpt-ghost unavailable (not in Claude's model list), used the fallback")
+  assert.deepEqual(fb.skipped, [{ model: 'Claude gpt-ghost', why: "not in Claude's model list" }])
   // the Codex primary is not installed: its fallback runs
   const codexRow = withRow('normal', { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'high' } })
   const noCodex = ok(worker({}, codexRow, { agents: ['claude'], models: {} }))
@@ -261,4 +265,35 @@ test('Orca launch limits: table, Haiku takes no effort, nothing Orca refuses is 
   assert.match(bad(worker({ model: 'sonnet', effort: 'max' }, S(), reported)), /it takes low, medium/)
   assert.equal(ok(worker({ model: 'sonnet', effort: 'max' })).choice.effort, 'max')
   assert.deepEqual(launchArgs(ok(worker({ kind: 'simple' })).choice), ['--agent', 'claude', '--model', 'haiku'])
+})
+
+test('an explicit --effort without a model is refused, never reported as applied', () => {
+  assert.match(bad(route(S(), { role: 'lead', effort: 'high' }, AVAIL)), /--effort high.*only with --model.*Name a model/)
+  assert.match(bad(route(S(), { role: 'worker', agent: 'codex', effort: 'low' }, AVAIL)), /only with --model/)
+  assert.match(bad(route(S({ lead: { agent: 'claude' } }), { role: 'lead', effort: 'low' }, AVAIL)), /only with --model/)
+  assert.equal(ok(route(S(), { role: 'worker', model: 'opus', effort: 'high' }, AVAIL)).choice.effort, 'high')
+})
+
+test('claude: aliases and unlisted claude-* ids are accepted when a model list is known; other names are not', () => {
+  const listed: Availability = { agents: ['claude'], models: { claude: [{ id: 'claude-opus-5-5' }] } }
+  for (const m of ['haiku', 'sonnet', 'opus', 'fable', 'claude-opus-5-5', 'claude-sonnet-9-9']) assert.equal(modelProblem('claude', m, listed), null, m)
+  assert.equal(ok(route(S(), { role: 'worker', model: 'claude-future-1' }, listed)).choice.model, 'claude-future-1')
+  assert.match(modelProblem('claude', 'gpt-6-luna', listed) ?? '', /not in Claude's model list/)
+  assert.match(bad(route(S(), { role: 'worker', model: 'gpt-x', agent: 'claude' }, listed)), /Cannot use claude gpt-x/)
+  assert.deepEqual(supportedEfforts('claude', 'claude-future-1', listed), ['low', 'medium', 'high', 'xhigh', 'max'])
+})
+
+test('saved presets get unique ids: only an exact (case-insensitive) name replaces', () => {
+  let s = savePreset(S(), '日本')
+  s = savePreset(s, '中文')
+  s = savePreset(s, 'fast')
+  s = savePreset(s, 'Fast!')
+  assert.equal(s.presets.length, 4)
+  assert.equal(new Set(s.presets.map((p) => p.id)).size, 4)
+  const ids = s.presets.map((p) => p.id)
+  s = savePreset(s, ' FAST ')
+  assert.equal(s.presets.length, 4)
+  assert.deepEqual(s.presets.map((p) => p.id), ids, 'replace keeps the id')
+  assert.deepEqual(normalizeRouting(s).presets.map((p) => p.id), ids, 'ids survive a round trip')
+  assert.deepEqual(normalizeRouting(JSON.parse(JSON.stringify(s))).presets.map((p) => p.name), ['日本', '中文', 'FAST', 'Fast!'])
 })

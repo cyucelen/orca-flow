@@ -1,6 +1,6 @@
 // What Settings → Models lists and shows, from the worker's availability (src/model-discovery.ts).
 // Pure: no DOM, so the page (src/panel/settings.ts) and tests share it.
-import { applyPreset, CLAUDE_ALIASES, EFFORTS, matchingPreset, orcaLaunchEfforts, presetsOf, savePreset, type Availability, type Effort, type ModelChoice, type Preset, type RoutingSettings } from '../routing.ts'
+import { applyPreset, CLAUDE_ALIASES, agentProblem, matchingPreset, modelProblem, presetsOf, savePreset, supportedEfforts, type Availability, type Effort, type ModelChoice, type Preset, type RoutingSettings } from '../routing.ts'
 
 export const UNKNOWN: Availability = { agents: null, models: {} }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -41,22 +41,13 @@ export function choiceText(c: ModelChoice | null, avail: Availability): string {
   return `${agentName(c.agent)} ${modelLabel(c.agent, c.model, avail)}${c.effort ? ` · ${c.effort}` : ''}`
 }
 
-/**
- * The efforts a model takes at launch: what its provider reports (all of them when it does not say)
- * that Orca also accepts. Empty: none (Claude Haiku).
- */
-export function effortsFor(agent: string, model: string | undefined, avail: Availability): readonly Effort[] {
-  if (!model) return []
-  const reported = avail.models[agent]?.find((m) => m.id === model)?.efforts ?? EFFORTS
-  const orca = orcaLaunchEfforts(agent, model)
-  return orca ? reported.filter((e) => orca.includes(e)) : reported
-}
+/** The efforts a model takes at launch (the routing rule); empty: none (Claude Haiku). */
+export const effortsFor = supportedEfforts
 
 /** Why a model cannot run on this machine, in plain words; null when it can (or cannot be checked). */
 export function unavailable(agent: string, model: string | undefined, avail: Availability): string | null {
-  if (avail.agents && !avail.agents.includes(agent)) return `${agentName(agent)} isn’t installed in Orca`
-  const catalog = avail.models[agent]
-  if (model && catalog && !catalog.some((m) => m.id === model)) return `${agentName(agent)} doesn’t list this model`
+  if (agentProblem(agent, avail)) return `${agentName(agent)} isn’t installed in Orca`
+  if (model && modelProblem(agent, model, avail)) return `${agentName(agent)} doesn’t list this model`
   return null
 }
 

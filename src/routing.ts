@@ -216,16 +216,25 @@ function normalizeWorkers(v: unknown, strict = false): Workers | null {
 }
 
 const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-const savedId = (name: string) => `saved:${slug(name) || 'preset'}`
+/** A saved-preset id no other preset in `taken` has: the name's slug, then slug-2, slug-3 ... (names with no ASCII letters share "preset"). */
+function savedId(name: string, taken: readonly string[]): string {
+  const base = `saved:${slug(name) || 'preset'}`
+  let id = base
+  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`
+  return id
+}
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 const isBuiltInName = (name: string) => BUILT_IN_PRESETS.some((p) => p.name.toLowerCase() === name.trim().toLowerCase())
 
-function normalizePreset(v: unknown): Preset | null {
+function normalizePreset(v: unknown, taken: readonly string[]): Preset | null {
   if (!isObject(v)) return null
   const name = text(v.name)
   if (!name || isBuiltInName(name)) return null
   const workers = normalizeWorkers(v.workers, true)
   if (!workers) return null
-  return { id: savedId(name), name, builtIn: false, coordinator: normalizeChoice(v.coordinator), lead: normalizeChoice(v.lead), workers }
+  const stored = text(v.id)
+  const id = stored && /^saved:.+/.test(stored) && !taken.includes(stored) ? stored : savedId(name, taken)
+  return { id, name, builtIn: false, coordinator: normalizeChoice(v.coordinator), lead: normalizeChoice(v.lead), workers }
 }
 
 /**
@@ -238,8 +247,8 @@ export function normalizeRouting(raw: unknown): RoutingSettings {
   if (!isObject(raw)) return clone(DEFAULT_ROUTING)
   const presets: Preset[] = []
   for (const entry of Array.isArray(raw.presets) ? raw.presets : []) {
-    const p = normalizePreset(entry)
-    if (p && !presets.some((o) => o.id === p.id) && presets.length < MAX_SAVED_PRESETS) presets.push(p)
+    const p = normalizePreset(entry, presets.map((o) => o.id))
+    if (p && !presets.some((o) => sameName(o.name, p.name)) && presets.length < MAX_SAVED_PRESETS) presets.push(p)
   }
   return {
     coordinator: normalizeChoice(raw.coordinator),
@@ -281,8 +290,9 @@ export function savePreset(s: RoutingSettings, name: string): RoutingSettings {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('A preset needs a name.')
   if (isBuiltInName(trimmed)) throw new Error(`"${trimmed}" is a built-in preset: choose another name.`)
-  const preset: Preset = { id: savedId(trimmed), name: trimmed, builtIn: false, coordinator: n.coordinator, lead: n.lead, workers: n.workers }
-  const at = n.presets.findIndex((p) => p.id === preset.id)
+  const at = n.presets.findIndex((p) => sameName(p.name, trimmed))
+  const id = at < 0 ? savedId(trimmed, n.presets.map((p) => p.id)) : n.presets[at].id
+  const preset: Preset = { id, name: trimmed, builtIn: false, coordinator: n.coordinator, lead: n.lead, workers: n.workers }
   if (at < 0 && n.presets.length >= MAX_SAVED_PRESETS) throw new Error(`At most ${MAX_SAVED_PRESETS} saved presets: delete one first.`)
   const presets = at < 0 ? [...n.presets, preset] : n.presets.map((p, i) => (i === at ? preset : p))
   return { ...n, presets: clone(presets) }
@@ -322,18 +332,23 @@ export function launchArgs(choice: ModelChoice): string[] {
 // ---------- availability ----------
 
 /** Why a model cannot be used on this machine, or null when it can (verified, or accepted unverified). */
-function modelProblem(agent: string, model: string, avail: Availability): string | null {
+export function modelProblem(agent: string, model: string, avail: Availability): string | null {
   const catalog = avail.models[agent]
+  if (agent === 'claude') {
+    // Orca accepts the aliases and any claude-* id, listed or not.
+    if (catalog?.some((m) => m.id === model) || isClaudeModel(model)) return null
+    return catalog ? `not in ${cap(agent)}'s model list` : 'not a Claude model name'
+  }
   if (catalog) return catalog.some((m) => m.id === model) ? null : `not in ${cap(agent)}'s model list`
-  if (agent === 'claude' && !isClaudeModel(model)) return 'not a Claude model name'
   return null
 }
-const agentProblem = (agent: string, avail: Availability): string | null =>
+export const agentProblem = (agent: string, avail: Availability): string | null =>
   avail.agents && !avail.agents.includes(agent) ? `${agent} not installed` : null
-const choiceProblem = (c: ModelChoice, avail: Availability): string | null =>
+/** Why a choice (agent, optional model) cannot run on this machine, or null. */
+export const choiceProblem = (c: ModelChoice, avail: Availability): string | null =>
   agentProblem(c.agent, avail) ?? (c.model ? modelProblem(c.agent, c.model, avail) : null)
 /** The efforts a launch may pass: what the provider reports (when it does) that Orca also accepts. Empty: none. */
-const supportedEfforts = (agent: string, model: string | undefined, avail: Availability): readonly Effort[] => {
+export const supportedEfforts = (agent: string, model: string | undefined, avail: Availability): readonly Effort[] => {
   if (!model) return []
   const info = avail.models[agent]?.find((m) => m.id === model)
   const reported = info?.efforts ?? EFFORTS
@@ -412,7 +427,10 @@ export function route(settings: RoutingSettings, req: RouteRequest, avail: Avail
     const bad = agentProblem(req.agent, avail)
     if (bad) return fail(`Cannot use --agent ${req.agent}: ${bad}.`)
   }
-  const agentDefault = (agent: string): RouteDecision => ({ ok: true, choice: { agent }, source: 'override', reason: `${cap(agent)} chosen explicitly: its default model`, skipped: [] })
+  const agentDefault = (agent: string): RouteDecision =>
+    req.effort
+      ? fail(`Cannot pass --effort ${req.effort}: ${cap(agent)} was chosen without a model, and Orca takes --effort only with --model. Name a model too.`)
+      : { ok: true, choice: { agent }, source: 'override', reason: `${cap(agent)} chosen explicitly: its default model`, skipped: [] }
   let d: RouteDecision
   if (req.role === 'coordinator' || req.role === 'lead') {
     const pick = req.role === 'coordinator' ? settings.coordinator : settings.lead
@@ -425,10 +443,9 @@ export function route(settings: RoutingSettings, req: RouteRequest, avail: Avail
     if (req.agent && !(d.ok && d.choice.agent === req.agent)) return agentDefault(req.agent)
   }
   if (!d.ok || !req.effort) return d
-  if (d.choice.model) {
-    const problem = effortProblem(d.choice, req.effort, avail)
-    if (problem) return fail(problem, d.skipped)
-  }
+  if (!d.choice.model) return fail(`Cannot pass --effort ${req.effort}: ${choiceLabel(d.choice)} has no model set, and Orca takes --effort only with --model. Name a model too.`, d.skipped)
+  const problem = effortProblem(d.choice, req.effort, avail)
+  if (problem) return fail(problem, d.skipped)
   const choice = { ...d.choice, effort: req.effort }
   return { ...d, choice, reason: `${d.reason}; effort ${req.effort} set explicitly` }
 }
