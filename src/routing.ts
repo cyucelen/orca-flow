@@ -259,10 +259,15 @@ export function presetsOf(s: RoutingSettings): Preset[] {
   return [...clone(BUILT_IN_PRESETS), ...clone(normalizeRouting(s).presets)]
 }
 
-/** The preset whose coordinator, lead and workers equal these settings; null means "Custom". */
+/**
+ * The preset whose coordinator, lead and workers equal these settings; null means "Custom".
+ * A saved preset wins over a built-in with the same setup (the last saved match if several).
+ */
 export function matchingPreset(s: RoutingSettings): Preset | null {
   const n = normalizeRouting(s)
-  return presetsOf(n).find((p) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers)) ?? null
+  const equal = (p: Preset) => same(p.coordinator, n.coordinator) && same(p.lead, n.lead) && same(p.workers, n.workers)
+  const saved = [...clone(n.presets)].reverse().find(equal)
+  return saved ?? clone(BUILT_IN_PRESETS).find(equal) ?? null
 }
 
 /** The settings with a preset's coordinator, lead and workers; the limits and saved presets stay. */

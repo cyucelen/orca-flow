@@ -74,6 +74,21 @@ test('presets: list, match, apply keeps saved presets', () => {
   assert.deepEqual(presetsOf(S()).map((p) => p.id), ['balanced', 'economy', 'best'])
 })
 
+test('matchingPreset: a saved copy of a built-in wins, plain built-ins still match, edits match nothing', () => {
+  const plain = S()
+  assert.equal(matchingPreset(plain)?.id, 'balanced')
+  const copy = savePreset(plain, 'My setup')
+  assert.equal(matchingPreset(copy)?.id, 'saved:my-setup')
+  assert.equal(matchingPreset(copy)?.builtIn, false)
+  // the built-in itself is still there and still applies
+  assert.equal(presetsOf(copy)[0].id, 'balanced')
+  assert.equal(matchingPreset(applyPreset(copy, 'economy'))?.id, 'economy')
+  // an edited setup matches nothing (Custom), with or without saved presets present
+  const edited = withRow('hard', { model: { agent: 'claude', model: 'opus', effort: 'max' }, fallback: null })
+  assert.equal(matchingPreset(edited), null, 'Custom')
+  assert.equal(matchingPreset({ ...copy, lead: { agent: 'claude', model: 'opus' } }), null, 'Custom with saved presets')
+})
+
 test('presets: save, replace by name, refuse built-in names and empty names, cap, delete', () => {
   const custom = withRow('hard', { model: { agent: 'claude', model: 'fable', effort: 'max' }, fallback: null }, { lead: { agent: 'claude', model: 'opus' } })
   const saved = savePreset(custom, '  Deep work ')
