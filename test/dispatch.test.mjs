@@ -424,7 +424,7 @@ test('an unknown start without a request id is recorded; the same command again 
   known.dispatches.ctx_n = 'dispatched'
   assert.equal(await again(), 0)
   assert.equal(starts(known).length, 1, 'never a second start')
-  assert.match(known.output.at(-1), /^Already started: .* runs in Orca as ctx_n \(dispatched\)\. Nothing new started/)
+  assert.match(known.output.at(-1), /^Already started: .* runs in Orca as dispatch ctx_n \(task task_of_ctx_n\): dispatched\. Nothing new started/)
   assert.deepEqual(pendingOf(known), {})
   const [logged] = readRoutes(known.dir)
   assert.deepEqual([logged.dispatchId, logged.taskId, logged.choice.model], ['ctx_n', 'task_of_ctx_n', 'haiku'], 'the start is logged, so --retry-of finds it')
@@ -444,7 +444,7 @@ test('dispatch --attempt needs --retry-of; route keeps --attempt as a what-if', 
   assert.equal(readRoutes(retry.dir).at(-1).attempt, 2)
 })
 
-test('a pending start Orca has settled is dropped and the command starts fresh; running, nothing starts; older than 24 h, dropped', async () => {
+test('a pending start Orca has settled is reported and dropped, and nothing starts until --restart; running, nothing starts; older than 24 h, dropped', async () => {
   let first = true
   const deps = fakeDeps({ stdin: 'the spec', orca: async (args) => {
     if (args[1] === 'worker-start' && first) {
@@ -452,23 +452,41 @@ test('a pending start Orca has settled is dropped and the command starts fresh; 
       throw unknownStart()
     }
   } })
-  const cmd = () => dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', 'task-title': 'T', 'spec-file': '-' }, 'dispatch'), deps)
+  const cmd = (extra = {}) => dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', 'task-title': 'T', 'spec-file': '-', ...extra }, 'dispatch'), deps)
   await assert.rejects(cmd(), (e) => e.code === 4)
   assert.ok(pendingOf(deps)[REQ])
   deps.dispatches.ctx_u = 'completed'
   assert.equal(await cmd(), 0)
-  const [, fresh] = starts(deps)
-  assert.ok(!fresh.args.includes('--retry-request'), 'a new start, not a replay of the settled request')
-  assert.match(deps.output.at(-1), /^The earlier start of this command .* did run and Orca has settled it: ctx_u is completed\. Its pending record is dropped; this is a new start\.\nStarted ctx_1 /)
+  assert.equal(starts(deps).length, 1, 'neither replayed nor started again')
+  assert.equal(deps.output.at(-1), 'Already ran: the earlier start of this command (outcome unknown at 2026-11-22T10:00:00.000Z) did start, and Orca has settled it: dispatch ctx_u (task task_of_ctx_u) completed. Nothing new started; its pending record is dropped. To start it again on purpose, run the same command with --restart.')
   assert.deepEqual(pendingOf(deps), {})
-  assert.deepEqual(readRoutes(deps.dir).map((r) => r.dispatchId), ['ctx_u', 'ctx_1'], 'the settled start is logged too')
+  assert.deepEqual(readRoutes(deps.dir).map((r) => r.dispatchId), ['ctx_u'], 'the settled start is logged, so --retry-of finds it')
+  assert.equal(await cmd({ restart: true }), 0)
+  assert.equal(starts(deps).length, 2, '--restart starts it again')
+  assert.ok(!starts(deps)[1].args.includes('--retry-request'))
+
+  // Without a request id, a failed one: the same report, nothing started.
+  let once = true
+  const failed = fakeDeps({ orca: async (args) => {
+    if (args[1] === 'worker-start' && once) {
+      once = false
+      throw Object.assign(new Error('start: runtime timeout'), { code: 'runtime_timeout', result: { state: 'outcome_unknown', dispatchId: 'ctx_f' } })
+    }
+  } })
+  const run = () => dispatchCommand(argsOf({ role: 'worker', worktree: 'current', spec: 's' }, 'dispatch'), failed)
+  await assert.rejects(run(), (e) => e.code === 4)
+  failed.dispatches.ctx_f = 'failed'
+  assert.equal(await run(), 0)
+  assert.equal(starts(failed).length, 1)
+  assert.match(failed.output.at(-1), /^Already ran: .* Orca has settled it: dispatch ctx_f \(task task_of_ctx_f\) failed\. Nothing new started/)
+  assert.deepEqual(pendingOf(failed), {})
 
   // Running (by its task, when Orca named no dispatch): reported, nothing replayed or started.
   const running = fakeDeps({ tasks: { task_r: 'dispatched' } })
   writeFileSync(join(running.dir, 'pending-starts.json'), JSON.stringify({ [REQ]: { at: '2026-11-22T09:00:00.000Z', base: ['orchestration', 'worker-start', '--worktree', 'current', '--task', 'task_r'], argv: ['orchestration', 'worker-start', '--worktree', 'current', '--task', 'task_r', '--agent', 'claude', '--model', 'sonnet'], input: null, role: 'worker', req: { role: 'worker' }, decision: { choice: { agent: 'claude', model: 'sonnet' }, source: 'kind', reason: 'r' }, dispatchId: null, taskId: 'task_r' } }))
   assert.equal(await dispatchCommand(argsOf({ role: 'worker', worktree: 'current', task: 'task_r' }, 'dispatch'), running), 0)
   assert.equal(starts(running).length, 0)
-  assert.match(running.output[0], /^Already started: .* task_r \(dispatched\)/)
+  assert.match(running.output[0], /^Already started: .* runs in Orca as task task_r: dispatched\. Nothing new started/)
   assert.deepEqual(pendingOf(running), {})
 
   // Older than 24 hours: dropped with a note, never replayed.

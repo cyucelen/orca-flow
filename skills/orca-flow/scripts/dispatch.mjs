@@ -13,10 +13,11 @@
 //
 // A worker-start that times out or comes back outcome_unknown may have started the worker. It is
 // never started again: dispatch keeps it in pending-starts.json and plan in its state ('unknown').
-// The next identical dispatch (or `plan next`) first asks Orca: running, it is reported and nothing
-// starts; settled, the record is dropped; still unknown, it is replayed with Orca's
-// `--retry-request <id>`, or, with no id to replay it by, refused (exit 4) until the user checks it
-// or passes `--restart`. Records older than 24 hours are dropped.
+// The next identical dispatch first asks Orca: running or settled, it is reported (its outcome and
+// dispatch id), its record dropped, and nothing starts; only `--restart` starts it again. Still
+// unknown, it is replayed with Orca's `--retry-request <id>`, or, with no id to replay it by,
+// refused (exit 4) until the user checks it or passes `--restart`. Records older than 24 hours are
+// dropped with a note. `plan next` replays and settles its own unknown starts the same way.
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -558,18 +559,18 @@ export async function dispatchCommand(args, deps) {
   } else if (pendingKeyOf) {
     const rec = pending[pendingKeyOf]
     const seen = await pendingState(rec, deps)
-    if (seen.state === 'running') {
+    // Orca knows the earlier start: running or settled, it is reported and nothing new starts.
+    if (seen.state === 'running' || seen.state === 'settled') {
       delete pending[pendingKeyOf]
       save()
-      if (!dryRun) appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: rec.role, receipt: seen, decision: rec.decision, req: rec.req }))
-      const text = `Already started: the earlier start of this command (outcome unknown at ${rec.at}) runs in Orca as ${seen.dispatchId ?? seen.taskId} (${seen.status}). Nothing new started${dryRun ? '' : '; its pending record is dropped'}.`
-      deps.out(args.json ? JSON.stringify({ alreadyStarted: seen, route: rec.decision, notes }, null, 2) : [...notes, text].join('\n'))
+      if (!dryRun) appendRoute(deps.dir, routeEntry({ at: seen.state === 'running' ? deps.now().toISOString() : rec.at, role: rec.role, receipt: seen, decision: rec.decision, req: rec.req }))
+      const who = seen.dispatchId ? `dispatch ${seen.dispatchId}${seen.taskId ? ` (task ${seen.taskId})` : ''}` : `task ${seen.taskId}`
+      const text =
+        seen.state === 'running'
+          ? `Already started: the earlier start of this command (outcome unknown at ${rec.at}) runs in Orca as ${who}: ${seen.status}. Nothing new started${dryRun ? '' : '; its pending record is dropped'}.`
+          : `Already ran: the earlier start of this command (outcome unknown at ${rec.at}) did start, and Orca has settled it: ${who} ${seen.status}. Nothing new started${dryRun ? '' : '; its pending record is dropped'}. To start it again on purpose, run the same command with --restart.`
+      deps.out(args.json ? JSON.stringify({ [seen.state === 'running' ? 'alreadyStarted' : 'alreadySettled']: seen, route: rec.decision, notes }, null, 2) : [...notes, text].join('\n'))
       return 0
-    }
-    if (seen.state === 'settled') {
-      delete pending[pendingKeyOf]
-      if (!dryRun) appendRoute(deps.dir, routeEntry({ at: rec.at, role: rec.role, receipt: seen, decision: rec.decision, req: rec.req }))
-      notes.push(`The earlier start of this command (outcome unknown at ${rec.at}) did run and Orca has settled it: ${seen.dispatchId ?? seen.taskId} is ${seen.status}. Its pending record is dropped; this is a new start.`)
     } else if (requestIdOf(pendingKeyOf, rec)) {
       save()
       return replayStart(pendingKeyOf, pending, args, deps, notes)
