@@ -1597,3 +1597,47 @@ test('the attaching retry is bounded and only for that code; anything else fails
   await assert.rejects(main.listTerminals(async () => { other++; throw Object.assign(new Error('boom'), { code: 'terminal_not_found' }) }, wait), /boom/)
   assert.equal(other, 1, 'no retry for any other error')
 })
+
+test('routes.jsonl labels reach the routed worker and lead rows, by dispatch id; a garbled or missing file shows nothing', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const lines = [
+    JSON.stringify({ at: 1, role: 'worker', taskId: 't1', dispatchId: 'ctx_w', workspace: '/w/env', choice: { agent: 'claude', model: 'haiku', effort: 'low' }, source: 'auto', reason: 'x', class: 'trivial', risk: 'low', attempt: 0 }),
+    '{ not json',
+    JSON.stringify({ dispatchId: 'ctx_w', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, class: 'standard', attempt: 1 }),
+    JSON.stringify({ role: 'lead', dispatchId: 'ctx_l', choice: { agent: 'claude', model: 'opus', effort: 'high' }, source: 'role' }),
+    JSON.stringify({ dispatchId: 'ctx_bad', choice: {} })
+  ].join('\n')
+  const labels = main.routeLabels(lines)
+  assert.deepEqual([...labels], [['ctx_w', 'Claude Sonnet · medium — standard task, escalated'], ['ctx_l', 'Claude Opus · high']])
+  const rows = main.fromPs([{ identity: { key: 'env' }, displayName: 'env', repo: 'isola', path: '/w/env', liveTerminalCount: 2, agents: [
+    { paneKey: 'p-worker', parentPaneKey: 'p-lead', state: 'working' }, { paneKey: 'p-lead', state: 'done' }, { paneKey: 'p-other', state: 'done' }
+  ] }])
+  const routed = main.withRoutes(rows, new Map([['p-worker', 'ctx_w'], ['p-lead', 'ctx_l'], ['p-other', 'ctx_unknown']]), labels)
+  assert.deepEqual(routed[0].agents.map((a) => a.route ?? null), ['Claude Sonnet · medium — standard task, escalated', 'Claude Opus · high', null])
+  assert.equal(main.withRoutes(rows, undefined, labels), rows)
+  const dir = mkdtempSync(join(tmpdir(), 'orca-flow-routes-'))
+  assert.equal(main.readRoutes(dir).size, 0, 'no file yet')
+  writeFileSync(join(dir, 'routes.jsonl'), lines)
+  assert.equal(main.readRoutes(dir).get('ctx_l'), 'Claude Opus · high')
+  writeFileSync(join(dir, 'routes.jsonl'), '\u0000garbage')
+  assert.equal(main.readRoutes(dir).size, 0)
+})
+
+test('model discovery runs Orca and the Codex CLI with the selected Codex account’s home', async () => {
+  const calls: { cmd: string; args: string[]; env?: Record<string, string> }[] = []
+  const exec = async (cmd: string, args: string[], opts?: { env?: Record<string, string> }) => {
+    calls.push({ cmd, args, env: opts?.env })
+    return args[0] === 'agent' ? JSON.stringify({ ok: true, result: { agents: [{ id: 'claude' }, { id: 'codex' }] } }) : JSON.stringify({ models: [{ slug: 'gpt-6-luna', display_name: 'GPT-6 Luna', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }] }] })
+  }
+  const run = async (args: string[]) => { assert.deepEqual(args, ['account', 'list', '--agent', 'codex']); return { activeAccountId: null, accounts: [] } }
+  const avail = await main.discoverHere(run, exec)
+  assert.deepEqual(avail.agents, ['claude', 'codex'])
+  assert.deepEqual(avail.models.codex, [{ id: 'gpt-6-luna', label: 'GPT-6 Luna', efforts: ['low'] }])
+  assert.match(calls.find((c) => c.args[0] === 'debug')?.env?.CODEX_HOME ?? '', /\.codex$/)
+  // No account answer: the default Codex home (no CODEX_HOME override).
+  calls.length = 0
+  await main.discoverHere(async () => { throw new Error('offline') }, exec)
+  assert.equal(calls.find((c) => c.args[0] === 'debug')?.env, undefined)
+})

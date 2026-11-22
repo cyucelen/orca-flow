@@ -196,7 +196,9 @@ const ASK_BADGE: Record<AskKind, (rim: string, bx: number, by: number, br: numbe
 function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size = 20, spinner = true): string {
   const face: Face = asleep(row) ? 'idle' : faceOf(a)
   const ask = askKindOf(a)
-  const tip = asleep(row) ? 'Asleep' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
+  const state = asleep(row) ? 'Asleep' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
+  // The model its dispatch was routed to, quietly, under the status.
+  const tip = a.route ? `${state}\n${a.route}` : state
   return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask, spinner), tip, face === 'asks' ? ASK_TONE[ask] : '')
 }
 

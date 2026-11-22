@@ -86,6 +86,8 @@ export type Lineage = {
   runs?: { id: string; terminal: string }[]
   /** worker pane -> whether its dispatch is still open or has settled (worker_done, abandoned) */
   dispatchOf?: Map<string, 'open' | 'settled'>
+  /** worker pane -> its dispatch id (an open one when it has one), to find how it was routed */
+  dispatchIdOf?: Map<string, string>
 }
 
 /** Dispatch states after which the agent no longer holds its task: it reported, or was ended. */
@@ -291,6 +293,7 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
 
   const dispatcherOf = new Map<string, string>()
   const dispatchOf = new Map<string, 'open' | 'settled'>()
+  const dispatchIdOf = new Map<string, string>()
   const coordinating = new Set<string>()
   for (const r of runs.runs ?? []) {
     const handle: string | null = r.coordinator_handle
@@ -310,7 +313,10 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
       if (!pane) continue
       dispatcherOf.set(pane, handle)
       // A follow-up sent to a settled worker opens a new dispatch on the same terminal: any open one wins.
-      if (dispatchOf.get(pane) !== 'open') dispatchOf.set(pane, SETTLED.has(w.state) ? 'settled' : 'open')
+      if (dispatchOf.get(pane) !== 'open') {
+        dispatchOf.set(pane, SETTLED.has(w.state) ? 'settled' : 'open')
+        if (typeof w.dispatchId === 'string') dispatchIdOf.set(pane, w.dispatchId)
+      }
     }
   }
 
@@ -324,7 +330,7 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
     const dir = dirOfClosed.get(handle)
     if (dir) dirOfTerminal.set(handle, dir)
   }
-  return { dispatcherOf, paneOf, dirOfTerminal, dispatchOf, runs: (runs.runs ?? []).filter((r: any) => r.coordinator_handle).map((r: any) => ({ id: r.id, terminal: r.coordinator_handle })) }
+  return { dispatcherOf, paneOf, dirOfTerminal, dispatchOf, dispatchIdOf, runs: (runs.runs ?? []).filter((r: any) => r.coordinator_handle).map((r: any) => ({ id: r.id, terminal: r.coordinator_handle })) }
 }
 
 /** Changes a coordinator's look in its file, keeping everything else. */

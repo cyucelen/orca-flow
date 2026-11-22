@@ -1525,3 +1525,11 @@ test('a coordinator Orca lists twice (stale pane beside its live pane) sorts wit
   assert.ok(main.indexOf('data-menu="coordinator:flow"') < main.indexOf('data-menu="coordinator:asleep"'), 'shown above the sleeping one')
   noMatch(flowRow, /Sleeping|Not started/, 'its row shows its live status')
 })
+
+test('a routed worker shows its model quietly in its existing status tooltip, nothing new on the row', () => {
+  const routed = { ...snap, rows: [row('w', 'shop', [agent('p-w', 'Rename flag', 'working', { route: 'Claude Sonnet · medium — standard task' })])] }
+  const html = page(routed, emptyUi())
+  assert.match(html, /data-tip="Working\nClaude Sonnet · medium — standard task"/)
+  const plain = page({ ...snap, rows: [row('w', 'shop', [agent('p-w', 'Rename flag', 'working')])] }, emptyUi())
+  assert.match(plain, /data-tip="Working"/)
+})

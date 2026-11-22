@@ -11,7 +11,7 @@
 // Orca reports a finished turn (src/summarize.ts). The worker watches that folder.
 import { antigravityTurnRecorded, launchAntigravityCoordinator, requireAntigravity } from './antigravity.ts'
 import { execFile, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
@@ -29,6 +29,10 @@ import { normalizeSettings, WRITER_PROVIDERS, type WriterStatus } from './settin
 import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
+import { coordinatorLaunchPlan, startCoordinator } from './coordinator-launch.ts'
+import { choiceLabel, type Availability, type ModelChoice } from './routing.ts'
+import { discover, type Exec } from './model-discovery.ts'
+import { codexHomeFromAccounts } from './writer.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
 import { readHandoverProviders } from './handover-providers.ts'
 import { coordinatorProviders, firstProvider, readInstalledProviders } from './coordinator-providers.ts'
@@ -122,6 +126,45 @@ function readFolder<T>(dir: string): Record<string, T> {
     }
   }
   return out
+}
+
+/**
+ * ~/.orca-flow/routes.jsonl (written by `orca-flow dispatch`, one routed launch per line) as what a
+ * row shows: dispatch id -> "Claude Sonnet · medium — standard task". The last line of a dispatch
+ * wins (a retry or an escalation); a garbled line is skipped.
+ */
+export function routeLabels(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let r: any
+    try { r = JSON.parse(line) } catch { continue }
+    const c = r?.choice as ModelChoice | undefined
+    if (typeof r?.dispatchId !== 'string' || !r.dispatchId || typeof c?.agent !== 'string' || !c.agent) continue
+    const why = ['trivial', 'standard', 'complex'].includes(r.class) ? `${r.class} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
+    out.set(r.dispatchId, `${choiceLabel(c)}${why ? ` — ${why}` : ''}`)
+  }
+  return out
+}
+
+let routesSeen: { key: string; labels: Map<string, string> } = { key: '', labels: new Map() }
+/** routeLabels of the file, read again only when its size or time changes; missing reads as empty. */
+export function readRoutes(dir = DATA_DIR): Map<string, string> {
+  const file = join(dir, 'routes.jsonl')
+  let key = ''
+  try { const st = statSync(file); key = `${st.size}:${st.mtimeMs}` } catch { return new Map() }
+  if (key !== routesSeen.key) {
+    try { routesSeen = { key, labels: routeLabels(readFileSync(file, 'utf8')) } } catch { return routesSeen.labels }
+  }
+  return routesSeen.labels
+}
+
+/** Rows with each dispatched agent's routed model, by its dispatch id. */
+export function withRoutes(rows: WorkspaceRow[], dispatchIdOf: Map<string, string> | undefined, labels: Map<string, string>): WorkspaceRow[] {
+  if (!dispatchIdOf?.size || !labels.size) return rows
+  return rows.map((row) => row.agents.some((a) => labels.has(dispatchIdOf.get(a.paneKey) ?? ''))
+    ? { ...row, agents: row.agents.map((a) => { const r = labels.get(dispatchIdOf.get(a.paneKey) ?? ''); return r ? { ...a, route: r } : a }) }
+    : row)
 }
 
 export function readStore(dir = DATA_DIR): Store {
@@ -689,7 +732,7 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const all = assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners)
+    const all = withRoutes(assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
     const remembered = rememberOwners(all, owners)
     if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }
@@ -1042,6 +1085,16 @@ export default function activate(orca: OrcaWorkerApi): void {
   // A terminal still attaching makes Orca refuse the list for a moment: retried briefly (listTerminals).
   const terminalsNow = (): Promise<TerminalRecord[]> => listTerminals(run)
 
+  // What this machine can run, for Settings → Models and coordinator models: discovered at most
+  // every few minutes (and again when Settings opens, if over a minute old), one lookup at a time.
+  let avail: { at: number; value: Availability } | null = null
+  let discovering: Promise<Availability> | null = null
+  async function availability(maxAgeMs = AVAIL_MAX_MS): Promise<Availability> {
+    if (avail && Date.now() - avail.at < maxAgeMs) return avail.value
+    discovering ??= discoverHere(run).then((value) => { avail = { at: Date.now(), value }; return value }).finally(() => { discovering = null })
+    return discovering
+  }
+
   /**
    * Fresh means a new explicitly associated member; it never closes an older member. agent.launch
    * starts it in the background, with no tab: it is shown, then bound by that exact terminal's pane
@@ -1070,9 +1123,18 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (agent === 'antigravity') {
         return launchAntigravityCoordinator(workspaceId, c.dir, dir, run, (input) => orca.host.call('agent.launch', input))
       }
-      return orca.host.call('agent.launch', { workspaceId, agent, prompt: coordinatorPrompt(skill) })
+      // Settings → Models' coordinator model, for this new conversation only; none set: as before.
+      const routing = readSettings(DATA_DIR).settings.routing
+      const plan = coordinatorLaunchPlan(routing, agent!, routing.coordinator?.model ? await availability() : null)
+      return startCoordinator(plan, { workspaceId, agent: agent!, dir: c.dir, prompt: coordinatorPrompt(skill) }, {
+        host: (input) => orca.host.call('agent.launch', input), run, terminals: terminalsNow, log: (line) => orca.log(line)
+      })
     })
-    await orca.host.call('terminal.focus', { terminalId: launch.terminalId }).catch((e: Error) => orca.log(`showing the launched terminal failed: ${e.message}`))
+    await orca.host.call('terminal.focus', { terminalId: launch.terminalId }).catch(async (e: Error) => {
+      // A CLI launch's terminal Orca did not list yet is known by its handle: switch to it by that.
+      if (launch.terminalId.startsWith('term_')) { if (await run(['terminal', 'switch', '--terminal', launch.terminalId]).then(() => true, () => false)) return }
+      orca.log(`showing the launched terminal failed: ${e.message}`)
+    })
     // Agents take seconds to start and report a conversation id; wait for it, not for the newest pane.
     // A list refused while the terminal attaches is retried; if it still fails, the launch stays
     // pending and the next click adopts it.
@@ -1605,17 +1667,18 @@ export default function activate(orca: OrcaWorkerApi): void {
   // ---------- Settings dialog ----------
   let version: string | null = null
   try { version = JSON.parse(readFileSync(join(dir ?? '', 'orca-plugin.json'), 'utf8')).version ?? null } catch {}
-  const settingsState = async (): Promise<SettingsState> => {
+  const settingsState = async (fresh = false): Promise<SettingsState> => {
     const read = readSettings(DATA_DIR)
+    const avail = await availability(fresh ? AVAIL_OPEN_MS : AVAIL_MAX_MS)
     if (!installedAgents) installedAgents = (await readInstalledProviders(run))?.map((a) => a.id) ?? null
     const health = writer.health()
     const writers: WriterStatus[] = WRITER_PROVIDERS.map((provider) => {
       const h = health.find((x) => x.provider === provider)
       return { provider, lastSuccessAt: h?.lastSuccessAt ?? null, failure: h?.failure ?? null, installed: installedAgents ? installedAgents.includes(provider) : null }
     })
-    return { settings: read.settings, error: read.error, version, writers, update: updateState, updateCheck: upd.last() }
+    return { settings: read.settings, error: read.error, version, writers, availability: avail, update: updateState, updateCheck: upd.last() }
   }
-  orca.panels.handle('sidebar.settings', () => settingsState())
+  orca.panels.handle('sidebar.settings', () => settingsState(true))
   orca.panels.handle('sidebar.saveSettings', async ({ settings }) => {
     try {
       writeSettings(normalizeSettings(settings), DATA_DIR)
@@ -1706,6 +1769,28 @@ export default function activate(orca: OrcaWorkerApi): void {
 export function deactivate(): void {
   for (const dispose of disposers.splice(0)) dispose()
 }
+
+// ---------- model availability ----------
+
+const AVAIL_MAX_MS = 5 * 60_000
+const AVAIL_OPEN_MS = 60_000
+const cliPath = (name: string) => [`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, join(homedir(), '.local', 'bin', name)].find(existsSync) ?? name
+
+/**
+ * discover() through this worker's processes. Codex lists its models from the Codex home of Orca's
+ * selected Codex account, as the card writer resolves it (codexHomeFromAccounts); unresolvable: the
+ * default home. Each lookup that fails reads as unknown.
+ */
+export async function discoverHere(run: (args: string[], options?: { timeoutMs?: number }) => Promise<any>, execImpl: Exec = execCmd): Promise<Availability> {
+  let codexHome: string | undefined
+  try { codexHome = codexHomeFromAccounts({ ok: true, result: await run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }) }) } catch { codexHome = undefined }
+  return discover(execImpl, { orcaBin: ORCA_BIN, codexBin: cliPath('codex'), ...(codexHome ? { env: { CODEX_HOME: codexHome } } : {}) })
+}
+
+const execCmd: Exec = (cmd, args, opts) => new Promise((resolve, reject) => {
+  const env = opts?.env ? { ...process.env, ...opts.env } : undefined
+  execFile(cmd, args, { timeout: opts?.timeoutMs ?? 10_000, maxBuffer: 16 * 1024 * 1024, ...(env ? { env } : {}) }, (e, stdout) => (e ? reject(e) : resolve(String(stdout))))
+})
 
 // ---------- Token speed ----------
 
