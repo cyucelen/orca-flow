@@ -23,7 +23,8 @@ function tree() {
     { worktreeId: WS, path: DIR, displayName: 'orca-flow', repo: 'orca-flow', liveTerminalCount: 2, agents: [
       { paneKey: STALE, orcaSessionId: MAIN, agentType: 'codex', state: 'done', conversationName: 'Resume status message clipping' },
       { paneKey: LIVE, orcaSessionId: MAIN, agentType: 'codex', state: 'working', hasLivePty: true, conversationName: 'Orca Flow coordinators' },
-      // A distinct earlier conversation in the folder, not a member: it stays visible.
+      // A distinct earlier conversation in the folder, not a member and closed: it keeps its own
+      // asleep row (no member duplicate), which the tree leaves out like any sleeping lead.
       { paneKey: 'hist:1', orcaSessionId: 'another-conversation', agentType: 'claude', state: 'done', conversationName: 'Disk cleanup' }
     ] },
     { worktreeId: 'wt::status', path: '/fixture/orca-plugin/coordinator-handover-status', identity: { key: 'status' }, displayName: 'coordinator-handover-status', repo: 'orca-plugin', branch: 'cyucelen/coordinator-handover-status', liveTerminalCount: 3, agents: [
@@ -72,12 +73,12 @@ test('reported orca-flow tree: the root is the live main conversation, opens its
   // Click destination: the exact live pane's terminal, never a resume or the stale pane.
   assert.deepEqual(wakePlan(c, all, 0), { kind: 'open', member: c.sessions.members[1], workspaceId: WS, terminal: TERM[LIVE] })
 
-  // No member row of the main conversation, live or stale; the distinct historical conversation stays.
+  // No member row of the main conversation, live or stale; the distinct closed conversation keeps its own row, hidden from the tree.
   const panes = visible.flatMap((r) => r.agents.map((a) => a.paneKey))
   assert.ok(!panes.includes(LIVE) && !panes.includes(STALE), `no duplicate main-conversation rows: ${panes.join(', ')}`)
   assert.ok(!html.includes(`agent:${LIVE}`) && !html.includes(`agent:${STALE}`))
-  assert.ok(panes.includes('hist:1'), 'a different conversation in the folder stays visible')
-  assert.match(html, /data-menu="agent:hist:1"[^>]*data-depth="0"/)
+  assert.ok(panes.includes('hist:1'), 'a different conversation in the folder keeps its own row')
+  assert.ok(!html.includes('agent:hist:1'), 'closed, it leaves the tree like any sleeping lead')
 
   // Ancestry: both leads directly under the root, each lead's workers under it.
   const of = (pane: string) => all.flatMap((r) => r.agents).find((a) => a.paneKey === pane)!

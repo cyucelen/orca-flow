@@ -1359,7 +1359,7 @@ function resumeHost(binding: (terminalId: string) => ResumeBinding = (terminalId
   return { io, calls }
 }
 
-test('a closed folder conversation is one Asleep row with the exact resume id; the live member stays current', () => {
+test('a closed folder conversation is one asleep row with the exact resume id; the tree leaves it out, search still resumes it', () => {
   const { visible, coordinators, sessions } = odin()
   assert.equal(coordinators[0].session?.paneKey, 'ps2:1')
   assert.equal(coordinators[0].sessions?.current, sessions.current)
@@ -1367,12 +1367,13 @@ test('a closed folder conversation is one Asleep row with the exact resume id; t
   const [row] = visible
   assert.deepEqual([row.agents[0].paneKey, row.agents[0].title, row.liveTerminals, row.resumeId, asleep(row)], ['stand:1', 'Odin 3 stand', 0, ODIN_RESUME, true])
   const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
-  assert.equal(html.match(/data-menu="agent:/g)?.length, 1)
-  assert.match(html, /data-resume="stand:1" data-workspace="folder:ayn-odin"/)
-  assert.match(html, /class="item finished[^"]*"/, 'dimmed')
-  assert.match(html, /<span class="rstatus sleeping">Asleep<\/span>/)
-  assert.ok(!html.includes('Exact session unavailable'))
-  assert.ok(!html.includes('data-open="folder:ayn-odin"'), 'the click resumes, it does not just open the folder')
+  assert.match(html, /data-menu="coordinator:ayn-odin"/, 'its coordinator still shows')
+  assert.ok(!html.includes('data-menu="agent:'), 'like any sleeping lead, it leaves the list')
+  assert.ok(!html.includes('Odin 3 stand') && !html.includes('Ayn Odin 3 setup'), 'neither pane of it shows')
+  assert.ok(!html.includes('>Asleep<'))
+  const found = render({ rows: visible, coordinators, source: 'cli', capacity: null }, { ...emptyUi(), query: 'odin 3' }).main
+  assert.match(found, /data-resume="stand:1" data-workspace="folder:ayn-odin"/, 'a search still finds it and resumes it exactly')
+  assert.ok(!found.includes('Exact session unavailable'))
 })
 
 test('an Asleep row offers no Sleep: not in Sleep all, not among the chat shortcuts, not in its menu', () => {
@@ -1430,7 +1431,7 @@ test('a closed folder conversation with no verified id is disabled with the reas
     const { visible, coordinators } = odin(summaries)
     assert.equal(visible.length, 1)
     assert.equal(visible[0].resumeId, undefined)
-    const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).main
+    const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, { ...emptyUi(), query: 'odin' }).main
     assert.ok(html.includes(`disabled data-tip="${NO_RESUME_ID}"`))
     assert.ok(!html.includes('data-resume='))
     const { io, calls } = resumeHost()
@@ -1438,6 +1439,73 @@ test('a closed folder conversation with no verified id is disabled with the reas
     assert.deepEqual([out.ok, calls.resume.length], [false, 0])
     assert.ok(out.error!.startsWith(NO_RESUME_ID))
   }
+})
+
+/**
+ * A coordinator folder with these lead panes, each live, closed or of unknown liveness, folded under
+ * its coordinator. `member` adds a closed coordinator session, so the coordinator itself sleeps.
+ */
+function folderLeads(panes: { pane: string; title: string; live: boolean | undefined; state?: 'done' | 'working' | 'waiting' }[], member = false) {
+  const all = member ? [...panes, { pane: 'coord:1', title: 'Coordinator', live: false }] : panes
+  const rows = fromPs([{ worktreeId: `r::${ODIN}`, path: ODIN, displayName: 'ayn-odin', repo: 'ayn-odin', liveTerminalCount: 2, agents: all.map((p) => (
+    { paneKey: p.pane, agentType: 'claude', orcaSessionId: `s-${p.pane}`, state: (p as { state?: string }).state ?? 'done', conversationName: p.title }
+  )) }], { cards: {}, summaries: {} }, new Map([[ODIN, 'folder:ayn-odin']]))
+  for (const a of rows[0].agents) {
+    const live = all.find((p) => p.pane === a.paneKey)!.live
+    if (live === undefined) delete a.live
+    else a.live = live
+  }
+  const coord = rows[0].agents.find((a) => a.paneKey === 'coord:1')
+  const sessions: CoordinatorSessions = coord ? { version: 1, current: memberFrom(rows[0], coord).id, members: [memberFrom(rows[0], coord)] } : { version: 1, current: null, members: [] }
+  const c = { key: 'ayn-odin', name: 'ayn-odin', repos: [], workspaceId: null, dir: ODIN, about: '', sessions }
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(assignCoordinators(rows, [c], { paneOf: new Map(), dispatcherOf: new Map() }), coordinators, [ODIN])
+  const snap = { rows: visible, coordinators, source: 'cli' as const, capacity: null }
+  return { visible, coordinators, html: render(snap, emptyUi()).main, targets: chatTargets(snap).map((t) => t.key) }
+}
+
+test('a coordinator folder shows its live lead; its closed lead has no row and no chat number', () => {
+  const { html, targets } = folderLeads([
+    { pane: 'live:1', title: 'Live lead', live: true, state: 'working' },
+    { pane: 'shut:1', title: 'Closed lead', live: false }
+  ])
+  assert.match(html, /data-menu="agent:live:1"/)
+  assert.ok(html.includes('Live lead'))
+  assert.ok(!html.includes('agent:shut:1') && !html.includes('Closed lead'))
+  assert.deepEqual(targets, ['coordinator:ayn-odin', 'agent:live:1'])
+})
+
+test('a closed lead stays hidden whatever its last state claimed: working or asking', () => {
+  for (const state of ['working', 'waiting'] as const) {
+    const { visible, html, targets } = folderLeads([{ pane: 'shut:1', title: 'Closed lead', live: false, state }])
+    assert.equal(visible[0].agents[0].state, state, 'the stale state is still there')
+    assert.ok(!html.includes('agent:shut:1') && !html.includes('Closed lead'), state)
+    assert.deepEqual(targets, ['coordinator:ayn-odin'])
+  }
+})
+
+test('a folder lead of unknown liveness is no sleeping lead: it still shows', () => {
+  const { visible, html, targets } = folderLeads([{ pane: 'what:1', title: 'Unknown lead', live: undefined }])
+  assert.deepEqual([visible[0].liveTerminals, asleep(visible[0])], [1, false])
+  assert.match(html, /data-menu="agent:what:1"/)
+  assert.deepEqual(targets, ['coordinator:ayn-odin', 'agent:what:1'])
+})
+
+test('a sleeping coordinator still shows as Sleeping; only its closed leads leave', () => {
+  const { coordinators, html, targets } = folderLeads([{ pane: 'shut:1', title: 'Closed lead', live: false }], true)
+  assert.equal(coordinators[0].session, null)
+  assert.match(html, /data-menu="coordinator:ayn-odin"[\s\S]*<span class="rstatus sleeping">Sleeping<\/span>/)
+  assert.ok(!html.includes('Closed lead'))
+  assert.deepEqual(targets, ['coordinator:ayn-odin'])
+})
+
+test('Sleep: the same lead shows while its pane is open and is gone once Orca reports it closed', () => {
+  const before = folderLeads([{ pane: 'lead:1', title: 'Odin 3 stand', live: true }])
+  assert.match(before.html, /data-menu="agent:lead:1"/)
+  assert.deepEqual(before.targets, ['coordinator:ayn-odin', 'agent:lead:1'])
+  const after = folderLeads([{ pane: 'lead:1', title: 'Odin 3 stand', live: false }])
+  assert.ok(!after.html.includes('agent:lead:1') && !after.html.includes('Odin 3 stand'))
+  assert.deepEqual(after.targets, ['coordinator:ayn-odin'])
 })
 
 test('Sleep on a pane with no open terminal returns why, and closes nothing', async () => {

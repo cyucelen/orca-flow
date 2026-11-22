@@ -231,8 +231,9 @@ type Placed = { a: AgentInfo; row: WorkspaceRow }
 
 /**
  * A closed conversation in a coordinator's folder (folderRows in worker.ts): no open terminal of its
- * own, whatever else runs in the folder. It shows dimmed as Asleep, a click resumes it by its exact
- * provider id (`resumeId`), and nothing offers to put it to sleep.
+ * own, whatever else runs in the folder. The tree leaves it out like any sleeping lead; where it
+ * still shows (search), a click resumes it by its exact provider id (`resumeId`), and nothing offers
+ * to put it to sleep.
  */
 export const asleep = (row: WorkspaceRow): boolean => Boolean(row.folderOf) && !row.historical && row.liveTerminals === 0
 
@@ -983,7 +984,6 @@ const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined
  * work is still in flight, or finished.
  */
 export function nodeOf(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): NodeState {
-  if (asleep(row)) return 'finished'
   const face = faceOf(a)
   return face === 'asks' ? 'asking' : face === 'working' ? 'working' : face === 'monitoring' ? 'monitoring' : inFlight(a, row, all) ? 'done' : 'finished'
 }
@@ -1007,7 +1007,7 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
-  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
+  const right = status ?? (lead
     ? (own ? `${chip}${prBadge(p.row.pr)}` : '')
     : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
@@ -1099,7 +1099,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
   const ask = asking ? askKindOf(asking) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
-  const done = (p: Placed) => asleep(p.row) || (faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all))
+  const done = (p: Placed) => faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all)
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
   // lead's branch color, lit together on hover and while one of them is current.
   const trunk = trunkX(face === 'idle')
@@ -1178,8 +1178,9 @@ function treeRails(lines: TreeBlock['lines'], index: number, trunk: number): str
 function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] {
   const all = snap.rows.flatMap((r) => r.agents)
   const placed: Placed[] = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
-  // A closed folder conversation shows once, as Asleep (folderRows): its click resumes it.
-  const live = placed.filter((p) => p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0 || asleep(p.row))
+  // A closed folder conversation (folderRows: live === false) leaves the tree like every sleeping
+  // lead, whatever state its last summary claimed. Unknown liveness is not asleep: it stays.
+  const live = placed.filter((p) => !asleep(p.row) && (p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0))
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
   // Grouped by the coordinator row's own status, the one its label shows: a live session (the
   // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
@@ -1242,8 +1243,7 @@ export type ChatTarget = { key: string } & ({ coordinator: string } | { workspac
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
   return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
     ...('you' in c ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
-    // An Asleep row takes no number: a key press never resumes a closed conversation unseen.
-    ...(folded.has(c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p }): ChatTarget => p.row.coordinator
+    ...(folded.has(c.key) ? [] : lines.map(({ p }): ChatTarget => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)
