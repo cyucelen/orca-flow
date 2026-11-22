@@ -431,11 +431,17 @@ declare module 'orca' {
     'sidebar.revealSettings': { output: { ok: boolean } }
     /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
     'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
+    /** The Token speed section's data: agent output and traffic over time, and the last internet test. */
+    'sidebar.tokenSpeed': { output: import('./token-speed.ts').TokenSpeedWire }
+    /** Starts `networkQuality -c` unless one is running; its result (or failure) is posted as sidebar.tokenSpeedChanged. */
+    'sidebar.tokenSpeedTest': { output: { started: boolean } }
   }
   interface PluginPanelEvents {
     /** Posted to open panels when a workspace or agent status changes. */
     'sidebar.changed': Snapshot
     /** Posted when the Linear section's data changed (a new read, a send). */
     'sidebar.linearChanged': LinearWire | null
+    /** Posted after each log and network sample, and when a speed test starts or ends. */
+    'sidebar.tokenSpeedChanged': import('./token-speed.ts').TokenSpeedWire
   }
 }

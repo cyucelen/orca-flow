@@ -97,3 +97,13 @@ declare module 'node:child_process' {
     on(event: string, listener: (...args: any[]) => void): void
   }
 }
+declare module 'node:fs' {
+  export function readdirSync(path: string, options: { withFileTypes: true }): { name: string; isDirectory(): boolean; isFile(): boolean }[]
+  export function statSync(path: string): { size: number; mtimeMs: number }
+}
+declare module 'node:fs' {
+  export function realpathSync(path: string): string
+}
+declare module 'node:fs' {
+  export function watch(path: string, options: { recursive?: boolean }, listener: (event: string, filename: string | null) => void): { close(): void }
+}

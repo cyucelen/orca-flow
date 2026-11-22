@@ -37,6 +37,7 @@ import { readFootprint, readProcs, startedGroups } from './started.ts'
 import { backgroundReader } from './background.ts'
 import { conversationOpener, ORCA_PROMPT, type Opener } from './transcripts.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
+import { addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -1117,6 +1118,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     return []
   }
   const listDir = (dir: string) => { try { return readdirSync(dir) } catch { return null } }
+  startTokenSpeed(orca, () => logRoots(providerHomes('claude'), providerHomes('codex')))
 
   /** Resumes by provider id and finds the exact terminal the resume returned, or that the provider exited. */
   const resumeIo: ResumeIo = {
@@ -1586,7 +1588,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   // The summarizer and `orca-flow set` write here; a new summary should show without an event.
   try {
     mkdirSync(DATA_DIR, { recursive: true })
-    const watcher = watch(DATA_DIR, { recursive: true }, refreshSoon)
+    // The Token speed files change every 30 s and are no part of the snapshot.
+    const watcher = watch(DATA_DIR, { recursive: true }, (_event: string, name: string | null) => { if (!isSpeedFile(name)) refreshSoon() })
     disposers.push(() => watcher.close())
   } catch (e) {
     orca.log(`not watching ${DATA_DIR}: ${(e as Error).message}`)
@@ -1620,4 +1623,135 @@ export default function activate(orca: OrcaWorkerApi): void {
 
 export function deactivate(): void {
   for (const dispose of disposers.splice(0)) dispose()
+}
+
+// ---------- Token speed ----------
+
+/** How often the logs are sampled, and how many samples between full listings (which find new logs). */
+const SPEED_SAMPLE_MS = 30_000
+const SPEED_FULL_EVERY = 4
+/** One slice of log reading; the slices of a long read (the first 24 h) yield to the event loop between them. */
+const SPEED_SLICE_MS = 40
+
+type Child = { kill?: (signal?: string) => void }
+const exec = (file: string, args: string[], timeout: number, keep?: (child: Child) => void) =>
+  new Promise<string>((resolve, reject) => {
+    const child = execFile(file, args, { timeout, maxBuffer: 16 * 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve(String(stdout)))) as Child
+    keep?.(child)
+  })
+
+/**
+ * The Token speed section's sampling, while the worker runs: the agents' logs every 30 s (only what
+ * they gained, in slices of at most SPEED_SLICE_MS so a big first read never blocks the worker), and
+ * a nettop snapshot of their sockets every 30 s for their traffic. The internet test runs only on the panel's Test.
+ * History and cursors live in ~/.orca-flow/token-speed*.json; the panel gets speedView (a few KB).
+ */
+function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[]): void {
+  let stopped = false
+  const timers: ReturnType<typeof setTimeout>[] = []
+  let nettop: Child | null = null
+  disposers.push(() => {
+    stopped = true
+    timers.forEach(clearTimeout)
+    nettop?.kill?.('SIGTERM')
+  })
+  const store = readSpeedStore(DATA_DIR)
+  const history = store.history
+  const cursors = store.cursors ?? new Map()
+  // No cursors yet: the first sample reads the last 24 h of logs, and the section says so until then.
+  let ready = store.cursors != null
+  let testing = false
+  let testError: string | null = null
+  let samples = 0
+  let reading: { paths: [string, LogKind][]; next: number; now: number } | null = null
+
+  const view = (): TokenSpeedWire => speedView(history, Date.now(), { ready, testing, testError })
+  const post = () => orca.panels.post('sidebar.tokenSpeedChanged', view())
+  const save = () => {
+    try { writeSpeedStore(DATA_DIR, { history, cursors }, Date.now()) } catch (e) { orca.log(`saving token speed failed: ${(e as Error).message}`) }
+  }
+
+  const slice = () => {
+    if (stopped || !reading) return
+    try {
+      const r = readLogs({ paths: reading.paths, from: reading.next, cursors, history, now: reading.now, deadline: Date.now() + SPEED_SLICE_MS })
+      reading.next = r.next
+    } catch (e) {
+      orca.log(`token speed read failed: ${(e as Error).message}`)
+      reading.next = reading.paths.length
+    }
+    if (reading.next < reading.paths.length) { timers.push(setTimeout(slice, 0)); return }
+    reading = null
+    ready = true
+    prune(history, Date.now())
+    save()
+    post()
+  }
+  const sampleLogs = () => {
+    if (stopped || reading) return
+    const now = Date.now()
+    try {
+      reading = { paths: logsToRead(roots(), cursors, now, !ready || samples++ % SPEED_FULL_EVERY === 0), next: 0, now }
+    } catch (e) {
+      orca.log(`token speed listing failed: ${(e as Error).message}`)
+      return
+    }
+    slice()
+  }
+  const logTimer = setInterval(sampleLogs, SPEED_SAMPLE_MS)
+  disposers.push(() => clearInterval(logTimer))
+  timers.push(setTimeout(sampleLogs, 3000))
+
+  // A nettop snapshot of the agents' sockets each sample, diffed against the last one.
+  let lastSockets: SocketSnapshot | null = null
+  const sampleNet = async () => {
+    if (stopped) return
+    try {
+      const ps = await exec('/bin/ps', ['-A', '-o', 'pid=,comm='], 5000)
+      const csv = await exec('/usr/bin/nettop', ['-L', '1', '-x', '-J', 'bytes_in,bytes_out'], 30_000, (c) => (nettop = c))
+      nettop = null
+      const snap = parseNettop(csv, agentPids(ps), Date.now())
+      const prev = lastSockets
+      lastSockets = snap
+      if (prev && !stopped) {
+        const d = socketDelta(prev, snap)
+        // A gap much longer than a sample (the Mac slept) is not one sample's traffic.
+        if (d.secs > 0 && d.secs < 3 * SPEED_SAMPLE_MS / 1000) {
+          addNet(history, { at: snap.at, ...d })
+          post()
+        }
+      }
+    } catch (e) {
+      nettop = null
+      if (!stopped) orca.log(`nettop sample failed: ${(e as Error).message}`)
+    }
+    if (!stopped) timers.push(setTimeout(() => void sampleNet(), SPEED_SAMPLE_MS))
+  }
+  timers.push(setTimeout(() => void sampleNet(), 5000))
+
+  orca.panels.handle('sidebar.tokenSpeed', () => view())
+  // One test at a time, only on the user's Test; its result is kept with the history.
+  orca.panels.handle('sidebar.tokenSpeedTest', () => {
+    if (testing) return { started: false }
+    testing = true
+    testError = null
+    post()
+    exec('/usr/bin/networkQuality', ['-c'], 120_000)
+      .then((out) => {
+        const result = parseNetworkQuality(out, Date.now())
+        if (result) {
+          history.internet = result
+          save()
+        } else testError = 'The speed test gave no result.'
+      })
+      .catch((e: Error) => {
+        testError = `The speed test failed: ${e.message.split('\n')[0]}`
+        orca.log(`networkQuality failed: ${e.message}`)
+      })
+      .finally(() => {
+        testing = false
+        if (!stopped) post()
+      })
+    return { started: true }
+  })
 }

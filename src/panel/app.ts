@@ -3,6 +3,8 @@
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
+import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
@@ -20,6 +22,9 @@ const ui = emptyUi()
 let snap: Snapshot | null = null
 /** The Linear section's data; null hides the section (Linear not connected, or not read yet). */
 let linear: LinearData | null = null
+/** The Token speed section's data from the worker, and its fold and range (kept in storage). */
+let speed: TokenSpeedWire | null = null
+const speedUi: { folded: boolean; range: SpeedRange } = { folded: false, range: '1h' }
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
@@ -32,6 +37,7 @@ const copenEl = $('copen')
 const updateEl = $('update-slot')
 const linearEl = $('linear')
 const botsEl = $('bots')
+const speedEl = $('tokenspeed')
 const toastEl = $('toast')
 
 const openedAt = Date.now()
@@ -47,7 +53,7 @@ function paint(): void {
 }
 
 /** The redrawn sections; keyboard focus inside them is kept across a redraw by its logical key. */
-const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, botsEl, linearEl, footerEl, updateEl]
+const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, botsEl, linearEl, speedEl, footerEl, updateEl]
 let restoringFocus = false
 function focusKey(): string | null {
   const el = document.activeElement
@@ -95,6 +101,11 @@ function paintRows(): void {
   linearEl.innerHTML = linearHtml
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
+  // Token speed, under Linear; hidden while searching, like the other sections.
+  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now })
+  speedEl.innerHTML = speedHtml
+  speedEl.hidden = !speedHtml
+  speedEl.classList.toggle('folded', speedUi.folded)
   footerEl.innerHTML = footer
   footerEl.hidden = !footer
   if (typeof markTarget === 'function') markTarget()
@@ -143,6 +154,20 @@ orca.storage.get(BOTS_UI_KEY).then((stored) => {
   draw()
 }).catch(() => null)
 document.addEventListener('visibilitychange', () => readLinear())
+// Token speed: the worker samples every 30 s and posts each sample; the panel asks once on open and
+// when it shows again. The fold and the 1 h / 24 h range come back from storage.
+const readSpeed = () => {
+  if (document.visibilityState !== 'visible') return
+  orca.plugin.request('sidebar.tokenSpeed').then((d) => { speed = d as TokenSpeedWire; draw() }).catch(() => null)
+}
+orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { speed = d as TokenSpeedWire; draw() })
+orca.storage.get(SPEED_UI_KEY).then((stored) => {
+  Object.assign(speedUi, speedUiOf(stored))
+  draw()
+}).catch(() => null)
+readSpeed()
+document.addEventListener('visibilitychange', readSpeed)
+const saveSpeedUi = () => void orca.storage.set(SPEED_UI_KEY, { folded: speedUi.folded, range: speedUi.range }).catch(() => null)
 const saveLinearUi = () =>
   void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter, display: ui.linearDisplay, groupFolds: [...ui.linearGroupFolds] }).catch(() => null)
 // No Orca event reports a switch between tabs of one workspace. While the panel shows, the worker
@@ -169,6 +194,19 @@ document.addEventListener('click', (event) => {
   if ((event.target as Element).closest('[data-bfold]')) {
     ui.botsFolded = !ui.botsFolded
     void orca.storage.set(BOTS_UI_KEY, { folded: ui.botsFolded }).catch(() => null)
+    draw()
+    return
+  }
+  // The Token speed section: fold, range, and the internet test (one at a time; the worker posts its result).
+  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-ttest]')
+  if (sp) {
+    const d = sp.dataset
+    if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi() }
+    if (d.trange === '1h' || d.trange === '24h') { speedUi.range = d.trange; saveSpeedUi() }
+    if ('ttest' in d && speed && !speed.testing) {
+      speed = { ...speed, testing: true, testError: null }
+      void orca.plugin.request('sidebar.tokenSpeedTest').catch((e: Error) => { if (speed) speed = { ...speed, testing: false, testError: e.message }; draw() })
+    }
     draw()
     return
   }

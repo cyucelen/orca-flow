@@ -22,6 +22,13 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
 - **Coordinators:** your coordinators, each with its leads and workers nested under it, plus the
   chats you started yourself. Click a coordinator to open its session; right-click anything for
   actions.
+- **Token speed:** how fast your agents write (output tok/s over the last minute, summed over every
+  agent), their network traffic, and your internet speed. Charts for the last hour or 24 h show tok/s
+  per model and agent traffic as a share of your connection; each model gets its median response
+  speed over the last hour and 24 h. Read from Claude Code and Codex logs every 30 s (only token
+  counts, model names and times, never content) and from `nettop` (loopback traffic left out).
+  The internet test (`networkQuality`, about 25 s and 100+ MB) runs only when you press Test; the
+  last result is kept. History stays on this Mac in `~/.orca-flow/token-speed.json`.
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds. If Haiku is
   unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI. Pick the
