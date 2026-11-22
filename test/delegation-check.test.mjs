@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { asksForSubagent, latestPrompt, realPrompt } from '../skills/orca-flow/scripts/delegation-check.mjs'
+import { asksForSubagent, latestPrompt, latestPromptInfo, realPrompt } from '../skills/orca-flow/scripts/delegation-check.mjs'
 
 const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
 const SESSION = '5b0d6a52-3f0e-4c1e-9d5e-2f6c0c3c9a11'
@@ -138,6 +138,30 @@ test('the user\'s latest real prompt asking for a subagent allows any type; Orca
   }
 })
 
+const COMMAND = (name, args = '') => `<command-message>${name.slice(1)}</command-message>\n<command-name>${name}</command-name>\n<command-args>${args}</command-args>`
+
+test('a slash command or skill the user ran allows any subagent type, the way a plain ask does', () => {
+  // Claude Code records /review as a <command-name> tag, not as the words "subagent".
+  const review = world([user(LEAD), said('On it.'), user(COMMAND('/review', 'the cart panel')), said('Starting.')])
+  assert.equal(hook(review), null, '/review, a recorded command')
+  assert.equal(hook(review, { description: 'Review a file', prompt: '...', subagent_type: 'fork' }), null, 'fork under /review')
+
+  // A typed "/code-review" prompt, with no tag, counts too.
+  const typed = world([user(LEAD), user('/code-review --max-findings 5')])
+  assert.equal(hook(typed), null, 'a prompt that starts with "/"')
+
+  // A dispatch whose TASK text starts with "/" is still the coordinator's word, not the user's command.
+  const dispatched = world([user(`${PREAMBLE}\nYour role: lead. Own the checkout workstream.\n=== TASK ===\n/review the cart`)])
+  assertDeny(dispatched, hook(dispatched))
+
+  // Plain text after the command is what counts: the latest prompt decides, not an older one.
+  const after = world([user(LEAD), user(COMMAND('/review')), said('Done.'), user('now fix the totals')])
+  assertDeny(after, hook(after))
+  // A plain prompt is denied even when it names the review.
+  const plain = world([user(LEAD), user('review the cart code and split it up')])
+  assertDeny(plain, hook(plain))
+})
+
 test('"delegationCheck": "off" turns it off; any other value keeps it on', () => {
   const w = world()
   writeFileSync(join(w.data, 'config.json'), JSON.stringify({ delegationCheck: 'off', messageFormat: 'all' }))
@@ -163,6 +187,9 @@ test('realPrompt and latestPrompt read only what the user typed, the TASK block 
   assert.equal(realPrompt(JSON.parse(user('<system-reminder>x</system-reminder>'))), null)
   assert.equal(latestPrompt([user('first'), said('ok'), user('second'), said('ok'), 'garbage'].join('\n')), 'second')
   assert.equal(latestPrompt(''), '')
+  assert.deepEqual(latestPromptInfo(''), { text: '', command: false })
+  assert.deepEqual(latestPromptInfo([user(LEAD), user(COMMAND('/review', 'x'))].join('\n')), { text: COMMAND('/review', 'x'), command: true })
+  assert.deepEqual(latestPromptInfo([user(LEAD), user('plain ask')].join('\n')), { text: 'plain ask', command: false })
   assert.equal(asksForSubagent('Do only this task, yourself: no subagents or helper workers unless the task asks.'), false)
   assert.equal(asksForSubagent('please use a subagent'), true)
   assert.equal(asksForSubagent('never use subagents. Use a subagent for the docs though.'), true, 'the second sentence asks')

@@ -8,8 +8,10 @@
 //
 // It denies an Agent call only when all hold: the agent runs in an Orca pane (ORCA_AGENT_PANE); it
 // is a coordinator or a lead (hookRole in stop-check.mjs, the rule the other hooks use); the
-// subagent type is not a read-only one (READ_ONLY); and the user's latest real prompt does not ask
-// for a subagent (asksForSubagent). Workers, chats the user started and every other tool: nothing.
+// subagent type is not a read-only one (READ_ONLY); and the user's latest real prompt neither runs a
+// slash command or skill (/review, /code-review: the user asked for that skill, and it starts the
+// subagents it needs) nor asks for a subagent in plain text (asksForSubagent). Workers, chats the
+// user started and every other tool: nothing.
 // On by default; "delegationCheck": "off" in ~/.orca-flow/config.json turns it off. Each deny is
 // logged to ~/.orca-flow/delegation.jsonl. Any error allows the call: exit 0, no output.
 //
@@ -46,37 +48,57 @@ const textOf = (content) =>
   typeof content === 'string' ? content : Array.isArray(content) ? content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n') : ''
 
 /**
+ * A real prompt with what it is: its text, and whether the user ran a slash command or a skill
+ * (a <command-name> tag, as Claude Code records /review, or text that starts with "/"). Null when
+ * the record is not a real prompt. Of a dispatch prompt only the TASK block is the text; the
+ * command check reads the text before that cut, so a TASK block cannot make a dispatch a command.
+ */
+function promptOf(d) {
+  if (d?.type !== 'user' || d.isSidechain || d.isMeta || d.isCompactSummary) return null
+  if (d.origin?.kind && d.origin.kind !== 'human') return null
+  if (d.promptSource === 'system') return null
+  const content = d.message?.content
+  if (Array.isArray(content) && content.some((c) => c?.type === 'tool_result')) return null
+  let whole = textOf(content).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
+  if (!whole || whole.startsWith('<task-notification>')) return null
+  if (/^You have \d+ orchestration messages?\b/.test(whole)) return null
+  const command = /<command-name>/.test(whole) || whole.startsWith('/')
+  let text = whole
+  const task = text.indexOf('=== TASK ===')
+  if (task >= 0) text = text.slice(task + '=== TASK ==='.length).trim()
+  return text ? { text, command } : null
+}
+
+/**
  * What the user typed in one transcript record, or null when the record is not a real prompt: tool
  * results, sidechains, skill bodies and other meta records, compaction summaries, task
  * notifications, Orca's "You have N orchestration message" wake line. Of a dispatch prompt only the
  * TASK block counts: Orca's preamble around it says "no subagents ... unless the task asks".
  */
 export function realPrompt(d) {
-  if (d?.type !== 'user' || d.isSidechain || d.isMeta || d.isCompactSummary) return null
-  if (d.origin?.kind && d.origin.kind !== 'human') return null
-  if (d.promptSource === 'system') return null
-  const content = d.message?.content
-  if (Array.isArray(content) && content.some((c) => c?.type === 'tool_result')) return null
-  let text = textOf(content).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
-  if (!text || text.startsWith('<task-notification>')) return null
-  if (/^You have \d+ orchestration messages?\b/.test(text)) return null
-  const task = text.indexOf('=== TASK ===')
-  if (task >= 0) text = text.slice(task + '=== TASK ==='.length).trim()
-  return text || null
+  return promptOf(d)?.text ?? null
 }
 
-/** The latest real prompt in a transcript's text, read from the end; '' when there is none. */
-export function latestPrompt(transcript) {
+/**
+ * The latest real prompt in a transcript, read from the end: its text, and whether it is a slash
+ * command or skill the user ran. Empty text and command false when there is none.
+ */
+export function latestPromptInfo(transcript) {
   const lines = transcript.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]
     if (!line.includes('"user"')) continue
     let d
     try { d = JSON.parse(line) } catch { continue }
-    const text = realPrompt(d)
-    if (text) return text
+    const prompt = promptOf(d)
+    if (prompt) return prompt
   }
-  return ''
+  return { text: '', command: false }
+}
+
+/** The latest real prompt's text in a transcript; '' when there is none. */
+export function latestPrompt(transcript) {
+  return latestPromptInfo(transcript).text
 }
 
 const readJson = (path) => {
@@ -113,7 +135,8 @@ export function decide(input, { env = process.env, home = homedir(), script = pr
   if (role !== 'coordinator' && role !== 'lead') return null
   let transcript = ''
   try { transcript = readFileSync(input.transcript_path, 'utf8') } catch {}
-  if (asksForSubagent(latestPrompt(transcript))) return null
+  const prompt = latestPromptInfo(transcript)
+  if (prompt.command || asksForSubagent(prompt.text)) return null
   return {
     output: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: denyReason({ role, subagentType, script }) } },
     logFile: join(data, 'delegation.jsonl'),
