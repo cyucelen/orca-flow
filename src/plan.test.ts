@@ -78,6 +78,7 @@ test('startable: deps done, queued only, bounded by maxParallel minus running', 
   assert.deepEqual(startable(p, { a: 'done', b: 'running' }, 3), ['c', 'd'])
   assert.deepEqual(startable(p, { a: 'failed' }, 3), ['b', 'c'], 'a failed dependency holds d back')
   assert.deepEqual(startable(p, { a: 'running', b: 'running', c: 'running' }, 2), [])
+  assert.deepEqual(startable(p, { a: 'failed-start' }, 3), ['a', 'b', 'c'], 'a failed start can be started again')
 })
 
 test('slug and ownership note', () => {

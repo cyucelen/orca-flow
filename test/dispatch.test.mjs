@@ -16,8 +16,8 @@ test('route prints the label, the reason and, with --explain, what it passed ove
   const deps = fakeDeps()
   assert.equal(await routeCommand(argsOf({ role: 'worker', class: 'trivial', explain: true }, 'route'), deps), 0)
   const out = deps.output.join('\n')
-  assert.match(out, /^Claude Haiku · low \(auto\)\n {2}why: trivial task → Claude Haiku · low/)
-  assert.match(out, /flags: --agent claude --model haiku --effort low/)
+  assert.match(out, /^Claude Haiku \(auto\)\n {2}why: trivial task → Claude Haiku/)
+  assert.match(out, /flags: --agent claude --model haiku\n/)
   assert.match(out, /passed over:\n {4}claude sonnet: costs more/)
   assert.equal(deps.calls.length, 0)
   const json = fakeDeps()
@@ -32,10 +32,10 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
   const code = await dispatchCommand(argsOf({ role: 'worker', class: 'trivial', worktree: 'current', 'task-title': 'Fix the button', 'spec-file': '-', 'keep-open': true }, 'dispatch'), deps)
   assert.equal(code, 0)
   const [start] = starts(deps)
-  assert.deepEqual(start.args, ['orchestration', 'worker-start', '--worktree', 'current', '--task-title', 'Fix the button', '--spec-file', '-', '--keep-open', '--agent', 'claude', '--model', 'haiku', '--effort', 'low'])
+  assert.deepEqual(start.args, ['orchestration', 'worker-start', '--worktree', 'current', '--task-title', 'Fix the button', '--spec-file', '-', '--keep-open', '--agent', 'claude', '--model', 'haiku'])
   assert.equal(start.input, 'Fix the button\nmore spec', 'stdin passes through for --spec-file -')
   assert.deepEqual(deps.capacityCalls, [{}], 'no new worktree: the general gate')
-  assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku · low — trivial task → /)
+  assert.match(deps.output[0], /^Started ctx_1 on Claude Haiku — trivial task → /)
   assert.match(deps.output[0], /task task_new1 · run run_1 · state ready · workspace repo1::\/work\/tree/)
   const [entry] = readRoutes(deps.dir)
   assert.deepEqual(Object.keys(entry), ['at', 'role', 'taskId', 'dispatchId', 'workspace', 'choice', 'source', 'reason', 'class', 'risk', 'attempt'])
@@ -45,7 +45,7 @@ test('dispatch starts the worker on the routed agent, model and effort, passes t
     taskId: 'task_new1',
     dispatchId: 'ctx_1',
     workspace: 'repo1::/work/tree',
-    choice: { agent: 'claude', model: 'haiku', effort: 'low' },
+    choice: { agent: 'claude', model: 'haiku' },
     source: 'auto',
     reason: entry.reason,
     class: 'trivial',

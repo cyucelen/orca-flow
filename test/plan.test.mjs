@@ -16,12 +16,13 @@ function withTasks(options = {}) {
     ...options,
     orca: async (args) => {
       const [, verb] = args
-      if (verb === 'run-current') return { runId: null }
+      await options.orca?.(args) // a test's hook may throw, e.g. to fail a worker-start
+      if (verb === 'run-current') return { runId: options.boundRun ?? null }
       if (verb === 'run-create') return { runId: 'run_9' }
       if (verb === 'task-create') {
         const id = `task_${++n}`
         status[id] = args.includes('--deps') ? 'pending' : 'ready'
-        return { task: { id, status: status[id] } }
+        return { task: { id, status: status[id], runId: options.joinRun ?? 'run_7' } }
       }
       if (verb === 'task-list') return { tasks: Object.entries(status).map(([id, s]) => ({ id, status: s, title: id })) }
       if (verb === 'worker-start') status[args[args.indexOf('--task') + 1]] = 'dispatched'
@@ -84,25 +85,27 @@ test('plan start creates one Orca task per plan task with deps, routes each once
     T('e2e', ['test/'], ['api', 'ui'], { class: 'complex', risk: 'high' })
   ])
   assert.equal(await run(deps, 'start', file), 0)
-  // A Run first (none is bound), then tasks in wave order, deps as Orca ids.
-  assert.deepEqual(verbs(deps, 'run-create')[0].args, ['orchestration', 'run-create', '--objective', 'Totals feature'])
+  // No Run is created as a side effect; tasks go in wave order, deps as Orca ids.
+  assert.equal(verbs(deps, 'run-create').length, 0)
   const creates = verbs(deps, 'task-create')
   assert.deepEqual(creates.map((c) => after(c.args, '--task-title')), ['Do api', 'Do ui', 'Do wire', 'Do e2e'])
   assert.equal(after(creates[2].args, '--deps'), '["task_1"]')
   assert.equal(after(creates[3].args, '--deps'), '["task_1","task_2"]')
-  assert.ok(creates.every((c) => after(c.args, '--run') === 'run_9'))
+  assert.ok(!creates[0].args.includes('--run'), 'no Run is bound: the first task joins the caller\'s own')
+  assert.ok(creates.slice(1).every((c) => after(c.args, '--run') === 'run_7'), 'the rest follow it into the Run read back')
   assert.match(creates[0].input, /^Spec for api\n\nPlan "Totals feature", task api\. Files you own \(edit only these\): src\/api\.ts\./)
 
   // Only the two ready tasks start, each on its own routed model, behind the gate.
   const startsNow = verbs(deps, 'worker-start')
   assert.deepEqual(startsNow.map((c) => after(c.args, '--task')), ['task_1', 'task_2'])
-  assert.deepEqual(startsNow[0].args.slice(-6), ['--agent', 'claude', '--model', 'haiku', '--effort', 'low'])
+  assert.deepEqual(startsNow[0].args.slice(-4), ['--agent', 'claude', '--model', 'haiku'], 'Haiku takes no effort flag')
   assert.deepEqual(startsNow[1].args.slice(-6), ['--agent', 'claude', '--model', 'sonnet', '--effort', 'medium'])
   assert.equal(after(startsNow[0].args, '--worktree'), 'current')
+  assert.equal(after(startsNow[0].args, '--run'), 'run_7', 'the Run read back from the first task is passed on')
   assert.equal(deps.capacityCalls.length, 2)
 
   const state = JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8'))
-  assert.equal(state.runId, 'run_9')
+  assert.equal(state.runId, 'run_7', 'read back from the first task')
   assert.deepEqual(Object.fromEntries(Object.entries(state.tasks).map(([id, t]) => [id, [t.taskId, t.state, t.route.choice.model]])), {
     api: ['task_1', 'running', 'haiku'],
     ui: ['task_2', 'running', 'sonnet'],
@@ -141,14 +144,14 @@ test('plan next starts newly ready tasks on their recorded route, even after set
   const wire = verbs(deps, 'worker-start')[2]
   assert.equal(after(wire.args, '--task'), 'task_3')
   assert.equal(after(wire.args, '--model'), 'haiku')
-  assert.equal(after(wire.args, '--run'), 'run_9')
+  assert.equal(after(wire.args, '--run'), 'run_7')
 
   deps.output.length = 0
   await run(deps, 'status', file)
   const status = deps.output.join('\n')
-  assert.match(status, /api +done +Claude Haiku · low/)
+  assert.match(status, /api +done +Claude Haiku/)
   assert.match(status, /ui +running +Claude Sonnet · medium — standard task/)
-  assert.match(status, /wire +running +Claude Haiku · low/)
+  assert.match(status, /wire +running +Claude Haiku/)
 })
 
 test('plan next routes again when the recorded model is gone, and says so; an explicit one is never swapped', async () => {
@@ -167,7 +170,7 @@ test('plan next routes again when the recorded model is gone, and says so; an ex
   deps.status.task_1 = 'completed'
   deps.output.length = 0
   await run(deps, 'next', file)
-  assert.match(deps.output[0], /^b: Codex gpt-mini · low is no longer available; routed again to Claude Haiku · low/)
+  assert.match(deps.output[0], /^b: Codex gpt-mini · low is no longer available; routed again to Claude Haiku/)
   assert.equal(after(verbs(deps, 'worker-start')[1].args, '--model'), 'haiku')
 
   deps.status.task_2 = 'completed'
@@ -187,4 +190,79 @@ test('plan start --dry-run creates nothing and prints the commands', async () =>
   assert.match(out, /a: would run orca orchestration task-create --task-title 'Do a' --spec-file - --run '<run>' --json/)
   assert.match(out, /b: would run .* --deps '\["<a>"\]'/)
   assert.match(out, /a: would run orca orchestration worker-start --task '<a>' --worktree current --run '<run>' --agent claude --model sonnet --effort medium --json/)
+})
+
+test('plan start from a dispatched worker joins its parent Run and never run-creates', async () => {
+  const deps = withTasks({ joinRun: 'run_parent' })
+  await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b'])]))
+  assert.equal(verbs(deps, 'run-create').length, 0)
+  assert.match(deps.output.join('\n'), /Run run_parent: the caller's own, joined by the first task\. No Run was created\./)
+  // The Run read back is used from then on.
+  assert.ok(verbs(deps, 'worker-start').every((c) => after(c.args, '--run') === 'run_parent'))
+})
+
+test('plan start uses the Run bound here (run-current) and says so', async () => {
+  const deps = withTasks({ boundRun: 'run_bound' })
+  await run(deps, 'start', writePlan(deps, [T('a', ['a'])]))
+  assert.equal(verbs(deps, 'run-create').length, 0)
+  assert.ok(verbs(deps, 'task-create').every((c) => after(c.args, '--run') === 'run_bound'))
+  assert.match(deps.output.join('\n'), /Run run_bound: the one bound to this terminal\./)
+})
+
+test('plan start --new-run is the only way a Run gets created, and the output says so', async () => {
+  const deps = withTasks()
+  await run(deps, 'start', writePlan(deps, [T('a', ['a'])]), { 'new-run': true })
+  assert.deepEqual(verbs(deps, 'run-create')[0].args, ['orchestration', 'run-create', '--objective', 'Totals feature'])
+  assert.match(deps.output.join('\n'), /Created Run run_9 \(--new-run\) and bound it to this terminal as its coordinator\./)
+  assert.ok(verbs(deps, 'task-create').every((c) => after(c.args, '--run') === 'run_9'))
+})
+
+test('a failed worker-start marks only that task failed-start, tries the rest, prints the table and exits 1; plan next retries it', async () => {
+  let fail = true
+  const deps = withTasks({
+    routing: { maxParallel: 3 },
+    orca: async (args) => {
+      if (args[1] === 'worker-start' && fail && args.includes('task_1')) throw new Error('worktree is busy\nsecond line')
+      return undefined
+    }
+  })
+  const file = writePlan(deps, [T('a', ['a']), T('b', ['b']), T('c', ['c'], ['a'])])
+  assert.equal(await run(deps, 'start', file), 1)
+  assert.equal(verbs(deps, 'worker-start').length, 2, 'b was still tried')
+  const out = deps.output.join('\n')
+  assert.match(out, /a: failed to start on Claude Sonnet · medium: worktree is busy/)
+  assert.match(out, /a +failed-start +Claude Sonnet/)
+  assert.match(out, /b +running/)
+  assert.match(out, /1 start failed .*plan next.*\n {2}a: worktree is busy/)
+  const state = JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8'))
+  assert.deepEqual([state.tasks.a.state, state.tasks.a.error, state.tasks.b.state, state.tasks.c.state], ['failed-start', 'worktree is busy', 'running', 'queued'])
+
+  // The task is still ready in Orca; plan next keeps it failed-start, retries it, and succeeds.
+  fail = false
+  deps.output.length = 0
+  assert.equal(await run(deps, 'next', file), 0)
+  assert.equal(verbs(deps, 'worker-start').filter((c) => after(c.args, '--task') === 'task_1').length, 2)
+  assert.match(deps.output.join('\n'), /a +running/)
+  assert.equal(JSON.parse(readFileSync(join(deps.dir, 'plans', 'totals-feature.json'), 'utf8')).tasks.a.error, undefined)
+})
+
+test('a failed start does not bypass the capacity gate for the tasks after it', async () => {
+  const deps = withTasks({ routing: { maxParallel: 3 }, orca: async (args) => { if (args[1] === 'worker-start' && args.includes('task_1')) throw new Error('nope') } })
+  assert.equal(await run(deps, 'start', writePlan(deps, [T('a', ['a']), T('b', ['b'])])), 1)
+  assert.equal(deps.capacityCalls.length, 2, 'each start is gated, including the one after the failure')
+})
+
+test('plan next re-routes a failed-start task whose recorded model is gone, and says so', async () => {
+  const codex = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-mini', efforts: ['low', 'medium'] }] } }
+  const routing = { maxParallel: 1, candidates: [{ agent: 'codex', model: 'gpt-mini', tier: 1, cost: 1, enabled: true }, { agent: 'claude', model: 'haiku', tier: 1, cost: 2, enabled: true }] }
+  let fail = true
+  const deps = withTasks({ routing, avail: codex, orca: async (args) => { if (args[1] === 'worker-start' && fail) throw new Error('codex would not launch') } })
+  const file = writePlan(deps, [T('a', ['a'], [], { class: 'trivial' })])
+  assert.equal(await run(deps, 'start', file), 1)
+  fail = false
+  deps.avail = { agents: ['claude'], models: { claude: null, codex: null } }
+  deps.output.length = 0
+  assert.equal(await run(deps, 'next', file), 0)
+  assert.match(deps.output[0], /^a: Codex gpt-mini · low is no longer available; routed again to Claude Haiku/)
+  assert.equal(after(verbs(deps, 'worker-start').at(-1).args, '--model'), 'haiku')
 })

@@ -191,7 +191,7 @@ worktree's dev servers running while no agent there works, usually the biggest w
 
 **Queue, don't squeeze.** When the gate says no, queue the task instead of starting it, and tell
 the user it is queued and why in one line. A task needs a Run: if `orca orchestration run-current`
-shows none, `run-create --objective "<goal>"` first. Then `orca orchestration task-create
+shows none and you are a home coordinator, `run-create --objective "<goal>"` first; a lead or worker (dispatched) never runs `run-create`, since it would fence its messages to the Run it already works in: omit `--run`. Then `orca orchestration task-create
 --task-title "<outcome>" --spec-file -`. Queued tasks show in `orca orchestration task-list
 --ready`; start the highest first when a slot frees, with
 `orca-flow dispatch --role worker --task <id>` (`--role lead` for a lead) plus the place flags it

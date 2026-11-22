@@ -338,13 +338,15 @@ function stateOf(status) {
 
 async function refreshStates(state, deps) {
   if (state.dryRun) return
-  const listed = await deps.orca(['orchestration', 'task-list', '--run', state.runId])
+  const listed = await deps.orca(['orchestration', 'task-list', ...runFlag(state)])
   const byId = new Map((listed?.tasks ?? []).map((t) => [t.id, t.status]))
   for (const t of Object.values(state.tasks)) {
     const status = byId.get(t.taskId)
     if (status) {
       t.status = status
-      t.state = stateOf(status)
+      const next = stateOf(status)
+      // Orca still has it ready: a start that failed stays failed-start until it starts.
+      t.state = t.state === 'failed-start' && next === 'queued' ? 'failed-start' : next
     }
   }
 }
@@ -355,13 +357,14 @@ async function refreshStates(state, deps) {
  * longer available is routed again and said so; an explicit one is never swapped.
  */
 async function startReady({ plan, state, settings, avail, deps, worktree, dryRun, lines }) {
+  const failures = []
   const states = Object.fromEntries(Object.entries(state.tasks).map(([id, t]) => [id, t.state]))
   const queued = planLib.startable(plan, states, settings.maxParallel)
   const running = Object.values(state.tasks).filter((t) => t.state === 'running').length
   if (!queued.length) {
     const waiting = plan.tasks.filter((t) => state.tasks[t.id].state === 'queued').length
     if (waiting) lines.push(running >= settings.maxParallel ? `Nothing started: ${running} of this plan's workers run (limit ${settings.maxParallel}).` : `Nothing started: ${waiting} task${waiting === 1 ? ' waits' : 's wait'} on dependencies.`)
-    return
+    return failures
   }
   for (const id of queued) {
     const t = state.tasks[id]
@@ -388,20 +391,37 @@ async function startReady({ plan, state, settings, avail, deps, worktree, dryRun
       lines.push(`${id}: queued: capacity says ${cap.verdict}${cap.freeGB == null ? '' : ` (${cap.freeGB} GB free)`}. Run \`orca-flow plan next\` when there is room.`)
       break
     }
-    const argv = ['orchestration', 'worker-start', '--task', t.taskId, '--worktree', worktree, '--run', state.runId, ...routing.launchArgs(decision.choice)]
+    const argv = ['orchestration', 'worker-start', '--task', t.taskId, '--worktree', worktree, ...runFlag(state), ...routing.launchArgs(decision.choice)]
     if (dryRun) {
       lines.push(`${id}: would run ${shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])}`)
       t.state = 'running'
       continue
     }
-    const receipt = await deps.orca(argv)
+    let receipt
+    try {
+      receipt = await deps.orca(argv)
+    } catch (e) {
+      // Only this task failed to start; it stays startable (`plan next`) and the others are still tried.
+      const message = String(e?.message ?? e).split('\n')[0]
+      t.state = 'failed-start'
+      t.error = message
+      failures.push(`${id}: ${message}`)
+      lines.push(`${id}: failed to start on ${label(decision)}: ${message}`)
+      continue
+    }
+    delete t.error
     t.dispatchId = receipt?.dispatchId ?? null
     t.state = 'running'
     t.status = 'dispatched'
     appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: 'worker', receipt: { ...receipt, taskId: receipt?.taskId ?? t.taskId }, decision, req: taskRequest(task) }))
     lines.push(`${id}: started ${t.dispatchId ?? t.taskId} on ${label(decision)} — ${decision.reason}`)
   }
+  return failures
 }
+
+/** `--run <id>` when the plan knows its run; otherwise Orca uses the caller's own run. */
+const runFlag = (state) => (state.runId && state.runId !== UNKNOWN_RUN ? ['--run', state.runId] : [])
+const UNKNOWN_RUN = "(the caller's run)"
 
 const pick = (d) => ({ choice: d.choice, source: d.source, reason: d.reason })
 
@@ -445,40 +465,69 @@ export async function planCommand(args, deps) {
     }
     if (failed.length) throw new Refused(`No model for ${failed.length === 1 ? 'a task' : 'some tasks'}; nothing created:\n${failed.join('\n')}`, 3)
 
+    // Which Run the tasks belong to. Never create one as a side effect: a lead that is itself a
+    // dispatched worker already works inside its coordinator's Run, and `run-create` would bind this
+    // terminal to a new Run as its coordinator, after which Orca fences ("consumer_fenced") every
+    // message to its earlier sub-workers in the first Run. So: --run, else the Run bound here
+    // (`run-current`), else none: task-create and worker-start without --run join the caller's own
+    // Run, and the Run id is read back from the first task. `--new-run` is the explicit opt-in to
+    // `run-create` (a home coordinator with no Run), and the output says it was created.
     let runId = typeof args.run === 'string' ? args.run : null
-    if (!runId && !dryRun) runId = idOf(await deps.orca(['orchestration', 'run-current']), 'run')
-    if (!runId && !dryRun) runId = idOf(await deps.orca(['orchestration', 'run-create', '--objective', plan.title]), 'run')
-    if (!runId && !dryRun) throw new Error('Orca returned no run id for the plan')
-    const state = { title: plan.title, plan: path, runId: runId ?? '<run>', worktree, createdAt: deps.now().toISOString(), dryRun, tasks: {} }
+    let runNote = null
+    if (!runId && !dryRun) {
+      runId = idOf(await deps.orca(['orchestration', 'run-current']), 'run')
+      if (runId) runNote = `Run ${runId}: the one bound to this terminal.`
+    }
+    if (!runId && !dryRun && args['new-run']) {
+      runId = idOf(await deps.orca(['orchestration', 'run-create', '--objective', plan.title]), 'run')
+      if (!runId) throw new Error('Orca returned no run id for the plan')
+      runNote = `Created Run ${runId} (--new-run) and bound it to this terminal as its coordinator.`
+    }
+    if (runNote) lines.push(runNote)
+    const state = { title: plan.title, plan: path, runId: runId ?? (dryRun ? '<run>' : UNKNOWN_RUN), worktree, createdAt: deps.now().toISOString(), dryRun, tasks: {} }
     for (const id of check.waves.flat()) {
       const t = plan.tasks.find((x) => x.id === id)
       const depIds = t.deps.map((d) => state.tasks[d].taskId)
-      const argv = ['orchestration', 'task-create', '--task-title', t.title, '--spec-file', '-', '--run', state.runId, ...(depIds.length ? ['--deps', JSON.stringify(depIds)] : [])]
+      const argv = ['orchestration', 'task-create', '--task-title', t.title, '--spec-file', '-', ...runFlag(state), ...(depIds.length ? ['--deps', JSON.stringify(depIds)] : [])]
       let taskId = `<${id}>`
       if (dryRun) lines.push(`${id}: would run ${shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])}`)
-      else taskId = idOf(await deps.orca(argv, { input: `${t.spec.trim()}\n\n${planLib.ownershipNote(plan, id)}\n` }), 'task')
+      else {
+        const receipt = await deps.orca(argv, { input: `${t.spec.trim()}\n\n${planLib.ownershipNote(plan, id)}\n` })
+        taskId = idOf(receipt, 'task')
+        // No run was named: the task joined the caller's Run; remember which.
+        const joined = receipt?.task?.runId ?? receipt?.runId
+        if (state.runId === UNKNOWN_RUN && joined) {
+          state.runId = joined
+          lines.push(`Run ${joined}: the caller's own, joined by the first task. No Run was created.`)
+        }
+      }
       if (!taskId) throw new Error(`Orca returned no task id for "${id}"`)
       state.tasks[id] = { taskId, route: routes[id], dispatchId: null, state: 'queued', status: dep(depIds) }
       if (!dryRun) writeJson(where, state)
     }
-    await startReady({ plan, state, settings, avail, deps, worktree: state.worktree, dryRun, lines })
+    const failures = await startReady({ plan, state, settings, avail, deps, worktree: state.worktree, dryRun, lines })
     if (!dryRun) writeJson(where, state)
-    lines.push(...statusLines(plan, state))
-    deps.out(args.json ? JSON.stringify(state, null, 2) : lines.join('\n'))
-    return 0
+    return finish({ plan, state, lines, failures, args, deps })
   }
 
   const state = readJson(where, null)
   if (!state) throw new UsageError(`plan "${plan.title}" has not started: \`orca-flow plan start ${file}\``)
   await refreshStates(state, deps)
+  let failures = []
   if (sub === 'next') {
-    await startReady({ plan, state, settings, avail: await deps.discover(), deps, worktree: state.worktree, dryRun: !!args['dry-run'], lines })
+    failures = await startReady({ plan, state, settings, avail: await deps.discover(), deps, worktree: state.worktree, dryRun: !!args['dry-run'], lines })
     if (!args['dry-run']) writeJson(where, state)
   } else if (sub === 'status') writeJson(where, state)
   else throw new UsageError('usage: orca-flow plan check|start|next|status <plan.json>')
+  return finish({ plan, state, lines, failures, args, deps })
+}
+
+/** Prints the status table; exits 1 when a start failed, naming each failure. */
+function finish({ plan, state, lines, failures, args, deps }) {
   lines.push(...statusLines(plan, state))
+  if (failures.length) lines.push(`${failures.length} start${failures.length === 1 ? '' : 's'} failed (state failed-start, \`orca-flow plan next\` retries):`, ...failures.map((f) => `  ${f}`))
   deps.out(args.json ? JSON.stringify(state, null, 2) : lines.join('\n'))
-  return 0
+  return failures.length ? 1 : 0
 }
 
 const dep = (depIds) => (depIds.length ? 'pending' : 'ready')
@@ -490,7 +539,7 @@ function statusLines(plan, state) {
     ...plan.tasks.map((t) => {
       const s = state.tasks[t.id]
       const who = s.dispatchId ? ` ${s.dispatchId}` : ''
-      return `  ${t.id.padEnd(width)}  ${s.state.padEnd(7)}  ${routing.choiceLabel(s.route.choice)} — ${s.route.reason}  [${s.taskId}${who}]`
+      return `  ${t.id.padEnd(width)}  ${s.state.padEnd(12)}  ${routing.choiceLabel(s.route.choice)} — ${s.route.reason}  [${s.taskId}${who}]${s.error ? ` start failed: ${s.error}` : ''}`
     })
   ]
 }

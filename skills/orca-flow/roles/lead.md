@@ -102,6 +102,17 @@ in Settings never switches pending work; `next` routes again only when that mode
 says so. At most `maxParallel` workers of the plan run at once, each behind the capacity gate; the
 rest wait as Orca tasks. Run `plan next` each time a plan worker reports.
 
+**Runs.** You are a dispatched worker inside your coordinator's Run, so `plan start` never runs
+`run-create`: that would bind your terminal to a new Run as its coordinator, and Orca then refuses
+("consumer_fenced") every message you send to workers of the first Run. It uses `--run` if you pass
+one, else the Run `run-current` shows, else none: tasks and workers started without `--run` join
+your own Run, and the output names it. `--new-run` creates one on purpose (only for a home
+coordinator with no Run) and the output says so. Never `run-create` or `run-use` from a lead.
+
+A start Orca refuses marks only that task `failed-start` (with Orca's error); the other ready tasks
+are still tried, the table prints, and the command exits 1 naming the failures. `plan next` retries
+it (routing again, and saying so, if its model is gone).
+
 When the workers deliver, integrate: read each result against its spec, run the whole test suite
 once on the combined work, and fix seams between tasks yourself only when that fits one short
 turn; otherwise send them to the worker that owns those files.

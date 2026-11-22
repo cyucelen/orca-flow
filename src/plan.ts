@@ -27,7 +27,8 @@ export type PlanTask = {
 export type Plan = { title: string; tasks: PlanTask[] }
 export type PlanCheck = { ok: boolean; errors: string[]; warnings: string[]; waves: string[][] }
 /** A plan task as Orca sees it now. */
-export type TaskState = 'queued' | 'running' | 'done' | 'failed'
+/** `failed-start`: Orca refused to start the worker; the task is still startable (`plan next`). */
+export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'failed-start'
 
 /** More tasks than this is not a split anyone can review: error. */
 export const MAX_TASKS = 8
@@ -253,7 +254,7 @@ export function startable(plan: Plan, states: Record<string, TaskState>, maxPara
   const order = (waves(plan.tasks) ?? []).flat()
   const byId = new Map(plan.tasks.map((t) => [t.id, t]))
   return order
-    .filter((id) => (states[id] ?? 'queued') === 'queued' && (byId.get(id)?.deps ?? []).every((d) => states[d] === 'done'))
+    .filter((id) => ['queued', 'failed-start'].includes(states[id] ?? 'queued') && (byId.get(id)?.deps ?? []).every((d) => states[d] === 'done'))
     .slice(0, slots)
 }
 
