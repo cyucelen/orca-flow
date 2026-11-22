@@ -1,6 +1,6 @@
 // What Settings → Models lists and shows, from the worker's availability (src/model-discovery.ts).
 // Pure: no DOM, so the page (src/panel/settings.ts) and tests share it.
-import { CLAUDE_ALIASES, EFFORTS, route, TASK_KINDS, type Availability, type Effort, type ModelChoice, type RoutingSettings, type TaskKind } from '../routing.ts'
+import { applyPreset, CLAUDE_ALIASES, EFFORTS, matchingPreset, orcaLaunchEfforts, presetsOf, savePreset, type Availability, type Effort, type ModelChoice, type Preset, type RoutingSettings } from '../routing.ts'
 
 export const UNKNOWN: Availability = { agents: null, models: {} }
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -14,15 +14,24 @@ export function agentsShown(avail: Availability): string[] {
 }
 
 export type ModelOption = { id: string; label: string }
-/** The models one agent offers: Claude's aliases, Codex's catalog; none for an agent that lists none. */
+const rank = (id: string) => { const i = CLAUDE_ALIASES.indexOf(id); return i < 0 ? CLAUDE_ALIASES.length : i }
+/**
+ * The models one agent offers, with display names: Claude's from discovery (aliases first), or the
+ * four aliases when discovery could not read them; Codex's from its catalog; none for an agent that lists none.
+ */
 export function modelOptions(agent: string, avail: Availability): ModelOption[] {
-  if (agent === 'claude') return CLAUDE_ALIASES.map((id) => ({ id, label: cap(id) }))
-  return (avail.models[agent] ?? []).map((m) => ({ id: m.id, label: m.label ?? m.id }))
+  const catalog = avail.models[agent]
+  if (agent === 'claude') {
+    if (!catalog?.length) return CLAUDE_ALIASES.map((id) => ({ id, label: cap(id) }))
+    return catalog.map((m, i) => ({ m, i })).sort((a, b) => rank(a.m.id) - rank(b.m.id) || a.i - b.i)
+      .map(({ m }) => ({ id: m.id, label: m.label ?? (CLAUDE_ALIASES.includes(m.id) ? cap(m.id) : m.id) }))
+  }
+  return (catalog ?? []).map((m) => ({ id: m.id, label: m.label ?? m.id }))
 }
 
 /** "Sonnet", "GPT-6 Luna", or the id itself when the catalog does not name it. */
 export function modelLabel(agent: string, model: string, avail: Availability): string {
-  return modelOptions(agent, avail).find((m) => m.id === model)?.label ?? model
+  return modelOptions(agent, avail).find((m) => m.id === model)?.label ?? (agent === 'claude' && CLAUDE_ALIASES.includes(model) ? cap(model) : model)
 }
 
 /** "Claude Sonnet · medium", "Codex (default model)": for people, with the catalog's display names. */
@@ -32,10 +41,15 @@ export function choiceText(c: ModelChoice | null, avail: Availability): string {
   return `${agentName(c.agent)} ${modelLabel(c.agent, c.model, avail)}${c.effort ? ` · ${c.effort}` : ''}`
 }
 
-/** The efforts a model takes, when its provider says; otherwise all of them. */
+/**
+ * The efforts a model takes at launch: what its provider reports (all of them when it does not say)
+ * that Orca also accepts. Empty: none (Claude Haiku).
+ */
 export function effortsFor(agent: string, model: string | undefined, avail: Availability): readonly Effort[] {
-  const info = model ? avail.models[agent]?.find((m) => m.id === model) : undefined
-  return info?.efforts?.length ? info.efforts : EFFORTS
+  if (!model) return []
+  const reported = avail.models[agent]?.find((m) => m.id === model)?.efforts ?? EFFORTS
+  const orca = orcaLaunchEfforts(agent, model)
+  return orca ? reported.filter((e) => orca.includes(e)) : reported
 }
 
 /** Why a model cannot run on this machine, in plain words; null when it can (or cannot be checked). */
@@ -55,15 +69,62 @@ export function choiceFrom(value: string, effort?: Effort): ModelChoice | null {
   return model ? { agent, model, ...(effort ? { effort } : {}) } : { agent }
 }
 
-export type Example = { kind: TaskKind; row: string; text: string; tip: string; ok: boolean }
-/** Each kind's row as set, and what a new worker task of that kind would start with right now. */
-export function examples(routing: RoutingSettings, avail: Availability): Example[] {
-  return TASK_KINDS.map((kind) => {
-    const r = routing.workers[kind]
-    const row = `${choiceText(r.model, avail)}, fallback ${r.fallback ? choiceText(r.fallback, avail) : 'none'}`
-    const d = route(routing, { role: 'worker', kind }, avail)
-    return d.ok
-      ? { kind, row, text: choiceText(d.choice, avail), tip: cap(d.reason), ok: true }
-      : { kind, row, text: 'No model available', tip: d.error, ok: false }
-  })
+/** The fallback select's value for a model and effort ("" is None), and back. */
+export const pairValue = (c: ModelChoice | null): string => (c?.model ? `${c.agent}|${c.model}|${c.effort ?? ''}` : '')
+export function pairFrom(value: string): ModelChoice | null {
+  const [agent, model, effort] = value.split('|')
+  return agent && model ? { agent, model, ...(effort ? { effort: effort as Effort } : {}) } : null
+}
+
+/** The efforts the fallback select offers per model, besides Default. */
+const FALLBACK_EFFORTS: readonly Effort[] = ['low', 'medium', 'high']
+export type PairGroup = { agent: string; pairs: { choice: ModelChoice; label: string }[] }
+/**
+ * Every model and effort pair a fallback can be: each available model at Default, low, medium and
+ * high, where the model takes that effort ("Sonnet", "Sonnet · low"). Grouped by agent.
+ */
+export function fallbackPairs(avail: Availability): PairGroup[] {
+  return agentsShown(avail).map((agent) => ({
+    agent,
+    pairs: modelOptions(agent, avail).flatMap((m) => {
+      const takes = effortsFor(agent, m.id, avail)
+      return [undefined, ...FALLBACK_EFFORTS.filter((e) => takes.includes(e))].map((effort) => ({
+        choice: { agent, model: m.id, ...(effort ? { effort } : {}) } as ModelChoice,
+        label: effort ? `${m.label} · ${effort}` : m.label
+      }))
+    })
+  })).filter((g) => g.pairs.length)
+}
+
+// ---------- what each control shows and does (pure, so tests cover it without a page) ----------
+
+export type PresetView = { builtIn: Preset[]; saved: Preset[]; /** The matching preset's id; "" is Custom. */ selected: string; /** The selected preset's id when it can be removed. */ removable: string | null }
+/** The preset pop-up: built-ins, the user's saved presets, and Custom only while nothing matches. */
+export function presetView(routing: RoutingSettings): PresetView {
+  const all = presetsOf(routing)
+  const now = matchingPreset(routing)
+  return { builtIn: all.filter((p) => p.builtIn), saved: all.filter((p) => !p.builtIn), selected: now?.id ?? '', removable: now && !now.builtIn ? now.id : null }
+}
+/** Picking a preset: its models, the limits and saved presets as they were. */
+export const pickPreset = (routing: RoutingSettings, id: string): RoutingSettings => applyPreset(routing, id)
+/** Save as…: the settings with the preset saved, or the error to show next to the name field. */
+export function saveNamed(routing: RoutingSettings, name: string): { ok: true; routing: RoutingSettings } | { ok: false; error: string } {
+  try { return { ok: true, routing: savePreset(routing, name) } } catch (e) { return { ok: false, error: (e as Error).message } }
+}
+
+export type EffortView = { efforts: readonly Effort[]; disabled: boolean; tip: string }
+/** The effort pop-up: Default plus these; off (with the reason) when the model takes none. */
+export function effortView(c: ModelChoice | null, avail: Availability): EffortView {
+  if (!c?.model) return { efforts: [], disabled: true, tip: 'Choose a model first: an effort applies only with one.' }
+  const efforts = [...effortsFor(c.agent, c.model, avail)]
+  if (!efforts.length) return { efforts, disabled: true, tip: `Orca sets no effort for ${modelLabel(c.agent, c.model, avail)}.` }
+  // A saved effort the model no longer takes stays listed, so the pop-up never silently changes it.
+  if (c.effort && !efforts.includes(c.effort)) efforts.push(c.effort)
+  return { efforts, disabled: false, tip: 'How hard the model thinks. Default: the model’s own setting.' }
+}
+
+/** Why a picked model is dimmed, as a tooltip; null when it can run. `fallback`: the row has one. */
+export function missingTip(c: ModelChoice | null, fallback: boolean, avail: Availability): string | null {
+  const why = c ? unavailable(c.agent, c.model, avail) : null
+  return why ? `${why}. ${fallback ? 'The fallback is used.' : 'No fallback is set.'}` : null
 }

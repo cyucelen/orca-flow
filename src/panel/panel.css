@@ -655,23 +655,26 @@ html.light #settings {
 .s-dot.bad { background: var(--danger); }
 .s-dot:focus-visible { outline-offset: 3px; border-radius: 50%; }
 
-/* Models: role rows, worker candidates, the note under them */
+/* Models: preset, role and worker rows */
 .s-mrow .s-label { flex: 1 1 auto; }
 .s-mrow .s-ctl { gap: 6px; flex: 0 1 auto; min-width: 0; }
-.s-crow { padding-left: 8px; gap: 8px; }
-.s-crow .s-ctl { gap: 8px; }
-.s-crow.dim > :not(.s-ctl), .s-crow.dim .s-tier, .s-crow.dim .s-cost { opacity: .45; }
-.s-cost { font-size: 8px; letter-spacing: 1px; color: var(--ink); }
-.s-faint { color: var(--faint); }
+.s-krow { flex-wrap: wrap; row-gap: 6px; }
+.s-krow > .s-label { flex: 0 0 52px; }
+.s-krow .s-ctl { gap: 6px; flex: 0 1 auto; margin-left: 0; min-width: 0; }
+.s-fb { display: flex; align-items: center; gap: 6px; margin-left: auto; min-width: 0; font-size: 12px; }
+.s-faint { color: var(--faint); white-space: nowrap; }
+.s-name { font-family: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; background: var(--s-fill); }
+.s-name::placeholder { font-size: 13px; }
+.s-err .s-wrap { white-space: normal; }
+select.s-pop.dim { opacity: .5; }
+select.s-pop.s-model { max-width: 130px; }
+select.s-pop.s-fallback { max-width: 140px; }
+select.s-pop.s-preset { max-width: 170px; }
 .s-warn { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-left: 6px; color: var(--warn); vertical-align: -2px; }
 .s-warn svg { width: 13px; height: 13px; }
-.s-mrow > .s-label { display: flex; align-items: center; }
 .s-value.s-bad { color: var(--danger); }
 .s-checking { font-style: normal; color: var(--faint); }
-.s-note { margin: -1px 0 0; padding: 0 10px; font-size: 11.5px; color: var(--muted); }
-select.s-addmodel { background-color: transparent; color: var(--s-on); padding-left: 0; }
-select.s-pop#s-wmode { max-width: 210px; }
-@media (max-width: 520px) { .s-cost { display: none; } select.s-pop.s-model { max-width: 96px; } select.s-pop.s-effort { max-width: 76px; } }
+@media (max-width: 520px) { select.s-pop.s-model { max-width: 122px; } select.s-pop.s-effort { max-width: 80px; } select.s-pop.s-fallback { max-width: 130px; } .s-fb { margin-left: 0; flex: 1 1 100%; justify-content: flex-end; } .s-krow > .s-label { flex: 1 1 auto; } }
 
 /* controls: pop-up menu, switch, stepper, round +/- and push buttons */
 select.s-pop { appearance: none; -webkit-appearance: none; cursor: pointer; border: 0; border-radius: 6px; padding: 3px 22px 3px 8px; max-width: 150px; color: var(--ink);

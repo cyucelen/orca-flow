@@ -36,7 +36,7 @@ const settings = {
       coordinator: { agent: 'claude', model: 'opus', effort: 'high' }, lead: null,
       workers: {
         simple: { model: { agent: 'claude', model: 'haiku' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'low' } },
-        normal: { model: { agent: 'codex', model: 'gpt-6-luna', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'medium' } },
+        normal: { model: { agent: 'codex', model: 'gpt-retired', effort: 'medium' }, fallback: { agent: 'claude', model: 'sonnet', effort: 'medium' } },
         hard: { model: { agent: 'claude', model: 'opus', effort: 'high' }, fallback: null }
       },
       maxParallel: 3, maxEscalations: 1, presets: []
@@ -70,6 +70,10 @@ const CHECKS = {
 const upd = q.get('update');
 settings.updateCheck = CHECKS[upd] ?? null;
 if (upd === 'available') settings.update = { kind: 'available', version: '0.2.65' };
+// ?fixture=saved: the setup equals the saved preset "Mine", so it is selected and removable.
+if (q.get('fixture') === 'saved') { const r = settings.settings.routing; r.workers.normal.model = { agent: 'claude', model: 'sonnet', effort: 'medium' }; r.presets = [{ id: 'saved:mine', name: 'Mine', builtIn: false, coordinator: r.coordinator, lead: r.lead, workers: JSON.parse(JSON.stringify(r.workers)) }]; }
+// ?click=<selector>: click that element (for screenshots), after the page shows.
+if (q.get('click')) setTimeout(() => document.querySelector(q.get('click'))?.click(), 500);
 // ?avail=none: the first model lookup has not landed yet.
 if (q.get('avail') === 'none') delete settings.availability;
 if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
@@ -133,7 +137,10 @@ server.listen(0, '127.0.0.1', () => {
   if (process.argv.includes('--models')) {
     jobs.length = 0
     for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page: 'models', theme, w, width, height })
-    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-crow.dim', name: 'models-unavailable-tooltip' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, tip: '.s-krow:nth-child(2) .s-tipwrap[data-tip]', name: 'models-unavailable-tooltip' })
+    jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, tip: '.s-krow:nth-child(1) .s-tipwrap[data-tip]', name: 'models-haiku-effort-tooltip' })
+    jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, fixture: 'saved', name: 'models-saved-preset' })
+    jobs.push({ page: 'models', theme: 'light', w: '360', width: 360, height: 820, fixture: 'saved', click: '#s-saveas', name: 'models-saving' })
     jobs.push({ page: 'models', theme: 'light', w: 'wide', width: 1180, height: 780, scroll: true, name: 'models-bottom' })
     jobs.push({ page: 'models', theme: 'dark', w: 'wide', width: 1180, height: 780, avail: 'none', name: 'models-checking' })
   }
@@ -146,7 +153,7 @@ server.listen(0, '127.0.0.1', () => {
     for (const j of jobs) {
       const file = join(out, `${j.name ? `${j.name}-${j.theme}-${j.w}` : `${j.page}-${j.theme}-${j.w}${j.state ? `-${j.state}` : ''}`}.png`)
       await new Promise((resolve, reject) => {
-        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}${j.scroll ? '&scroll=1' : ''}${j.avail ? `&avail=${j.avail}` : ''}`
+        const query = `page=${j.page}&theme=${j.theme}${j.state ? `&state=${j.state}` : ''}${j.update ? `&update=${j.update}` : ''}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}${j.scroll ? '&scroll=1' : ''}${j.avail ? `&avail=${j.avail}` : ''}${j.fixture ? `&fixture=${j.fixture}` : ''}${j.click ? `&click=${encodeURIComponent(j.click)}` : ''}`
         const framed = j.width < 600 || !!j.tip
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${framed ? Math.max(600, j.width + 100) : j.width},${framed ? j.height + 100 : j.height}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
           framed ? `${base}frame?${query}&w=${j.width}&h=${j.height}` : `${base}?${query}`]

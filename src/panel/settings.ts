@@ -5,9 +5,9 @@
 import type { SettingsState, UpdateState } from '../protocol.ts'
 import type { UpdateCheck } from '../update.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
-import { agentName, agentsShown, choiceFrom, choiceValue, effortsFor, examples, modelOptions, UNKNOWN, unavailable } from './models.ts'
-import { matchingPreset, type Effort, type ModelChoice } from '../routing.ts'
-import { ago, DEFAULT_DRAFT, settingsSession, statusView, WRITABLE, type Draft, type DraftKey, type WriterProvider } from '../settings.ts'
+import { agentName, agentsShown, choiceFrom, choiceText, choiceValue, effortsFor, effortView, fallbackPairs, missingTip, modelOptions, pairFrom, pairValue, pickPreset, presetView, saveNamed, UNKNOWN, unavailable } from './models.ts'
+import { DEFAULT_ROUTING, deletePreset, TASK_KINDS, type Effort, type ModelChoice, type Preset, type TaskKind } from '../routing.ts'
+import { ago, same, settingsSession, statusView, WRITABLE, type Draft, type DraftKey, type WriterProvider } from '../settings.ts'
 
 const glyph = (d: string) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
 const ICON = {
@@ -160,63 +160,137 @@ const avail = () => state?.availability ?? UNKNOWN
 const lookingUp = () => !state?.availability
 const CHECKING = '<span class="s-value s-checking">Checking installed models…</span>'
 const r = () => d().routing
-const NEW_ONLY = 'Applies to new launches only: running and resumed sessions keep their model.'
-const ROLE_TIP: Record<'coordinator' | 'lead', string> = {
-  coordinator: `The model a new coordinator conversation starts with. Provider default: whatever Claude or Codex picks by itself. A model for one provider applies when the coordinator runs that provider. ${NEW_ONLY}`,
-  lead: `The model a coordinator starts a workstream lead with. ${NEW_ONLY}`
-}
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const ROLE_TIP = 'Applies to new conversations only; running and resumed ones keep their model.'
+const KIND_TIP: Record<TaskKind, string> = { simple: 'Mechanical, one or two files, obvious result.', normal: 'A bounded change with tests.', hard: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }
+let naming = false
+let presetName = ''
+let presetError: string | null = null
 
-/** A model pop-up: the provider default, then each installed agent's models (agents that list none offer their default). */
-function modelSelect(attr: string, current: ModelChoice | null, name: string, tip: string, withProviderDefault = true): string {
+/**
+ * A model pop-up, grouped by installed agent. A saved pick this machine does not list stays shown
+ * (and dimmed with its reason), so the pop-up never silently changes it.
+ */
+function modelSelect(attr: string, current: ModelChoice | null, name: string, tip: string, providerDefault: boolean, hasFallback = false): string {
   const a = avail()
   const groups = agentsShown(a)
-  // A saved pick this machine does not list stays shown, so the pop-up never silently changes it.
   if (current && !groups.includes(current.agent)) groups.push(current.agent)
   const opt = (value: string, text: string) => `<option value="${esc(value)}" ${choiceValue(current) === value ? 'selected' : ''}>${esc(text)}</option>`
   const body = groups.map((agent) => {
     const models = modelOptions(agent, a)
     if (current?.agent === agent && current.model && !models.some((m) => m.id === current.model)) models.push({ id: current.model, label: current.model })
-    return `<optgroup label="${esc(agentName(agent))}">${opt(`${agent}:`, models.length ? `${agentName(agent)} default` : 'Default model')}${models.map((m) => opt(`${agent}:${m.id}`, m.label)).join('')}</optgroup>`
+    const own = current?.agent === agent && !current.model ? opt(`${agent}:`, `${agentName(agent)} default`) : ''
+    return models.length || own ? `<optgroup label="${esc(agentName(agent))}">${own}${models.map((m) => opt(`${agent}:${m.id}`, m.label)).join('')}</optgroup>` : ''
   }).join('')
-  return `<select class="s-pop s-model" ${attr} ${off()} ${described(name, tip)}>${withProviderDefault ? opt('', 'Provider default') : ''}${body}</select>`
+  const why = missingTip(current, hasFallback, a)
+  const select = `<select class="s-pop s-model ${why ? 'dim' : ''}" ${attr} ${off()} ${described(name, why ?? tip)}>${providerDefault ? opt('', 'Provider default') : ''}${body}</select>`
+  return why ? `<span class="s-tipwrap" data-tip="${esc(why)}">${select}</span>` : select
 }
 
-/** Effort pop-up: Default, then what the model takes. Off without a model (Orca takes an effort only with one). */
+/** Effort pop-up: Default, then what the model takes and Orca accepts. Off when there is nothing to choose. */
 function effortSelect(attr: string, c: ModelChoice | null, name: string): string {
-  const efforts = c?.model ? effortsFor(c.agent, c.model, avail()) : []
-  const tip = c?.model ? 'How hard the model thinks. Default: the model’s own setting.' : 'Choose a model first: an effort applies only with one.'
-  return `<span class="s-tipwrap" ${c?.model ? '' : `data-tip="${esc(tip)}"`}><select class="s-pop s-effort" ${attr} ${off(!c?.model)} ${described(name, tip)}><option value="">Default</option>${efforts.map((e) => `<option value="${e}" ${c?.effort === e ? 'selected' : ''}>${e}</option>`).join('')}</select></span>`
+  const v = effortView(c, avail())
+  const select = `<select class="s-pop s-effort" ${attr} ${off(v.disabled)} ${described(name, v.tip)}><option value="">Default</option>${v.efforts.map((e) => `<option value="${e}" ${c?.effort === e ? 'selected' : ''}>${cap(e)}</option>`).join('')}</select>`
+  return v.disabled && c?.model ? `<span class="s-tipwrap" data-tip="${esc(v.tip)}">${select}</span>` : select
+}
+
+/** Fallback pop-up: None, then each available model at Default, low, medium and high. */
+function fallbackSelect(kind: TaskKind, current: ModelChoice | null, name: string): string {
+  const a = avail()
+  const opt = (value: string, text: string) => `<option value="${esc(value)}" ${pairValue(current) === value ? 'selected' : ''}>${esc(text)}</option>`
+  const groups = fallbackPairs(a)
+  const listed = !current?.model || groups.some((g) => g.pairs.some((p) => pairValue(p.choice) === pairValue(current)))
+  const extra = listed ? '' : `<optgroup label="Not offered">${opt(pairValue(current), choiceText(current, a).replace(/^\w+ /, ''))}</optgroup>`
+  const body = groups.map((g) => `<optgroup label="${esc(agentName(g.agent))}">${g.pairs.map((p) => opt(pairValue(p.choice), p.label)).join('')}</optgroup>`).join('')
+  const why = current?.model ? unavailable(current.agent, current.model, a) : null
+  const tip = why ? `${why}. This fallback can’t be used.` : 'Runs the task when its model is unavailable.'
+  const select = `<select class="s-pop s-model s-fallback ${why ? 'dim' : ''}" data-kfall="${kind}" ${off()} ${described(name, tip)}>${opt('', 'None')}${extra}${body}</select>`
+  return why ? `<span class="s-tipwrap" data-tip="${esc(tip)}">${select}</span>` : select
 }
 
 function roleRow(role: 'coordinator' | 'lead'): string {
   const c = r()[role]
-  const title = role === 'coordinator' ? 'Coordinator' : 'Lead'
-  if (lookingUp()) return row(label(title, ROLE_TIP[role]), CHECKING, 's-mrow')
-  const why = c ? unavailable(c.agent, c.model, avail()) : null
-  return row(`${label(title, ROLE_TIP[role])}${why ? `<span class="s-warn" tabindex="0" data-tip="${esc(`${why}. New ${role}s start with the provider default until it is back.`)}" aria-label="${esc(why)}">${ICON.warn}</span>` : ''}`,
-    modelSelect(`data-rmodel="${role}"`, c, `${title} model`, ROLE_TIP[role]) + effortSelect(`data-reffort="${role}"`, c, `${title} effort`), 's-mrow')
+  const title = cap(role)
+  if (lookingUp()) return row(label(title, ROLE_TIP), CHECKING, 's-mrow')
+  return row(label(title, ROLE_TIP), modelSelect(`data-rmodel="${role}"`, c, `${title} model`, ROLE_TIP, true, true) + effortSelect(`data-reffort="${role}"`, c, `${title} effort`), 's-mrow')
 }
+
+function kindRow(kind: TaskKind): string {
+  const rt = r().workers[kind]
+  const title = cap(kind)
+  const tip = `${KIND_TIP[kind]} ${KIND_NOTE}`
+  if (lookingUp()) return row(label(title, tip), CHECKING, 's-mrow')
+  const model = modelSelect(`data-kmodel="${kind}"`, rt.model, `${title} model`, tip, false, !!rt.fallback) + effortSelect(`data-keffort="${kind}"`, rt.model, `${title} effort`)
+  return `<div class="s-row s-krow">${label(title, tip)}<div class="s-ctl">${model}</div><div class="s-fb"><span class="s-faint">if unavailable</span>${fallbackSelect(kind, rt.fallback, `${title} fallback`)}</div></div>`
+}
+const KIND_NOTE = 'A task’s own model choice always wins.'
 
 function rstep(key: 'maxParallel' | 'maxEscalations', min: number, max: number, name: string): string {
   const v = r()[key]
-  return `<span class="s-value" aria-hidden="true">${v}</span><span class="s-seg" role="group" aria-label="${esc(name)}: ${v}">
+  const shown = key === 'maxEscalations' ? `${v} ${v === 1 ? 'time' : 'times'}` : String(v)
+  return `<span class="s-value" aria-hidden="true">${shown}</span><span class="s-seg" role="group" aria-label="${esc(name)}: ${shown}">
     <button type="button" data-rstep="${key}" data-d="-1" ${off(v <= min)} aria-label="${esc(name)}: less">${ICON.minus}</button><button type="button" data-rstep="${key}" data-d="1" ${off(v >= max)} aria-label="${esc(name)}: more">${ICON.plus}</button></span>`
 }
 
+const PRESET_TIP = 'Sets the coordinator, lead and worker models at once. Workers at once and retries stay as you set them.'
+function presetRow(): string {
+  const v = presetView(r())
+  const opt = (p: Preset) => `<option value="${esc(p.id)}" ${v.selected === p.id ? 'selected' : ''}>${esc(p.name)}</option>`
+  const select = `<select class="s-pop s-preset" id="s-preset" ${off()} ${described('Preset', PRESET_TIP)}>${v.builtIn.map(opt).join('')}${v.saved.length ? `<optgroup label="Your presets">${v.saved.map(opt).join('')}</optgroup>` : ''}${v.selected ? '' : '<option value="" selected>Custom</option>'}</select>`
+  const remove = v.removable ? `<button type="button" class="s-round" data-rmpreset="${esc(v.removable)}" ${off()} aria-label="Remove this preset" data-tip="Remove this preset">${ICON.minus}</button>` : ''
+  const rows = [row(label('Preset', PRESET_TIP), `${select}${remove}<button type="button" class="s-push" id="s-saveas" ${off(naming)}>Save as…</button>`, 's-mrow s-prow')]
+  if (naming) {
+    rows.push(row(`<input class="s-input s-name" id="s-presetname" placeholder="Preset name" value="${esc(presetName)}" maxlength="40" autocomplete="off" spellcheck="false" ${off()} ${described('Preset name', 'A name for the current coordinator, lead and worker models')}>`,
+      `<button type="button" class="s-push primary" id="s-presetsave" ${off()}>Save</button><button type="button" class="s-push" id="s-presetcancel">Cancel</button>`, 's-add'))
+    if (presetError) rows.push(`<div class="s-row"><div class="s-err" role="alert">${ICON.warn}<span class="s-wrap">${esc(presetError)}</span></div></div>`)
+  }
+  return group(rows)
+}
+
 function pageModels(): string {
-  const rt = r()
-  const roles = group([roleRow('coordinator'), roleRow('lead')], { text: 'Roles', tip: `Coordinators and leads plan and steer, so they usually get a strong model. ${NEW_ONLY}` })
-  const KIND_TIP = { simple: 'Mechanical, one or two files, obvious result.', normal: 'A bounded change with tests.', hard: 'Cross-cutting design, hard debugging, concurrency, migrations or security.' }
-  // Read-only until the new Models page lands: each kind's model and fallback, and what it would start on now.
-  const preset = matchingPreset(rt)
-  const kinds = lookingUp() ? [row(label('Workers get', 'Shown once Orca Flow has checked which models are installed.'), CHECKING)] : examples(rt, avail()).map((e) => row(label(`${e.kind[0].toUpperCase()}${e.kind.slice(1)} task`, `${KIND_TIP[e.kind]} Set: ${e.row}.`),
-    `<span class="s-value${e.ok ? '' : ' s-bad'}" tabindex="0" data-tip="${esc(e.tip)}" aria-description="${esc(e.tip)}">${esc(e.text)}</span>`))
-  const workers = group(kinds, { text: `Workers · ${preset ? preset.name : 'Custom'}`, tip: `The lead says what kind each task is; each kind starts on its own model, or its fallback when that is unavailable. ${NEW_ONLY}` })
+  const roles = group([roleRow('coordinator'), roleRow('lead')], { text: 'Roles', tip: ROLE_TIP })
+  const workers = group(TASK_KINDS.map(kindRow), { text: 'Workers, by task', tip: `The lead marks each task simple, normal or hard. ${KIND_NOTE}` })
   const limits = group([
     row(label('Workers at once', 'How many workers one lead runs at the same time. Free memory can still hold new ones back.'), rstep('maxParallel', 1, 6, 'Workers at once')),
-    row(label('Retries with a stronger model', 'When a worker fails, how many times its task may be tried again, each time one kind up. 0: never; the lead asks you instead.'), rstep('maxEscalations', 0, 2, 'Retries with a stronger model'))
+    row(label('Failed task moves up a level', 'After a failed try, the task runs again one level up, this many times at most.'), rstep('maxEscalations', 0, 2, 'Failed task moves up a level'))
   ])
-  return roles + workers + limits
+  return presetRow() + roles + workers + limits
+}
+
+/** Balanced, 3 workers at once, 1 retry; the user's saved presets stay. */
+const modelsAtDefault = () => same({ ...r(), presets: [] }, { ...DEFAULT_ROUTING, presets: [] })
+function resetModels(): void {
+  naming = false
+  presetError = null
+  void session.change((x) => { x.routing = { ...structuredClone(DEFAULT_ROUTING), presets: x.routing.presets } })
+}
+
+function startNaming(): void {
+  naming = true
+  presetName = ''
+  presetError = null
+  focusAfter = '#s-presetname'
+  render()
+}
+function stopNaming(): void {
+  naming = false
+  presetError = null
+  focusAfter = '#s-saveas'
+  render()
+}
+/** Saves the current setup under the typed name; a built-in or empty name shows its error and keeps the field. */
+function saveNamedPreset(): void {
+  const res = saveNamed(r(), presetName)
+  if (!res.ok) {
+    presetError = res.error
+    focusAfter = '#s-presetname'
+    render()
+    return
+  }
+  naming = false
+  presetError = null
+  focusAfter = '#s-preset'
+  void session.change((x) => { x.routing = res.routing })
 }
 
 /** A selector that finds the same control after a redraw, so keyboard focus stays where it was. */
@@ -224,7 +298,7 @@ function focusKey(el: Element | null): string | null {
   if (!el || !$('s-page').contains(el)) return null
   if (el.id) return `#${el.id}`
   const ds = (el as HTMLElement).dataset
-  for (const k of ['handle', 'model', 'enable', 'rmfolder', 'reset', 'rmodel', 'reffort']) if (ds[k]) return `[data-${k}="${ds[k]}"]`
+  for (const k of ['handle', 'model', 'enable', 'rmfolder', 'reset', 'rmodel', 'reffort', 'kmodel', 'keffort', 'kfall', 'rmpreset']) if (ds[k]) return `[data-${k}="${ds[k]}"]`
   if (ds.step) return `[data-step="${ds.step}"][data-d="${ds.d}"]`
   if (ds.rstep) return `[data-rstep="${ds.rstep}"][data-d="${ds.d}"]`
   return el.classList.contains('s-dot') ? `[data-writer="${el.closest<HTMLElement>('[data-writer]')?.dataset.writer}"] .s-dot` : null
@@ -296,7 +370,8 @@ function render(): void {
   $('s-title').dataset.tip = state?.version ? `Orca Flow ${state.version}` : 'Orca Flow'
   $('s-nav').innerHTML = PAGES.map((p) => `<button class="s-nav-btn" type="button" data-page="${p.id}" ${p.id === pageId ? 'aria-current="page"' : ''} aria-label="${esc(p.label)}"${narrow ? ` data-tip="${esc(p.label)}"` : ''}><span class="s-tile" style="background:${p.tint}">${ICON[p.id]}</span><span class="s-nav-label">${esc(p.label)}</span></button>`).join('')
   const body = !state && !loadError ? '<p class="s-loading">Loading…</p>' : { summaries: pageSummaries, models: pageModels, format: pageFormat, capacity: pageCapacity, advanced: pageAdvanced, about: pageAbout }[pageId]()
-  const reset = state && !locked() && !session.isDefault(page.keys) ? `<div class="s-foot"><button type="button" class="s-push" data-reset="${page.id}">Reset to Defaults</button></div>` : ''
+  const atDefault = page.id === 'models' ? modelsAtDefault() : session.isDefault(page.keys)
+  const reset = state && !locked() && !atDefault ? `<div class="s-foot"><button type="button" class="s-push" data-reset="${page.id}">Reset to Defaults</button></div>` : ''
   $('s-page').innerHTML = `<h3 class="s-ptitle">${label(page.label, page.tip)}</h3>${errorLine()}${body}${reset}`
   if (focusAfter) {
     const el = document.querySelector<HTMLElement>(`#s-page ${focusAfter}`)
@@ -322,6 +397,8 @@ export function openSettings(): void {
   state = null
   loadError = null
   newFolder = ''
+  naming = false
+  presetError = null
   pageId = 'summaries'
   $('settings').hidden = false
   render()
@@ -363,17 +440,28 @@ function onClick(e: MouseEvent): void {
   if (!t || (t as HTMLButtonElement).disabled) return
   const ds = t.dataset
   if (ds.page) { pageId = ds.page as PageId; render(); return }
+  if (ds.reset === 'models') { resetModels(); return }
   if (ds.reset) { void session.reset(PAGES.find((p) => p.id === ds.reset)!.keys); return }
+  if (ds.rmpreset) { const id = ds.rmpreset; focusAfter = '#s-preset'; void session.change((x) => { x.routing = deletePreset(x.routing, id) }); return }
   if (ds.step) { const k = ds.step as 'marginGB' | 'warnHeadroomGB'; void session.change((x) => { x[k] = Math.min(16, Math.max(0, x[k] + Number(ds.d))) }); return }
   if (ds.rstep) { const k = ds.rstep as 'maxParallel' | 'maxEscalations'; const [lo, hi] = k === 'maxParallel' ? [1, 6] : [0, 2]; void session.change((x) => { x.routing[k] = Math.min(hi, Math.max(lo, x.routing[k] + Number(ds.d))) }); return }
   if (ds.rmfolder) { void session.change((x) => { x.folders.splice(Number(ds.rmfolder), 1) }); return }
   switch (t.id) {
     case 's-x': close(); break
     case 's-addfolder': addFolder(); break
+    case 's-saveas': startNaming(); break
+    case 's-presetsave': saveNamedPreset(); break
+    case 's-presetcancel': stopNaming(); break
     case 's-check': void checkUpdates(); break
     case 's-update': settingsHooks.update(updateState && updateState.kind !== 'none' ? updateState : { kind: 'available', version: t.dataset.version! }); break
     case 's-reveal': void orca.plugin.request('sidebar.revealSettings').catch(() => null); break
   }
+}
+
+/** The new pick, keeping the old effort when the new model takes it. */
+function withEffort(next: ModelChoice | null, before: ModelChoice | null): ModelChoice | null {
+  if (next?.model && before?.effort && effortsFor(next.agent, next.model, avail()).includes(before.effort)) next.effort = before.effort
+  return next
 }
 
 function onChange(e: Event): void {
@@ -381,28 +469,36 @@ function onChange(e: Event): void {
   if (t.dataset.model) { const p = t.dataset.model as WriterProvider; void session.change((x) => { x.models[p] = t.value }) }
   else if (t.dataset.enable) { const p = t.dataset.enable as WriterProvider; void session.change((x) => { x.enabled[p] = t.checked }) }
   else if (t.id === 's-format') void session.change((x) => { x.format = t.value as Draft['format'] })
+  else if (t.id === 's-preset') { if (t.value) void session.change((x) => { x.routing = pickPreset(x.routing, t.value) }) }
   else if (t.dataset.rmodel) {
     const role = t.dataset.rmodel as 'coordinator' | 'lead'
-    void session.change((x) => {
-      const before = x.routing[role]
-      const next = choiceFrom(t.value)
-      // The effort stays when the new model takes it.
-      if (next?.model && before?.effort && effortsFor(next.agent, next.model, avail()).includes(before.effort)) next.effort = before.effort
-      x.routing[role] = next
-    })
+    void session.change((x) => { x.routing[role] = withEffort(choiceFrom(t.value), x.routing[role]) })
   }
   else if (t.dataset.reffort) {
     const role = t.dataset.reffort as 'coordinator' | 'lead'
     void session.change((x) => { const c = x.routing[role]; if (c?.model) x.routing[role] = choiceFrom(choiceValue(c), (t.value || undefined) as Effort | undefined) })
+  }
+  else if (t.dataset.kmodel) {
+    const kind = t.dataset.kmodel as TaskKind
+    void session.change((x) => { const next = withEffort(choiceFrom(t.value), x.routing.workers[kind].model); if (next?.model) x.routing.workers[kind].model = next })
+  }
+  else if (t.dataset.keffort) {
+    const kind = t.dataset.keffort as TaskKind
+    void session.change((x) => { const c = x.routing.workers[kind].model; x.routing.workers[kind].model = choiceFrom(choiceValue(c), (t.value || undefined) as Effort | undefined) ?? c })
+  }
+  else if (t.dataset.kfall) {
+    const kind = t.dataset.kfall as TaskKind
+    void session.change((x) => { x.routing.workers[kind].fallback = pairFrom(t.value) })
   }
   else if (t.id === 's-linear') void session.change((x) => { x.linearDryRun = t.checked })
 }
 
 function onKey(e: KeyboardEvent): void {
   const t = e.target as HTMLElement
-  if (e.key === 'Escape') { e.preventDefault(); close() }
+  if (e.key === 'Escape') { e.preventDefault(); if (naming && t.id === 's-presetname') stopNaming(); else close() }
   else if (t.dataset.handle && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); move(t.dataset.handle as WriterProvider, e.key === 'ArrowUp' ? -1 : 1) }
   else if (e.key === 'Enter' && t.id === 's-newfolder') { e.preventDefault(); addFolder() }
+  else if (e.key === 'Enter' && t.id === 's-presetname') { e.preventDefault(); saveNamedPreset() }
 }
 
 // Drag a writer by its handle: rows move as the pointer passes them; one save on drop.
@@ -439,7 +535,11 @@ const dialog = root.querySelector<HTMLElement>('.s-dialog')!
 // The panel's own click handler (src/panel/app.ts) never sees clicks inside the dialog.
 root.addEventListener('click', (e) => { e.stopPropagation(); onClick(e) })
 root.addEventListener('change', onChange)
-root.addEventListener('input', (e) => { if ((e.target as HTMLElement).id === 's-newfolder') newFolder = (e.target as HTMLInputElement).value })
+root.addEventListener('input', (e) => {
+  const t = e.target as HTMLInputElement
+  if (t.id === 's-newfolder') newFolder = t.value
+  else if (t.id === 's-presetname') presetName = t.value
+})
 root.addEventListener('keydown', onKey)
 root.addEventListener('pointerdown', onDown)
 root.addEventListener('pointermove', onMove)
