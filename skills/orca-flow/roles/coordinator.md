@@ -35,7 +35,8 @@ free memory and continues it later in a new terminal):
 1. `orca-flow resume`: takes back the Runs your earlier terminal coordinated, so reports reach you
    again. If it resumed any, `orca orchestration check` for mail you missed.
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
-   queued). If there is room now, start the highest queued one.
+   queued). If there is room now, start the highest queued one with
+   `orca-flow dispatch --role lead --task <id>` and its place flags.
 3. Greet with a Briefing (see [messages.md](../messages.md)): the status line, one short
    paragraph with what runs and the room left, then the top three waiting items as a numbered
    list, one line each (level, workstream, who waits, the kind of need).
@@ -62,11 +63,12 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
      and leave it to decide whether it gets its own PR.
    - **Its agent is a chat the user runs** (no Dispatch): say so and offer to open it
      (`orca worktree activate --worktree <selector>`).
-   - **No agent there:** run the capacity gate and start a lead in it. No creation flags for an
-     existing worktree:
+   - **No agent there:** start a lead in it. `orca-flow dispatch` runs the capacity gate and
+     starts the lead on the model the user set for leads. No creation flags for an existing
+     worktree:
 
      ```sh
-     orca orchestration worker-start --worktree path:<path> --agent claude --keep-open \
+     orca-flow dispatch --role lead --worktree path:<path> --keep-open \
        --task-title "<outcome>" --spec-file - <<'EOF'
      Your role: lead. Load the orca-flow skill and follow roles/lead.md.
      As a lead, send worker_done only when the user says this workstream is done or its PR is merged,
@@ -78,11 +80,12 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
      Bots for this project: <each from `orca-flow bots --repo <repo>`, with its purpose; omit when none>
      EOF
      ```
-3. **New workstream: start a lead.** Set the level, run the capacity gate, then:
+3. **New workstream: start a lead.** Set the level, then (dispatch runs the capacity gate for a
+   new worktree of that project, and refuses with exit 2 when it does not fit):
 
    ```sh
-   orca orchestration worker-start --worktree new-top-level --repo id:<repoId> \
-     --name <short-kebab> --agent claude --keep-open \
+   orca-flow dispatch --role lead --worktree new-top-level --repo id:<repoId> \
+     --name <short-kebab> --keep-open \
      --task-title "<outcome>" --spec-file - <<'EOF'
    Your role: lead. Load the orca-flow skill and follow roles/lead.md.
    As a lead, send worker_done only when the user says this workstream is done or its PR is merged,
@@ -96,11 +99,13 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    ```
 
    Name the project's bots in every lead's spec (`orca-flow bots --repo <repo>`), so the lead
-   hands QA and other specialist work to them.
+   hands QA and other specialist work to them. When the user asks for a model or an agent for
+   this workstream ("use Codex", "run it on Opus"), pass `--agent`, `--model` or `--effort`; they
+   go straight through. Otherwise leave the model to the user's Settings.
 
    Then write its card from the receipt's `workspace` (`<repoId>::<path>`):
    `orca-flow set --worktree path:<path> --priority <level> --goal "..." --fits "..."`.
-   Check with `orca-flow capacity --repo <name>`. When it is not `ok`, first offer what makes room:
+   When dispatch refuses (or `orca-flow capacity --repo <name>` is not `ok`), first offer what makes room:
    reusing an existing worktree for this, or the largest item under `reclaimable` (an idle
    environment, a finished worktree to remove; see Worktree cleanup). Otherwise queue it (see the
    capacity gate in SKILL.md) and say so in one line. Decide on the verdict alone: swap use is
@@ -109,8 +114,8 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
    **Work that changes no code** (reproduce a bug on staging, triage, answer a question, read
    production data the user allows) may start as a lead in your own folder. Use this when the work
    needs no repo checkout and no dev environment, especially when the gate says `agents-only`.
-   Start it with `--worktree path:<your folder>` and no creation flags, with the same lead
-   preamble. It shows as a child row under you in the sidebar. When it must change code, it asks
+   Start it with `orca-flow dispatch --role lead --worktree path:<your folder>` and no creation
+   flags, with the same lead preamble. It shows as a child row under you in the sidebar. When it must change code, it asks
    you for a worktree with `orca orchestration ask`. Then create one as above, start a new lead
    there with the first lead's findings in its spec, and reply to the first lead that the work
    moved; it then sends `worker_done`.

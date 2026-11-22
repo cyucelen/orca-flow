@@ -12,7 +12,9 @@ says which files you may change, what other workers own, and what evidence prove
    `orca orchestration ask` and end your turn; Orca wakes you with the answer. Do not guess at
    product decisions.
 4. **The task grows** (a separate deliverable, its own branch, much more than the spec): stop and
-   ask instead of expanding it.
+   ask instead of expanding it. Your lead picked your model for the task it described: when the
+   task turns out much harder (a "small fix" that needs design or deep debugging), say so in your
+   ask, so it can rerun the task on a stronger model.
 5. **Commit** your work on the worktree's branch. Do not push or open a PR; your lead does.
 6. **Report** with `worker_done`: the outcome in one line, the evidence (test output, screenshot,
    the commit), and anything left open. It is exempt from the user message frame in

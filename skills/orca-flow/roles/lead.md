@@ -29,12 +29,15 @@ one line, and end your turn.
    pre-diagnosed spec is still a worker task: knowing the fix does not make it small.
 4. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
    it with its whole conversation, so it already knows the code.
-5. **Otherwise start a worker** in this worktree: run the capacity gate, then
-   `orca orchestration worker-start --worktree current --agent claude --task-title "<outcome>"
-   --spec-file -`. Workers running at the same time must touch different files; otherwise send the
-   second task to the first worker, or start it after the first reports.
+5. **Otherwise start a worker** in this worktree, classed by how demanding the task is (see
+   Which model in [SKILL.md](../SKILL.md)):
+   `orca-flow dispatch --role worker --class <trivial|standard|complex> --worktree current
+   --task-title "<outcome>" --spec-file -`. It runs the capacity gate, starts the worker on the
+   cheapest model the user rated for that class, and prints the model and why. Workers running at
+   the same time must touch different files; otherwise send the second task to the first worker,
+   or start it after the first reports. Two or more tasks at once go in a plan (Splitting work).
 6. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
-   and a short paragraph that names the worker by its job ("a worker now fixes ...") and its plan,
+   and a short paragraph that names the worker by its job ("a worker now fixes ..."), its model and its plan,
    then end your turn. Orca wakes you when a worker reports. Pick the status line from what is
    true: `**Waiting on <thing>**` when nothing runs and you only wait (CI, a free slot, another
    lead's merge); `**Idle**` when nothing runs and nothing is asked (after a release, or while you
@@ -55,6 +58,54 @@ Write each spec self-contained: the outcome in its first line, the change, which
 edit, what other workers own (files, migrations, schema, lockfiles), constraints, and the evidence
 that proves it is done (tests, a screenshot, a command's output).
 
+**The user names a model or an agent** ("do this with Codex", "use Opus for the migration"): pass
+`--agent`, `--model` or `--effort` to dispatch. They go straight through and are never swapped; if
+one is unavailable, dispatch refuses and you tell the user.
+
+## Splitting work
+
+Split a request only when it holds independent pieces that each make sense alone. Each task is
+bounded: one outcome, the files it owns, and its own evidence. Do not split trivial work; one
+worker does five small edits faster than five workers start. Keep each task to what one worker
+finishes in one sitting.
+
+Write the split as a plan file outside the repo (a scratch folder):
+
+```json
+{ "title": "Order totals",
+  "tasks": [
+    { "id": "api", "title": "Totals endpoint returns tax", "class": "standard",
+      "files": ["src/api/totals.ts", "src/api/totals.test.ts"], "spec": "..." },
+    { "id": "ui", "title": "Cart shows tax line", "class": "standard",
+      "files": ["src/panel/"], "deps": ["api"], "specFile": "ui-spec.md" },
+    { "id": "copy", "title": "Rename Subtotal label", "class": "trivial",
+      "files": ["src/i18n/en.json"] } ] }
+```
+
+- `files`: every file, directory (`src/panel/`) or glob the task may change. Lockfiles,
+  migrations and schema count: name them in the one task that changes them.
+- `deps`: tasks that must finish first. Two tasks that own the same path must be chained by deps
+  (or merged); the check refuses them otherwise.
+- `class`, `risk`, `context` as in Which model; `agent`, `model`, `effort` only when the user
+  named them.
+
+```sh
+orca-flow plan check plan.json    # errors: overlap, cycles, missing deps, over 8 tasks
+orca-flow plan start plan.json    # one Orca task each, routed once, ready tasks started
+orca-flow plan next plan.json     # when a worker reports: start what became ready
+orca-flow plan status plan.json   # one line per task: state, model, why
+```
+
+`check` warns when the split looks too fine (every task trivial, or a trivial task inside another
+task's files): merge as it says. `start` routes every task once and keeps that choice, so a change
+in Settings never switches pending work; `next` routes again only when that model is gone, and
+says so. At most `maxParallel` workers of the plan run at once, each behind the capacity gate; the
+rest wait as Orca tasks. Run `plan next` each time a plan worker reports.
+
+When the workers deliver, integrate: read each result against its spec, run the whole test suite
+once on the combined work, and fix seams between tasks yourself only when that fits one short
+turn; otherwise send them to the worker that owns those files.
+
 ## When a worker reports
 
 - Check its evidence; rerun a check only for a gap or a contradiction.
@@ -63,6 +114,10 @@ that proves it is done (tests, a screenshot, a command's output).
   (`Needs your review`) and say how to look (a URL, a screenshot).
 - A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
   worker is running on those files.
+- A demonstrated failure the worker cannot fix (it reported `--outcome failed`, or the fix you
+  sent did not work): rerun it one tier up with
+  `orca-flow dispatch --role worker --retry-of <its dispatch id> --worktree current`. Never
+  escalate before a failure. Past the user's limit dispatch refuses; then ask the user.
 
 **A worker's question:** answer it with `orca orchestration reply --id <message_id>` when it follows
 from the task or what the user told you. Otherwise ask the user: put the one Ask (see

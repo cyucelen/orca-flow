@@ -10,10 +10,23 @@
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
 //   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
+//   orca-flow route --role worker|lead|coordinator [--class trivial|standard|complex] [--risk high]
+//       [--context large] [--attempt n] [--agent a] [--model m] [--effort e] [--json] [--explain]
+//                                             Which model a start would use, and why. Launches nothing
+//   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task
+//       --task-title --spec --spec-file --keep-open --repo --name --base-branch --display-name
+//       --comment --setup --deps --parent --run --retry-of] [--dry-run] [--json]
+//                                             Capacity gate, route, then `orca orchestration worker-start`
+//                                             on the routed model. Exit 2: capacity said no; 3: no model
+//   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
+//                                             A lead's parallel plan: checked file ownership and deps,
+//                                             one Orca task each, started in waves within maxParallel
 //
 // Data lives in ~/.orca-flow (ORCA_FLOW_DIR overrides): cards/<worktree>.json written by
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
-// limits, roles.json for leads the user named (roles.mjs). The Orca plugin reads both folders. No dependencies.
+// limits and `routing` (Settings → Models), roles.json for leads the user named (roles.mjs),
+// routes.jsonl (one line per routed start), plans/<slug>.json (plan state). The Orca plugin reads
+// them too. No dependencies.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -423,6 +436,26 @@ export function role(args, { env = process.env, cwd = process.cwd(), home = home
   return clearRole(DIR, session.id) ? `Cleared the lead record of session ${session.id}.` : `Session ${session.id} had no role record.`
 }
 
+// ---------- route, dispatch, plan ----------
+
+const flow = await import('./dispatch.mjs')
+const { discover } = await import(new URL('../../../src/model-discovery.ts', import.meta.url).href)
+
+/** The real machine: Orca's CLI, model discovery and the memory gate. Tests pass fakes instead. */
+function liveDeps() {
+  return {
+    dir: DIR,
+    cwd: process.cwd(),
+    orcaBin: ORCA_BIN,
+    orca: flow.orcaRunner(ORCA_BIN),
+    discover: () => discover(flow.execCommand, { orcaBin: ORCA_BIN }),
+    capacity,
+    readStdin: () => readFileSync(0, 'utf8'),
+    out: (s) => console.log(s),
+    now: () => new Date()
+  }
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -459,8 +492,21 @@ async function main() {
       console.log(args.json ? JSON.stringify(b, null, 2) : formatBots(b))
       break
     }
+    case 'route':
+    case 'dispatch':
+    case 'plan': {
+      const run = { route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command]
+      try {
+        process.exitCode = await run(args, liveDeps())
+      } catch (e) {
+        if (!(e instanceof flow.Refused || e instanceof flow.UsageError)) throw e
+        console.error(e.message)
+        process.exitCode = e instanceof flow.Refused ? e.code : 1
+      }
+      break
+    }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }
