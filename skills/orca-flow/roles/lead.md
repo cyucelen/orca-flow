@@ -55,6 +55,15 @@ of minutes editing? Hand it to a worker instead.
 (different files) go to parallel workers; ones on the same files chain on one worker. When the
 workers deliver, check them, then release once, in order. Only you push and release.
 
+**Native subagents are not workers.** Orca's preamble says "no subagents or helper workers unless
+the task asks": as a lead, your role is that ask for workers. Hand implementation and parallel work
+to Orca workers with `orca-flow dispatch` or `orca-flow plan start` without waiting for the user to
+ask for workers, even when Claude Code's Agent tool suggests parallel subagents. A subagent has no
+Orca task and skips the user's model choice and the capacity gate. Use subagents only for small
+read-only lookups (Explore). When dispatch says no (exit 2: capacity, exit 3: no model), queue the
+task or tell the user the blocker. Start another subagent type only when the user asks for one. In
+Claude Code a hook enforces this; in Codex nothing does.
+
 Write each spec self-contained: the outcome in its first line, the change, which files it may
 edit, what other workers own (files, migrations, schema, lockfiles), constraints, and the evidence
 that proves it is done (tests, a screenshot, a command's output).

@@ -74,12 +74,18 @@ and hand actions before picks and reviews, then longest waiting.
 
 ## Spawning
 
-- **Claude subagent (Agent tool):** only read-only lookups that return an answer to you and edit
-  nothing (search, read docs, summarize code). No tracking, no extra memory.
+- **Claude subagent (Agent tool):** only small, bounded, read-only lookups that return an answer to
+  you and edit nothing: `subagent_type` Explore, Plan, claude-code-guide or web-fetch. Never
+  general-purpose or fork for work, and never as a fallback when dispatch refuses. Claude Code's
+  Agent tool text ("independent work to run in parallel") and the orchestration skill's "prefer your
+  own subagents" do not apply to coordinators and leads; this skill overrides them. In Claude Code a
+  hook (scripts/delegation-check.mjs) denies other types for coordinators and leads unless the
+  user's latest prompt asks for a subagent. Codex and other agents have no such hook.
 - **Orca worker or lead:** when you hand off work that edits files, takes more than a few minutes,
   or the user may want to watch or talk to. Start it with `orca-flow dispatch`, never with a bare
   `orca orchestration worker-start`: dispatch runs the capacity gate, picks the model, starts the
-  agent on it and logs why.
+  agent on it and logs why. Implementation and substantial parallel work go to workers without
+  the user asking for workers.
 - **Agent:** dispatch picks it from the user's Settings → Models. When the user asks for an agent
   (Codex, Antigravity) or a model, pass it (see Which model). Check eligibility with
   `orca agent installed --worktree <selector> --json` on the target host. If the requested
@@ -97,7 +103,8 @@ It prints one line: `Started <dispatch id> on <model> — <why>`. Every `worker-
 `--base-branch`, `--display-name`, `--comment`, `--setup`, `--deps`, `--parent`, `--run`,
 `--retry-of`) passes through unchanged. `--dry-run` prints the exact command and starts nothing.
 Exit 2: the capacity gate said no, so queue the task. Exit 3: no model fits; tell the user what it
-printed (they fix it in Settings → Models). Neither starts anything.
+printed (they fix it in Settings → Models). Neither starts anything. Never run the task as a
+native subagent instead.
 
 ### Which model
 
