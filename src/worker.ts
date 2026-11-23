@@ -42,6 +42,8 @@ import { backgroundReader } from './background.ts'
 import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel } from './transcripts.ts'
 import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
+import { reloadPlan, type ReloadScope } from './skill-reload.ts'
+import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 
 const background = backgroundReader()
@@ -1042,6 +1044,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const features = readSettings(DATA_DIR).settings.features
     const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
     snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
+    snap.skillReload = readSkillReload()
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
@@ -1063,6 +1066,19 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   orca.panels.handle('sidebar.list', () => refresh())
+
+  // "Reload skills": the targets are checked again against the latest snapshot, then written as one
+  // request with the hash of the skill files agents read (through the Claude profile's link).
+  orca.panels.handle('sidebar.reloadSkills', async ({ scope }) => {
+    const snap = latest ?? await refresh()
+    try {
+      const r = requestReload(snap, scope, skillFolder(dir))
+      void refresh()
+      return { ok: r.asked > 0, ...r, ...(r.asked ? {} : { error: 'No running Claude Code session to reload' }) }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, asked: 0, unsupported: 0, skipped: { finished: 0, asleep: 0 } }
+    }
+  })
 
   // ⌘⇧N and the status bar item: open the next workspace waiting on the person.
   let lastJump: { id: string; at: number } | null = null
@@ -1825,6 +1841,47 @@ export default function activate(orca: OrcaWorkerApi): void {
     void (focusReading ?? Promise.resolve()).then(rereadFocus)
     refreshSoon()
   })
+}
+
+/** Unexpired reload requests for the snapshot; a stale gate file for the PostToolUse hook is removed. */
+function readSkillReload(): Snapshot['skillReload'] {
+  try {
+    syncActive(DATA_DIR)
+    return reloadStatus(DATA_DIR)
+  } catch {
+    return []
+  }
+}
+
+/** The skill folder agents read: the Claude profile's link when it exists, else this plugin's own copy. */
+export function skillFolder(dir: string | null, link = linksFor(dir ?? '')[0]?.from): string {
+  if (link && existsSync(join(link, 'SKILL.md'))) return link
+  if (dir) return join(dir, 'skills', 'orca-flow')
+  throw new Error('The orca-flow skill folder was not found')
+}
+
+/**
+ * Writes the reload request for a scope: every live Claude Code target with its session id (the
+ * summary's, else its transcript's name), and the unsupported ones so the sidebar can say so. Pure
+ * but for the files (`write`, `hashOf` and `sessionOf` are replaceable for tests).
+ */
+export function requestReload(
+  snap: Pick<Snapshot, 'rows' | 'coordinators'>,
+  scope: ReloadScope,
+  skill: string,
+  io: { data?: string; hashOf?: (skill: string) => string; write?: typeof writeRequest; sessionOf?: (pane: string, a: AgentInfo | undefined) => string | null; now?: number } = {}
+): { asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } {
+  const plan = reloadPlan(snap, scope)
+  if (!plan.targets.length) return { asked: 0, unsupported: plan.unsupported.length, skipped: plan.skipped }
+  const agents = new Map([...snap.rows.flatMap((r) => r.agents), ...snap.coordinators.flatMap((c) => (c.session ? [c.session] : []))].map((a) => [a.paneKey, a]))
+  const sessionOf = io.sessionOf ?? ((pane: string, a: AgentInfo | undefined) => {
+    const path = findTranscript(pane, undefined, { orcaSession: a?.orcaSession ?? undefined, provider: a?.agentType ?? undefined }).path
+    return path && path.endsWith('.jsonl') ? path.slice(path.lastIndexOf('/') + 1, -'.jsonl'.length) : null
+  })
+  const targets = [...plan.targets, ...plan.unsupported].map((t) => ({ ...t, session: t.session ?? (t.supported ? sessionOf(t.pane, agents.get(t.pane)) : null) }))
+  const hash = (io.hashOf ?? skillHash)(skill)
+  ;(io.write ?? writeRequest)(io.data ?? DATA_DIR, targets, { hash, scope: scope === 'all' ? 'all' : `coordinator:${scope.coordinator}`, now: io.now })
+  return { asked: plan.targets.length, unsupported: plan.unsupported.length, skipped: plan.skipped, hash }
 }
 
 export function deactivate(): void {

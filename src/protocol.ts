@@ -285,7 +285,16 @@ export type Snapshot = {
   bots?: Bot[] | null
   /** Settings → Features: Linear and Token Speed. Absent reads as on; false hides the section and its entry points. */
   features?: { linear: boolean; tokenSpeed: boolean }
+  /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
+  skillReload?: SkillReloadEntry[]
 }
+
+/**
+ * Where one pane's skill reload stands: waiting (its next turn has not come), reading (it got the
+ * note, no matching confirmation yet), reloaded (confirmed for the requested hash) or unsupported (a
+ * provider with no live reload). `doneAt`: when it confirmed.
+ */
+export type SkillReloadEntry = { pane: string; state: 'waiting' | 'reading' | 'reloaded' | 'unsupported'; role: 'coordinator' | 'lead' | 'worker' | 'chat'; provider: string | null; at: number; expiresAt: number; request: string; doneAt?: number }
 
 /** What the opened cockpit shows; loaded on demand because Orca's memory report is slow. */
 export type SessionRef = { paneKey: string; terminal: string | null; workspaceId: string; title: string; repo: string; memMB: number }
@@ -453,6 +462,12 @@ declare module 'orca' {
     'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
     /** The Token speed section's data: agent output and traffic over time, and the last internet test. */
     'sidebar.tokenSpeed': { output: import('./token-speed.ts').TokenSpeedWire }
+    /**
+     * Asks a coordinator's team (its session, leads and workers) or every running agent to re-read
+     * their skill files: writes a request the Claude Code hooks deliver at each session's next turn.
+     * Types nothing into a terminal and sends no mail. Counts what it asked, what cannot reload, and what it skipped.
+     */
+    'sidebar.reloadSkills': { input: { scope: 'all' | { coordinator: string } }; output: { ok: boolean; error?: string; asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } }
     /** Starts `networkQuality -c` unless one is running; its result (or failure) is posted as sidebar.tokenSpeedChanged. */
     'sidebar.tokenSpeedTest': { output: { started: boolean } }
   }

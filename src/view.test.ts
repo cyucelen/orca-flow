@@ -58,7 +58,7 @@ test('up next: the first briefing is open with about, the glance and one jump; t
 
 test('Up next is pinned under the tree, so the tree never moves when an ask comes or goes', () => {
   const asking = render(snap, emptyUi())
-  assert.match(asking.main, /^<div class="tree"><div class="label">Coordinators<\/div>/, 'the scrolling part starts with the tree')
+  assert.match(asking.main, /^<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/, 'the scrolling part starts with the tree')
   noMatch(asking.main, /Up next|class="upnext"|data-brief=/, 'nothing from Up next above or inside it')
   assert.match(asking.attention, /^<section class="upnext"><div class="label">Up next · 2<\/div>/)
   const html = readFileSync(new URL('./panel/index.html', import.meta.url).pathname, 'utf8')
@@ -68,7 +68,7 @@ test('Up next is pinned under the tree, so the tree never moves when an ask come
   const calm: Snapshot = { ...snap, rows: snap.rows.map((r) => ({ ...r, agents: r.agents.map((a) => ({ ...a, summary: a.summary ? summary() : null })) })) }
   const quiet = render(calm, emptyUi())
   assert.equal(quiet.attention, '')
-  assert.match(quiet.main, /^<div class="tree"><div class="label">Coordinators<\/div>/)
+  assert.match(quiet.main, /^<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/)
   assert.equal(render(snap, { ...emptyUi(), query: 'headline' }).attention, '', 'search shows only what it found')
 })
 
@@ -534,7 +534,7 @@ test('characters with nothing reaching outside the body are drawn centered', () 
 })
 
 test('the tree has a Coordinators section title', () => {
-  assert.match(render(snap, emptyUi()).main, /<div class="tree"><div class="label">Coordinators<\/div>/)
+  assert.match(render(snap, emptyUi()).main, /<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/)
 })
 
 test('Orca\'s waiting always means waiting on you, and its question shows in Up next', () => {
@@ -1082,7 +1082,7 @@ test("a coordinator's badge is the kind of the ask it shows; a review with a PR 
   const review = summary({ glance: 'Review the PR?', needs: { type: 'review', ask: 'Review the PR?', options: [] } })
   const session = agent('p-home', 'Home', 'done', { summary: review })
   const s: Snapshot = { ...snap, coordinators: [{ ...snap.coordinators[0], session }, snap.coordinators[1]] }
-  const tree = render(s, emptyUi()).main.split('<div class="label">Coordinators</div>')[1]
+  const tree = render(s, emptyUi()).main.split('<span>Coordinators</span>')[1]
   const head = /<button class="coord-open"[^>]*>[\s\S]*?<\/button>/.exec(tree.split('data-menu="coordinator:alpha"')[1])![0]
   assert.match(head, /data-tip="Wants a review" data-tone="review"[\s\S]*?class="review-badge"/)
   const lead = agent('p-l', 'Checkout', 'done', { summary: review })
