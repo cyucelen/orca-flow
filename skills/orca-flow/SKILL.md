@@ -169,6 +169,10 @@ one worker does a handful of small edits faster than several workers start. Seve
 plan file, which `orca-flow plan` checks and starts (see [roles/lead.md](roles/lead.md)). A plan
 task takes `"type"` like `--type`. Never split a task into a typed part and a code part just to use
 a type.
+**Comparing two ways of splitting** (lead alone vs lead + workers, say): only when the user asks for
+a comparison, start each arm's lead with `--arm baseline|variant --pair <id>` (same `<id>` for both
+arms, same task and checks, same models). Analytics compares the pair; `--arm` without `--pair` is
+refused, and a `--retry-of` keeps its first attempt's arm.
 `plan start` also finishes a partly started plan. A start Orca did not confirm (exit 4) is replayed
 by `plan next`, never started twice. If Orca gave no request id, check
 `orca orchestration task-list`, and use `plan next --restart <task id>` only when no worker runs for

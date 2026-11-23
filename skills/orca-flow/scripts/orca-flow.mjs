@@ -19,12 +19,13 @@
 //   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task
 //       --task-title --spec --spec-file --keep-open --repo --name --base-branch --display-name
 //       --comment --setup --deps --parent --run --retry-of --retry-request] [--attempt n, only with
-//       --retry-of] [--restart] [--dry-run] [--json]
+//       --retry-of] [--arm baseline|variant --pair <id>] [--restart] [--dry-run] [--json]
 //                                             Capacity gate, route, then `orca orchestration worker-start`
 //                                             on the routed model. Exit 2: capacity said no; 3: no model;
 //                                             4: start outcome unknown. The same command asks Orca first:
 //                                             running, nothing starts; unknown, it replays the request,
-//                                             or with no request id refuses (exit 4) until --restart
+//                                             or with no request id refuses (exit 4) until --restart.
+//                                             --arm/--pair label one arm of a comparison (routes.jsonl)
 //   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
 //       [--restart <id>]                      A lead's parallel plan: checked file ownership and deps,
 //                                             one Orca task each, started in waves, each behind the memory check
