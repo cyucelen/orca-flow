@@ -22,11 +22,17 @@ export function mixedProviders(snap: Pick<Snapshot, 'rows' | 'coordinators'>): b
   return providers.size > 1
 }
 
+const GENERIC_MARK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="3"/><path d="M12 2v4M8 11v3m8-3v3M9 17h6"/></svg>'
+
+/** The provider's name and mark; an agent whose provider is not known gets the generic mark. */
+export function providerMark(a: AgentInfo): { name: string, mark: string } {
+  const provider = providerOf(a.agentType)
+  return { name: provider ? NAMES[provider] : 'Unknown provider', mark: provider ? PROVIDER_LOGOS[provider] : GENERIC_MARK }
+}
+
 /** Non-interactive, accessible and tooltip-enabled: clicks keep opening the enclosing agent row. */
 export function providerBadge(a: AgentInfo | null | undefined, mixed: boolean): string {
   if (!mixed || !a || !providerSessionLive(a)) return ''
-  const provider = providerOf(a.agentType)
-  const name = provider ? NAMES[provider] : 'Unknown provider'
-  const mark = provider ? PROVIDER_LOGOS[provider] : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="3"/><path d="M12 2v4M8 11v3m8-3v3M9 17h6"/></svg>'
+  const { name, mark } = providerMark(a)
   return `<span class="provider" role="img" aria-label="${name}" data-tip="${name}">${mark}</span>`
 }

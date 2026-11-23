@@ -7,7 +7,7 @@ import { askKey } from './coordinator-sessions.ts'
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
-import { mixedProviders, providerBadge, providerOf } from './providers.ts'
+import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
 import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
@@ -201,14 +201,23 @@ function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size 
 }
 
 /**
- * The session's model, muted, first on the row's right (panel.css .ml): seen in its latest reply, or
- * dimmed and italic (`pending`) while only asked for or the provider's default. The visible name is
- * the whole label: no tooltip, so the row shows the name and nothing more.
+ * The agent's model in the Linear chip's box and type (panel.css .mbadge): its provider's mark, then
+ * the model's name, on the row's left between the avatar and the title. Only the name is shown while
+ * it is asked for or the provider's default (`pending`, italic and dimmer). Without a model, it is
+ * the provider mark as before.
  */
-export function modelTag(a: AgentInfo | null | undefined): string {
+export function modelBadge(a: AgentInfo | null | undefined, mixed: boolean): string {
+  const m = a?.model
+  if (!a || !m) return providerBadge(a, mixed)
+  const { name, mark } = providerMark(a)
+  return `<span class="mbadge${m.source === 'seen' ? '' : ' pending'}" aria-label="${esc(`${name} · ${m.name}`)}">${mark}<span class="mn">${esc(m.name)}</span></span>`
+}
+
+/** The coordinator's model on its row's right: the same chip without the mark, since its picker shows the provider. */
+export function modelChip(a: AgentInfo | null | undefined): string {
   const m = a?.model
   if (!a || !m) return ''
-  return `<span class="ml${m.source === 'seen' ? '' : ' pending'}">${esc(m.name)}</span>`
+  return `<span class="mbadge model-only${m.source === 'seen' ? '' : ' pending'}"><span class="mn">${esc(m.name)}</span></span>`
 }
 
 // ---------- reading the model ----------
@@ -928,7 +937,7 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
       : agentCharacter(p.a, p.row, all)
     const menu = c ? `${p.row.historical ? 'history' : 'coordinator'}:${c.key}` : `agent:${p.a.paneKey}`
     const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.historical ? 'previous session · read-only' : 'current session'}` : coordinatorName(p.a.coordinator, coordinators)
-    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}${providerBadge(p.a, mixed)}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
+    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}${modelBadge(p.a, mixed)}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
     return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>${p.row.historical ? 'View source history' : 'Jump to session'}</button>${reviewPr(p)}</div></div>`
@@ -1024,8 +1033,8 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
   const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
-    ? `${modelTag(p.a)}${own ? `${chip}${prBadge(p.row.pr)}` : ''}`
-    : `${modelTag(p.a)}${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
+    ? `${own ? `${chip}${prBadge(p.row.pr)}` : ''}`
+    : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}" data-depth="${depth}" style="--node-x:${nodeX(depth)}px"`
@@ -1034,9 +1043,9 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // A lead that reported worker_done leaves its worktree ready for cleanup: offer remove on the row.
   // A button cannot hold a button, so this row is a div whose name opens the session.
   if (removable(p, all) && !status) {
-    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${providerBadge(p.a, mixed)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
+    return `<div class="${cls}" ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${modelBadge(p.a, mixed)}<span class="t" ${openAttrs(p)} role="button" tabindex="0">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span><button class="act" data-remove="${esc(p.row.id)}" data-target="agent:${esc(p.a.paneKey)}">remove</button></div>`
   }
-  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${providerBadge(p.a, mixed)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
+  return `<button class="${cls}" ${openAttrs(p)} ${menu}>${lines}${agentCharacter(p.a, p.row, all, 20, false)}${modelBadge(p.a, mixed)}<span class="t">${esc(nameOf(p.a, p.row))}</span><span class="r">${right}</span></button>`
 }
 
 /**
@@ -1144,7 +1153,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? modelTag(c.session) : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? modelChip(c.session) : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 

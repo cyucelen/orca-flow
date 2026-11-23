@@ -143,7 +143,6 @@ html.light { --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --card: color-mix(in s
 .gauge.warn { color: var(--warn); }
 .gauge.danger { color: var(--danger); }
 .gauge svg { width: 13px; height: 13px; }
-.item.finished :is(.pr, .idchip) { opacity: .7; }
 /* A row's PR number, colored as Orca's workspace card colors it. */
 .pr { display: inline-flex; flex: none; padding: 0 3px; margin: 0 -3px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 16px; font-variant-numeric: tabular-nums; }
 .pr:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
@@ -196,18 +195,23 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
    monospace, and centering line boxes of different fonts leaves their text at different heights. */
 .r > :is(.idchip, .pr, .soft, .age) { align-self: baseline; }
 .soft { color: var(--faint); font-size: 11px; }
-/* A session's model, muted like the repo name; dimmed with the finished row's PR; italic while it is only asked for. */
-/* The model never costs a row its title: the title keeps a floor and the model is what gives way (an ellipsis, then nothing). */
-.item:has(> .r > .ml) > .t { min-width: 56px; }
-.item > .r:has(> .ml) { min-width: 0; flex: 0 1 auto; }
-.r:has(> .ml) > :not(.ml, .soft) { flex: none; }
-/* Past the model, the repo name is what gives way (it already hides under 300 px). */
-.r:has(> .ml) > .soft { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.r > .ml { align-self: baseline; flex: 0 8 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-size: 11px; }
-.r > .ml.pending { font-style: italic; color: color-mix(in srgb, var(--muted) 55%, transparent); }
-.item.finished .ml { opacity: .7; }
-/* Narrow: the repo name goes (as the Linear chip does above); the model stays. */
-@media (max-width: 300px) { .r:has(> .ml) > .soft { display: none; } }
+/* A session's model, in the Linear chip's box and type: its provider's mark, then the name. On a row
+   it sits after the avatar, before the title; the title keeps a floor and the badge gives way first. */
+.mbadge { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 46px; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
+.mbadge svg, .mbadge img { flex: none; width: 10px; height: 10px; display: block; object-fit: contain; }
+.mbadge .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Asked for or the provider's default: italic and dimmer. */
+.mbadge.pending .mn { font-style: italic; color: color-mix(in srgb, var(--muted) 60%, transparent); }
+.item > .mbadge { max-width: 45%; }
+.item:has(> .mbadge) > .t { min-width: 56px; }
+/* A coordinator's model on its right: the name alone, centered on the row, its picker shows the provider. */
+.r > .mbadge.model-only { align-self: center; min-width: 0; max-width: none; }
+.item.finished :is(.pr, .idchip, .mbadge) { opacity: .7; }
+/* Narrow: the repo name goes (as the Linear chip does above); the model stays, with a smaller share. */
+@media (max-width: 300px) {
+  .item > .mbadge { max-width: 38%; }
+  .item:has(> .mbadge) .r > .soft { display: none; }
+}
 .grow { flex: 1; min-width: 0; display: grid; }
 .indent { padding-left: 30px; }
 .hair { height: 1px; background: var(--line); margin-inline: -12px; }
