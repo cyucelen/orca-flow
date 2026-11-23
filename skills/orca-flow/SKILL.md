@@ -286,6 +286,11 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 - Hand implementation and any substantial or parallel task to a tracked Orca worker; your own
   subagents (Agent tool) are only for small, read-only lookups. In messages, call it "a worker".
 - End your turn as soon as work is handed off; Orca wakes you when workers report. Never poll.
+- A wake (Orca mail, a task notification) is not the user: read the mail, act or reply on its
+  route, end the turn. Don't recap the mail, don't repeat the user's open question, don't send a
+  status. No text, or "Noted."; the open ask stands. Write to the user only for news they can act
+  on or a changed question (then one whole frame, saying the old ask is replaced). A person asking
+  "status?" is a normal prompt. See "Mail and notifications" in [messages.md](messages.md).
 - Answer a worker's question yourself when it follows from the task or the user's instructions;
   bring the user only what only they can decide.
 - Ask the user from the agent that owns the decision, in its own chat, so its card shows the ask.

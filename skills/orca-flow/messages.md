@@ -134,14 +134,36 @@ later, Idle, Done) and the priority words (now, today, soon, someday).
   option tucked into a Warning, Caution or Next ("or leave peri out") goes under the Ask too.
 - **Risks have numbers.** A cost gives the amount ("about $6"). A risk names what is at risk
   ("1,240 staging rows").
-- **No silent drops.** An earlier ask of yours that is still open gets one phrase in the context:
-  held, replaced or answered. A coordinator never carries a lead's open ask: the lead asks again
+- **No silent drops.** In a message you send the user anyway, an earlier ask of yours that is still
+  open gets one phrase in the context: held, replaced or answered. (A wake is not such a message:
+  see Mail and notifications.) A coordinator never carries a lead's open ask: the lead asks again
   in its own chat.
 - **Letters belong to this Ask.** Earlier options, tested variants and table columns are named by
   what they are ("all documents"), never by a letter, in the detail above too. When an earlier
   option comes back, say so with its new letter: "C is the earlier courses-under-1,200 rule".
 - **No ask, short message.** Without an ask, write the status line and the context, and Next only
   when it isn't obvious.
+
+## Mail and notifications
+
+A **wake** is a turn the user did not start: Orca's mail notice (`You have 1 orchestration
+message. Run \`orca orchestration check\`.`), a task notification (`<task-notification>`), a
+duplicate notice, an idle or status event. The user is not in it, and the question they still
+have open is in your last frame.
+
+- Read the mail (`orca orchestration check`), act, or reply on the right route (a worker's
+  message id, the dispatch), then end the turn.
+- No recap of the mail in chat. No full or partial repeat of the open question, no status nobody
+  asked for. Best: no text at all (Claude Code allows it). If the host needs text, the shortest
+  neutral acknowledgment, such as "Noted.": no status line, no Ask.
+- The open ask stands as it was, in the chat that owns it. Don't restate, re-letter or replace it.
+- Write to the user only for news they can act on, a blocker that needs them, or a report they
+  asked for. When their question really changes (the decision changed, the options changed, events
+  answered it, or a new blocker replaces it), write ONE whole frame with the full current question,
+  in the chat that owns it (the lead's, for its workstream; a coordinator never relays it), and say
+  the old ask is replaced.
+- A person asking "status?" or "what's going on" is a normal prompt, not a wake: answer with a
+  full frame.
 
 ## Coordinators: route line and Briefing
 
@@ -321,6 +343,9 @@ BOU-4206 → lead in mono/bou-4206-aic-split-lessons · today
 
 - The check reads only the last message of a turn, and skips lines inside ``` code fences when it
   looks for the status line. A coordinator message made only of route lines passes with no frame.
+- A short reply to a wake (Mail and notifications) with no status line is not checked: it neither
+  blocks nor leaves a reminder, and the sidebar keeps the ask from your last frame. A frame you
+  write after a wake is checked, and decides the card, as usual.
 - It runs in a Stop hook and a UserPromptSubmit hook, only in Orca agent terminals, only for
   coordinators and leads, and only where the user turned it on (`"messageFormat"` in
   `~/.orca-flow/config.json` is `"all"`, or a list of worktree or coordinator folder paths).
