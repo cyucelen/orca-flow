@@ -1,7 +1,8 @@
 // Browser-only fixture for "Reload skills" in the actual panel code: no plugin load, worker or Orca
 // state. `orca` is a stub whose sidebar.list answers with a fixture tree and whose sidebar.reloadSkills
 // is recorded in window.previewCalls.
-//   node scripts/skill-reload-preview.mjs                 serve; open the printed URL (?show=menu|confirm|coordinator-confirm)
+//   node scripts/skill-reload-preview.mjs                 serve; open the printed URL (?show=menu|confirm|coordinator-confirm,
+//                                                         ?codex=ready for Codex hooks trusted, ?tip=<selector> to hover)
 //   node scripts/skill-reload-preview.mjs --shots <dir>   capture the status, the menu and both confirmations, then exit
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -22,6 +23,7 @@ const agent = (paneKey, title, over = {}) => ({
 })
 const row = (id, repo, agents, over = {}) => ({ id, name: id, branch: id, repo, path: `/fixture/${id}`, main: false, agents, state: agents[0].state, priority: null, card: null, parentId: null,
   liveTerminals: agents.length, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: now - 7 * 60_000, createdAt: 1, pr: null, ...over })
+const APPROVE = "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)"
 const entry = (pane, state, r, over = {}) => ({ pane, state, role: r, provider: 'claude', at: now - 4 * 60_000, expiresAt: now + 20 * 3600_000, request: 'r1', ...over })
 const fixture = {
   source: 'cli', capacity: null, ready: true, focusedPanes: [],
@@ -39,11 +41,13 @@ const fixture = {
     row('api-docs', 'docs', [agent('dlead', 'API reference refresh', { coordinator: 'docs', state: 'done', summary: role('lead') })]),
     row('scratch', 'notes', [agent('chat', 'Release notes draft', { coordinator: 'you', dispatch: null })])
   ],
+  // Right after the installed copy added its hooks: Codex sessions wait for the user's approval in Codex.
+  codexReload: { ready: false, reason: APPROVE },
   skillReload: [
     entry('home-shop', 'reloaded', 'coordinator', { doneAt: now - 2 * 60_000 }),
     entry('lead', 'reading', 'lead'),
     entry('w1', 'waiting', 'worker'),
-    entry('w2', 'unsupported', 'worker', { provider: 'codex' }),
+    entry('w2', 'unsupported', 'worker', { provider: 'codex', reason: APPROVE }),
     entry('home-docs', 'reloaded', 'coordinator', { doneAt: now - 60_000 }),
     entry('dlead', 'waiting', 'lead')
   ]
@@ -52,6 +56,7 @@ const bridge = `<script>
 const q = new URLSearchParams(location.search);
 const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
 if (q.get('status') === 'none') delete fixture.skillReload;
+if (q.get('codex') === 'ready') fixture.codexReload = { ready: true, reason: '' };
 fixture.features = { linear: false, tokenSpeed: false };
 const listeners = new Map();
 window.previewCalls = [];
@@ -75,6 +80,8 @@ if (show === 'menu' || show === 'coordinator-confirm') after(600, () => {
   if (show === 'coordinator-confirm') after(200, () => [...document.querySelectorAll('#ctx .mi')].find((el) => el.textContent.includes('Reload skills'))?.click());
 });
 if (show === 'confirm') after(600, () => document.querySelector('[data-reload-skills]').click());
+// ?tip=<selector>: hover that element so its tooltip shows.
+if (q.get('tip')) after(900, () => document.querySelector(q.get('tip'))?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true })));
 </script>`
 const html = readFileSync(join(root, 'src/panel/index.html'), 'utf8')
   .replace('<head>', '<head><title>Reload skills fixture · Orca Flow</title>')
@@ -108,14 +115,16 @@ server.listen(0, '127.0.0.1', () => {
     { name: 'reload-status', query: '' },
     { name: 'reload-menu', query: 'show=menu&status=none' },
     { name: 'reload-confirm-all', query: 'show=confirm&status=none' },
-    { name: 'reload-confirm-coordinator', query: 'show=coordinator-confirm&status=none' }
+    { name: 'reload-confirm-coordinator', query: 'show=coordinator-confirm&status=none' },
+    { name: 'reload-confirm-coordinator-codex-ready', query: 'show=coordinator-confirm&status=none&codex=ready' },
+    { name: 'reload-codex-reason-tip', query: '', tip: '[data-menu="agent:w2"] .srl' }
   ]
   const run = async () => {
     for (const j of jobs) {
       const file = join(out, `${j.name}.png`)
       await new Promise((resolve, reject) => {
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${Math.max(600, width + 100)},${height + 100}`, '--virtual-time-budget=4000', `--screenshot=${file}`,
-          `${base}frame?${j.query}&w=${width}&h=${height}`]
+          `${base}frame?${j.query}${j.tip ? `&tip=${encodeURIComponent(j.tip)}` : ''}&w=${width}&h=${height}`]
         execFile(chrome, args, { timeout: 60_000 }, (e, _out, stderr) => {
           if (e && !/bytes written to file/.test(String(stderr))) return reject(e)
           execFileSync('sips', ['--cropToHeightWidth', String(height), String(width), file], { stdio: 'ignore' })

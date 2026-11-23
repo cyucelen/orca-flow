@@ -7,7 +7,7 @@ import { askKey } from './coordinator-sessions.ts'
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
-import { RELOAD_TIP, reloadSummary, visibleReload } from './skill-reload.ts'
+import { CODEX_WAITING_TIP, RELOAD_TIP, reloadSummary, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
@@ -1320,7 +1320,7 @@ export function reloadMark(ui: Pick<UiState, 'reloads'>, pane: string): string {
   if (!e) return ''
   const glyph = e.state === 'reloaded' ? RELOAD_CHECK : e.state === 'unsupported' ? RELOAD_NONE : RELOAD_ICON
   // An unsupported row says why, with the one action to take ("Codex: approve Orca Flow's hooks once; …").
-  const tip = e.state === 'unsupported' && e.reason ? e.reason : RELOAD_TIP[e.state]
+  const tip = e.state === 'unsupported' && e.reason ? e.reason : e.state === 'waiting' && e.provider === 'codex' ? CODEX_WAITING_TIP : RELOAD_TIP[e.state]
   return `<span class="srl srl-${e.state}" role="img" aria-label="${esc(tip)}" data-tip="${esc(tip)}">${glyph}</span>`
 }
 

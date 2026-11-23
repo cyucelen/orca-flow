@@ -153,7 +153,7 @@ export const RELOAD_HOOK_MARK = 'skills/orca-flow/scripts/reload-check.mjs'
 export const AGENT_TOOL_MATCHER = 'Agent|Task'
 
 export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'PreToolUse' | 'PostToolUse'
-export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { matcher?: string; hooks: { type: 'command'; command: string; timeout: number }[] } }
+export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { matcher?: string; hooks: { type: 'command'; command: string; timeout: number; statusMessage?: string }[] } }
 
 /** One of our hook entries: it runs the script through the skill link, only in an Orca agent pane. */
 function hookFor(claudeDir: string, event: HookEvent, mark: string, matcher?: string, gate = ''): StopHook {

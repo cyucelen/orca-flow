@@ -83,7 +83,9 @@ test('Codex sessions take the note only once its hooks are installed and trusted
   const ready = reloadPlan({ ...snap, codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
   assert.deepEqual(ready.targets.map((t) => [t.pane, t.role]), [['p-alpha', 'coordinator'], ['p-lead', 'lead'], ['p-w1', 'worker'], ['p-codex', 'worker']])
   assert.deepEqual(ready.unsupported, [])
-  assert.match(confirmText(ready, 'for alpha').text, /^1 coordinator, 1 lead, 2 workers re-read/)
+  assert.match(confirmText(ready, 'for alpha').text, /^1 coordinator, 1 lead, 2 workers re-read[^]* A Codex session started before you approved Orca Flow's hooks reloads only after a restart\./)
+  assert.ok(!confirmText(reloadPlan(snap, { coordinator: 'beta' }), 'for beta').text.includes('Codex'), 'no Codex caveat without a Codex session')
+  assert.match(reloadMark({ reloads: new Map([['p-codex', entry('p-codex', 'waiting', { provider: 'codex' })]]) }, 'p-codex'), /a Codex session started before you approved the hooks needs a restart/)
   // Its Codex thread id goes with it when the summary bound one.
   const bound = { ...codex, summary: summary({ role: 'worker', providerSession: { provider: 'codex', id: 'thread-1' } }) }
   const withThread = reloadPlan({ ...snap, rows: [row('lead', [lead, worker, finished, bound])], codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })

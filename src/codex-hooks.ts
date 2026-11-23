@@ -28,6 +28,9 @@ export const CODEX_HOOKS = [
   { event: 'PostToolUse', label: 'post_tool_use', script: 'reload-check.mjs' }
 ] as const
 
+/** What Codex calls our hooks in its review and while one runs. Part of the trust hash: changing it asks the user again. */
+export const CODEX_HOOK_NAME = 'Orca Flow: Reload skills'
+
 /** Orca gives Codex panes ORCA_PANE_KEY (its own Codex hooks gate on it); Claude Code panes ORCA_AGENT_PANE. */
 const PANE = '${ORCA_AGENT_PANE:-${ORCA_PANE_KEY-}}'
 
@@ -41,7 +44,8 @@ export function codexHooksFor(codexHome: string, skill = join(homedir(), '.agent
   return CODEX_HOOKS.map(({ event, script }) => {
     const gate = event === 'PostToolUse' ? ' && [ -e "${ORCA_FLOW_DIR:-$HOME/.orca-flow}/skill-reload/active" ]' : ''
     const command = `if [ -n "${PANE}" ]${gate}; then node "${join(skill, 'scripts', script)}"; fi`
-    return { path: join(codexHome, 'hooks.json'), event: event as HookEvent, mark: `skills/orca-flow/scripts/${script}`, entry: { hooks: [{ type: 'command', command, timeout: 10 }] } }
+    // The name Codex shows for it in "Hooks need review" and /hooks (without one it reads "Unnamed hook").
+    return { path: join(codexHome, 'hooks.json'), event: event as HookEvent, mark: `skills/orca-flow/scripts/${script}`, entry: { hooks: [{ type: 'command', command, timeout: 10, statusMessage: CODEX_HOOK_NAME }] } }
   })
 }
 

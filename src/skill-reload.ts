@@ -20,6 +20,10 @@ export type ReloadPlan = {
 
 /** Codex's reason when the snapshot does not say (an old worker, or readiness not read yet). */
 export const CODEX_UNKNOWN = 'Codex: Orca Flow could not check its hooks in this Codex account; restart to reload'
+/** Said whenever Codex sessions are asked: Codex reads its hooks only when a session starts. */
+export const CODEX_STARTED_BEFORE = 'A Codex session started before you approved Orca Flow\'s hooks reloads only after a restart.'
+/** A Codex row that waits: the same caveat, short. */
+export const CODEX_WAITING_TIP = 'Reload waits for next turn; a Codex session started before you approved the hooks needs a restart'
 /** Every other provider: no hooks of ours. */
 export const NO_LIVE_RELOAD = 'it has no live reload; restart to reload'
 
@@ -99,6 +103,8 @@ export function confirmText(plan: ReloadPlan, where: string): { title: string; t
   const parts: string[] = []
   if (n) parts.push(`${rolesText(plan.targets)} re-read their skill files at their next turn (a busy one after its next tool call) and confirm. Nothing is typed into their terminals; their tasks, open asks and runs stay as they are.`)
   else parts.push('No running session here can take a reload.')
+  // Codex loads hooks when a session starts (verified live): one started before the hooks were trusted never gets the note.
+  if (plan.targets.some((t) => t.provider === 'codex')) parts.push(CODEX_STARTED_BEFORE)
   // Each reason once, with how many sessions it holds back: "1 Codex session cannot reload: approve …".
   const reasons = new Map<string, PlannedTarget[]>()
   for (const t of plan.unsupported) reasons.set(t.reason ?? NO_LIVE_RELOAD, [...(reasons.get(t.reason ?? NO_LIVE_RELOAD) ?? []), t])

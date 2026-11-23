@@ -53,6 +53,7 @@ test('our three hooks go next to Orca\'s in each Orca-managed account, once, kee
     assert.deepEqual(after.SessionStart, [orcaGroup(), ours[1].entry])
     assert.deepEqual(after.PostToolUse, [orcaGroup(), before.hooks.PostToolUse[1], ours[2].entry], 'the user\'s own entry stays')
     assert.match(ours[0].entry.hooks[0].command, /^if \[ -n "\$\{ORCA_AGENT_PANE:-\$\{ORCA_PANE_KEY-\}\}" \]; then node "\/u\/.agents\/skills\/orca-flow\/scripts\/prompt-check.mjs"; fi$/)
+    assert.equal(ours[0].entry.hooks[0].statusMessage, 'Orca Flow: Reload skills', 'named in Codex\'s review, not "Unnamed hook"')
     assert.match(ours[2].entry.hooks[0].command, /skill-reload\/active" \]; then node "\/u\/.agents\/skills\/orca-flow\/scripts\/reload-check.mjs"/)
     assert.deepEqual(ensureCodexHooks(home, skill), [], 'a second run changes nothing (the trust key stays put)')
     assert.equal(readFileSync(join(home, 'config.toml'), 'utf8'), config, 'config.toml and its trust state untouched')
@@ -76,7 +77,7 @@ test('readiness: not installed, then needs the user\'s approval, ready once all 
     assert.deepEqual(r, { state: 'needs-approval', reason: "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)" })
     // What Codex writes when the user trusts them: one table per hook, keyed by file, event, group, handler.
     const source = join(realpathSync(home), 'hooks.json')
-    const trust = (label: string, group: number, cmd: string, extra = '') => `\n[hooks.state."${source}:${label}:${group}:0"]\n${extra}trusted_hash = "${codexTrustHash(label, { command: cmd, timeout: 10 })}"\n`
+    const trust = (label: string, group: number, cmd: string, extra = '') => `\n[hooks.state."${source}:${label}:${group}:0"]\n${extra}trusted_hash = "${codexTrustHash(label, { command: cmd, timeout: 10, statusMessage: 'Orca Flow: Reload skills' })}"\n`
     const [p, s, t] = codexHooksFor(home, skill).map((h) => h.entry.hooks[0].command)
     const base = readFileSync(join(home, 'config.toml'), 'utf8')
     writeFileSync(join(home, 'config.toml'), base + trust('user_prompt_submit', 1, p) + trust('session_start', 1, s))
