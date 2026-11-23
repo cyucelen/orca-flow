@@ -6,7 +6,7 @@ import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTarget
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
-import { approvalSummary, versionDelta } from '../approval.ts'
+import { accessLine, approvalSummary, versionDelta } from '../approval.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
 import { externalLink } from './links.ts'
@@ -643,8 +643,7 @@ function approvalDialog(st: { version: string; reason: string; command: string; 
   const copy = $('approval-copy') as HTMLButtonElement
   const cancel = $('approval-cancel') as HTMLButtonElement
   $('approval-title').textContent = `Orca Flow ${versionDelta(a)} needs your approval`
-  $('approval-sum').textContent = a.access ? `Asks for more access: ${a.access}.` : 'It asks for different access than the version you run.'
-  $('approval-adds').textContent = a.adds ?? ''
+  $('approval-sum').textContent = accessLine(a)
   $('approval-scroll').textContent = a.text || 'Orca gave no details.'
   $('approval-cmd').textContent = a.command
   // Without a fingerprint there is nothing to bind an approval to: the command is the way.
@@ -664,7 +663,7 @@ function approvalDialog(st: { version: string; reason: string; command: string; 
     dialog.onkeydown = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); done(null); return }
       if (e.key !== 'Tab') return
-      const stops = [$('approval-scroll'), cancel, copy, ...(ok.hidden ? [] : [ok])]
+      const stops = [$('approval-main'), $('approval-scroll'), cancel, copy, ...(ok.hidden ? [] : [ok])]
       const i = stops.indexOf(document.activeElement as HTMLElement)
       const next = stops[(i + (e.shiftKey ? -1 : 1) + stops.length) % stops.length]
       e.preventDefault(); next.focus()

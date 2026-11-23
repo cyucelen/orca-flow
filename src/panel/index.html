@@ -60,13 +60,12 @@
     </div>
     <div id="approval" class="modal" hidden>
       <form id="approval-form" class="dialog approval" role="alertdialog" aria-modal="true" aria-labelledby="approval-title" aria-describedby="approval-sum">
-        <div class="approval-main">
+        <div class="approval-main" id="approval-main" tabindex="0" role="region" aria-label="Update approval">
         <div class="approval-head">
           <span class="dialog-icon warn" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 21.5 20h-19Z"/><path d="M12 10v4.5M12 17.2v.1"/></svg></span>
           <div class="dialog-text">
             <h2 id="approval-title"></h2>
             <p id="approval-sum"></p>
-            <p id="approval-adds" class="approval-adds"></p>
           </div>
         </div>
         <div class="approval-scroll" id="approval-scroll" tabindex="0" role="region" aria-label="Details from Orca"></div>

@@ -473,13 +473,22 @@ button.item.coord { padding: 5px 6px; }
 .approval-scroll { max-height: 40vh; min-height: 48px; overflow: auto; margin: 0 16px; padding: 8px; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere;
   font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: color-mix(in srgb, var(--ink) 5%, transparent);
   user-select: text; -webkit-user-select: text; }
+.approval-main:focus-visible { outline: 2px solid color-mix(in srgb, var(--ask) 70%, transparent); outline-offset: -2px; }
 .approval-scroll:focus-visible { outline: 2px solid color-mix(in srgb, var(--ask) 70%, transparent); outline-offset: 1px; }
 .approval-cmd { display: grid; gap: 4px; padding: 10px 16px 12px; }
 .approval-label { font-size: 11px; color: var(--faint); }
 .approval-cmd code { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
-.approval-head .approval-adds { color: var(--ink); }
-.approval-head .approval-adds:empty { display: none; }
+/* Footer: Approve and update gets its own full-width row when narrow, the other two share one. */
 .dialog.approval .dialog-actions { flex: none; flex-wrap: wrap; }
+@media (max-width: 340px) {
+  .dialog.approval .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; }
+  .dialog.approval #approval-ok { grid-column: 1 / -1; grid-row: 1; }
+  .dialog.approval .btn { padding: 5px 8px; text-align: center; }
+}
+/* Short viewports: everything between the title and the footer scrolls as one region. */
+@media (max-height: 460px) {
+  .approval-scroll { max-height: none; overflow: visible; }
+}
 
 /* inline row status: running, done, failed; sits where the row's time or count normally is */
 .rstatus { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

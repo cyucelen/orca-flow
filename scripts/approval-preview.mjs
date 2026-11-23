@@ -1,8 +1,7 @@
 // Browser-only fixture for the update-approval dialog and its tooltip, in the actual panel code.
 // `orca` is a stub: no plugin, worker or update runs, and nothing is approved.
 //   node scripts/approval-preview.mjs --shots <dir>   dialog at 556x1566, 300x420, 240x300, light and dark, and the tooltip
-// The host text is the 0.2.87 → 0.2.91 one from the bug report; the end of its fingerprint and command were cut off in the
-// screenshot, so they are reconstructed.
+// The host text is the 0.2.87 → 0.2.91 one from the bug report (its first line is reconstructed; see src/approval.test.ts).
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -14,13 +13,26 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const build = mkdtempSync(join(tmpdir(), 'orca-flow-approval-preview-'))
 execFileSync('npx', ['-y', 'esbuild', 'src/panel/app.ts', '--bundle', '--format=esm', '--tsconfig-raw={}', '--log-level=warning', `--outfile=${join(build, 'app.js')}`], { cwd: root, stdio: 'inherit' })
 
+const adds = ['panels "Orca Flow"', 'commands "Jump to next waiting workspace"', 'commands "Update Orca Flow"',
+  ...Array.from({ length: 9 }, (_, i) => `commands "Open chat ${i + 1} in Orca Flow"`),
+  'events "agent.status.changed"', 'events "workspace.created"', 'events "workspace.removed"', 'events "workspace.changed"',
+  ...Array.from({ length: 9 }, (_, i) => `keybindings "Alt+${i + 1}"`),
+  'customEditors "Usage"', 'statusBarItems "..."', 'statusBarItems "Orca Flow update"'].join(', ')
 const reason = [
-  'Grants: sidebar, storage, shell.openExternal, terminals, worktrees.',
-  'Adds: panels, commands, events, keybindings, customEditors, statusBarItems.',
+  'Orca Flow needs approval before it can run.', // reconstructed
+  'Approving Orca Flow (cyucelen.flow 0.2.91) grants:',
+  '- Runs its own code in a separate Node.js process on the Orca host, with your user account’s access to that machine.',
+  '- Store data in the plugin\'s own storage folder',
+  '- Read your projects and workspaces (names, branches, paths and agent status) and the terminals in them, and get notified when they change',
+  '- Open and rename your workspaces, hide projects from the sidebar or show them again, focus their terminals, open their files in Orca, and run its built-in commands',
+  '- Get notified when agent status changes',
+  '- Start and resume agents in your workspaces, local and SSH',
+  `Adds: ${adds}`,
   'Updating 0.2.87 → 0.2.91 asks for more access: new customEditors.',
-  'Source: https://github.com/cyucelen/orca-flow @ 7a7cbf9c491e664eb66e70ba83c12b44',
-  'Publisher: cyucelen',
-  'Only approve plugins you trust: a plugin runs with the access listed above.',
+  'Source: github.com/cyucelen/orca-flow (v0.2.91) at commit 00c29b00a75c.',
+  'Publisher: cyucelen.',
+  'Make sure you trust cyucelen: this plugin is not from Orca and Orca has not checked this repository, so only install it if you trust cyucelen.',
+  'Why approval is needed: It can run code or act in Orca, so Orca does not enable it without an explicit approval bound to exactly these files and this access.',
   'Fingerprint: ap1-7a7cbf9c491e664eb66e70ba83c12b44'
 ].join('\n')
 const update = { kind: 'approval', version: '0.2.91', reason, command: 'orca plugin update cyucelen.flow --approve ap1-7a7cbf9c491e664eb66e70ba83c12b44', fingerprint: 'ap1-7a7cbf9c491e664eb66e70ba83c12b44' }

@@ -31,3 +31,17 @@ export function approvalTip(state: { version: string; reason: string; command: s
 export function versionDelta(a: ApprovalSummary): string {
   return a.from ? `${a.from} → ${a.to}` : a.to
 }
+
+const KIND: Record<string, string> = { customEditors: 'custom editor', panels: 'panel', commands: 'command', events: 'event', keybindings: 'keybinding', statusBarItems: 'status bar item' }
+
+/**
+ * The access delta as one line: the kinds named by "new customEditors" matched to the entries of that kind in the Adds line
+ * (`New access: custom editor "Usage"`). With nothing to match it is the raw delta phrase; the whole Adds list is never the delta.
+ */
+export function accessLine(a: ApprovalSummary): string {
+  if (!a.access) return 'It asks for different access than the version you run.'
+  const kinds = a.access.split(/[\s,;]+/).filter((k) => k in KIND)
+  const entries = [...(a.adds ?? '').matchAll(/(\w+)\s+"([^"]*)"/g)].filter((m) => kinds.includes(m[1]) && m[2] && m[2] !== '...')
+  if (!entries.length) return `Asks for more access: ${a.access}.`
+  return `New access: ${entries.map((m) => `${KIND[m[1]]} "${m[2]}"`).join(', ')}.`
+}
