@@ -1,9 +1,9 @@
 // Types for skill-reload.mjs, so the plugin's TypeScript (src/worker.ts) can import it.
 export type ReloadRole = 'coordinator' | 'lead' | 'worker' | 'chat'
-export type ReloadTarget = { pane: string; session?: string | null; role: ReloadRole; provider?: string | null; supported?: boolean; title?: string }
-export type StoredTarget = { request: string; at: number; expiresAt: number; hash: string; scope: string; role: ReloadRole; session: string | null; provider: string | null; supported: boolean; title: string }
+export type ReloadTarget = { pane: string; session?: string | null; role: ReloadRole; provider?: string | null; supported?: boolean; reason?: string; title?: string }
+export type StoredTarget = { request: string; at: number; expiresAt: number; hash: string; scope: string; role: ReloadRole; session: string | null; provider: string | null; supported: boolean; reason?: string; title: string }
 export type ReloadState = 'waiting' | 'reading' | 'reloaded' | 'unsupported'
-export type ReloadStatusEntry = { pane: string; role: ReloadRole; provider: string | null; at: number; expiresAt: number; request: string; state: ReloadState; doneAt?: number }
+export type ReloadStatusEntry = { pane: string; role: ReloadRole; provider: string | null; at: number; expiresAt: number; request: string; state: ReloadState; doneAt?: number; reason?: string }
 export const RELOAD_DIR: string
 export const RELOAD_TTL_MS: number
 export const ROLES: ReloadRole[]

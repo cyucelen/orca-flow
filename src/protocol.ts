@@ -287,6 +287,12 @@ export type Snapshot = {
   features?: { linear: boolean; tokenSpeed: boolean }
   /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
   skillReload?: SkillReloadEntry[]
+  /**
+   * Whether Codex sessions (of the selected Codex account) can take the reload note: Orca Flow's hooks
+   * in its hooks.json and trusted by the user (src/codex-hooks.ts). Not ready: the reason, with the
+   * one action to take. Absent: unknown, read as not ready.
+   */
+  codexReload?: { ready: boolean; reason: string }
 }
 
 /**
@@ -294,7 +300,7 @@ export type Snapshot = {
  * note, no matching confirmation yet), reloaded (confirmed for the requested hash) or unsupported (a
  * provider with no live reload). `doneAt`: when it confirmed.
  */
-export type SkillReloadEntry = { pane: string; state: 'waiting' | 'reading' | 'reloaded' | 'unsupported'; role: 'coordinator' | 'lead' | 'worker' | 'chat'; provider: string | null; at: number; expiresAt: number; request: string; doneAt?: number }
+export type SkillReloadEntry = { pane: string; state: 'waiting' | 'reading' | 'reloaded' | 'unsupported'; role: 'coordinator' | 'lead' | 'worker' | 'chat'; provider: string | null; at: number; expiresAt: number; request: string; doneAt?: number; reason?: string }
 
 /** What the opened cockpit shows; loaded on demand because Orca's memory report is slow. */
 export type SessionRef = { paneKey: string; terminal: string | null; workspaceId: string; title: string; repo: string; memMB: number }

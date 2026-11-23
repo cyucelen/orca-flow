@@ -1,29 +1,39 @@
 // "Reload skills": which running agents a click asks to re-read their skill files, and what the
 // sidebar says about it afterwards. Pure (no Node), so the panel draws the scope confirmation from
 // its snapshot and the worker checks the same targets again when it writes the request.
-// The delivery (Claude Code hooks) and the request store live in skills/orca-flow/scripts/skill-reload.mjs.
+// The delivery (Claude Code and Codex hooks) and the request store live in skills/orca-flow/scripts/skill-reload.mjs.
 import type { AgentInfo, Snapshot, SkillReloadEntry } from './protocol.ts'
 import { providerOf } from './providers.ts'
 
 export type ReloadRole = 'coordinator' | 'lead' | 'worker' | 'chat'
 /** One coordinator's team (its key), or every running agent. */
 export type ReloadScope = 'all' | { coordinator: string }
-export type PlannedTarget = { pane: string; session: string | null; role: ReloadRole; provider: string | null; supported: boolean; title: string; coordinator: string }
+export type PlannedTarget = { pane: string; session: string | null; role: ReloadRole; provider: string | null; supported: boolean; title: string; coordinator: string; /** Why it cannot reload now, with the one action to take (unsupported only). */ reason?: string }
 export type ReloadPlan = {
-  /** Live Claude Code sessions: they get the note at their next turn or tool call. */
+  /** Live Claude Code sessions, and Codex ones once its hooks are installed and trusted: they get the note at their next turn or tool call. */
   targets: PlannedTarget[]
-  /** Live sessions of a provider with no live reload (Codex, Antigravity, unknown): restart to reload. */
+  /** Live sessions that cannot take it now (Codex before its hooks are trusted, Antigravity, unknown), each with its reason. */
   unsupported: PlannedTarget[]
   /** Left out and why: finished (reported worker_done or settled) or asleep/closed (no live session). */
   skipped: { finished: number; asleep: number }
 }
 
+/** Codex's reason when the snapshot does not say (an old worker, or readiness not read yet). */
+export const CODEX_UNKNOWN = 'Codex: Orca Flow could not check its hooks in this Codex account; restart to reload'
+/** Every other provider: no hooks of ours. */
+export const NO_LIVE_RELOAD = 'it has no live reload; restart to reload'
+
 /**
- * Only Claude Code takes the note: its hooks are ours (src/install.ts). Codex 0.171 runs the same
- * hooks when they are configured (docs/skill-reload.md), but Orca launches Codex with the account's
- * Orca-managed hooks.json and trust state, which hold none of ours. Others are reported, never typed into.
+ * Who takes the note: Claude Code always (our hooks are in its settings.json, src/install.ts); Codex
+ * only while Orca Flow's hooks are in its account's hooks.json and trusted by the user
+ * (src/codex-hooks.ts, the snapshot's codexReload). Others are reported with a reason, never typed into.
  */
-export const reloadSupported = (agentType: string | null) => providerOf(agentType) === 'claude'
+export function reloadSupport(agentType: string | null, codex: Snapshot['codexReload']): { supported: boolean; reason?: string } {
+  const p = providerOf(agentType)
+  if (p === 'claude') return { supported: true }
+  if (p === 'codex') return codex?.ready ? { supported: true } : { supported: false, reason: codex?.reason || CODEX_UNKNOWN }
+  return { supported: false, reason: NO_LIVE_RELOAD }
+}
 
 /** The role the note names, by the sidebar's own reading (view.ts shapeOf): a coordinator's session, a lead, a worker, or a chat you started. */
 function roleOf(a: AgentInfo, all: AgentInfo[], coordinator: string): ReloadRole {
@@ -33,8 +43,11 @@ function roleOf(a: AgentInfo, all: AgentInfo[], coordinator: string): ReloadRole
   return coordinator === 'you' ? 'chat' : 'worker'
 }
 
-/** Claude's session id, as the summarizer bound it; null when unknown (the hook then matches by pane). */
-const sessionOf = (a: AgentInfo) => (a.summary?.providerSession?.provider === 'claude' ? a.summary.providerSession.id : null)
+/** The provider's session id (Claude's session, Codex's thread), as the summarizer bound it; null when unknown (the hook then matches by pane). */
+const sessionOf = (a: AgentInfo) => {
+  const s = a.summary?.providerSession
+  return s && (s.provider === 'claude' || s.provider === 'codex') && s.provider === providerOf(a.agentType) ? s.id : null
+}
 
 /**
  * The agents one click reaches: for a coordinator, its own live session and every lead and worker
@@ -42,7 +55,7 @@ const sessionOf = (a: AgentInfo) => (a.summary?.providerSession?.provider === 'c
  * Orca-managed sessions: a finished one (settled dispatch) or a closed or asleep one is skipped and
  * counted, never woken. Each pane once.
  */
-export function reloadPlan(snap: Pick<Snapshot, 'rows' | 'coordinators'>, scope: ReloadScope): ReloadPlan {
+export function reloadPlan(snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'codexReload'>, scope: ReloadScope): ReloadPlan {
   const plan: ReloadPlan = { targets: [], unsupported: [], skipped: { finished: 0, asleep: 0 } }
   const inScope = (key: string) => scope === 'all' || key === scope.coordinator
   const all = snap.rows.flatMap((r) => r.agents)
@@ -52,8 +65,8 @@ export function reloadPlan(snap: Pick<Snapshot, 'rows' | 'coordinators'>, scope:
     seen.add(a.paneKey)
     if (a.live !== true) { plan.skipped.asleep++; return }
     if (a.dispatch === 'settled') { plan.skipped.finished++; return }
-    const supported = reloadSupported(a.agentType)
-    const target: PlannedTarget = { pane: a.paneKey, session: sessionOf(a), role, provider: providerOf(a.agentType) ?? a.agentType, supported, title: a.title, coordinator }
+    const { supported, reason } = reloadSupport(a.agentType, snap.codexReload)
+    const target: PlannedTarget = { pane: a.paneKey, session: sessionOf(a), role, provider: providerOf(a.agentType) ?? a.agentType, supported, title: a.title, coordinator, ...(reason ? { reason } : {}) }
     ;(supported ? plan.targets : plan.unsupported).push(target)
   }
   for (const c of snap.coordinators) if (inScope(c.key) && c.session) add(c.session, 'coordinator', c.key)
@@ -85,11 +98,11 @@ export function confirmText(plan: ReloadPlan, where: string): { title: string; t
   const n = plan.targets.length
   const parts: string[] = []
   if (n) parts.push(`${rolesText(plan.targets)} re-read their skill files at their next turn (a busy one after its next tool call) and confirm. Nothing is typed into their terminals; their tasks, open asks and runs stay as they are.`)
-  else parts.push('No running Claude Code session here can take a reload.')
-  // Codex takes the same note through the same hooks (verified live), but Orca starts its Codex
-  // sessions with only Orca's own trusted hooks (the account's hooks.json); Orca Flow's are not there.
-  const codex = plan.unsupported.some((t) => t.provider === 'codex') ? ' (Orca starts Codex without Orca Flow\'s hooks)' : ''
-  if (plan.unsupported.length) parts.push(`${unsupportedText(plan.unsupported)} ${plan.unsupported.length === 1 ? 'session has' : 'sessions have'} no live reload${codex}: restart to reload.`)
+  else parts.push('No running session here can take a reload.')
+  // Each reason once, with how many sessions it holds back: "1 Codex session cannot reload: approve …".
+  const reasons = new Map<string, PlannedTarget[]>()
+  for (const t of plan.unsupported) reasons.set(t.reason ?? NO_LIVE_RELOAD, [...(reasons.get(t.reason ?? NO_LIVE_RELOAD) ?? []), t])
+  for (const [reason, ts] of reasons) parts.push(`${unsupportedText(ts)} ${ts.length === 1 ? 'session' : 'sessions'} cannot reload: ${reason.replace(/^Codex: /, '')}.`)
   const skipped = [plan.skipped.finished ? `${plan.skipped.finished} finished` : '', plan.skipped.asleep ? `${plan.skipped.asleep} asleep or closed` : ''].filter(Boolean)
   if (skipped.length) parts.push(`Skipped: ${skipped.join(', ')}.`)
   return { title: n ? `Reload skills in ${plural(n, 'agent')} ${where}?` : `Nothing to reload ${where}`, text: parts.join(' '), ok: n > 0 }

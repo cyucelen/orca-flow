@@ -25,19 +25,22 @@ export function targetRole(target, hook) {
   return target?.role ?? hook ?? 'worker'
 }
 
+/** The Orca pane a hook runs for: Claude Code panes have ORCA_AGENT_PANE, Codex panes ORCA_PANE_KEY. */
+export const paneOf = (env) => env.ORCA_AGENT_PANE || env.ORCA_PANE_KEY || null
+
 /** The note for a targeted session, or null (not an Orca pane, not targeted, already given or confirmed). */
 export function reloadNote(input, event, { env = process.env, home = homedir(), script = process.argv[1], now = Date.now() } = {}) {
-  if (!input || typeof input !== 'object' || !env.ORCA_AGENT_PANE) return null
+  if (!input || typeof input !== 'object' || !paneOf(env)) return null
   const data = flowDir(env, home)
   const cwd = resolve(input.cwd || process.cwd())
   const role = (target) => targetRole(target, hookRole({ cwd, home, data, session: input.session_id, first: () => firstPromptOf(input.transcript_path) }))
-  return deliverReload(input, { event, pane: env.ORCA_AGENT_PANE, data, skill: skillOf(script), role, now })
+  return deliverReload(input, { event, pane: paneOf(env), data, skill: skillOf(script), role, now })
 }
 
 /** Records the confirmation of a targeted session whose tool call just ran `orca-flow skills-reloaded`. */
 export function recordConfirm(input, { env = process.env, home = homedir(), script = process.argv[1], now = Date.now() } = {}) {
-  if (!input || typeof input !== 'object' || !env.ORCA_AGENT_PANE) return false
-  return confirmFromToolCall(input, { pane: env.ORCA_AGENT_PANE, data: flowDir(env, home), skill: skillOf(script), now })
+  if (!input || typeof input !== 'object' || !paneOf(env)) return false
+  return confirmFromToolCall(input, { pane: paneOf(env), data: flowDir(env, home), skill: skillOf(script), now })
 }
 
 async function main() {

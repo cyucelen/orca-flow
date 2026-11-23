@@ -65,15 +65,30 @@ test('the confirmation names the exact count by role, the unsupported provider a
   assert.equal(title, 'Reload skills in 5 agents across all coordinators and your chats?')
   assert.match(text, /^1 coordinator, 2 leads, 1 worker, 1 chat re-read their skill files at their next turn/)
   assert.match(text, /Nothing is typed into their terminals; their tasks, open asks and runs stay as they are\./)
-  assert.match(text, /1 Codex session has no live reload \(Orca starts Codex without Orca Flow's hooks\): restart to reload\./)
+  assert.match(text, /1 Codex session cannot reload: Orca Flow could not check its hooks in this Codex account; restart to reload\./, 'readiness unknown: not counted, said so')
   assert.match(text, /Skipped: 1 finished, 1 asleep or closed\./)
-  const none = confirmText({ targets: [], unsupported: [{ pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c' }], skipped: { finished: 0, asleep: 0 } }, 'for c')
+  const none = confirmText({ targets: [], unsupported: [{ pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c', reason: 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)' }, { pane: 'y', session: null, role: 'worker', provider: 'antigravity', supported: false, title: '', coordinator: 'c' }], skipped: { finished: 0, asleep: 0 } }, 'for c')
   assert.deepEqual([none.ok, none.title], [false, 'Nothing to reload for c'])
-  assert.match(none.text, /No running Claude Code session here can take a reload\. 1 Codex session has no live reload \(Orca starts Codex/)
+  assert.equal(none.text, 'No running session here can take a reload. 1 Codex session cannot reload: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks). 1 Antigravity session cannot reload: it has no live reload; restart to reload.')
   assert.equal(rolesText([{ role: 'worker' }, { role: 'lead' }, { role: 'worker' }]), '1 lead, 2 workers')
 })
 
 const entry = (pane: string, state: SkillReloadEntry['state'], over: Partial<SkillReloadEntry> = {}): SkillReloadEntry => ({ pane, state, role: 'worker', provider: 'claude', at: 1000, expiresAt: 1000 + 86_400_000, request: 'r1', ...over })
+
+test('Codex sessions take the note only once its hooks are installed and trusted; until then they are unsupported with the reason, never requested', () => {
+  const approve = 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)'
+  const waiting = reloadPlan({ ...snap, codexReload: { ready: false, reason: approve } }, { coordinator: 'alpha' })
+  assert.deepEqual(waiting.unsupported.map((t) => [t.pane, t.reason]), [['p-codex', approve]])
+  assert.ok(!waiting.targets.some((t) => t.pane === 'p-codex'))
+  const ready = reloadPlan({ ...snap, codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
+  assert.deepEqual(ready.targets.map((t) => [t.pane, t.role]), [['p-alpha', 'coordinator'], ['p-lead', 'lead'], ['p-w1', 'worker'], ['p-codex', 'worker']])
+  assert.deepEqual(ready.unsupported, [])
+  assert.match(confirmText(ready, 'for alpha').text, /^1 coordinator, 1 lead, 2 workers re-read/)
+  // Its Codex thread id goes with it when the summary bound one.
+  const bound = { ...codex, summary: summary({ role: 'worker', providerSession: { provider: 'codex', id: 'thread-1' } }) }
+  const withThread = reloadPlan({ ...snap, rows: [row('lead', [lead, worker, finished, bound])], codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
+  assert.equal(withThread.targets.find((t) => t.pane === 'p-codex')?.session, 'thread-1')
+})
 
 test('the summary counts reloaded, reading, waiting and unsupported apart; requested is never counted as reloaded', () => {
   const entries = [entry('a', 'reloaded', { doneAt: 2000 }), entry('b', 'reloaded', { doneAt: 2000 }), entry('c', 'reading'), entry('d', 'waiting'), entry('e', 'waiting'), entry('f', 'unsupported', { provider: 'codex' })]
@@ -95,6 +110,8 @@ test('rows wear a small mark per state, and the heading carries the action and t
   assert.match(reloadMark({ reloads }, 'p-w1'), /class="srl srl-waiting"[^>]*data-tip="Reload waits for next turn"/)
   assert.match(reloadMark({ reloads }, 'p-lead'), /srl-reloaded/)
   assert.match(reloadMark({ reloads }, 'p-codex'), /Restart to reload skills/)
+  const why = new Map([['p-codex', entry('p-codex', 'unsupported', { provider: 'codex', reason: 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)' })]])
+  assert.match(reloadMark({ reloads: why }, 'p-codex'), /data-tip="Codex: approve Orca Flow&#39;s hooks once; start Codex, choose Trust all and continue \(or \/hooks\)"/, 'an unsupported row says why and what to do')
   assert.equal(reloadMark({ reloads }, 'p-other'), '')
   const label = treeLabel([...reloads.values()], emptyUi())
   assert.match(label, /data-reload-skills="all" aria-label="Reload skills in all running agents"/)

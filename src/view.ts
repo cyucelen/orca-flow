@@ -1319,7 +1319,9 @@ export function reloadMark(ui: Pick<UiState, 'reloads'>, pane: string): string {
   const e = ui.reloads?.get(pane)
   if (!e) return ''
   const glyph = e.state === 'reloaded' ? RELOAD_CHECK : e.state === 'unsupported' ? RELOAD_NONE : RELOAD_ICON
-  return `<span class="srl srl-${e.state}" role="img" aria-label="${esc(RELOAD_TIP[e.state])}" data-tip="${esc(RELOAD_TIP[e.state])}">${glyph}</span>`
+  // An unsupported row says why, with the one action to take ("Codex: approve Orca Flow's hooks once; …").
+  const tip = e.state === 'unsupported' && e.reason ? e.reason : RELOAD_TIP[e.state]
+  return `<span class="srl srl-${e.state}" role="img" aria-label="${esc(tip)}" data-tip="${esc(tip)}">${glyph}</span>`
 }
 
 /**

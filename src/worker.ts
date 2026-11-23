@@ -43,6 +43,7 @@ import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel
 import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
 import { reloadPlan, type ReloadScope } from './skill-reload.ts'
+import { codexReloadReadiness, ensureOwnCodexHooks, managedCodexHomes } from './codex-hooks.ts'
 import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 
@@ -1014,6 +1015,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!dir) return
     for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
     if (!repairOnly) for (const line of ensureOwnStopHook(stopHookFor(), installed)) orca.log(line)
+    // Codex: our reload hooks next to Orca's in each Orca-managed Codex account's hooks.json; never its trust or auth.
+    if (!repairOnly) for (const line of ensureOwnCodexHooks(managedCodexHomes(), installed)) orca.log(line)
   }
   if (!dir) orca.log(`plugin folder not found from ${import.meta.url}; skill and coordinator CLAUDE.md not set up`)
   else {
@@ -1038,6 +1041,22 @@ export default function activate(orca: OrcaWorkerApi): void {
   let firstProviders: Snapshot['coordinatorProviders'] = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
+  // The selected Codex account's home, looked up every 5 minutes (also when a Codex account was added:
+  // the installed copy then adds our hooks to it); its readiness is read from files on every snapshot.
+  let codexHome: string | null = null
+  let codexHomeAt = 0
+  const codexReady = (): Snapshot['codexReload'] => {
+    if (Date.now() - codexHomeAt > 5 * 60_000) {
+      codexHomeAt = Date.now()
+      void run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }).then((result) => {
+        codexHome = codexHomeFromAccounts({ ok: true, result })
+        if (installed) for (const line of ensureOwnCodexHooks(managedCodexHomes(), true)) if (!line.startsWith('left ')) orca.log(line)
+      }).catch(() => { codexHome = null })
+    }
+    if (!codexHome) return undefined
+    const r = codexReloadReadiness(codexHome)
+    return { ready: r.state === 'ready', reason: r.reason }
+  }
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
@@ -1045,6 +1064,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
     snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
     snap.skillReload = readSkillReload()
+    snap.codexReload = codexReady()
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
@@ -1854,7 +1874,7 @@ export function skillFolder(dir: string | null, link = linksFor(dir ?? '')[0]?.f
  * but for the files (`write`, `hashOf` and `sessionOf` are replaceable for tests).
  */
 export function requestReload(
-  snap: Pick<Snapshot, 'rows' | 'coordinators'>,
+  snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'codexReload'>,
   scope: ReloadScope,
   skill: string,
   io: { data?: string; hashOf?: (skill: string) => string; write?: typeof writeRequest; sessionOf?: (pane: string, a: AgentInfo | undefined) => string | null; now?: number } = {}
@@ -1866,7 +1886,8 @@ export function requestReload(
     const path = findTranscript(pane, undefined, { orcaSession: a?.orcaSession ?? undefined, provider: a?.agentType ?? undefined }).path
     return path && path.endsWith('.jsonl') ? path.slice(path.lastIndexOf('/') + 1, -'.jsonl'.length) : null
   })
-  const targets = [...plan.targets, ...plan.unsupported].map((t) => ({ ...t, session: t.session ?? (t.supported ? sessionOf(t.pane, agents.get(t.pane)) : null) }))
+  // A Claude transcript is named by its session id; a Codex rollout file is not (its thread id comes from the summary).
+  const targets = [...plan.targets, ...plan.unsupported].map((t) => ({ ...t, session: t.session ?? (t.supported && t.provider === 'claude' ? sessionOf(t.pane, agents.get(t.pane)) : null) }))
   const hash = (io.hashOf ?? skillHash)(skill)
   ;(io.write ?? writeRequest)(io.data ?? DATA_DIR, targets, { hash, scope: scope === 'all' ? 'all' : `coordinator:${scope.coordinator}`, now: io.now })
   return { asked: plan.targets.length, unsupported: plan.unsupported.length, skipped: plan.skipped, hash }

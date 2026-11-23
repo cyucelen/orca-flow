@@ -229,3 +229,26 @@ test('the PostToolUse hook records the confirmation when the agent runs the conf
     assert.equal(lead.state, 'reloaded', 'recorded by the hook')
   } finally { rmSync(w.home, { recursive: true }) }
 })
+
+test('Codex panes: the hooks find the pane by ORCA_PANE_KEY, and an unsupported target keeps its reason for the sidebar', () => {
+  const w = world()
+  try {
+    const t0 = Date.now()
+    const codexTarget = { pane: 'tab:codex', session: 'thread-9', role: 'worker', provider: 'codex', supported: true, title: 'Codex worker' }
+    const notYet = { pane: 'tab:codex2', session: null, role: 'worker', provider: 'codex', supported: false, reason: "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)", title: '' }
+    writeRequest(w.data, [codexTarget, notYet], { hash: skillHash(w.skill), scope: 'all', now: t0, id: 'r1' })
+    const run = (name, input, env) => {
+      const r = spawnSync(process.execPath, [join(w.skill, 'scripts', name)], { input: JSON.stringify(input), env: { PATH: process.env.PATH, HOME: w.home, ...env }, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      return r.stdout.trim() ? JSON.parse(r.stdout) : null
+    }
+    // Codex hook input: session_id is the thread, the shell tool reports as Bash with tool_input.command.
+    const note = run('prompt-check.mjs', { session_id: 'thread-9', cwd: w.worktree, hook_event_name: 'UserPromptSubmit', prompt: 'hi', turn_id: 't1' }, { ORCA_PANE_KEY: 'tab:codex' })
+    assert.match(note.hookSpecificOutput.additionalContext, /request r1[^]*roles\/worker\.md/)
+    assert.equal(run('reload-check.mjs', { session_id: 'thread-9', cwd: w.worktree, tool_name: 'Bash', tool_input: { command: `node ${w.skill}/scripts/orca-flow.mjs skills-reloaded --request r1` }, tool_response: 'EPERM' }, { ORCA_PANE_KEY: 'tab:codex' }), null)
+    const states = Object.fromEntries(reloadStatus(w.data).map((s) => [s.pane, s]))
+    assert.equal(states['tab:codex'].state, 'reloaded', 'recorded by the hook, keyed by ORCA_PANE_KEY')
+    assert.deepEqual([states['tab:codex2'].state, states['tab:codex2'].reason], ['unsupported', notYet.reason])
+    assert.equal(run('prompt-check.mjs', { session_id: 'x', cwd: w.worktree, prompt: 'hi' }, { ORCA_PANE_KEY: 'tab:codex2' }), null, 'nothing for a target that cannot take it')
+  } finally { rmSync(w.home, { recursive: true }) }
+})

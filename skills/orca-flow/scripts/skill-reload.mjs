@@ -148,6 +148,7 @@ export function writeRequest(data, targets, { hash, scope, now = Date.now(), ttl
       session: t.session || null,
       provider: t.provider || null,
       supported: t.supported !== false,
+      ...(t.supported === false && typeof t.reason === 'string' && t.reason ? { reason: t.reason.slice(0, 200) } : {}),
       title: typeof t.title === 'string' ? t.title.slice(0, 120) : ''
     }
   }
@@ -271,7 +272,7 @@ export function confirmReload(data, { pane, session, skill, request, now = Date.
 export function reloadStatus(data, now = Date.now()) {
   return Object.entries(readRequests(data, now)).map(([pane, t]) => {
     const base = { pane, role: t.role, provider: t.provider, at: t.at, expiresAt: t.expiresAt, request: t.request }
-    if (t.supported === false) return { ...base, state: 'unsupported' }
+    if (t.supported === false) return { ...base, state: 'unsupported', ...(t.reason ? { reason: t.reason } : {}) }
     const c = readConfirmation(data, { pane, session: t.session })
     if (isConfirmed(t, c)) return { ...base, state: 'reloaded', doneAt: Number(c.at) }
     return { ...base, state: wasDelivered(data, pane, t.request) ? 'reading' : 'waiting' }
