@@ -1126,7 +1126,8 @@ test('update button: hidden with nothing to update, then what the update needs o
   assert.match(updateButton({ kind: 'updated', version: '0.2.16' }), /class="icon update updated"[^>]*data-tip="Orca Flow updated to 0\.2\.16"/)
 
   const approval = updateButton({ kind: 'approval', version: '0.2.16', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz' })
-  assert.match(approval, /data-tip="Orca Flow 0\.2\.16 needs your approval: It asks for a new command\.\nTo approve and update, run:\norca plugin update cyucelen\.flow --approve ap1-xyz" data-tone="warn"/)
+  assert.match(approval, /data-tip="Orca Flow 0\.2\.16 needs your approval\. Click for details\." data-tone="warn"/)
+  assert.ok(!/--approve|new command/.test(approval), 'the tooltip never carries the host text or the command')
 
   const failed = updateButton({ kind: 'failed', version: '0.2.16', reason: 'Could not read <github.com>' })
   assert.match(failed, /data-tip="Update to 0\.2\.16 failed: Could not read &lt;github\.com&gt;\nClick to try again" data-tone="danger"/, 'the reason, escaped, and a retry')

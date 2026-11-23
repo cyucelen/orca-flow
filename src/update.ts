@@ -5,6 +5,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { approvalTip } from './approval.ts'
 import type { UpdateState } from './protocol.ts'
 
 export type { UpdateState }
@@ -141,7 +142,7 @@ export function updateItem(state: UpdateState): UpdateItem {
     case 'updated':
       return { ...base, visible: true, text: `Orca Flow updated to ${state.version}`, icon: 'check' as const, tone: 'success' as const, tooltip: 'Running the new version' }
     case 'approval':
-      return { ...base, visible: true, text: `Orca Flow ${state.version} needs your approval`, icon: 'warning' as const, tone: 'warning' as const, tooltip: `${state.reason}\nTo approve and update, run:\n${state.command}` }
+      return { ...base, visible: true, text: `Orca Flow ${state.version} needs your approval`, icon: 'warning' as const, tone: 'warning' as const, tooltip: approvalTip(state) }
     case 'failed':
       return { ...base, visible: true, text: `Orca Flow ${state.version} update failed`, icon: 'error' as const, tone: 'danger' as const, tooltip: `${state.reason}\nClick to try again` }
   }
@@ -149,8 +150,8 @@ export function updateItem(state: UpdateState): UpdateItem {
 
 /**
  * Update now: the status bar item's second click and the panel's confirmed click. Starts only from
- * available or failed (or the status bar's pending confirm); an approval explains itself with the
- * command to run (its text is what Orca shows for the command's result).
+ * available or failed (or the status bar's pending confirm); an approval never starts here: it is
+ * approved only by the panel's explicit Approve and update (updater.approve).
  */
 export function updateNow(state: UpdateState): { next: UpdateState; start: boolean; message: string } {
   switch (state.kind) {
@@ -159,7 +160,7 @@ export function updateNow(state: UpdateState): { next: UpdateState; start: boole
     case 'confirm':
       return { next: { kind: 'updating', version: state.version }, start: true, message: `Updating Orca Flow to ${state.version}…` }
     case 'approval':
-      return { next: state, start: false, message: `Orca Flow ${state.version} asks for new access, so it was not installed. ${state.reason} To approve and update, run: ${state.command}` }
+      return { next: state, start: false, message: `Orca Flow ${state.version} asks for new access, so it was not installed. Open the Orca Flow panel to review it and approve, or run: ${state.command}` }
     case 'updating':
       return { next: state, start: false, message: `Already updating to ${state.version}.` }
     default:
@@ -183,12 +184,13 @@ export type UpdaterDeps = {
   dir: string
   /** Called on every state change: the status bar item and the panel show it. */
   show: (state: UpdateState) => void
-  /** Starts `orca plugin update` for this version (startUpdate in the worker). */
-  start: (version: string) => void
+  /** Starts `orca plugin update` for this version (startUpdate in the worker); `approve` only from an explicit Approve and update. */
+  start: (version: string, approve?: string) => void
   later: (fn: () => void, ms: number) => void
   log: (message: string) => void
 }
 
+const FINGERPRINT = /^ap\d+-[0-9a-f]+$/i
 export const DEV_FOLDER = 'Updates apply to an installed Orca Flow, not a development folder.'
 export const NO_VERSION = 'The manifest has no version, so there is nothing to compare releases with.'
 
@@ -209,7 +211,12 @@ export function updater(d: UpdaterDeps) {
   const settle = (tries = 0): void => {
     const result = readUpdateResult(d.dir, d.current)
     if (result === null) return
-    if (result === 'pending') return void (tries < 100 && d.later(() => settle(tries + 1), 3000))
+    // Keep watching until the result lands: readUpdateResult itself gives up on a shell that never reports (5 minutes),
+    // so a poll cap shorter than that left "Updating…" up forever.
+    if (result === 'pending') {
+      if (state.kind !== 'updating') show({ kind: 'updating', version: pendingVersion(d.dir) ?? d.current })
+      return void d.later(() => settle(tries + 1), 1000)
+    }
     rmSync(d.dir, { recursive: true, force: true })
     d.log(`update to ${result.version}: ${result.kind}${'reason' in result ? ` (${result.reason})` : ''}`)
     show(result)
@@ -248,6 +255,22 @@ export function updater(d: UpdaterDeps) {
       return apply(click)
     },
     /** The panel's request, after its confirm. */
+    /**
+     * Approve and update: the one place `--approve` is passed, only for the fingerprint of the approval being shown, and only
+     * from the panel's explicit click. Nothing calls it on its own; a stale or new fingerprint comes back as a new approval state.
+     */
+    approve(fingerprint: string): { started: boolean; message: string } {
+      if (!d.key) return { started: false, message: DEV_FOLDER }
+      if (state.kind !== 'approval' || !state.fingerprint || state.fingerprint !== fingerprint || !FINGERPRINT.test(fingerprint)) {
+        return { started: false, message: 'That approval is out of date. Review the current details first.' }
+      }
+      const version = state.version
+      show({ kind: 'updating', version })
+      d.start(version, fingerprint)
+      d.log(`updating to ${version} with the approval the person gave (${fingerprint})`)
+      settle()
+      return { started: true, message: `Updating Orca Flow to ${version}…` }
+    },
     now(): { started: boolean; message: string } {
       if (!d.key) return { started: false, message: DEV_FOLDER }
       const click = updateNow(state)
@@ -266,21 +289,34 @@ export function resultOf(exit: number, output: string, key: string, version: str
   } catch {}
   if (exit === 0 && parsed?.ok !== false) return { kind: 'updated', version: parsed?.result?.version ?? version }
   const code = parsed?.error?.code ?? ''
+  const message: string | undefined = parsed?.error?.message
+  // The host updates to its newest release, which can be newer than the one this worker offered: name what it evaluated.
+  const target = /Updating\s+v?[0-9][\w.+-]*\s*(?:→|->)\s*v?([0-9][\w.+-]*)/.exec(message ?? '')?.[1] ?? version
   if (exit === 3 || code === 'approval_required' || code === 'approval_stale') {
-    const fp = parsed?.error?.data?.approvalFingerprint
-    // Never approved here: the person reads what it asks for and runs the command themselves.
-    return { kind: 'approval', version, reason: parsed?.error?.message ?? 'The new version asks for different access.', command: `orca plugin update ${key}${fp ? ` --approve ${fp}` : ''}` }
+    const fp: string | undefined = parsed?.error?.data?.approvalFingerprint
+    // Never approved here: the person reads what it asks for, then approves with a click or runs the command themselves.
+    return { kind: 'approval', version: target, reason: message ?? 'The new version asks for different access.', command: `orca plugin update ${key}${fp ? ` --approve ${fp}` : ''}`, ...(fp ? { fingerprint: fp } : {}) }
   }
-  return { kind: 'failed', version, reason: parsed?.error?.message ?? (output.trim().split('\n').at(-1) || `orca plugin update exited ${exit}`) }
+  return { kind: 'failed', version: target, reason: parsed?.error?.message ?? (output.trim().split('\n').at(-1) || `orca plugin update exited ${exit}`) }
+}
+
+/** The version the running update was started for, or null when none is. */
+export function pendingVersion(dir: string): string | null {
+  try {
+    return JSON.parse(readFileSync(join(dir, 'pending.json'), 'utf8')).version ?? null
+  } catch {
+    return null
+  }
 }
 
 /** Starts the update in a shell that outlives this worker; it writes `exit` and `out.json` to `dir`. */
-export function startUpdate(orcaBin: string, key: string, version: string, dir: string): void {
+export function startUpdate(orcaBin: string, key: string, version: string, dir: string, approve?: string): void {
+  if (approve !== undefined && !FINGERPRINT.test(approve)) throw new Error('Not an approval fingerprint.')
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'pending.json'), JSON.stringify({ key, version, at: Date.now() }))
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
-  const script = `${q(orcaBin)} plugin update ${q(key)} --json > ${q(join(dir, 'out.json'))} 2>&1; echo $? > ${q(join(dir, 'exit.tmp'))}; mv ${q(join(dir, 'exit.tmp'))} ${q(join(dir, 'exit'))}`
+  const script = `${q(orcaBin)} plugin update ${q(key)}${approve ? ` --approve ${q(approve)}` : ''} --json > ${q(join(dir, 'out.json'))} 2>&1; echo $? > ${q(join(dir, 'exit.tmp'))}; mv ${q(join(dir, 'exit.tmp'))} ${q(join(dir, 'exit'))}`
   const child = spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore' })
   child.unref()
 }

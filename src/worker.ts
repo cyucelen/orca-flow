@@ -961,7 +961,7 @@ function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: Updat
       changed(state)
       void orca.host.call('statusBar.update', updateItem(state)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     },
-    start: (version) => startUpdate(ORCA_BIN, key!, version, UPDATE_DIR),
+    start: (version, approve) => startUpdate(ORCA_BIN, key!, version, UPDATE_DIR, approve),
     later: (fn, ms) => void timers.push(setTimeout(fn, ms)),
     log: (m) => orca.log(m)
   })
@@ -969,6 +969,8 @@ function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: Updat
 
   orca.commands.register('flow.update', () => update.click())
   orca.panels.handle('sidebar.update', async () => update.now())
+  // The only caller of --approve: the panel's explicit Approve and update click, with the fingerprint its dialog showed.
+  orca.panels.handle('sidebar.approveUpdate', async (data) => update.approve(String((data as { fingerprint?: string } | undefined)?.fingerprint ?? '')))
 
   // One check for the timer and Settings' Check for Updates. Where Orca installed this copy from
   // (`orca plugin list`) decides whether it can update to a release at all (cannotUpdate).

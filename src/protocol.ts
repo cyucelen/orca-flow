@@ -260,7 +260,7 @@ export type UpdateState =
   | { kind: 'confirm'; version: string }
   | { kind: 'updating'; version: string }
   | { kind: 'updated'; version: string }
-  | { kind: 'approval'; version: string; command: string; reason: string }
+  | { kind: 'approval'; version: string; command: string; reason: string; /** What the details are bound to; only an explicit Approve and update click passes it back. */ fingerprint?: string }
   | { kind: 'failed'; version: string; reason: string }
 
 export type Snapshot = {

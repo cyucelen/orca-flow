@@ -1261,11 +1261,11 @@ test('update item: hidden, available, confirm on the first click, update on the 
 
   assert.deepEqual(resultOf(0, JSON.stringify({ ok: true, result: { version: '0.2.12' } }), 'cyucelen.flow', '0.2.12'), { kind: 'updated', version: '0.2.12' })
   const approval = resultOf(3, JSON.stringify({ ok: false, error: { code: 'approval_required', message: 'It asks for a new command.', data: { approvalFingerprint: 'ap1-xyz' } } }), 'cyucelen.flow', '0.2.12')
-  assert.deepEqual(approval, { kind: 'approval', version: '0.2.12', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz' })
+  assert.deepEqual(approval, { kind: 'approval', version: '0.2.12', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz', fingerprint: 'ap1-xyz' })
   const click = onClick(approval)
   assert.deepEqual([click.next.kind, click.start], ['approval', false], 'approval is the person\'s to give')
   assert.match(click.message, /run: orca plugin update cyucelen\.flow --approve ap1-xyz/)
-  assert.match(updateItem(approval).tooltip!, /It asks for a new command\.\nTo approve and update, run:\norca plugin update/)
+  assert.equal(updateItem(approval).tooltip, 'Orca Flow 0.2.12 needs your approval. Click for details.')
   const failed = resultOf(1, JSON.stringify({ ok: false, error: { code: 'git_auth_failed', message: 'Could not read github.com' } }), 'cyucelen.flow', '0.2.12')
   assert.deepEqual(failed, { kind: 'failed', version: '0.2.12', reason: 'Could not read github.com' })
   assert.equal(onClick(failed).next.kind, 'confirm', 'a failed update can be tried again')
@@ -1341,11 +1341,45 @@ test('the update runs outside the worker and leaves its result for the next one'
   startUpdate(fake, 'cyucelen.flow', '0.2.12', dir)
   assert.equal(readUpdateResult(dir, '0.2.11'), 'pending')
   for (let i = 0; i < 200 && readUpdateResult(dir, '0.2.11') === 'pending'; i++) await new Promise((r) => setTimeout(r, 50))
-  assert.deepEqual(readUpdateResult(dir, '0.2.11'), { kind: 'approval', version: '0.2.12', reason: 'New access', command: 'orca plugin update cyucelen.flow --approve ap1-1' })
+  assert.deepEqual(readUpdateResult(dir, '0.2.11'), { kind: 'approval', version: '0.2.12', reason: 'New access', command: 'orca plugin update cyucelen.flow --approve ap1-1', fingerprint: 'ap1-1' })
   const { readFileSync } = await import('node:fs')
-  assert.equal(readFileSync(join(t, 'args'), 'utf8').trim(), 'plugin update cyucelen.flow --json', 'never --approve')
+  assert.equal(readFileSync(join(t, 'args'), 'utf8').trim(), 'plugin update cyucelen.flow --json', 'a start without a given approval never passes --approve')
   assert.deepEqual(readUpdateResult(dir, '0.2.12'), { kind: 'updated', version: '0.2.12' }, 'the new version running is the proof')
   assert.equal(readUpdateResult(join(t, 'none'), '0.2.11'), null)
+})
+
+test('routine update (exit 0) and the approval path, each against a fake orca binary', async () => {
+  const { readUpdateResult, startUpdate } = await import('./update.ts')
+  const { chmodSync, mkdtempSync, readFileSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const wait = async (dir: string, current: string) => {
+    for (let i = 0; i < 200 && readUpdateResult(dir, current) === 'pending'; i++) await new Promise((r) => setTimeout(r, 50))
+    return readUpdateResult(dir, current)
+  }
+  const t = mkdtempSync(join(tmpdir(), 'update-'))
+  const bin = (name: string, body: string) => { const f = join(t, name); writeFileSync(f, `#!/bin/sh\necho "$@" >> "${join(t, name + '.args')}"\n${body}\n`); chmodSync(f, 0o755); return f }
+  const args = (name: string) => readFileSync(join(t, name + '.args'), 'utf8').trim().split('\n')
+
+  // Routine: same repository, no new access. One start, exit 0, no --approve, the result is "updated".
+  const routine = bin('routine', `echo '{"ok":true,"result":{"version":"0.2.91"}}'\nexit 0`)
+  startUpdate(routine, 'cyucelen.flow', '0.2.91', join(t, 'u1'))
+  assert.deepEqual(await wait(join(t, 'u1'), '0.2.90'), { kind: 'updated', version: '0.2.91' })
+  assert.deepEqual(args('routine'), ['plugin update cyucelen.flow --json'])
+
+  // Approval: the host wants approval for the version it evaluated (0.2.91, not the 0.2.90 offered), then goes stale on --approve.
+  const msg = 'Updating 0.2.87 → 0.2.91 asks for more access: new customEditors.'
+  const host = bin('host', `case "$*" in *"--approve ap1-a1"*) echo '{"ok":false,"error":{"code":"approval_stale","message":"${msg} Changed again.","data":{"approvalFingerprint":"ap1-b2"}}}'; exit 3;; esac\necho '{"ok":false,"error":{"code":"approval_required","message":"${msg}","data":{"approvalFingerprint":"ap1-a1"}}}'\nexit 3`)
+  startUpdate(host, 'cyucelen.flow', '0.2.90', join(t, 'u2'))
+  const asked = await wait(join(t, 'u2'), '0.2.87')
+  assert.deepEqual(asked, { kind: 'approval', version: '0.2.91', reason: msg, command: 'orca plugin update cyucelen.flow --approve ap1-a1', fingerprint: 'ap1-a1' })
+  assert.deepEqual(args('host'), ['plugin update cyucelen.flow --json'], 'asking never approves')
+  // The explicit click: exactly the fingerprint shown, once.
+  startUpdate(host, 'cyucelen.flow', '0.2.91', join(t, 'u3'), 'ap1-a1')
+  const stale = await wait(join(t, 'u3'), '0.2.87') as { kind: string; fingerprint?: string; version: string }
+  assert.deepEqual([stale.kind, stale.fingerprint, stale.version], ['approval', 'ap1-b2', '0.2.91'], 'a new fingerprint comes back as a new approval to read')
+  assert.deepEqual(args('host'), ['plugin update cyucelen.flow --json', 'plugin update cyucelen.flow --approve ap1-a1 --json'], 'one --approve, no retry')
+  assert.throws(() => startUpdate(host, 'cyucelen.flow', '0.2.91', join(t, 'u4'), 'ap1-x; rm -rf /'), /fingerprint/)
 })
 
 test("a session in a coordinator's folder is a coordinator, even before it starts any worker", async () => {

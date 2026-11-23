@@ -4,6 +4,7 @@
 // (sidebar.saveSettings), which owns ~/.orca-flow/config.json; a failed save puts the control back.
 import type { SettingsState, UpdateState } from '../protocol.ts'
 import type { UpdateCheck } from '../update.ts'
+import { approvalTip } from '../approval.ts'
 import { PROVIDER_LOGOS } from '../provider-logos.ts'
 import { addTaskType, cardName, cardProblem, canAddType, choiceText, editTaskType, effortBar, effortsFor, fallbackText, pickEffort, pickModel, pickNone, pickPreset, popoverView, presetView, refFrom, removeTaskType, routingRows, saveNamed, suggestedTypes, UNKNOWN, type RoutingRow, type Slot } from './models.ts'
 import { deletePreset, MAX_TYPE_DESCRIPTION, MAX_TYPE_NAME, MAX_TYPES, resetRouting, type Effort, type ModelChoice, type Preset, type RoutingSettings } from '../routing.ts'
@@ -465,7 +466,7 @@ function updatesRow(): string {
   const checkBtn = (disabled = false, tip = '') => `<span class="s-tipwrap" ${tip ? `data-tip="${esc(tip)}"` : ''}><button type="button" class="s-push" id="s-check" ${disabled ? 'disabled' : ''} ${tip ? `aria-description="${esc(tip)}"` : ''}>Check for Updates</button></span>`
   const updateBtn = (version: string, text = 'Update') => `<button type="button" class="s-push primary" id="s-update" data-version="${esc(version)}">${text}</button>`
   if (u?.kind === 'updating') return value(`Updating to ${u.version}…`)
-  if (u?.kind === 'approval') return value('Needs approval', `${u.reason} To approve and update, run: ${u.command}`) + updateBtn(u.version, 'Update…')
+  if (u?.kind === 'approval') return value('Needs approval', approvalTip(u)) + updateBtn(u.version, 'Update…')
   if (u?.kind === 'failed') return value('Update failed', u.reason) + updateBtn(u.version, 'Try Again')
   if (checking) return value('Checking…') + checkBtn(true)
   if (c?.kind === 'cannot') {

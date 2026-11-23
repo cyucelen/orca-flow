@@ -6,6 +6,7 @@ import { askKey } from './coordinator-sessions.ts'
 // Layout (agreed in the mockup): a one-row cockpit; Up next as collapsible briefings, the first
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
+import { approvalSummary } from './approval.ts'
 import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
 import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, reloadSummary, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
@@ -835,6 +836,7 @@ const UPDATE_ICON = {
  * The top bar's update button, just left of search; empty when there is nothing to update. A new
  * release shows a download arrow with an accent dot; the rest say how the update went.
  */
+const approvalAccess = (s: { version: string; reason: string; command: string }) => { const a = approvalSummary(s).access; return a ? `: ${a}` : '' }
 export function updateButton(state: UpdateState | undefined): string {
   if (!state || state.kind === 'none') return ''
   const v = state.version
@@ -849,7 +851,7 @@ export function updateButton(state: UpdateState | undefined): string {
     case 'updated':
       return button('updated', `Orca Flow updated to ${v}`, UPDATE_ICON.check)
     case 'approval':
-      return button('approval', `Orca Flow ${v} needs your approval: ${state.reason}\nTo approve and update, run:\n${state.command}`, UPDATE_ICON.warning, 'warn')
+      return button('approval', `Orca Flow ${v} needs your approval${approvalAccess(state)}. Click for details.`, UPDATE_ICON.warning, 'warn')
     case 'failed':
       return button('failed', `Update to ${v} failed: ${state.reason}\nClick to try again`, UPDATE_ICON.error, 'danger')
   }

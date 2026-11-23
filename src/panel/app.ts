@@ -6,6 +6,7 @@ import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTarget
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
+import { approvalSummary, versionDelta } from '../approval.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
 import { externalLink } from './links.ts'
@@ -377,7 +378,7 @@ async function runAction(key: string): Promise<void> {
 /**
  * The update button. A new release (or a failed try) asks first, then the worker starts the update
  * as the status bar's second click does; the button follows the state the worker posts. An update
- * that needs approval is never approved from here: the dialog shows the command to run.
+ * that needs approval is approved only by the dialog's own Approve and update click.
  */
 async function updateClick(given?: UpdateState): Promise<void> {
   const st = given ?? snap?.update
@@ -386,8 +387,10 @@ async function updateClick(given?: UpdateState): Promise<void> {
     if (!(await confirmAction('update', `Update Orca Flow to ${st.version}?`, 'Orca Flow restarts on the new version.', 'Update', 'download', 'warn', false))) return
     await orca.plugin.request('sidebar.update').catch(() => null)
   } else if (st.kind === 'approval') {
-    const copy = await confirmAction('update-approval', `Orca Flow ${st.version} needs your approval`, `${st.reason}\nTo approve and update, run:\n${st.command}`, 'Copy command', 'warning', 'warn', false)
-    if (copy) await navigator.clipboard?.writeText(st.command).catch(() => {})
+    const choice = await approvalDialog(st)
+    if (choice === 'copy') await navigator.clipboard?.writeText(st.command).catch(() => {})
+    // Only this click approves, once, for the fingerprint the dialog showed; a new fingerprint comes back as a new dialog to read.
+    else if (choice === 'approve' && st.fingerprint) await orca.plugin.request('sidebar.approveUpdate', { fingerprint: st.fingerprint }).catch(() => null)
   }
 }
 
@@ -626,6 +629,48 @@ const MI: Record<string, string> = {
 const svgIcon = (name?: string) => (name ? `<svg class="micon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${MI[name]}</svg>` : '<span class="micon"></span>')
 const iconOf = (it: { icon?: string; iconHtml?: string }) => (it.iconHtml ? `<span class="micon">${it.iconHtml}</span>` : svgIcon(it.icon))
 
+
+/**
+ * The update-approval dialog: the version and access change on top, Orca's whole text in a region
+ * that scrolls, the command, and a footer that stays put. Approve and update is the person's own
+ * click, for exactly the fingerprint shown here; Copy command is the same approval run by hand.
+ */
+function approvalDialog(st: { version: string; reason: string; command: string; fingerprint?: string }): Promise<'approve' | 'copy' | null> {
+  const a = approvalSummary(st)
+  const dialog = $('approval')
+  const form = $('approval-form') as HTMLFormElement
+  const ok = $('approval-ok') as HTMLButtonElement
+  const copy = $('approval-copy') as HTMLButtonElement
+  const cancel = $('approval-cancel') as HTMLButtonElement
+  $('approval-title').textContent = `Orca Flow ${versionDelta(a)} needs your approval`
+  $('approval-sum').textContent = a.access ? `Asks for more access: ${a.access}.` : 'It asks for different access than the version you run.'
+  $('approval-adds').textContent = a.adds ?? ''
+  $('approval-scroll').textContent = a.text || 'Orca gave no details.'
+  $('approval-cmd').textContent = a.command
+  // Without a fingerprint there is nothing to bind an approval to: the command is the way.
+  ok.hidden = !st.fingerprint
+  dialog.hidden = false
+  cancel.focus()
+  return new Promise((resolve) => {
+    const done = (r: 'approve' | 'copy' | null) => {
+      dialog.hidden = true
+      form.onsubmit = null; cancel.onclick = null; copy.onclick = null; dialog.onkeydown = null; dialog.onclick = null
+      resolve(r)
+    }
+    form.onsubmit = (e) => { e.preventDefault(); done('approve') }
+    copy.onclick = () => done('copy')
+    cancel.onclick = () => done(null)
+    dialog.onclick = (e) => { if (e.target === dialog) done(null) }
+    dialog.onkeydown = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); return }
+      if (e.key !== 'Tab') return
+      const stops = [$('approval-scroll'), cancel, copy, ...(ok.hidden ? [] : [ok])]
+      const i = stops.indexOf(document.activeElement as HTMLElement)
+      const next = stops[(i + (e.shiftKey ? -1 : 1) + stops.length) % stops.length]
+      e.preventDefault(); next.focus()
+    }
+  })
+}
 
 /** Confirms a destructive action unless the person said not to ask again for this kind. */
 async function confirmAction(kind: string, title: string, text: string, okLabel: string, icon = 'trash', tone: 'danger' | 'warn' = 'danger', rememberable = true): Promise<boolean> {

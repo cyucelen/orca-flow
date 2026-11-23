@@ -65,3 +65,48 @@ test('the status bar and the panel button follow each check, and stop offering w
   assert.deepEqual(u.state, { kind: 'none' })
   assert.deepEqual(shown, [{ kind: 'available', version: '0.2.65' }, { kind: 'none' }])
 })
+
+test('only the explicit Approve and update passes --approve: for the shown fingerprint, once; the status bar and routine paths never do', () => {
+  type S = UpdateState
+  const approvals: string[] = []
+  const timers: (() => void)[] = []
+  const shown: S[] = []
+  const u = updater({ key: 'cyucelen.flow', current: '0.2.87', dir: '/nonexistent', show: (s) => shown.push(s), start: (_v, approve) => approvals.push(approve ?? 'none'), later: (fn) => timers.push(fn), log: () => {} })
+  const ask: S = { kind: 'approval', version: '0.2.91', reason: 'Updating 0.2.87 → 0.2.91 asks for more access: new customEditors.', command: 'orca plugin update cyucelen.flow --approve ap1-aa', fingerprint: 'ap1-aa' }
+  u.show(ask)
+  u.click(); u.click(); u.now()
+  assert.deepEqual([...approvals], [], 'the status bar and the panel update click never approve')
+  assert.equal(u.approve('ap1-bb').started, false, 'a fingerprint other than the one shown')
+  assert.equal(u.approve('ap1-aa; x').started, false)
+  assert.deepEqual([...approvals], [])
+  assert.equal(u.approve('ap1-aa').started, true)
+  assert.deepEqual([...approvals], ['ap1-aa'])
+  assert.deepEqual(u.state, { kind: 'updating', version: '0.2.91' })
+  assert.equal(u.approve('ap1-aa').started, false, 'not again while updating, and no remembered consent')
+  assert.deepEqual([...approvals], ['ap1-aa'])
+  // routine: available → start without an approval
+  const r = updater({ key: 'cyucelen.flow', current: '0.2.87', dir: '/nonexistent', show: () => {}, start: (_v, approve) => approvals.push(approve ?? 'none'), later: () => {}, log: () => {} })
+  r.found('0.2.88'); r.now()
+  assert.deepEqual([...approvals], ['ap1-aa', 'none'])
+})
+
+test('a pending update keeps being watched past 100 polls, and a result ends Updating at once, naming the real target', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = join(mkdtempSync(join(tmpdir(), 'upd-')), 'update')
+  mkdirSync(dir)
+  writeFileSync(join(dir, 'pending.json'), JSON.stringify({ key: 'cyucelen.flow', version: '0.2.90', at: Date.now() }))
+  const shown: UpdateState[] = []
+  const queue: (() => void)[] = []
+  const u = updater({ key: 'cyucelen.flow', current: '0.2.87', dir, show: (s) => shown.push(s), start: () => {}, later: (fn) => queue.push(fn), log: () => {} })
+  u.settle()
+  for (let i = 0; i < 150; i++) queue.shift()!()
+  assert.equal(queue.length, 1, 'still watching after 150 polls')
+  assert.deepEqual(shown.at(-1), { kind: 'updating', version: '0.2.90' }, 'a fresh worker shows an update that is still running')
+  writeFileSync(join(dir, 'out.json'), JSON.stringify({ ok: false, error: { code: 'approval_required', message: 'Updating 0.2.87 → 0.2.91 asks for more access: new customEditors.', data: { approvalFingerprint: 'ap1-aa' } } }))
+  writeFileSync(join(dir, 'exit'), '3')
+  queue.shift()!()
+  assert.equal(shown.at(-1)!.kind, 'approval')
+  assert.equal((shown.at(-1) as { version: string }).version, '0.2.91', 'the version the host evaluated, not the one offered')
+})
