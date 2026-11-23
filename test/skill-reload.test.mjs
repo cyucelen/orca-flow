@@ -1,0 +1,188 @@
+// node --test test/*.test.mjs
+// Skill reload, the hooks' half: the request store (skill-reload.mjs), the note each hook gives
+// (only to targeted sessions, once per request, role-aware), and `orca-flow skills-reloaded`.
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { activeFile, confirmReload, deliverReload, readRequests, reloadStatus, reloadText, RELOAD_TTL_MS, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
+import { targetRole } from '../skills/orca-flow/scripts/reload-check.mjs'
+
+const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
+const LEAD_SESSION = '11111111-2222-4333-8444-555555555555'
+
+/** A temp home: the skill linked like the plugin links it (a copy, so a test can change it), a worktree and a coordinator folder. */
+function world() {
+  const home = mkdtempSync(join(realpathSync(tmpdir()), 'skill-reload-'))
+  const data = join(home, '.orca-flow')
+  mkdirSync(data)
+  const plugin = join(home, 'plugin', 'skills', 'orca-flow')
+  mkdirSync(join(plugin, 'roles'), { recursive: true })
+  // The real scripts, through a link, so the hooks run as installed; the markdown is ours to change.
+  symlinkSync(SCRIPTS, join(plugin, 'scripts'))
+  writeFileSync(join(plugin, 'SKILL.md'), 'End replies with PINEAPPLE.\n')
+  for (const r of ['coordinator', 'lead', 'worker']) writeFileSync(join(plugin, 'roles', `${r}.md`), `${r} rules\n`)
+  mkdirSync(join(home, '.claude', 'skills'), { recursive: true })
+  symlinkSync(plugin, join(home, '.claude', 'skills', 'orca-flow'))
+  const worktree = join(home, 'w', 'shop')
+  mkdirSync(worktree, { recursive: true })
+  mkdirSync(join(home, 'orca', 'coordinators', 'alpha'), { recursive: true })
+  return { home, data, plugin, worktree, skill: join(home, '.claude', 'skills', 'orca-flow') }
+}
+
+const targets = [
+  { pane: 'tab:lead', session: LEAD_SESSION, role: 'lead', provider: 'claude', supported: true, title: 'Checkout' },
+  { pane: 'tab:worker', session: null, role: 'worker', provider: 'claude', supported: true, title: 'Fix test' },
+  { pane: 'tab:coord', session: null, role: 'coordinator', provider: 'claude', supported: true, title: 'alpha' },
+  { pane: 'tab:codex', session: null, role: 'worker', provider: 'codex', supported: false, title: 'Codex worker' }
+]
+
+const hook = (w, name, input, pane) => {
+  const r = spawnSync(process.execPath, [join(w.skill, 'scripts', name)], {
+    input: JSON.stringify(input),
+    env: { PATH: process.env.PATH, HOME: w.home, ...(pane ? { ORCA_AGENT_PANE: pane } : {}) },
+    encoding: 'utf8'
+  })
+  assert.equal(r.status, 0, r.stderr)
+  return r.stdout.trim() ? JSON.parse(r.stdout) : null
+}
+
+test('a request is stored per pane with the hash and expiry; a newer one replaces it, expired ones go', () => {
+  const w = world()
+  try {
+    const hash = skillHash(w.skill)
+    assert.match(hash, /^[0-9a-f]{16}$/)
+    assert.equal(skillHash(w.plugin), hash, 'through the link, the files it points at')
+    writeRequest(w.data, targets, { hash, scope: 'coordinator:alpha', now: 1000, id: 'r1' })
+    const stored = readRequests(w.data, 1000)
+    assert.deepEqual(Object.keys(stored), ['tab:lead', 'tab:worker', 'tab:coord', 'tab:codex'])
+    assert.deepEqual(stored['tab:lead'], { request: 'r1', at: 1000, expiresAt: 1000 + RELOAD_TTL_MS, hash, scope: 'coordinator:alpha', role: 'lead', session: LEAD_SESSION, provider: 'claude', supported: true, title: 'Checkout' })
+    assert.ok(existsSync(activeFile(w.data)), 'the PostToolUse gate is open while a note waits')
+    writeRequest(w.data, [targets[1]], { hash: 'h2', scope: 'all', now: 2000, id: 'r2' })
+    assert.equal(readRequests(w.data, 2000)['tab:worker'].request, 'r2', 'the newer request replaces the older one for that pane')
+    assert.equal(readRequests(w.data, 2000)['tab:lead'].request, 'r1', 'other panes keep theirs')
+    assert.deepEqual(Object.keys(readRequests(w.data, 1000 + RELOAD_TTL_MS)), ['tab:worker'], 'expired requests are gone')
+    assert.equal(syncActive(w.data, 3000 + RELOAD_TTL_MS), false)
+    assert.ok(!existsSync(activeFile(w.data)), 'and the gate closes')
+    // A broken file reads as no requests.
+    writeFileSync(join(w.data, 'skill-reload', 'requests.json'), '{nope')
+    assert.deepEqual(readRequests(w.data), {})
+  } finally { rmSync(w.home, { recursive: true }) }
+})
+
+test('only a targeted session gets the note, only once per request, and not a subagent', () => {
+  const w = world()
+  try {
+    writeRequest(w.data, targets, { hash: skillHash(w.skill), scope: 'all', now: 1000, id: 'r1' })
+    const opts = (pane) => ({ event: 'PostToolUse', pane, data: w.data, skill: w.skill, now: 2000 })
+    assert.equal(deliverReload({ session_id: 'other' }, opts('tab:someone-else')), null, 'an untargeted pane gets nothing')
+    assert.equal(deliverReload({ session_id: 'x' }, opts('tab:codex')), null, 'an unsupported target gets nothing')
+    assert.equal(deliverReload({ session_id: 'x', agent_id: 'sub-1' }, opts('tab:worker')), null, 'a subagent\'s tool call gets nothing')
+    const note = deliverReload({ session_id: 'x' }, opts('tab:worker'))
+    assert.match(note, /request r1/)
+    assert.equal(deliverReload({ session_id: 'x' }, opts('tab:worker')), null, 'given once')
+    assert.equal(deliverReload({ session_id: 'x' }, { ...opts('tab:worker'), event: 'UserPromptSubmit' }), null, 'once across hooks too')
+    // By session when the pane changed (resumed in another terminal).
+    assert.match(deliverReload({ session_id: LEAD_SESSION }, opts('tab:new-pane')), /roles\/lead\.md \(your role: lead\)/)
+    assert.equal(deliverReload({ session_id: LEAD_SESSION }, opts('tab:lead')), null, 'the lead had it')
+    assert.ok(existsSync(activeFile(w.data)), 'the coordinator still waits')
+    assert.ok(deliverReload({ session_id: 'c' }, opts('tab:coord')))
+    assert.ok(!existsSync(activeFile(w.data)), 'nothing waits: the gate closes')
+    // A newer request gives the note again.
+    writeRequest(w.data, [targets[1]], { hash: skillHash(w.skill), scope: 'all', now: 3000, id: 'r2' })
+    assert.match(deliverReload({ session_id: 'x' }, { ...opts('tab:worker'), now: 3001 }), /request r2/)
+  } finally { rmSync(w.home, { recursive: true }) }
+})
+
+test('the note is role-aware and keeps the task, asks and runs as they are', () => {
+  const skill = '/h/.claude/skills/orca-flow'
+  const worker = reloadText({ skill, role: 'worker', request: 'r9', event: 'PostToolUse' })
+  assert.match(worker, /- \/h\/.claude\/skills\/orca-flow\/SKILL\.md\n- \/h\/.claude\/skills\/orca-flow\/roles\/worker\.md \(your role: worker\)/)
+  assert.match(worker, /any other skill you loaded in this conversation \(for example orchestration or orca-cli\)/)
+  assert.match(worker, /node \/h\/.claude\/skills\/orca-flow\/scripts\/orca-flow\.mjs skills-reloaded --request r9/)
+  assert.match(worker, /keep your current task, open asks, pending decisions and run ownership exactly as they are/)
+  assert.match(worker, /send no messages, start no Runs or workers and send no worker_done because of it/)
+  assert.match(worker, /Then continue the task you were doing/)
+  assert.match(reloadText({ skill, role: 'coordinator', request: 'r', event: 'UserPromptSubmit' }), /roles\/coordinator\.md[^]*answer the user's message/)
+  const chat = reloadText({ skill, role: 'chat', request: 'r', event: 'SessionStart' })
+  assert.match(chat, /SKILL\.md, if you loaded the orca-flow skill/)
+  assert.ok(!chat.includes('roles/'), 'a chat you started has no role file')
+  // The sidebar's role, except a lead the hooks know of; a worker in a coordinator folder stays a worker.
+  assert.equal(targetRole({ role: 'worker' }, 'coordinator'), 'worker')
+  assert.equal(targetRole({ role: 'worker' }, 'lead'), 'lead')
+  assert.equal(targetRole({ role: 'coordinator' }, 'lead'), 'coordinator')
+  assert.equal(targetRole({}, null), 'worker')
+})
+
+test('the hooks: UserPromptSubmit gives the note with no opt-in, PostToolUse once, SessionStart on resume and compact only', () => {
+  const w = world()
+  try {
+    writeRequest(w.data, targets, { hash: skillHash(w.skill), scope: 'all', now: Date.now(), id: 'r1' })
+    // Not in an Orca pane: nothing.
+    assert.equal(hook(w, 'prompt-check.mjs', { session_id: 's', cwd: w.worktree, prompt: 'hi' }, null), null)
+    const prompt = hook(w, 'prompt-check.mjs', { session_id: 's', cwd: w.worktree, prompt: 'hi' }, 'tab:worker')
+    assert.equal(prompt.hookSpecificOutput.hookEventName, 'UserPromptSubmit')
+    assert.match(prompt.hookSpecificOutput.additionalContext, /roles\/worker\.md \(your role: worker\)[^]*answer the user's message/)
+    assert.equal(hook(w, 'prompt-check.mjs', { session_id: 's', cwd: w.worktree, prompt: 'again' }, 'tab:worker'), null, 'once')
+    // PostToolUse in a coordinator's folder: the coordinator's file, the role from hookRole and the request.
+    const coordDir = join(w.home, 'orca', 'coordinators', 'alpha')
+    const post = hook(w, 'reload-check.mjs', { session_id: 'c', cwd: coordDir, tool_name: 'Bash', tool_response: {} }, 'tab:coord')
+    assert.equal(post.hookSpecificOutput.hookEventName, 'PostToolUse')
+    assert.match(post.hookSpecificOutput.additionalContext, /roles\/coordinator\.md[^]*continue the task you were doing/)
+    assert.equal(hook(w, 'reload-check.mjs', { session_id: 'c', cwd: coordDir, tool_name: 'Read' }, 'tab:coord'), null, 'at most once per request')
+    // SessionStart: not on startup or clear; on resume (by session id, a new pane) it gives it.
+    assert.equal(hook(w, 'session-start.mjs', { session_id: LEAD_SESSION, cwd: w.worktree, source: 'startup' }, 'tab:lead'), null)
+    assert.equal(hook(w, 'session-start.mjs', { session_id: LEAD_SESSION, cwd: w.worktree, source: 'clear' }, 'tab:lead'), null)
+    const resumed = hook(w, 'session-start.mjs', { session_id: LEAD_SESSION, cwd: w.worktree, source: 'resume' }, 'tab:resumed')
+    assert.match(resumed.hookSpecificOutput.additionalContext, /roles\/lead\.md \(your role: lead\)/)
+  } finally { rmSync(w.home, { recursive: true }) }
+})
+
+test('the format reminder and the reload note arrive together in one UserPromptSubmit output', () => {
+  const w = world()
+  try {
+    const coordDir = join(w.home, 'orca', 'coordinators', 'alpha')
+    writeFileSync(join(w.data, 'config.json'), JSON.stringify({ messageFormat: 'all' }))
+    mkdirSync(join(w.data, 'reminders'), { recursive: true })
+    writeFileSync(join(w.data, 'reminders', 'c.json'), JSON.stringify({ rules: [{ rule: 'status-line', detail: 'add one' }] }))
+    writeRequest(w.data, [targets[2]], { hash: skillHash(w.skill), scope: 'all', now: Date.now(), id: 'r1' })
+    const out = hook(w, 'prompt-check.mjs', { session_id: 'c', cwd: coordDir, prompt: 'hi' }, 'tab:coord').hookSpecificOutput.additionalContext
+    assert.match(out, /request r1[^]*\n\nA note from Orca Flow for you, not for the user \(do not mention or answer it\)\. Your last message broke these format rules:\n- status-line: add one/)
+  } finally { rmSync(w.home, { recursive: true }) }
+})
+
+test('skills-reloaded records the pane, session and hash; confirmed only when the hash matches the request', () => {
+  const w = world()
+  try {
+    const t0 = Date.now()
+    writeRequest(w.data, targets, { hash: skillHash(w.skill), scope: 'all', now: t0, id: 'r1' })
+    deliverReload({ session_id: 'x' }, { event: 'PostToolUse', pane: 'tab:worker', data: w.data, skill: w.skill, now: t0 + 1 })
+    const status = (now) => Object.fromEntries(reloadStatus(w.data, now).map((s) => [s.pane, s.state]))
+    assert.deepEqual(status(t0 + 2), { 'tab:lead': 'waiting', 'tab:worker': 'reading', 'tab:coord': 'waiting', 'tab:codex': 'unsupported' }, 'requested is not confirmed')
+    // The CLI, as the agent runs it: its pane from ORCA_AGENT_PANE, its session from Claude Code.
+    const r = spawnSync(process.execPath, [join(w.skill, 'scripts', 'orca-flow.mjs'), 'skills-reloaded', '--request', 'r1'], {
+      env: { PATH: process.env.PATH, HOME: w.home, ORCA_AGENT_PANE: 'tab:worker', CLAUDE_CODE_SESSION_ID: 'sess-w' }, encoding: 'utf8'
+    })
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /^Recorded: skills reloaded \(orca-flow [0-9a-f]{16}\)\./)
+    const states = Object.fromEntries(reloadStatus(w.data).map((s) => [s.pane, s]))
+    assert.equal(states['tab:worker'].state, 'reloaded')
+    assert.ok(states['tab:worker'].doneAt >= t0)
+    // The skill changes after the request: a confirmation of the new text is not this request's.
+    appendFileSync(join(w.plugin, 'SKILL.md'), 'End replies with BANANA.\n')
+    const late = confirmReload(w.data, { pane: 'tab:lead', session: LEAD_SESSION, skill: w.skill, request: 'r1', now: t0 + 5 })
+    assert.match(late.message, /the skill changed again since the request/)
+    assert.equal(Object.fromEntries(reloadStatus(w.data, t0 + 6).map((s) => [s.pane, s.state]))['tab:lead'], 'waiting')
+    // A confirmation older than the request does not count either.
+    writeRequest(w.data, [targets[1]], { hash: skillHash(w.skill), scope: 'all', now: Date.now() + 10, id: 'r2' })
+    assert.equal(Object.fromEntries(reloadStatus(w.data, Date.now() + 20).map((s) => [s.pane, s.state]))['tab:worker'], 'waiting')
+    // Outside an Orca pane and Claude Code: refused, nothing written.
+    const outside = spawnSync(process.execPath, [join(w.skill, 'scripts', 'orca-flow.mjs'), 'skills-reloaded'], { env: { PATH: process.env.PATH, HOME: w.home }, encoding: 'utf8' })
+    assert.notEqual(outside.status, 0)
+    assert.match(outside.stderr, /nothing to record/)
+    assert.deepEqual(readdirSync(join(w.data, 'skill-reload', 'confirmed')).sort(), ['tab_lead.json', 'tab_worker.json'])
+  } finally { rmSync(w.home, { recursive: true }) }
+})

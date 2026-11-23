@@ -9,7 +9,9 @@
 // resumes or compacts; it needs no opt-in and gives everyone else nothing. A PreToolUse hook on the
 // Agent tool (delegation-check.mjs) denies a coordinator's or lead's native subagent for anything
 // but a read-only lookup and points it at `orca-flow dispatch`; on by default, off with
-// "delegationCheck": "off" in ~/.orca-flow/config.json.
+// "delegationCheck": "off" in ~/.orca-flow/config.json. A PostToolUse hook (reload-check.mjs) hands a
+// busy agent the sidebar's "Reload skills" note after a tool call; its command starts node only while
+// ~/.orca-flow/skill-reload/active exists, so it costs other tool calls a file test.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -145,16 +147,18 @@ export const PROMPT_HOOK_MARK = 'skills/orca-flow/scripts/prompt-check.mjs'
 export const SESSION_HOOK_MARK = 'skills/orca-flow/scripts/session-start.mjs'
 /** Finds our PreToolUse hook, which sends a coordinator's or lead's work to Orca workers. */
 export const DELEGATION_HOOK_MARK = 'skills/orca-flow/scripts/delegation-check.mjs'
+/** Finds our PostToolUse hook, which gives a busy agent the sidebar's skill-reload note. */
+export const RELOAD_HOOK_MARK = 'skills/orca-flow/scripts/reload-check.mjs'
 /** The Agent tool, under its current name and the one it had before. */
 export const AGENT_TOOL_MATCHER = 'Agent|Task'
 
-export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'PreToolUse'
+export type HookEvent = 'Stop' | 'UserPromptSubmit' | 'SessionStart' | 'PreToolUse' | 'PostToolUse'
 export type StopHook = { path: string; event?: HookEvent; mark?: string; entry: { matcher?: string; hooks: { type: 'command'; command: string; timeout: number }[] } }
 
 /** One of our hook entries: it runs the script through the skill link, only in an Orca agent pane. */
-function hookFor(claudeDir: string, event: HookEvent, mark: string, matcher?: string): StopHook {
+function hookFor(claudeDir: string, event: HookEvent, mark: string, matcher?: string, gate = ''): StopHook {
   const script = join(claudeDir, mark)
-  const hooks: StopHook['entry']['hooks'] = [{ type: 'command', command: `if [ -n "\${ORCA_AGENT_PANE-}" ]; then node "${script}"; fi`, timeout: 10 }]
+  const hooks: StopHook['entry']['hooks'] = [{ type: 'command', command: `if [ -n "\${ORCA_AGENT_PANE-}" ]${gate}; then node "${script}"; fi`, timeout: 10 }]
   return { path: join(claudeDir, 'settings.json'), event, mark, entry: matcher === undefined ? { hooks } : { matcher, hooks } }
 }
 
@@ -179,6 +183,14 @@ export function sessionHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(
 /** The profile's settings.json and our PreToolUse hook entry, for the Agent tool only. */
 export function delegationHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
   return hookFor(claudeDir, 'PreToolUse', DELEGATION_HOOK_MARK, AGENT_TOOL_MATCHER)
+}
+
+/**
+ * The profile's settings.json and our PostToolUse hook entry, on every tool (no matcher). The shell
+ * starts node only while a reload request waits (skill-reload.mjs keeps the `active` file in step).
+ */
+export function reloadHookFor(home = homedir(), claudeDir = claudeDiscoveryDir(home, claudeConfigDir(), process.env.CLAUDE_CONFIG_DIR)): StopHook {
+  return hookFor(claudeDir, 'PostToolUse', RELOAD_HOOK_MARK, undefined, ' && [ -e "${ORCA_FLOW_DIR:-$HOME/.orca-flow}/skill-reload/active" ]')
 }
 
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -258,16 +270,17 @@ export function ensureStopHook({ path, entry, event = 'Stop', mark = STOP_HOOK_M
 
 /**
  * Like ensureOwnLinks: only the installed copy writes our hooks, never a development folder. With
- * the Stop hook go its UserPromptSubmit partner, the SessionStart hook and the PreToolUse
- * delegation hook, in the same settings.json.
+ * the Stop hook go its UserPromptSubmit partner, the SessionStart hook, the PreToolUse
+ * delegation hook and the PostToolUse skill-reload hook, in the same settings.json.
  */
 export function ensureOwnStopHook(hook: StopHook, installed: boolean): string[] {
-  if (!installed) return [`left the Stop, UserPromptSubmit, SessionStart and PreToolUse hooks in ${hook.path} to the installed copy: this is a development folder`]
+  if (!installed) return [`left the Stop, UserPromptSubmit, SessionStart, PreToolUse and PostToolUse hooks in ${hook.path} to the installed copy: this is a development folder`]
   const claudeDir = join(hook.path, '..')
   return [
     ...ensureStopHook(hook),
     ...ensureStopHook(promptHookFor(undefined, claudeDir)),
     ...ensureStopHook(sessionHookFor(undefined, claudeDir)),
-    ...ensureStopHook(delegationHookFor(undefined, claudeDir))
+    ...ensureStopHook(delegationHookFor(undefined, claudeDir)),
+    ...ensureStopHook(reloadHookFor(undefined, claudeDir))
   ]
 }
