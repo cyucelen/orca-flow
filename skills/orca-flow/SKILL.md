@@ -44,6 +44,12 @@ Everything below applies to every role. Load the `orchestration` skill for comma
 `node <this skill's base directory>/scripts/orca-flow.mjs <command>`. It reads the same data as the
 user's Orca Flow sidebar, so what you rank and report matches what they see.
 
+**When told the skills changed** (a note from Orca Flow after the user pressed Reload skills, or the
+user saying so): re-read this file and your role file from disk, and any other skill you loaded in
+this conversation, even if you read them before; the new text replaces what you remember. Then run
+`orca-flow skills-reloaded` (with the note's `--request` id) and carry on. Nothing else changes:
+keep your task, open asks and run ownership, and send no message or `worker_done` because of it.
+
 ## Priority vocabulary
 
 Use these words exactly, in cards, specs, summaries and when talking to the user.

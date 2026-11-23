@@ -58,6 +58,16 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   branch's color.
 - **The `orca-flow` skill:** teaches agents the coordinator, lead and worker roles, one priority
   vocabulary, and when there is room to start more.
+- **Reload skills:** after a skill update, running agents keep the old text in their conversation.
+  Right-click a coordinator and choose **Reload skills** (its session, leads and workers), or use the
+  circular-arrows button on the Coordinators heading (every running agent). A confirmation names who
+  gets it ("1 coordinator, 2 leads, 1 worker; 1 Codex session has no live reload; skipped: 1
+  finished"). Each Claude Code session gets a short note at its next turn, or after its next tool
+  call when busy: re-read the skill files, then confirm. Nothing is typed into a terminal and no mail
+  is sent; tasks, open asks and runs stay as they are. Rows show waiting, reading, reloaded or
+  unsupported, and one line sums it up ("Skills: 3 reloaded · 2 waiting for next turn"); requests
+  expire after 24 h. Codex and other agents cannot reload live: restart them.
+  [How it works and what each provider supports](docs/skill-reload.md)
 
 ## Requirements
 
@@ -86,7 +96,7 @@ The installed copy sets up these files outside its own folder:
 | `~/.agents/skills/orca-flow` | The Codex USER skill link, shared across Orca Codex accounts. Account selection changes `CODEX_HOME`, not this user skill directory. |
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
 | `~/orca/coordinators/<name>/AGENTS.md` and `CLAUDE.md` | Missing local instructions are seeded for new and existing coordinator folders. Launch prompts also explicitly supply the coordinator role and skill path. |
-| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. One PreToolUse hook on the Agent tool denies a coordinator's or lead's native subagent so the work goes to an Orca worker; it is on by default ([Delegation](docs/model-routing.md#delegation)). All four run only in Orca's agent panes. Your other settings and hooks stay as they are. |
+| `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. One PreToolUse hook on the Agent tool denies a coordinator's or lead's native subagent so the work goes to an Orca worker; it is on by default ([Delegation](docs/model-routing.md#delegation)). One PostToolUse hook hands a busy agent the [Reload skills](docs/skill-reload.md) note; it starts `node` only while a reload request waits. The UserPromptSubmit and SessionStart hooks give that note too, with no opt-in, and only to the sessions a request names. All five run only in Orca's agent panes. Your other settings and hooks stay as they are. |
 
 A real file or another source's symlink is left alone, including a dangling link whose ownership
 cannot be verified. Only our installed release links are repointed. A `settings.json` that is not
@@ -402,8 +412,8 @@ orca plugin uninstall cyucelen.flow
 ```
 
 Then remove what it set up outside its folder, if you no longer want it: the `orca-flow` link in
-your Claude profile's `skills` folder, the hooks that run `stop-check.mjs`, `prompt-check.mjs` and `session-start.mjs`
-in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
+your Claude profile's `skills` folder, the hooks that run `stop-check.mjs`, `prompt-check.mjs`, `session-start.mjs`,
+`delegation-check.mjs` and `reload-check.mjs` in its `settings.json`, `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
 
 ## Limitations
 
