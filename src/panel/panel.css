@@ -197,7 +197,9 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .soft { color: var(--faint); font-size: 11px; }
 /* A session's model, in the Linear chip's box and type: its provider's mark, then the name. On a row
    it sits after the avatar, before the title; the title keeps a floor and the badge gives way first. */
-.mbadge { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 46px; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
+.mbadge { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 46px; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: color-mix(in srgb, var(--ink) 11%, transparent); }
+/* Stronger than --card: the badge sits right beside the title and must read as a chip, also on a hovered row. */
+html.light .mbadge { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .mbadge svg, .mbadge img { flex: none; width: 10px; height: 10px; display: block; object-fit: contain; }
 .mbadge .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Asked for or the provider's default: italic and dimmer. */
