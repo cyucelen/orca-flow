@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import {
   addNet, addResponse, agentPids, binRate, claudeLine, codexLine, decodeCursors, decodeHistory, emptyHistory, encodeCursors, encodeHistory,
   flushStale, histogramMedian, isSpeedFile, logRoots, logsToRead, modelLabel, newCursor, parseNettop, parseNetworkQuality, prune, rateBin,
-  readAppended, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type Cursor, type Response
+  logSession, readAppended, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type Cursor, type Response, type Usage
 } from './token-speed.ts'
 import { ago, bits, chart, niceMax, speedUiOf, tokenSpeedSection } from './token-speed-view.ts'
 
@@ -110,6 +110,116 @@ test('Codex without token_usage_record: the token_count after a tool output ends
     ev(8002, { type: 'token_count', info: null })
   ])
   assert.deepEqual(out, [{ model: 'gpt-6-astra', out: 100, start: T0, end: T0 + 5000 }])
+})
+
+// ---------- usage observations ----------
+
+const runUsage = (kind: 'claude' | 'codex', lines: string[], now = T0 + 3_600_000) => {
+  const c = newCursor(kind)
+  const out: Response[] = []
+  const used: Usage[] = []
+  for (const l of lines) (kind === 'claude' ? claudeLine : codexLine)(c, l, (r) => out.push(r), (u) => used.push(u))
+  flushStale(c, now, (r) => out.push(r), (u) => used.push(u))
+  return { c, out, used }
+}
+
+const claudeUsage = (ms: number, id: string, usage: Record<string, unknown>, sessionId: string | null = 'sess-1') =>
+  JSON.stringify({ type: 'assistant', ...(sessionId ? { sessionId } : {}), message: { model: 'claude-opus-5-5', id, content: [{ type: 'text', text: 'secret answer' }], usage }, timestamp: iso(ms) })
+
+test('Claude usage: input excludes the cache, the cache write splits 5m/1h, the last line of an id wins', () => {
+  const first = { input_tokens: 6, cache_read_input_tokens: 20_000, cache_creation_input_tokens: 1500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 1000 }, output_tokens: 1 }
+  const lines = [
+    user(0),
+    claudeUsage(1000, 'm1', first),
+    claudeUsage(3000, 'm1', { ...first, output_tokens: 420, output_tokens_details: { thinking_tokens: 300 } }),
+    user(4000),
+    // No split in the log: the whole write is 5m (the default TTL).
+    claudeUsage(5000, 'm2', { input_tokens: 2, cache_read_input_tokens: 21_500, cache_creation_input_tokens: 800, output_tokens: 90 })
+  ]
+  const { out, used, c } = runUsage('claude', lines)
+  assert.deepEqual(used, [
+    { provider: 'claude', session: 'sess-1', id: 'm1', model: 'claude-opus-5-5', start: T0, end: T0 + 3000, in: 6, cacheRead: 20_000, cacheWrite5m: 500, cacheWrite1h: 1000, out: 420 },
+    { provider: 'claude', session: 'sess-1', id: 'm2', model: 'claude-opus-5-5', start: T0 + 4000, end: T0 + 5000, in: 2, cacheRead: 21_500, cacheWrite5m: 800, cacheWrite1h: 0, out: 90 }
+  ])
+  // Speed is as before: the same two responses, output only.
+  assert.deepEqual(out, run('claude', lines).out)
+  assert.ok(!JSON.stringify(c).includes('secret'))
+})
+
+test('Claude usage: responses too long or with no start for a speed still count', () => {
+  const { out, used } = runUsage('claude', [
+    claudeUsage(1000, 'nostart', { input_tokens: 1, output_tokens: 10 }),
+    user(2000), claudeUsage(2000 + 601_000, 'long', { input_tokens: 1, output_tokens: 9000 })
+  ])
+  assert.equal(out.length, 0)
+  assert.deepEqual(used.map((u) => [u.id, u.start - T0, u.end - T0, u.out]), [['nostart', 1000, 1000, 10], ['long', 2000, 603_000, 9000]])
+})
+
+test('Codex usage: input_tokens includes the cached ones; reasoning stays in output; never the cumulative totals', () => {
+  const rec = (ms: number, ordinal: number, id: string, input: number, cached: number, out: number) =>
+    JSON.stringify({ timestamp: iso(ms), ordinal, type: 'token_usage_record', payload: {
+      thread_id: 'th-1', session_id: 'root-1', response_id: id,
+      usage: { input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0, output_tokens: out, reasoning_output_tokens: Math.floor(out / 2), total_tokens: input + out },
+      thread_token_usage: { input_tokens: 999_999, cached_input_tokens: 1, output_tokens: 999_999, total_tokens: 1_999_998 }
+    } })
+  const lines = [
+    cx(0, 'turn_context', { model: 'gpt-6.2-astra' }),
+    ev(0, { type: 'task_started' }),
+    item(4000, { type: 'reasoning' }),
+    rec(9200, 13, 'resp_a', 21_323, 12_032, 145),
+    ev(9300, { type: 'token_count', info: { last_token_usage: usage(145), total_token_usage: usage(145) } }),
+    item(9900, { type: 'function_call_output', output: 'secret' }),
+    rec(15_100, 19, 'resp_b', 29_280, 21_120, 39)
+  ]
+  const { out, used } = runUsage('codex', lines)
+  assert.deepEqual(used, [
+    { provider: 'codex', session: 'th-1', id: 'resp_a', model: 'gpt-6.2-astra', start: T0, end: T0 + 9200, in: 9291, cacheRead: 12_032, cacheWrite5m: 0, cacheWrite1h: 0, out: 145 },
+    { provider: 'codex', session: 'th-1', id: 'resp_b', model: 'gpt-6.2-astra', start: T0 + 9900, end: T0 + 15_100, in: 8160, cacheRead: 21_120, cacheWrite5m: 0, cacheWrite1h: 0, out: 39 }
+  ])
+  assert.deepEqual(out, run('codex', lines).out)
+})
+
+test('Codex usage without records: each token_count\'s last_token_usage once, a repeated count (same total) not again', () => {
+  const tc = (ms: number, out: number, total: number) => ev(ms, { type: 'token_count', info: { last_token_usage: usage(out), total_token_usage: { ...usage(out), total_tokens: total } } })
+  const lines = [
+    cx(0, 'turn_context', { model: 'gpt-6-astra' }),
+    ev(0, { type: 'user_message', message: 'secret' }),
+    item(3000, { type: 'reasoning' }),
+    item(5000, { type: 'function_call' }),
+    item(8000, { type: 'function_call_output' }),
+    tc(8001, 100, 9100),
+    tc(8500, 100, 9100), // the same count again (a rate limit update)
+    item(9000, { type: 'message', role: 'assistant' }),
+    tc(9500, 60, 18_160)
+  ]
+  const { out, used } = runUsage('codex', lines)
+  assert.deepEqual(used.map((u) => [u.session, u.id, u.start - T0, u.end - T0, u.in, u.cacheRead, u.out]), [['', `t${T0 + 8001}`, 0, 5000, 1000, 8000, 100], ['', `t${T0 + 9500}`, 8000, 9000, 1000, 8000, 60]])
+  assert.deepEqual(out, run('codex', lines).out)
+})
+
+test('log sessions: a rollout\'s id, else the file name; readLogs fills in the session a line did not name', () => {
+  assert.equal(logSession('/h/.codex/sessions/2026/10/01/rollout-2026-10-01T17-27-51-01a0f814-3e5d-75c1-8227-f84e3d64e09b.jsonl'), '01a0f814-3e5d-75c1-8227-f84e3d64e09b')
+  assert.equal(logSession('/h/.claude/projects/p/5f1c-abc.jsonl'), '5f1c-abc')
+  const dir = mkdtempSync(join(tmpdir(), 'token-speed-'))
+  try {
+    const root = join(dir, '.claude', 'projects')
+    mkdirSync(join(root, 'p'), { recursive: true })
+    const now = Date.now()
+    const at = (ms: number) => new Date(now - 120_000 + ms).toISOString()
+    writeFileSync(join(root, 'p', 'file-sess.jsonl'), [
+      JSON.stringify({ type: 'user', timestamp: at(0) }),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5-5', id: 'a', usage: { input_tokens: 4, output_tokens: 80 } }, timestamp: at(2000) }),
+      ''
+    ].join('\n'))
+    const used: Usage[] = []
+    const cursors = new Map<string, Cursor>()
+    const paths = logsToRead(logRoots([join(dir, '.claude')], []), cursors, now, true)
+    const stats = readLogs({ paths, cursors, history: emptyHistory(), now, usage: (u) => used.push(u) })
+    assert.equal(stats.responses, 1)
+    assert.deepEqual(used.map((u) => [u.session, u.id, u.in, u.out]), [['file-sess', 'a', 4, 80]])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ---------- incremental reads ----------
@@ -266,6 +376,9 @@ test('history and cursors survive a write and a read, compactly, and prune drops
 test('the snapshot watcher ignores the speed files', () => {
   assert.ok(isSpeedFile('token-speed.json'))
   assert.ok(isSpeedFile('.token-speed-cursor.json.123.tmp'))
+  assert.ok(isSpeedFile('usage/2026-11.jsonl'))
+  assert.ok(isSpeedFile('usage/.coverage.json.1.tmp'))
+  assert.ok(!isSpeedFile('usage-links.jsonl'))
   assert.ok(!isSpeedFile('cards/x.json'))
   assert.ok(!isSpeedFile(null))
 })

@@ -43,6 +43,7 @@ import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel
 import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
+import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, recordUsage, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -1881,6 +1882,10 @@ const SPEED_SAMPLE_MS = 30_000
 const SPEED_FULL_EVERY = 4
 /** One slice of log reading; the slices of a long read (the first 24 h) yield to the event loop between them. */
 const SPEED_SLICE_MS = 40
+/** The usage backfill's pause between its slices (it is no hurry), and how often it saves its progress. */
+const BACKFILL_GAP_MS = 40
+const BACKFILL_SAVE_MS = 5000
+const USAGE_PRUNE_MS = 86_400_000
 
 type Child = { kill?: (signal?: string) => void }
 const exec = (file: string, args: string[], timeout: number, keep?: (child: Child) => void) =>
@@ -1895,6 +1900,9 @@ const exec = (file: string, args: string[], timeout: number, keep?: (child: Chil
  * a nettop snapshot of their sockets every 30 s for their traffic. The internet test runs only on the panel's Test.
  * Settings → Features → Token Speed off: none of that runs (the timers idle) and the history file stays as it is.
  * History and cursors live in ~/.orca-flow/token-speed*.json; the panel gets speedView (a few KB).
+ * The same reads record each response's token usage in the usage store (~/.orca-flow/usage/, see
+ * usage-store.ts), flushed when a read is through. Once, after the first read, a backfill reads the
+ * logs still on disk from the last 90 days into it, in slices between the samples.
  */
 function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => boolean = () => true): void {
   let stopped = false
@@ -1914,6 +1922,24 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   let testError: string | null = null
   let samples = 0
   let reading: { paths: [string, LogKind][]; next: number; now: number } | null = null
+  // Usage: a store failing to open leaves Token speed as it was.
+  let usage: UsageStore | null = null
+  try { usage = openUsageStore(DATA_DIR, Date.now()) } catch (e) { orca.log(`usage store not opened: ${(e as Error).message}`) }
+  const record = (u: Usage) => { if (usage) recordUsage(usage, u, Date.now()) }
+  let lastPrune = 0
+  const saveUsage = () => {
+    if (!usage) return
+    try {
+      const now = Date.now()
+      if (now - lastPrune > USAGE_PRUNE_MS) { lastPrune = now; pruneUsage(usage, now) }
+      flushUsage(usage, now)
+    } catch (e) {
+      orca.log(`saving usage failed: ${(e as Error).message}`)
+    }
+  }
+  let backfill: BackfillRun | null = null
+  let backfillChecked = false
+  let backfillSaved = 0
 
   const view = (): TokenSpeedWire => speedView(history, Date.now(), { ready, testing, testError })
   const post = () => orca.panels.post('sidebar.tokenSpeedChanged', view())
@@ -1924,7 +1950,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   const slice = () => {
     if (stopped || !reading) return
     try {
-      const r = readLogs({ paths: reading.paths, from: reading.next, cursors, history, now: reading.now, deadline: Date.now() + SPEED_SLICE_MS })
+      const r = readLogs({ paths: reading.paths, from: reading.next, cursors, history, now: reading.now, deadline: Date.now() + SPEED_SLICE_MS, usage: usage ? record : undefined })
       reading.next = r.next
     } catch (e) {
       orca.log(`token speed read failed: ${(e as Error).message}`)
@@ -1934,8 +1960,48 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
     reading = null
     ready = true
     prune(history, Date.now())
+    // The usage first: a crash before the cursors are saved reads the lines again, and dedupe drops them.
+    saveUsage()
     save()
     post()
+    startUsageBackfill()
+  }
+
+  // The one-time usage backfill, after the first read: slices between the samples, paused while a
+  // sample reads or the feature is off, its progress saved so a restart goes on where it was.
+  const startUsageBackfill = () => {
+    if (backfillChecked || !usage || stopped) return
+    backfillChecked = true
+    try {
+      backfill = startBackfill(roots(), readBackfill(DATA_DIR), Date.now())
+      if (backfill) writeBackfill(DATA_DIR, backfill.state)
+    } catch (e) {
+      orca.log(`usage backfill not started: ${(e as Error).message}`)
+      backfill = null
+    }
+    if (backfill) timers.push(setTimeout(backfillStep, BACKFILL_GAP_MS))
+  }
+  const backfillStep = () => {
+    if (stopped || !backfill) return
+    if (reading || !on()) { timers.push(setTimeout(backfillStep, reading ? BACKFILL_GAP_MS : SPEED_SAMPLE_MS)); return }
+    let finished: boolean
+    try {
+      finished = backfillSlice(backfill, record, Date.now(), Date.now() + SPEED_SLICE_MS)
+    } catch (e) {
+      orca.log(`usage backfill failed: ${(e as Error).message}`)
+      finished = false
+      backfill.cursor = null
+      backfill.next++ // the log it failed on is left out
+    }
+    const now = Date.now()
+    if (finished || now - backfillSaved > BACKFILL_SAVE_MS) {
+      backfillSaved = now
+      saveUsage()
+      // A log is marked read only after its records are on disk.
+      try { writeBackfill(DATA_DIR, backfill.state) } catch (e) { orca.log(`saving usage backfill failed: ${(e as Error).message}`) }
+    }
+    if (finished) { orca.log(`usage backfill done: ${backfill.paths.length} logs`); backfill = null; return }
+    timers.push(setTimeout(backfillStep, BACKFILL_GAP_MS))
   }
   const sampleLogs = () => {
     if (stopped || reading || !on()) return
