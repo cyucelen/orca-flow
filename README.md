@@ -444,6 +444,7 @@ scripts/dev.sh off     # unload local.flow and run the installed cyucelen.flow a
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
 node scripts/settings-preview.mjs                       # the Settings dialog in a browser, with fixture data
 node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots-v2 --tips   # every page, dark and light, 360 px and wide, plus tooltips
+node scripts/skill-reload-preview.mjs --shots /tmp/orca-flow-reload-shots   # Reload skills: status, coordinator menu, both confirmations
 ```
 
 The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker
