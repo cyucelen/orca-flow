@@ -394,7 +394,7 @@ export async function loadLinear(run: Run, now = Date.now()): Promise<LinearData
   const cycles = byTeam.map(activeCycle).filter((c): c is string => c !== null)
   // A team key shown in the header: the user's teams, the one with most of its own issues first.
   const ownCount = (t: string) => mine.filter((i: LinearIssue) => i.team === t).length
-  return { me, teams: [...teams].sort((a, b) => ownCount(b) - ownCount(a) || a.localeCompare(b)), connectedTeams, issues: [...issues.values()], cycles, sent: {}, lastSent: {}, at: now }
+  return { me, teams: [...teams].sort((a, b) => ownCount(b) - ownCount(a) || a.localeCompare(b)), issues: [...issues.values()], cycles, sent: {}, lastSent: {}, at: now }
 }
 
 // ---------- Linear's glyphs ----------

@@ -340,16 +340,6 @@ export function writeLook(dir: string, look: Look): void {
   writeFileSync(path, JSON.stringify({ ...data, look }, null, 2) + '\n')
 }
 
-/** Sets the Linear teams a coordinator owns in its file, keeping everything else; none removes the field. */
-export function writeLinearTeams(dir: string, teams: string[]): void {
-  const path = join(dir, COORDINATOR_FILE)
-  const data = readJson<Record<string, unknown>>(path) ?? {}
-  const keys = [...new Set(teams.map((t) => t.trim().toUpperCase()).filter((t) => /^[A-Z][A-Z0-9]*$/.test(t)))]
-  if (keys.length) data.linearTeams = keys
-  else delete data.linearTeams
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n')
-}
-
 /** Deletes a coordinator's folder; refuses anything that is not a direct child of the home. */
 export function deleteFolder(dir: string, root = COORDINATOR_HOME): void {
   const parent = join(dir, '..')

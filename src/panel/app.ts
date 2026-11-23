@@ -837,19 +837,6 @@ function coordinatorMenu(key: string): MenuItem[] {
   const at = items.findIndex((it) => typeof it === 'object' && 'label' in it && it.label === 'New look') + 1
   if (c.members?.length) items.splice(at, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(at, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
-  // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
-  const teams = linearIsOn() ? linear?.connectedTeams ?? [] : []
-  if (teams.length) {
-    const own = c.linearTeams ?? []
-    items.splice(at, 0, {
-      chips: 'Linear teams', iconHtml: LINEAR_MARK,
-      options: teams.map((t) => ({
-        label: t,
-        active: own.includes(t),
-        run: () => inline(`coordinator:${key}`, 'Saving…', own.includes(t) ? `${t} removed` : `Owns ${t}`, () => orca.plugin.request('sidebar.setLinearTeams', { key, teams: own.includes(t) ? own.filter((x) => x !== t) : [...own, t] }))
-      }))
-    })
-  }
   items.push({ label: 'Delete coordinator', icon: 'trash', danger: true, run: async () => {
     if (await confirmAction('delete-coordinator', `Delete ${c.name}?`, 'Its sessions end and its folder is deleted. Workers it started keep running.', 'Delete')) await run('delete', 'Delete')
   } })

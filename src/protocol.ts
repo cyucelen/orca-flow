@@ -354,8 +354,6 @@ export type LinearData = {
   me: string | null
   /** The user's teams (keys), the ones Team and Cycle show. */
   teams: string[]
-  /** Every connected team's key, for a coordinator's "Linear teams" chips. */
-  connectedTeams: string[]
   /** Open issues (and Staging) of "Mine" and of the user's teams, each once. */
   issues: LinearIssue[]
   /** The active cycle of each of the user's teams (cycle ids). */
@@ -458,8 +456,6 @@ declare module 'orca' {
     'sidebar.checkUpdates': { output: import('./update.ts').UpdateCheck }
     /** Shows ~/.orca-flow/config.json (or its folder, while there is no file) in Finder. */
     'sidebar.revealSettings': { output: { ok: boolean } }
-    /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
-    'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
     /** The Token speed section's data: agent output and traffic over time, and the last internet test. */
     'sidebar.tokenSpeed': { output: import('./token-speed.ts').TokenSpeedWire }
     /**

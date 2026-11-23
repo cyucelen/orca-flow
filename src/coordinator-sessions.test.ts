@@ -274,7 +274,7 @@ test('a saved Linear recipient opens its source history after current changes', 
   const coordinators: Coordinator[] = [{ ...c }]
   const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
   const issue = { id: 'TEST-1', title: 'Example task', url: '', state: { name: 'Todo', type: 'unstarted', color: '' }, team: 'TEST', project: null, projectColor: '', assignee: { id: 'me', name: 'Me' }, priority: 2, cycle: null, updatedAt: 1 }
-  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi(), { me: 'me', teams: ['TEST'], connectedTeams: ['TEST'], issues: [issue], cycles: [], sent: { 'TEST-1': { coordinator: 'home', at: 1, recipient } }, lastSent: {}, at: 1 }).linear
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi(), { me: 'me', teams: ['TEST'], issues: [issue], cycles: [], sent: { 'TEST-1': { coordinator: 'home', at: 1, recipient } }, lastSent: {}, at: 1 }).linear
   assert.match(html, /data-history="home"/)
   assert.match(html, /data-history-terminal="term-new:1"/)
   assert.ok(html.includes('session-new') || html.includes('new-session'))

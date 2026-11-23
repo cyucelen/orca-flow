@@ -1214,7 +1214,7 @@ const lin = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
   team: 'BOU', project: null, projectColor: '', assignee: { id: 'me', name: 'me' }, priority: 3, cycle: 'c1', updatedAt: 0, ...over
 })
 const linearData = (issues: LinearIssue[], over: Partial<LinearData> = {}): LinearData => ({
-  me: 'me', teams: ['BOU'], connectedTeams: ['BOU'], issues, cycles: ['c1'], sent: {}, lastSent: {}, at: 0, ...over
+  me: 'me', teams: ['BOU'], issues, cycles: ['c1'], sent: {}, lastSent: {}, at: 0, ...over
 })
 const linearUi = (over: Partial<UiState> = {}): UiState => ({ ...emptyUi(), ...over })
 /** The issue IDs a section shows, top to bottom. */
@@ -1466,7 +1466,7 @@ test('a later ask comes after every ask that stops work, even from a working age
 test("a row's Linear label opens the issue, like its PR chip: in a row, a coordinator-folder row, never as a dead link", async () => {
   const { externalLink } = await import('./panel/links.ts')
   const { idChip } = await import('./view.ts')
-  const linear = (issues: Partial<LinearIssue>[]): LinearData => ({ at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: issues.map((i) => ({ state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0, ...i }) as LinearIssue) })
+  const linear = (issues: Partial<LinearIssue>[]): LinearData => ({ at: 1, me: null, teams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: issues.map((i) => ({ state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0, ...i }) as LinearIssue) })
   const day = { id: 'BOU-4242', title: 'Day view part ranges', url: 'https://linear.app/acme/issue/BOU-4242/day-view-part-ranges', team: 'BOU' }
   const rows = [
     row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'working', { coordinator: 'alpha' })], { linearIssue: 'BOU-4242', pr: { number: 6290, url: 'https://github.com/o/r/pull/6290', state: 'open', checks: null } }),
@@ -1497,7 +1497,7 @@ test("a row's Linear label opens the issue, like its PR chip: in a row, a coordi
 })
 
 test('Up next and search show no Linear label, so they have nothing to open', () => {
-  const linear: LinearData = { at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: [{ id: 'BOU-4242', title: 'Day', url: 'https://linear.app/acme/issue/BOU-4242', team: 'BOU', state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0 }] }
+  const linear: LinearData = { at: 1, me: null, teams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: [{ id: 'BOU-4242', title: 'Day', url: 'https://linear.app/acme/issue/BOU-4242', team: 'BOU', state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0 }] }
   const s: Snapshot = { ...snap, rows: [row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'done', { coordinator: 'alpha', summary: asks('Which ranges?') })], { linearIssue: 'BOU-4242' })] }
   const { attention } = render(s, emptyUi(), linear)
   assert.match(attention, /Up next · 1/)
