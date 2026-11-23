@@ -288,7 +288,8 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 - End your turn as soon as work is handed off; Orca wakes you when workers report. Never poll.
 - A wake (Orca mail, a task notification) is not the user: read the mail, act or reply on its
   route, end the turn. Don't recap the mail, don't repeat the user's open question, don't send a
-  status. No text, or "Noted."; the open ask stands. Write to the user only for news they can act
+  status. Reply with one plain line (what arrived, what you did; about 25 words, no status line, no
+  Ask, no ids), never an empty reply; the open ask stands. Write to the user only for news they can act
   on or a changed question (then one whole frame, saying the old ask is replaced). A person asking
   "status?" is a normal prompt. See "Mail and notifications" in [messages.md](messages.md).
 - Answer a worker's question yourself when it follows from the task or the user's instructions;

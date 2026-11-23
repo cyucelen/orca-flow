@@ -275,3 +275,32 @@ test('a worker after a wake is untouched: no frame rules apply to it', () => {
   assert.equal(d.role, 'worker')
   assert.equal(d.lastMessage, 'Noted.')
 })
+
+const NUDGE = '[Your previous response had no visible output. Please continue and produce a user-visible response.]'
+const meta = (text: string) => JSON.stringify({ type: 'user', isMeta: true, timestamp: '2026-11-18T12:00:00Z', message: { content: text } })
+const base = [line('user', 'Your role: lead. Split short docs into lessons.'), line('user', 'go on'), say(DECISION)]
+
+test('wake, empty reply, the host nudge, one plain line: the card keeps the pick', () => {
+  const d = digest([...base, line('user', WAKE), tool, meta(NUDGE), say('A worker sent a routine note; nothing to do.')], '/h/orca/coordinators')!
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+  const empty = digest([...base, line('user', WAKE), tool, meta(NUDGE)], '/h/orca/coordinators')!
+  assert.equal(empty.lastMessage, DECISION, 'nudge alone: the pick stands')
+  assert.equal(frameAsk(empty)?.needs.ask, PICK)
+})
+
+test('the host nudge is never a human prompt, even without a wake before it', () => {
+  const d = digest([...base, meta(NUDGE)], '/h/orca/coordinators')!
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+})
+
+test('meta records (skill bodies) do not start a turn; real prompts still do', () => {
+  const skill = meta('Base directory for this skill: /x\n\n# orca-flow ...')
+  const d = digest([...base, skill, say('Reading the skill.')], '/h/orca/coordinators')!
+  assert.match(d.turn, /USER: go on/, 'the turn still starts at the real prompt')
+  assert.equal(/Base directory/.test(d.turn), false, 'the skill body is not shown as the user')
+  assert.equal(/go on/.test(d.context), false, 'and it did not push the real prompt into the earlier turn')
+  const human = digest([...base, line('user', 'status?'), say('Noted.')], '/h/orca/coordinators')!
+  assert.equal(human.lastMessage, 'Noted.')
+})

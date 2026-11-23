@@ -279,7 +279,7 @@ has a "Needs" status and a **Reply:** line, that a pick has options with one rec
 option letters name only the current Ask's options, that "above" points to detail but never
 replaces the point, that no terminal handles, ids or commit hashes reach the part you read, and
 that a cost warning gives a number. A coordinator can also answer with route lines only. Workers and your own
-chats are never checked. A short reply to an Orca mail notice or a task notification (a wake, not you) is not checked, and the sidebar keeps the ask from the agent's last frame.
+chats are never checked. The one plain line an agent writes after an Orca mail notice or a task notification (a wake, not you) is not checked, and the sidebar keeps the ask from the agent's last frame.
 
 The check is off until you turn it on in [Settings](#settings) (Message check) or in
 `~/.orca-flow/config.json`, for every agent or only for agents working in some folders (a folder

@@ -153,6 +153,8 @@ export function digest(lines: string[], home = COORDINATOR_HOME, recorded: (sess
       const full = textOf(content).trim()
       // A wake (Orca mail, a task notification) does not start a turn: the user's open question stands.
       if (isWake(full)) { events.push({ kind: 'wake', text: '', at: d.timestamp }); continue }
+      // Host-injected meta records (skill bodies and the like) are not the user speaking.
+      if (d.isMeta) continue
       const raw = conversationalPrompt(full)
       const text = briefOf(raw)
       // A dispatched worker's first message carries its Dispatch id: keep that fact for roleOf.
@@ -179,7 +181,7 @@ export function digest(lines: string[], home = COORDINATOR_HOME, recorded: (sess
   const finals = turn.filter((e) => e.kind === 'assistant' && e.final !== false)
   let lastAssistant = finals.at(-1)
   const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home, session ? recorded(session) : null)
-  // After a wake, a short reply without a valid frame ("Noted.") is an acknowledgment, not the
+  // After a wake, a short reply without a valid frame ("A worker sent a routine note; nothing to do.") is its one-line acknowledgment, not the
   // message that decides the ask: the last valid frame of this human turn stands.
   if (lastAssistant && (role === 'lead' || role === 'coordinator') && turn.some((e) => e.kind === 'wake' && turn.indexOf(e) < turn.indexOf(lastAssistant!))
     && lastAssistant.text.length <= ACK_CHARS && !frameAsk({ role, lastMessage: lastAssistant.text })) {

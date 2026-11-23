@@ -570,3 +570,27 @@ test('stop hook: a human "status?" prompt is a normal turn, and a short reply wi
   rmSync(w.home, { recursive: true })
   rmSync(after.home, { recursive: true })
 })
+
+const NUDGE = '[Your previous response had no visible output. Please continue and produce a user-visible response.]'
+const metaEntry = (text) => JSON.stringify({ type: 'user', isMeta: true, message: { content: text } })
+
+test('the host nudge after an empty reply is a wake, and a skill body is not a prompt', () => {
+  const t = (...records) => readTranscript([entry('user', 'Your role: lead.'), entry('assistant', [{ type: 'text', text: DECISION }]), ...records])
+  assert.equal(t(entry('user', WAKE), metaEntry(NUDGE), entry('assistant', [{ type: 'text', text: 'ok' }])).wake, true)
+  assert.equal(t(metaEntry(NUDGE), entry('assistant', [{ type: 'text', text: 'ok' }])).wake, true)
+  assert.equal(t(entry('user', WAKE), entry('assistant', [{ type: 'text', text: 'ok' }]), metaEntry('Base directory for this skill: /x')).last, 'ok', 'a skill body starts no turn')
+  assert.equal(t(entry('user', 'status?'), metaEntry(NUDGE)).wake, true, 'only the latest prompt counts: here the nudge')
+})
+
+test('stop hook: pick, mail wake, empty reply, nudge, one plain line: passes; "status?" still blocks', () => {
+  const w = world({ config: { messageFormat: 'all' } })
+  const line = 'A worker sent a routine note; nothing to do.'
+  const records = (...mid) => [entry('user', 'Your role: lead. Fix BOU-1.'), entry('assistant', [{ type: 'text', text: DECISION }]), entry('user', WAKE), ...mid].join('\n')
+  writeFileSync(w.transcript, records(metaEntry(NUDGE), entry('assistant', [{ type: 'text', text: line }])))
+  assert.equal(hook(w, {}), null)
+  assert.equal(hook(w, { last_assistant_message: line }), null)
+  assert.equal(misses(w).length, 0)
+  writeFileSync(w.transcript, records(metaEntry(NUDGE), entry('user', 'status?'), entry('assistant', [{ type: 'text', text: line }])))
+  assert.equal(hook(w, {}).decision, 'block', 'a human prompt after the nudge is a normal turn')
+  rmSync(w.home, { recursive: true })
+})

@@ -72,6 +72,8 @@ export function readTranscript(lines) {
     if (d.type === 'user') {
       const text = promptOf(d)
       if (!text) continue
+      // Host meta records (skill bodies) are not the user; the host's nudge after an empty reply is a wake.
+      if (d.isMeta && !isWake(text)) continue
       if (first === null && !isWake(text)) first = text
       wake = isWake(text)
       last = null // a new turn starts
@@ -178,8 +180,8 @@ export function judge(input, { env = process.env, home = homedir(), script = pro
   if (!message.trim()) return null
   const { ok, misses } = checkFrame(message, { role: g.role })
   if (ok) return null
-  // A short reply to a wake (Orca mail, a task notification) is an acknowledgment, not a message to
-  // the user: no frame is asked for, so it neither blocks nor leaves a reminder. A reply that has a
+  // A short reply to a wake (Orca mail, a task notification, the host's nudge) is its one plain line,
+  // not a message to the user: no frame is asked for, so it neither blocks nor leaves a reminder. A reply that has a
   // frame, or is long enough to be a message, is checked as before.
   if (g.lines().wake && message.trim().length <= ACK_CHARS && misses.some((m) => m.rule === 'status')) return null
 
