@@ -2,7 +2,8 @@
 // state. `orca` is a stub whose sidebar.list answers with a fixture tree and whose sidebar.reloadSkills
 // is recorded in window.previewCalls.
 //   node scripts/skill-reload-preview.mjs                 serve; open the printed URL (?show=menu|confirm|coordinator-confirm,
-//                                                         ?codex=ready for Codex hooks trusted, ?tip=<selector> to hover)
+//                                                         ?codex=ready for Codex hooks trusted, ?agy=off for Antigravity's
+//                                                         hooks not installed, ?tip=<selector> to hover)
 //   node scripts/skill-reload-preview.mjs --shots <dir>   capture the status, the menu and both confirmations, then exit
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -36,18 +37,22 @@ const fixture = {
       agent('lead', 'Guest checkout', { summary: role('lead') }),
       agent('w1', 'Cart totals rounding', { leadPane: 'lead' }),
       agent('w2', 'Coupon stacking tests', { leadPane: 'lead', agentType: 'codex' }),
+      agent('w4', 'Price rules review', { leadPane: 'lead', agentType: 'antigravity' }),
       agent('w3', 'Address form copy', { leadPane: 'lead', state: 'done', dispatch: 'settled' })
     ]),
     row('api-docs', 'docs', [agent('dlead', 'API reference refresh', { coordinator: 'docs', state: 'done', summary: role('lead') })]),
     row('scratch', 'notes', [agent('chat', 'Release notes draft', { coordinator: 'you', dispatch: null })])
   ],
   // Right after the installed copy added its hooks: Codex sessions wait for the user's approval in Codex.
-  codexReload: { ready: false, reason: APPROVE },
+  codexReload: { ready: false, reason: APPROVE, approval: true },
+  // Antigravity: Orca Flow's hooks in ~/.gemini/config/hooks.json (fixture; agy itself untested live).
+  antigravityReload: { ready: true, reason: '' },
   skillReload: [
     entry('home-shop', 'reloaded', 'coordinator', { doneAt: now - 2 * 60_000 }),
     entry('lead', 'reading', 'lead'),
     entry('w1', 'waiting', 'worker'),
     entry('w2', 'unsupported', 'worker', { provider: 'codex', reason: APPROVE }),
+    entry('w4', 'waiting', 'worker', { provider: 'antigravity' }),
     entry('home-docs', 'reloaded', 'coordinator', { doneAt: now - 60_000 }),
     entry('dlead', 'waiting', 'lead')
   ]
@@ -57,6 +62,7 @@ const q = new URLSearchParams(location.search);
 const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
 if (q.get('status') === 'none') delete fixture.skillReload;
 if (q.get('codex') === 'ready') fixture.codexReload = { ready: true, reason: '' };
+if (q.get('agy') === 'off') fixture.antigravityReload = { ready: false, reason: "Antigravity: Orca Flow's hooks are not installed yet; update Orca Flow (it adds them once Orca has set up Antigravity)" };
 fixture.features = { linear: false, tokenSpeed: false };
 const listeners = new Map();
 window.previewCalls = [];
@@ -117,6 +123,8 @@ server.listen(0, '127.0.0.1', () => {
     { name: 'reload-confirm-all', query: 'show=confirm&status=none' },
     { name: 'reload-confirm-coordinator', query: 'show=coordinator-confirm&status=none' },
     { name: 'reload-confirm-coordinator-codex-ready', query: 'show=coordinator-confirm&status=none&codex=ready' },
+    { name: 'reload-confirm-coordinator-agy-not-installed', query: 'show=coordinator-confirm&status=none&agy=off' },
+    { name: 'reload-antigravity-waiting-tip', query: '', tip: '[data-menu="agent:w4"] .srl' },
     { name: 'reload-codex-reason-tip', query: '', tip: '[data-menu="agent:w2"] .srl' }
   ]
   const run = async () => {
