@@ -287,8 +287,9 @@ test('Bots off: no section, no bot chat in Up next, the queue or the status bar;
   const r = render(off, ui)
   assert.equal(r.bots, '')
   noMatch(r.main + r.attention, /live-qa/)
-  assert.equal(askingRows(off).length, 0)
-  assert.equal(upNextOrder(off).length, 0)
+  // The snapshot reads the real coordinator folders, whose sessions may ask: count only bot rows.
+  assert.equal(askingRows(off).filter((row) => row.bot).length, 0)
+  assert.equal(upNextOrder(off).filter((p) => p.row.bot).length, 0)
   assert.deepEqual(summaryAgents(off), summaryAgents(snapOf({ rows: off.rows })), 'no bot chat is summarized')
   // On: the snapshot the worker builds with bots, as before.
   const withBots = snapOf({ rows: off.rows, bots: [bot({ chats: [{ workspaceId: 'folder:qa', agent: agent('p-home', 'blocked') }] })] })
