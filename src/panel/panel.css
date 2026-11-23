@@ -960,4 +960,4 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 
 .sumfail { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0 6px; padding: 5px 8px; border-radius: 6px; font-size: 11.5px; line-height: 1.35; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .sumfail svg { flex: none; margin-top: 1px; }
-.sumfail .t { min-width: 0; overflow-wrap: anywhere; }
+.sumfail .sumtext { flex: 1; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }

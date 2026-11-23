@@ -40,14 +40,14 @@ export class WriterError extends Error {
 
 /** The sidebar's plain reason for a failed writer; never contains command output, paths or settings values. */
 export function failureReason(error: WriterError): string {
-  const who = error.provider === 'writer' ? 'Writer' : LABEL[error.provider]
+  const who = error.provider === 'writer' ? 'Writer' : NOTICE_LABEL[error.provider]
   switch (error.kind) {
     case 'auth':
       return error.hint === 'aws' ? 'AWS credentials expired — run aws sso login'
         : error.hint === 'no-settings' ? 'Claude not logged in (Bedrock settings not found)'
         : `${who} not logged in`
     case 'quota': return `${who} usage limit reached`
-    case 'unavailable': return `${who} unavailable (check the CLI installation and account)`
+    case 'unavailable': return `${who} unavailable`
     case 'timeout': return `${who} timed out`
     case 'transient': return `${who} is temporarily unavailable`
     case 'disabled': return 'no writer is turned on in Settings'
@@ -79,6 +79,8 @@ export type Writer = (request: WriterRequest) => Promise<unknown>
 
 /** The CLI behind each writer name: Claude (Haiku, Sonnet), Codex (Luna), or Antigravity (Flash). */
 const CLI: Record<Provider, WriterCli> = { haiku: 'claude', sonnet: 'claude', luna: 'codex', flash: 'antigravity' }
+/** Names in the sidebar notice: which CLI, then which model. */
+const NOTICE_LABEL: Record<Provider, string> = { haiku: 'Claude (Haiku)', sonnet: 'Claude (Sonnet)', luna: 'Codex Luna', flash: 'Antigravity Flash' }
 const LABEL: Record<Provider, string> = { haiku: 'Haiku', sonnet: 'Sonnet', luna: 'Codex Luna', flash: 'Antigravity Flash' }
 type Slot = { cli: WriterCli; name: Provider; write: Writer }
 
@@ -103,7 +105,23 @@ export function writerChain(writers: readonly WriterSetting[], providers: Partia
 /** What the writer last saw of one CLI, for the Settings dialog. Kept in memory only. */
 export type WriterHealth = { provider: WriterCli; lastSuccessAt: number | null; failure: { kind: Failure; until: number } | null }
 /** The last writer failure, until a summary succeeds again; the sidebar shows it as "Summaries failing: <reason>". */
-export type WriterFailure = { provider: Provider | 'writer'; reason: string }
+export type WriterFailure = {
+  /** The first writer in the chain that failed (the primary's reason, not the last fallback's). */
+  provider: Provider | 'writer'
+  /** Short and plain: the primary's reason, then "; fallback <reason>" for each fallback that also failed. */
+  reason: string
+  /** The full diagnostics in chain order, for the notice's tooltip; never raw provider output. */
+  detail: string
+}
+/** One request's failures, in chain order, as the sidebar notice reads them. */
+export function chainFailure(errors: readonly WriterError[]): WriterFailure {
+  const [first, ...rest] = errors
+  return {
+    provider: first.provider,
+    reason: [failureReason(first), ...rest.map((e) => `fallback ${failureReason(e)}`)].join('; '),
+    detail: errors.map(writerDiagnostic).join('\n')
+  }
+}
 export type ManagedWriter = Writer & { health(): WriterHealth[]; lastFailure(): WriterFailure | null }
 
 /**
@@ -119,7 +137,7 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
   let primary: Promise<void> | undefined
   let lastFailure: WriterFailure | null = null
   const setFailure = (next: WriterFailure | null) => {
-    const changed = lastFailure?.reason !== next?.reason || lastFailure?.provider !== next?.provider
+    const changed = JSON.stringify(lastFailure) !== JSON.stringify(next)
     lastFailure = next
     if (changed) try { options.onFailureChange?.() } catch { /* the notice is best effort */ }
   }
@@ -138,7 +156,6 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
     if (!(error instanceof WriterError) || ['invalid-output', 'unexpected'].includes(error.kind)) throw error
     const s = state[slot.cli]
     s.failure = error
-    setFailure({ provider: error.provider, reason: failureReason(error) })
     s.blocked = now() + (['timeout', 'transient'].includes(error.kind) ? TRANSIENT_COOLDOWN_MS : PRIMARY_COOLDOWN_MS)
     note(`${writerDiagnostic(error)}; ${next ? `trying ${LABEL[next.name]} during cooldown` : 'existing card preserved during cooldown'}`)
   }
@@ -154,13 +171,20 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
     while (primary) await primary
     const slots = chain()
     if (!slots.length) {
-      setFailure({ provider: 'writer', reason: failureReason(new WriterError('writer', 'disabled')) })
+      setFailure(chainFailure([new WriterError('writer', 'disabled')]))
       throw new WriterError('writer', 'disabled')
     }
     let last: WriterError | undefined
+    // Every writer that failed this request, in chain order, a cooled-down one by its stored failure:
+    // the notice names the primary's reason first, not only the last fallback's.
+    const errors: WriterError[] = []
     for (const [i, slot] of slots.entries()) {
       const s = state[slot.cli]
-      if (now() < s.blocked) { last = s.failure ?? last; continue }
+      if (now() < s.blocked) {
+        last = s.failure ?? last
+        if (s.failure) errors.push(s.failure)
+        continue
+      }
       let release: (() => void) | undefined
       if (i === 0) primary = new Promise<void>((resolve) => { release = resolve })
       try {
@@ -170,11 +194,14 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
       } catch (error) {
         failed(slot, slots[i + 1], error)
         last = error as WriterError
+        errors.push(last)
       } finally {
         if (release) { primary = undefined; release() }
       }
     }
-    throw last ?? new WriterError(slots[0].name, 'unavailable')
+    const error = last ?? new WriterError(slots[0].name, 'unavailable')
+    setFailure(chainFailure(errors.length ? errors : [error]))
+    throw error
   }
   return Object.assign(write, {
     lastFailure: (): WriterFailure | null => lastFailure,

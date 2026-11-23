@@ -1352,7 +1352,9 @@ export function treeLabel(reloading: SkillReloadEntry[], ui: UiState): string {
 /** A visible warning, above the tree, while the summary writer is failing; gone after the next successful summary. */
 export function summaryNotice(failure: Snapshot['summaryFailure']): string {
   if (!failure) return ''
-  return `<div class="sumfail" role="status" data-tone="warn" data-tip="Agent cards keep their last summary until the writer works again. Writer: ${esc(failure.provider)}">${STATUS_ICON.warn}<span class="t">Summaries failing: ${esc(failure.reason)}</span></div>`
+  // The text wraps (no ellipsis) in the narrow sidebar; the full diagnostics sit in the panel's tooltip (data-tip, like every other row).
+  const tip = `${failure.detail ? `${failure.detail}\n` : ''}Agent cards keep their last summary until a writer works again.`
+  return `<div class="sumfail" role="status" data-tone="warn" data-tip="${esc(tip)}">${STATUS_ICON.warn}<span class="sumtext">Summaries failing: ${esc(failure.reason)}</span></div>`
 }
 
 export function render(given: Snapshot, state: UiState, linearData: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {

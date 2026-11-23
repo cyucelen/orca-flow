@@ -1578,3 +1578,15 @@ test('the sidebar warns "Summaries failing" while the writer fails, and not othe
   const escaped = render({ ...base, summaryFailure: { provider: 'haiku', reason: '<b>x</b>' } }, emptyUi()).main
   assert.ok(escaped.includes('&lt;b&gt;x&lt;/b&gt;') && !escaped.includes('<b>x</b>'))
 })
+
+test('the summaries notice shows the full reason, wrapping instead of truncating, with the detail as its tooltip', () => {
+  const base: Snapshot = { rows: [], source: 'cli', capacity: null, coordinators: [] }
+  const reason = 'Claude (Haiku) not logged in; fallback Codex Luna unavailable'
+  const html = render({ ...base, summaryFailure: { provider: 'haiku', reason, detail: 'haiku: auth; check the provider login in Orca' } }, emptyUi()).main
+  assert.ok(html.includes(`<span class="sumtext">Summaries failing: ${reason}</span>`))
+  assert.ok(!/class="t"/.test(html.slice(0, html.indexOf('</div>'))), 'not the ellipsis-truncated .t text')
+  assert.ok(/data-tip="haiku: auth; check the provider login in Orca/.test(html))
+  const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
+  const rule = css.match(/\.sumfail \.sumtext \{[^}]*\}/)?.[0] ?? ''
+  assert.ok(/white-space: normal/.test(rule) && !/text-overflow: ellipsis/.test(rule), 'the notice wraps')
+})

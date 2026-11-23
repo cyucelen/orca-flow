@@ -610,10 +610,45 @@ test('the last writer failure is kept with its reason and cleared by the next su
   const writer = createWriter({ haiku: async () => { if (fail) throw new WriterError('haiku', 'auth', 'aws'); return card() }, now: () => t, onFailureChange: () => { changes++ } })
   assert.equal(writer.lastFailure(), null)
   await assert.rejects(writer(request))
-  assert.deepEqual(writer.lastFailure(), { provider: 'haiku', reason: 'AWS credentials expired — run aws sso login' })
+  assert.equal(writer.lastFailure()?.provider, 'haiku')
+  assert.equal(writer.lastFailure()?.reason, 'AWS credentials expired — run aws sso login')
   fail = false
   t += PRIMARY_COOLDOWN_MS + 1
   await writer(request)
   assert.equal(writer.lastFailure(), null)
   assert.equal(changes, 2)
+})
+
+test('a failed chain names the primary writer first, then each fallback, also while the primary cools down', async () => {
+  let t = 0
+  let fail = true
+  const writer = createWriter({
+    haiku: async () => { if (fail) throw new WriterError('haiku', 'auth'); return card() },
+    luna: async () => { if (fail) throw new WriterError('luna', 'unavailable'); return card() },
+    now: () => t
+  })
+  await assert.rejects(writer(request))
+  const first = writer.lastFailure()!
+  assert.equal(first.provider, 'haiku')
+  assert.equal(first.reason, 'Claude (Haiku) not logged in; fallback Codex Luna unavailable')
+  assert.ok(first.detail.startsWith('haiku: auth;') && first.detail.includes('\nluna: unavailable;'))
+  // Inside the cooldown both are skipped; the stored primary reason still comes first.
+  t += 1000
+  await assert.rejects(writer(request))
+  assert.equal(writer.lastFailure()?.reason, 'Claude (Haiku) not logged in; fallback Codex Luna unavailable')
+  // The same writer (no restart) clears the notice on its next success, from either writer.
+  fail = false
+  t += PRIMARY_COOLDOWN_MS + 1
+  await writer(request)
+  assert.equal(writer.lastFailure(), null)
+})
+
+test('a Bedrock primary failure is named even when the fallback fails differently', async () => {
+  const writer = createWriter({
+    haiku: async () => { throw new WriterError('haiku', 'auth', 'aws') },
+    luna: async () => { throw new WriterError('luna', 'quota') },
+    now: () => 0
+  })
+  await assert.rejects(writer(request))
+  assert.equal(writer.lastFailure()?.reason, 'AWS credentials expired — run aws sso login; fallback Codex Luna usage limit reached')
 })
