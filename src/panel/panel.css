@@ -467,12 +467,12 @@ button.item.coord { padding: 5px 6px; }
 /* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it
    is capped and scrolls on its own under a sticky header; folded, it is its header row. */
 .lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -6px -12px 0; padding: 6px 12px 8px; border-top: 1px solid var(--line); }
-.lsec.folded { padding-bottom: 6px; }
+.lsec.folded { padding-bottom: 7px; }
 .sechead { display: flex; align-items: center; gap: 8px; position: sticky; top: -6px; z-index: 2; background: var(--bg); padding-block: 2px; }
 .sechead .label { padding-bottom: 0; }
 /* The title button's padding is even top and bottom (2px keeps the header at its old height): `.sechead .label` above would otherwise win
    over it and zero the bottom, which sat the label 2px under the centre the trailing text shares. */
-.sechead .lfold { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; margin-left: -6px; padding: 2px 6px; border-radius: 5px; }
+.sechead .lfold { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; margin-left: -6px; padding: 2px 6px; border-radius: 5px; }
 .lfold:hover { color: var(--ink); background: var(--hover); }
 .lfold > svg:first-child { width: 9px; height: 9px; flex: none; transition: transform .15s; }
 .lfold[aria-expanded="true"] > svg:first-child { transform: rotate(90deg); }
@@ -482,6 +482,19 @@ button.item.coord { padding: 5px 6px; }
 .lfold .fc { margin-left: 2px; padding: 0 6px; border-radius: 999px; background: var(--card); color: var(--muted); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .foldsum { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .foldsum .sepd::before { content: "·"; margin-right: 6px; }
+/* In a narrow sidebar the section name keeps its room, so the summary gives way first. Below ~260px the
+   part after the first value (the traffic, the filter beside "N starting") goes; below ~210px the whole
+   summary goes, so the name is never cut by it. Between those widths the summary shrinks before the
+   name does (a shrink factor far above the name's), and its second part ellipsizes before the first. */
+.sechead { container-type: inline-size; }
+.sechead > .foldsum { flex: 0 100 auto; min-width: 0; overflow: hidden; }
+.foldsum > .sepd { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@container (max-width: 260px) { .foldsum > .sepd { display: none; } }
+@container (max-width: 210px) { .sechead > .foldsum { display: none; } }
+/* A folded section sits centred between its dividers: the next divider is this section's bottom edge, so
+   the 8px the panel's gap would add under the header (14px gap, the section's -6px top margin) is taken
+   back; open, the section keeps that room under its last row. */
+.lsec.folded:has(~ .lsec:not([hidden])) { margin-bottom: -8px; }
 @media (prefers-reduced-motion: reduce) { .lfold > svg:first-child { transition: none; } }
 .seg { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 7px; background: var(--card); }
 .seg button { padding: 2px 8px; border-radius: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
