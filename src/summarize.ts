@@ -12,7 +12,7 @@ import type { AgentSummary } from './protocol.ts'
 export { claudeConfigDir } from './writer.ts'
 import { cliProviders, createWriter, WriterError, writerDiagnostic, type Provider, type Writer } from './writer.ts'
 import { configuredWriters } from './config.ts'
-import { checkFrame, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
+import { ACK_CHARS, checkFrame, isWake, parseFrame, sentencesOf } from '../skills/orca-flow/scripts/frame.mjs'
 import { flowDir, recordedRole } from '../skills/orca-flow/scripts/roles.mjs'
 
 export const DATA_DIR = join(homedir(), '.orca-flow')
@@ -24,7 +24,7 @@ const AGENTS = join(DATA_DIR, 'agents')
  * starts, it re-summarizes live agents whose card an older summarizer wrote (no field = 0), so the
  * fix shows at once instead of at the agent's next turn.
  */
-export const SUMMARIZER_VERSION = 10
+export const SUMMARIZER_VERSION = 11
 
 export const SUMMARY_SCHEMA = {
   type: 'object',
@@ -92,7 +92,7 @@ export function briefOf(text: string): string {
 }
 
 type Role = 'lead' | 'worker' | 'coordinator' | 'solo'
-type Event = { final?: boolean; kind: 'user' | 'assistant' | 'tool'; text: string; raw?: string; at?: string; reports?: boolean }
+type Event = { final?: boolean; kind: 'user' | 'assistant' | 'tool' | 'wake'; text: string; raw?: string; at?: string; reports?: boolean }
 
 /** Decided from facts, not by the model: a lead's first prompt names its role, or the user made the
  * session a lead and it recorded that (`recorded`, from `orca-flow role lead`; never in a
@@ -150,7 +150,10 @@ export function digest(lines: string[], home = COORDINATOR_HOME, recorded: (sess
     const content = d.message?.content
     if (d.type === 'user') {
       if (Array.isArray(content) && content.some((c: any) => c.type === 'tool_result')) continue
-      const raw = conversationalPrompt(textOf(content).trim())
+      const full = textOf(content).trim()
+      // A wake (Orca mail, a task notification) does not start a turn: the user's open question stands.
+      if (isWake(full)) { events.push({ kind: 'wake', text: '', at: d.timestamp }); continue }
+      const raw = conversationalPrompt(full)
       const text = briefOf(raw)
       // A dispatched worker's first message carries its Dispatch id: keep that fact for roleOf.
       if (text) events.push({ kind: 'user', text, raw, at: d.timestamp })
@@ -173,12 +176,19 @@ export function digest(lines: string[], home = COORDINATOR_HOME, recorded: (sess
   const earlier = prompts.length > 1 ? events.slice(events.indexOf(prompts.at(-2)!), latest) : []
   const turn = events.slice(latest)
   // The final message comes from the latest turn only; an earlier turn's is not this turn's.
-  const lastAssistant = [...turn].reverse().find((e) => e.kind === 'assistant' && e.final !== false)
+  const finals = turn.filter((e) => e.kind === 'assistant' && e.final !== false)
+  let lastAssistant = finals.at(-1)
+  const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home, session ? recorded(session) : null)
+  // After a wake, a short reply without a valid frame ("Noted.") is an acknowledgment, not the
+  // message that decides the ask: the last valid frame of this human turn stands.
+  if (lastAssistant && (role === 'lead' || role === 'coordinator') && turn.some((e) => e.kind === 'wake' && turn.indexOf(e) < turn.indexOf(lastAssistant!))
+    && lastAssistant.text.length <= ACK_CHARS && !frameAsk({ role, lastMessage: lastAssistant.text })) {
+    lastAssistant = finals.slice(0, -1).reverse().find((e) => frameAsk({ role, lastMessage: e.text })) ?? lastAssistant
+  }
   const render = (es: Event[]) => es
     .filter((e) => e !== lastAssistant)
-    .map((e) => (e.kind === 'user' ? `USER: ${clip(e.text, 1500)}` : e.kind === 'assistant' ? `AGENT: ${clip(e.text, 800)}` : `  → ${e.text}`))
+    .map((e) => (e.kind === 'wake' ? '  → (Orca mail or a task notification woke the agent)' : e.kind === 'user' ? `USER: ${clip(e.text, 1500)}` : e.kind === 'assistant' ? `AGENT: ${clip(e.text, 800)}` : `  → ${e.text}`))
     .join('\n')
-  const role = roleOf(prompts[0].raw ?? prompts[0].text, events, cwd, home, session ? recorded(session) : null)
   return {
     role,
     firstPrompt: clip(prompts[0].text, 1500),

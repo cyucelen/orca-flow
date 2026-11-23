@@ -334,8 +334,8 @@ test('the transcript gives the first prompt and the last text of the latest turn
     entry('assistant', [{ type: 'text', text: 'part 2' }], { id: 'm1' }),
     'not json'
   ]
-  assert.deepEqual(readTranscript(lines), { first: 'Your role: lead. Fix BOU-1.', last: 'part 1\npart 2' })
-  assert.deepEqual(readTranscript([...lines, entry('user', 'and now?')]), { first: 'Your role: lead. Fix BOU-1.', last: '' }, 'a new turn has no text yet')
+  assert.deepEqual(readTranscript(lines), { first: 'Your role: lead. Fix BOU-1.', last: 'part 1\npart 2', wake: false })
+  assert.deepEqual(readTranscript([...lines, entry('user', 'and now?')]), { first: 'Your role: lead. Fix BOU-1.', last: '', wake: false }, 'a new turn has no text yet')
 })
 
 /** A temp home with the skill linked like the plugin links it, and a transcript. */
@@ -509,4 +509,55 @@ test('prompt hook: the same gates as the Stop hook; bad input exits 0 quietly', 
   const r = spawnSync(process.execPath, [join(SCRIPTS, 'prompt-check.mjs')], { input: 'not json', env: { PATH: process.env.PATH, HOME: w.home, ORCA_AGENT_PANE: 'x' }, encoding: 'utf8' })
   assert.deepEqual([r.status, r.stdout, r.stderr], [0, '', ''])
   rmSync(w.home, { recursive: true })
+})
+
+// Mail and notifications (messages.md): a wake is not the user, so a short acknowledgment after it
+// is not checked as a frame; a human prompt such as "status?" is a normal turn.
+const WAKE = 'You have 1 orchestration message. Run `orca orchestration check`.'
+const NOTIFY = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'
+const wakeWorld = (prompts, last, role = 'lead') => {
+  const w = world({ config: { messageFormat: 'all' }, firstPrompt: role === 'lead' ? 'Your role: lead. Fix BOU-1.' : 'hello' })
+  const lines = [entry('user', role === 'lead' ? 'Your role: lead. Fix BOU-1.' : 'hello'), entry('assistant', [{ type: 'text', text: DECISION }])]
+  for (const p of prompts) lines.push(entry('user', p), entry('assistant', [{ type: 'text', text: last }]))
+  writeFileSync(w.transcript, lines.join('\n'))
+  return w
+}
+
+test('the transcript marks a turn that a wake started', () => {
+  const t = (...prompts) => readTranscript([entry('user', 'Your role: lead.'), ...prompts.map((p) => entry('user', p)), entry('assistant', [{ type: 'text', text: 'x' }])])
+  assert.equal(t(WAKE).wake, true)
+  assert.equal(t(NOTIFY).wake, true)
+  assert.equal(t(`${WAKE} Please also tell me the plan.`).wake, false, 'text beyond the notice is a prompt')
+  assert.equal(t(WAKE, 'status?').wake, false, 'a human prompt after a wake is a normal turn')
+  assert.equal(readTranscript([entry('user', WAKE), entry('user', 'Your role: lead.')]).first, 'Your role: lead.')
+})
+
+test('stop hook: a short acknowledgment after a wake neither blocks nor leaves a reminder', () => {
+  for (const [prompts, cwdRole] of [[[WAKE], 'lead'], [[WAKE, WAKE, WAKE], 'lead'], [[NOTIFY], 'lead'], [[WAKE], 'coordinator']]) {
+    const w = wakeWorld(prompts, 'Noted.', cwdRole)
+    const cwd = cwdRole === 'coordinator' ? join(w.home, 'orca', 'coordinators', 'bounti') : w.worktree
+    assert.equal(hook(w, { cwd }), null, `${prompts.length} wake(s), ${cwdRole}`)
+    assert.equal(hook(w, { cwd, last_assistant_message: 'Noted.' }), null)
+    assert.equal(misses(w).length, 0)
+    assert.equal(existsSync(join(w.data, 'reminders')), false, 'no reminder')
+    rmSync(w.home, { recursive: true })
+  }
+})
+
+test('stop hook: after a wake a frame with a block miss, or a long frameless message, is still checked', () => {
+  const w = wakeWorld([WAKE], 'Noted.')
+  const broken = '**Needs your pick**\n\nChoose the plan.\n\n**Ask:** which plan?'
+  assert.equal(hook(w, { last_assistant_message: broken }).decision, 'block', 'a frame that misses its Reply')
+  assert.equal(hook(w, { last_assistant_message: 'The worker finished and all 12 tests pass. '.repeat(8) }).decision, 'block', 'a long message with no frame')
+  assert.equal(hook(w, { last_assistant_message: PLAN }), null, 'a valid frame passes as before')
+  rmSync(w.home, { recursive: true })
+})
+
+test('stop hook: a human "status?" prompt is a normal turn, and a short reply without a frame blocks', () => {
+  const w = wakeWorld(['status?'], 'Noted.')
+  assert.equal(hook(w, {}).decision, 'block')
+  const after = wakeWorld([WAKE, 'status?'], 'Fine.')
+  assert.equal(hook(after, {}).decision, 'block', 'a wake, then the user asks')
+  rmSync(w.home, { recursive: true })
+  rmSync(after.home, { recursive: true })
 })

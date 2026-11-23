@@ -68,6 +68,17 @@ export const INTERNAL_ID = [
   /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/
 ]
 
+/**
+ * A wake is a turn Orca or the host starts, not the user: Orca's mail notice ("You have 1
+ * orchestration message. Run `orca orchestration check`.") or a Claude Code `<task-notification>`.
+ * messages.md ("Mail and notifications"): a wake gets no frame, so a short reply to one is not checked
+ * as a frame and does not replace the ask the user still has open.
+ */
+export const WAKE = [/^\s*You have \d+ orchestration messages?\. Run `orca orchestration check`\.?\s*$/, /^\s*<task-notification>/]
+export const isWake = (text) => WAKE.some((re) => re.test(String(text ?? '')))
+/** The longest reply to a wake that still counts as an acknowledgment ("Noted."), not a message. */
+export const ACK_CHARS = 200
+
 const PLAIN = /^(?:Working|Idle|Done|Working · needs \S.* later|Needs \S.*|Waiting on \S.*)$/
 const LATER = /^Working · needs \S.* later$/
 const HAND = /^Needs you to /

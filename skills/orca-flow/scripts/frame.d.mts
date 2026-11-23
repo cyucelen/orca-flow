@@ -28,6 +28,9 @@ export const COST: RegExp
 export const LETTERED: RegExp[]
 export const ABOVE: RegExp[]
 export const INTERNAL_ID: RegExp[]
+export const WAKE: RegExp[]
+export function isWake(text: unknown): boolean
+export const ACK_CHARS: number
 export function sentencesOf(text: string): string[]
 export function checkFrame(text: string, options?: { role?: string }): { ok: boolean; misses: Miss[] }
 export function parseFrame(text: string): Frame | null

@@ -16,6 +16,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { ACK_CHARS, isWake } from './frame.mjs'
 import { recordedRole } from './roles.mjs'
 
 const LEAD = /your role: lead\b/i
@@ -50,10 +51,14 @@ function promptOf(d) {
   return textOf(content).trim() || null
 }
 
-/** The first user prompt and the last assistant text of the latest turn, from transcript lines. */
+/**
+ * The first user prompt, the last assistant text of the latest turn, and whether that turn was a
+ * wake (Orca's mail notice or a task notification: frame.mjs isWake), from transcript lines.
+ */
 export function readTranscript(lines) {
   let first = null
   let last = null
+  let wake = false
   let lastId = null
   for (const line of lines) {
     let d
@@ -67,7 +72,8 @@ export function readTranscript(lines) {
     if (d.type === 'user') {
       const text = promptOf(d)
       if (!text) continue
-      if (first === null) first = text
+      if (first === null && !isWake(text)) first = text
+      wake = isWake(text)
       last = null // a new turn starts
       lastId = null
     } else if (d.type === 'assistant') {
@@ -79,7 +85,7 @@ export function readTranscript(lines) {
       lastId = id
     }
   }
-  return { first: first ?? '', last: last ?? '' }
+  return { first: first ?? '', last: last ?? '', wake }
 }
 
 /**
@@ -140,7 +146,7 @@ export function gate(input, { env = process.env, home = homedir() } = {}) {
     try {
       transcript = readTranscript(readFileSync(input.transcript_path, 'utf8').split('\n'))
     } catch {
-      transcript = { first: '', last: '' }
+      transcript = { first: '', last: '', wake: false }
     }
     return transcript
   }
@@ -172,6 +178,10 @@ export function judge(input, { env = process.env, home = homedir(), script = pro
   if (!message.trim()) return null
   const { ok, misses } = checkFrame(message, { role: g.role })
   if (ok) return null
+  // A short reply to a wake (Orca mail, a task notification) is an acknowledgment, not a message to
+  // the user: no frame is asked for, so it neither blocks nor leaves a reminder. A reply that has a
+  // frame, or is long enough to be a message, is checked as before.
+  if (g.lines().wake && message.trim().length <= ACK_CHARS && misses.some((m) => m.rule === 'status')) return null
 
   const at = new Date().toISOString()
   const session = input.session_id ?? null

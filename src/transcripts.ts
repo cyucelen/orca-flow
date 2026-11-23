@@ -3,6 +3,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { isWake } from '../skills/orca-flow/scripts/frame.mjs'
 
 export type ProviderSession = { provider: 'claude' | 'codex' | 'antigravity'; id: string }
 const TRANSCRIPT_PROVIDERS = new Set(['claude', 'codex', 'antigravity'])
@@ -213,7 +214,8 @@ function parseAntigravityArgs(raw: unknown): Record<string, unknown> {
 export function conversationalPrompt(raw: string): string {
   if (raw.includes('=== TASK ===')) return raw
   if (/^\s*(?:# AGENTS\.md instructions|<instructions>|<skills_instructions>|<environment_context>|<permissions instructions>|<collaboration_mode>|<multi_agent_role>)/.test(raw)) return ''
-  if (/^\s*You have \d+ orchestration messages?\. Run `orca orchestration check`\.?\s*$/.test(raw)) return ''
+  // A wake (Orca's mail notice, a task notification) is not a prompt: digest() reads it as a wake.
+  if (isWake(raw)) return ''
   if (/You are a dispatched worker\./.test(raw) && !raw.includes('=== TASK ===')) return ''
   return raw
 }
