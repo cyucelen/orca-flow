@@ -919,7 +919,7 @@ export function upNextOrder(snap: SnapLike): Placed[] {
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
 
-function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, mixed: boolean, bots: Bot[] = []): string {
+function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[], ui: UiState, bots: Bot[] = []): string {
   if (placed.length === 0) return ''
   const items = placed.map((p, i) => {
     const key = askKey(p.row, p.a)
@@ -940,7 +940,7 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
       : agentCharacter(p.a, p.row, all)
     const menu = c ? `${p.row.historical ? 'history' : 'coordinator'}:${c.key}` : `agent:${p.a.paneKey}`
     const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.historical ? 'previous session · read-only' : 'current session'}` : coordinatorName(p.a.coordinator, coordinators)
-    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}${modelBadge(p.a, mixed)}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
+    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
     return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>${p.row.historical ? 'View source history' : 'Jump to session'}</button>${reviewPr(p)}</div></div>`
@@ -1384,7 +1384,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
     cockpit: cockpit(snap, ui),
     copen,
     main: `<div class="tree">${treeLabel(reloading, ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
-    attention: upNext(asking, all, snap.coordinators, ui, mixed, snap.bots ?? []),
+    attention: upNext(asking, all, snap.coordinators, ui, snap.bots ?? []),
     bots: botsSection(snap, ui),
     linear: linearSection(snap, ui, linear),
     footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : ''
