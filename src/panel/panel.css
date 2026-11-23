@@ -544,7 +544,8 @@ button.item.coord { padding: 5px 6px; }
 /* A block of one 17 px line: its text is centered by its line height and its baseline is the text's,
    so the row's right side can line it up with the PR, project and age. */
 .idchip { display: inline-block; flex: none; padding: 0 5px; height: 17px; border-radius: 4px; font: 10.5px/17px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--card); }
-.idchip .lmark { width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; }
+/* Centered in the 17 px line by its own box, not by the font's baseline: (17 - 10) / 2 from the top. */
+.idchip .lmark { width: 10px; height: 10px; margin-right: 4px; vertical-align: top; margin-top: 3.5px; }
 /* A label that opens its issue, like the PR chip: a pointer, and the ink on hover. */
 .idchip[data-url] { cursor: pointer; }
 .idchip[data-url]:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, var(--card)); }
