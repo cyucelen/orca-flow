@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { AgentInfo, AgentSummary, Bot, Coordinator, Snapshot, WorkspaceRow } from './protocol.ts'
 import { buildBots, folderOf, groupBots, isBotRow, nextRunOf, plainText, purposeOf, readBotFolders, soulLine, type BotFolder } from './bots.ts'
 import { askingRows, botsSection, botState, emptyUi, render, upNextOrder } from './view.ts'
-import { botsOf, fromPs, statusOf, summaryAgents, type PsWorktree } from './worker.ts'
+import { botsOf, fromPs, snapshot, statusOf, summaryAgents, type PsWorktree } from './worker.ts'
 import { COORDINATOR_FILE, readCoordinators, writeCoordinatorSessions, writeLinearTeams, writeLook } from './coordinators.ts'
 
 const NOW = 1_800_000_000_000
@@ -270,4 +270,28 @@ test("a bot's workspace shows only in Bots: not in the tree, Idle, search or a s
   assert.match(r.bots, /class="bname">Replies you owe</)
   const found = render(s, { ...ui, query: 'live' }).main
   assert.match(found, /No matching workspaces/, 'search finds no bot workspace')
+})
+
+// ---------- Settings → Features → Bots ----------
+
+test('Bots off: no section, no bot chat in Up next, the queue or the status bar; Bots on shows them as before', async () => {
+  const ps: PsWorktree[] = [
+    { identity: { key: 'wt2:local:a' }, displayName: 'shop-fix', repo: 'shop', path: '/w/shop-fix', branch: 'refs/heads/fix', liveTerminalCount: 1, agents: [{ paneKey: 'p-shop', state: 'working', agentType: 'claude', conversationName: 'Fix the cart' }] },
+    { displayName: 'super-agent-live-qa', repo: 'Bots', path: '/bots/live-qa', bot: 'super-agent-live-qa', botHome: true, agents: [{ paneKey: 'p-home', orcaSessionId: 's1', state: 'blocked', agentType: 'claude', conversationName: 'super-agent-live-qa' }] }
+  ]
+  const orca = { host: { call: async () => ({ workspaces: [], truncated: false }) }, log: () => {} }
+  const off = await snapshot(orca as never, async () => ps, () => {}, false)
+  assert.equal('bots' in off, false, 'the snapshot carries no bots')
+  assert.deepEqual(off.rows.map((r) => r.name), ['shop-fix'], 'the bot workspace is no ordinary row either')
+  const ui = { ...emptyUi(), now: NOW }
+  const r = render(off, ui)
+  assert.equal(r.bots, '')
+  noMatch(r.main + r.attention, /live-qa/)
+  assert.equal(askingRows(off).length, 0)
+  assert.equal(upNextOrder(off).length, 0)
+  assert.deepEqual(summaryAgents(off), summaryAgents(snapOf({ rows: off.rows })), 'no bot chat is summarized')
+  // On: the snapshot the worker builds with bots, as before.
+  const withBots = snapOf({ rows: off.rows, bots: [bot({ chats: [{ workspaceId: 'folder:qa', agent: agent('p-home', 'blocked') }] })] })
+  assert.match(render(withBots, ui).bots, /class="bname">live-qa</)
+  assert.equal(askingRows(withBots).length, 1)
 })

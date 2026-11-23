@@ -10,7 +10,9 @@ export type WriterProvider = 'claude' | 'codex' | 'antigravity'
 export type WriterSetting = { provider: WriterProvider; model?: string; enabled: boolean }
 /** Absent or "off": no check; "all": every coordinator and lead; a list: agents working under those folders. */
 export type MessageFormat = 'off' | 'all' | string[]
-export type FlowSettings = { writers: WriterSetting[]; messageFormat: MessageFormat; marginGB: number; warnHeadroomGB: number; linearDryRun: boolean; routing: RoutingSettings }
+/** Parts of Orca Flow that show only when switched on (Settings → Features). Display only: a switch never touches Orca's own data. */
+export type FeatureSettings = { bots: boolean }
+export type FlowSettings = { writers: WriterSetting[]; messageFormat: MessageFormat; marginGB: number; warnHeadroomGB: number; linearDryRun: boolean; routing: RoutingSettings; features: FeatureSettings }
 export type SettingsKey = keyof FlowSettings
 
 export const WRITER_PROVIDERS: readonly WriterProvider[] = ['claude', 'codex', 'antigravity']
@@ -34,9 +36,10 @@ export const DEFAULT_SETTINGS: FlowSettings = {
   marginGB: 2,
   warnHeadroomGB: 2,
   linearDryRun: false,
-  routing: DEFAULT_ROUTING
+  routing: DEFAULT_ROUTING,
+  features: { bots: false }
 }
-export const SETTINGS_KEYS: readonly SettingsKey[] = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun', 'routing']
+export const SETTINGS_KEYS: readonly SettingsKey[] = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun', 'routing', 'features']
 
 export const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
@@ -74,6 +77,11 @@ export function normalizeFormat(value: unknown): MessageFormat {
   return 'off'
 }
 
+/** The feature switches; one that is missing or not exactly true is off, so an older or broken file shows nothing new. */
+export function normalizeFeatures(value: unknown): FeatureSettings {
+  return { bots: isObject(value) && value.bots === true }
+}
+
 const gb = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback)
 
 /** What a config object means, every key filled in; a missing or unusable value reads as its default. */
@@ -85,7 +93,8 @@ export function normalizeSettings(raw: unknown): FlowSettings {
     marginGB: gb(c.marginGB, DEFAULT_SETTINGS.marginGB),
     warnHeadroomGB: gb(c.warnHeadroomGB, DEFAULT_SETTINGS.warnHeadroomGB),
     linearDryRun: c.linearDryRun === true,
-    routing: normalizeRouting(c.routing)
+    routing: normalizeRouting(c.routing),
+    features: normalizeFeatures(c.features)
   }
 }
 
@@ -119,6 +128,7 @@ export type Draft = {
   warnHeadroomGB: number
   linearDryRun: boolean
   routing: RoutingSettings
+  bots: boolean
 }
 export type DraftKey = keyof Draft
 export const DEFAULT_FOLDERS = ['~/orca/coordinators']
@@ -138,7 +148,7 @@ export function toDraft(s: FlowSettings): Draft {
     writers: writers.map((w) => w.provider), enabled, models,
     format: Array.isArray(format) ? 'folders' : format,
     folders: Array.isArray(format) ? format : [...DEFAULT_FOLDERS],
-    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun, routing: clone(normalizeRouting(s.routing))
+    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun, routing: clone(normalizeRouting(s.routing)), bots: normalizeFeatures(s.features).bots
   }
 }
 
@@ -146,7 +156,7 @@ export function fromDraft(d: Draft): FlowSettings {
   return normalizeSettings({
     writers: d.writers.map((provider) => ({ provider, ...(WRITER_MODELS[provider].length ? { model: d.models[provider] } : {}), enabled: d.enabled[provider] })),
     messageFormat: d.format === 'folders' ? d.folders : d.format,
-    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing
+    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing, features: { bots: d.bots }
   })
 }
 

@@ -1,6 +1,6 @@
 import { assert, test } from 'orca/testing'
 import { addType, applyPreset, DEFAULT_ROUTING, deletePreset, normalizeRouting, removeType, route, savePreset, type Availability, type RoutingSettings } from './routing.ts'
-import { applySettings, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
+import { applySettings, normalizeFeatures, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
   assert.deepEqual(normalizeWriters([
@@ -161,4 +161,35 @@ test('precedence from stored settings: override > role > kind row', () => {
   assert.deepEqual((route(routing, { role: 'lead', model: 'sonnet' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'sonnet' })
   assert.deepEqual((route(routing, { role: 'worker', kind: 'simple' }, avail) as { choice: unknown }).choice, { agent: 'claude', model: 'haiku' }, 'Orca takes no effort for Haiku')
   assert.deepEqual(routing.workers.normal, DEFAULT_ROUTING.workers.normal)
+})
+
+test('features: bots is off unless the file says true; a missing or malformed key reads as off and keeps every other setting', () => {
+  assert.deepEqual(DEFAULT_SETTINGS.features, { bots: false })
+  assert.deepEqual(normalizeSettings({}).features, { bots: false })
+  for (const bad of [undefined, null, true, 'bots', [], [true], {}, { bots: 'true' }, { bots: 1 }, { bots: null }, { bots: false }]) assert.deepEqual(normalizeFeatures(bad), { bots: false })
+  assert.deepEqual(normalizeFeatures({ bots: true, other: 1 }), { bots: true })
+  const older = normalizeSettings({ marginGB: 3.5, linearDryRun: true, features: 'oops' })
+  assert.deepEqual(older, { ...DEFAULT_SETTINGS, marginGB: 3.5, linearDryRun: true })
+})
+
+test('features: the toggle round-trips through the draft and writes only its own key', () => {
+  const on = { ...DEFAULT_SETTINGS, features: { bots: true } }
+  assert.equal(toDraft(on).bots, true)
+  assert.deepEqual(fromDraft(toDraft(on)), on)
+  assert.equal(DEFAULT_DRAFT.bots, false)
+  const raw = { marginGB: 'x', futureKey: [1], messageFormat: ['~/y'] }
+  assert.deepEqual(applySettings(raw, { ...on, messageFormat: ['~/y'] }), { ...raw, features: { bots: true } })
+  assert.deepEqual(applySettings({ ...raw, features: { bots: true } }, { ...DEFAULT_SETTINGS, messageFormat: ['~/y'] }), raw, 'back to off removes the key; the rest stays')
+})
+
+test('features: the dialog saves the Bots switch at once and Reset puts it back off', async () => {
+  const saved: FlowSettings[] = []
+  const session = settingsSession(async (settings) => { saved.push(settings); return { ok: true, settings } })
+  session.load(DEFAULT_SETTINGS)
+  await session.change((d) => { d.bots = true })
+  assert.deepEqual(saved.at(-1)?.features, { bots: true })
+  assert.equal(session.isDefault(['bots']), false)
+  await session.reset(['bots'])
+  assert.deepEqual(saved.at(-1)?.features, { bots: false })
+  assert.equal(session.shown.bots, false)
 })

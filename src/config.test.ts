@@ -99,3 +99,18 @@ test('defaults agree with the capacity check and the stop hook', () => {
   // stop-check reads anything but "all" or a list as off.
   assert.equal(normalizeSettings({ messageFormat: 'yes' }).messageFormat, 'off')
 })
+
+test('the Bots switch is saved under features, leaves other keys as written, and reads back; an older file reads as off', () => {
+  const dir = temp()
+  try {
+    writeFileSync(configFile(dir), JSON.stringify({ marginGB: 2, futureKey: { a: 1 }, linearDryRun: true }))
+    assert.equal(readSettings(dir).settings.features.bots, false)
+    writeSettings(withSettings({ linearDryRun: true, features: { bots: true } }), dir)
+    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: { a: 1 }, linearDryRun: true, features: { bots: true } })
+    assert.equal(readSettings(dir).settings.features.bots, true)
+    writeSettings(withSettings({ linearDryRun: true }), dir)
+    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: { a: 1 }, linearDryRun: true })
+    writeFileSync(configFile(dir), JSON.stringify({ marginGB: 4, features: ['x'] }))
+    assert.deepEqual(readSettings(dir).settings, { ...DEFAULT_SETTINGS, marginGB: 4 })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

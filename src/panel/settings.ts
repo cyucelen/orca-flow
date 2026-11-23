@@ -15,6 +15,7 @@ const ICON = {
   format: glyph('<path d="M3 3.5h10v7H6.5L3 13.5z"/><path d="M6 7l1.5 1.5L10.5 5.5"/>'),
   capacity: glyph('<rect x="2" y="4.5" width="12" height="7" rx="1.5"/><path d="M5 7v2M8 7v2M11 7v2"/>'),
   models: glyph('<rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M6.5 2v2M9.5 2v2M6.5 12v2M9.5 12v2M2 6.5h2M2 9.5h2M12 6.5h2M12 9.5h2"/>'),
+  features: glyph('<rect x="3" y="5" width="10" height="7" rx="2"/><path d="M8 5V3M6 8.2v.1M10 8.2v.1"/>'),
   about: glyph('<circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.6M8 5.1v.1"/>'),
   advanced: glyph('<path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6"/><circle cx="10" cy="5" r="1.5"/><circle cx="6" cy="11" r="1.5"/>'),
   grip: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/></svg>',
@@ -36,7 +37,7 @@ const PROVIDERS: Record<WriterProvider, { name: string; logo: string; tip: strin
 }
 const MODEL_LABEL: Record<string, string> = { haiku: 'Claude Haiku', sonnet: 'Claude Sonnet', 'gpt-6-luna': 'GPT-6 Luna', 'gemini-3.8-flash-low': 'Gemini 3.8 Flash', 'gemini-4-carbon-low': 'Gemini 4 Carbon', 'gemini-4-neon-low': 'Gemini 4 Neon', 'gemini-4-hydrogen-low': 'Gemini 4 Hydrogen', 'gemini-4-argon-low': 'Gemini 4 Argon', 'agy-default': 'Antigravity' }
 
-type PageId = 'summaries' | 'models' | 'format' | 'capacity' | 'advanced' | 'about'
+type PageId = 'summaries' | 'models' | 'format' | 'capacity' | 'features' | 'advanced' | 'about'
 const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: string }[] = [
   { id: 'summaries', label: 'Titles & Summaries', tint: '#0a84ff', keys: ['writers', 'enabled', 'models'],
     tip: 'After each agent turn, one request writes the title, summary and ask on its Orca Flow card. Only Orca Flow’s sidebar cards change: Orca names its own tabs and chats.' },
@@ -46,6 +47,7 @@ const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: s
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
   { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
     tip: 'Before a coordinator or lead starts more work, Orca Flow checks free memory. Each agent costs about 0.5 GB, plus any dev servers its project runs.' },
+  { id: 'features', label: 'Features', tint: '#bf5af2', keys: ['bots'], tip: 'Parts of Orca Flow that are off until you switch them on.' },
   { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' },
   { id: 'about', label: 'About', tint: '#6e6e73', keys: [], tip: 'Orca Flow’s version and updates.' }
 ]
@@ -147,6 +149,11 @@ function pageCapacity(): string {
     row(label('Always', 'New work waits when starting it would leave less free memory than this. Default 2 GB.'), stepper('marginGB', 'Free memory to keep, always')),
     row(label('Under memory pressure', 'When macOS reports memory pressure, a new worktree also needs this much spare, or half its dev servers’ size if larger. Default 2 GB.'), stepper('warnHeadroomGB', 'Free memory to keep under memory pressure'))
   ], { text: 'Free memory to keep', tip: 'Orca Flow keeps this much RAM free before agents start more work.' })
+}
+
+function pageFeatures(): string {
+  const tip = 'Show the Bots section in the sidebar'
+  return group([row(label('Bots', tip), toggle('s-bots', d().bots, 'Bots', tip))])
 }
 
 function pageAdvanced(): string {
@@ -495,7 +502,7 @@ function render(): void {
   const narrow = window.innerWidth <= 520
   $('s-title').dataset.tip = state?.version ? `Orca Flow ${state.version}` : 'Orca Flow'
   $('s-nav').innerHTML = PAGES.map((p) => `<button class="s-nav-btn" type="button" data-page="${p.id}" ${p.id === pageId ? 'aria-current="page"' : ''} aria-label="${esc(p.label)}"${narrow ? ` data-tip="${esc(p.label)}"` : ''}><span class="s-tile" style="background:${p.tint}">${ICON[p.id]}</span><span class="s-nav-label">${esc(p.label)}</span></button>`).join('')
-  const body = !state && !loadError ? '<p class="s-loading">Loading…</p>' : { summaries: pageSummaries, models: pageModels, format: pageFormat, capacity: pageCapacity, advanced: pageAdvanced, about: pageAbout }[pageId]()
+  const body = !state && !loadError ? '<p class="s-loading">Loading…</p>' : { summaries: pageSummaries, models: pageModels, format: pageFormat, capacity: pageCapacity, features: pageFeatures, advanced: pageAdvanced, about: pageAbout }[pageId]()
   const atDefault = page.id === 'models' ? modelsAtDefault() : session.isDefault(page.keys)
   const reset = state && !locked() && !atDefault ? `<div class="s-foot"><button type="button" class="s-push" data-reset="${page.id}">Reset to Defaults</button></div>` : ''
   $('s-page').innerHTML = `<h3 class="s-ptitle">${label(page.label, page.tip)}</h3>${errorLine()}${body}${reset}`
@@ -622,6 +629,7 @@ function onChange(e: Event): void {
   if (t.dataset.model) { const p = t.dataset.model as WriterProvider; void session.change((x) => { x.models[p] = t.value }) }
   else if (t.dataset.enable) { const p = t.dataset.enable as WriterProvider; void session.change((x) => { x.enabled[p] = t.checked }) }
   else if (t.id === 's-format') void session.change((x) => { x.format = t.value as Draft['format'] })
+  else if (t.id === 's-bots') void session.change((x) => { x.bots = t.checked })
   else if (t.id === 's-linear') void session.change((x) => { x.linearDryRun = t.checked })
 }
 

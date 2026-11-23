@@ -31,7 +31,7 @@ const settings = {
   version: '0.2.64', error: null,
   settings: {
     writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }],
-    messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false,
+    messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false, features: { bots: false },
     routing: {
       coordinator: { agent: 'claude', model: 'opus', effort: 'high' }, lead: null,
       workers: {
@@ -81,6 +81,8 @@ if (q.get('fixture') === 'saved') { const r = settings.settings.routing; r.worke
 if (q.get('click')) setTimeout(() => { const el = document.querySelector(q.get('click')); el?.scrollIntoView({ block: 'center' }); setTimeout(() => el?.click(), 100); }, 500);
 // ?eval=<js>: run it after the page shows and put its result in document.title (for checks with --dump-dom).
 if (q.get('eval')) setTimeout(async () => { try { document.title = 'EVAL ' + JSON.stringify(await (0, eval)(q.get('eval'))); } catch (e) { document.title = 'EVAL ERROR ' + e.message; } }, 1500);
+// ?bots=on: the Bots switch starts on (Settings → Features).
+if (q.get('bots') === 'on') settings.settings.features.bots = true;
 // ?avail=none: the first model lookup has not landed yet.
 if (q.get('avail') === 'none') delete settings.availability;
 if (q.get('state') === 'broken') settings.error = '~/.orca-flow/config.json isn’t valid JSON (Expected double-quoted property name in JSON at position 18).';
@@ -132,7 +134,7 @@ server.listen(0, '127.0.0.1', () => {
   const profile = mkdtempSync(join(tmpdir(), 'orca-flow-chrome-'))
   const sizes = { 360: [360, 820], wide: [1180, 780] }
   const jobs = []
-  for (const page of ['summaries', 'models', 'format', 'capacity', 'advanced']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page, theme, w, width, height })
+  for (const page of ['summaries', 'models', 'format', 'capacity', 'features', 'advanced']) for (const theme of ['dark', 'light']) for (const [w, [width, height]] of Object.entries(sizes)) jobs.push({ page, theme, w, width, height })
   if (process.argv.includes('--broken')) jobs.push({ page: 'summaries', theme: 'dark', w: 'wide', width: 1180, height: 780, state: 'broken' })
   // --updates: About's rows in every Check for Updates state, instead of the four pages.
   if (process.argv.includes('--updates')) {

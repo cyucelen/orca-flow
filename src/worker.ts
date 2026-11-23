@@ -687,6 +687,7 @@ function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string
 let botData: { listed: ListedBot[] | null; automations: BotAutomation[] } = { listed: null, automations: [] }
 let botDataAt = 0
 let botDataLoading = false
+let botsWereOn = true
 /** The last duplicate adoptions logged, so each is logged once, not at every snapshot. */
 let botDuplicatesLogged = ''
 
@@ -721,14 +722,21 @@ export function botsOf(botRows: WorkspaceRow[], coordinators: Coordinator[], dat
 export async function snapshot(
   orca: OrcaWorkerApi,
   ps: () => Promise<PsWorktree[]> = runPs,
-  onLineage: () => void = () => {}
+  onLineage: () => void = () => {},
+  /** Settings → Features → Bots. Off: `orca bot list` is not read and the snapshot carries no bots. */
+  botsOn = true
 ): Promise<Snapshot> {
   const onDisk = readCoordinators()
   const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
   try {
     refreshLineage(orca, onLineage, allRows.flatMap((r) => r.agents.map((a) => a.paneKey)))
     refreshMemory(allRows, onLineage)
-    refreshBotData(orca, onLineage)
+    // Switching Bots on reads at once, not at the next minute; the cached read may be old by then.
+    if (botsOn) {
+      if (!botsWereOn) botDataAt = 0
+      refreshBotData(orca, onLineage)
+    }
+    botsWereOn = botsOn
     const worktrees = await ps()
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
     const idByPath = new Map<string, string>()
@@ -781,8 +789,9 @@ export async function snapshot(
     // A bot's workspaces show in the Bots section only: not in the tree, Idle or search.
     const botRows = all.filter((r) => isBotRow(r))
     const rows = foldCoordinatorFolders(all.filter((r) => !isBotRow(r)), coordinators, onDisk.map((c) => c.dir))
-    const bots = botsOf(botRows, coordinators, botData, (line) => orca.log(line))
-    return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, bots }
+    // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
+    const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
+    return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}) }
   } catch (e) {
     orca.log(`orca worktree ps failed, using workspace.list: ${(e as Error).message}`)
     return { rows: (await fromApi(orca)).filter((r) => !isBotRow(r)), source: 'api', capacity: null, coordinators }
@@ -990,7 +999,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
-    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh()), readFocus(run), readInstalledProviders(run)])
+    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), readSettings(DATA_DIR).settings.features.bots), readFocus(run), readInstalledProviders(run)])
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
