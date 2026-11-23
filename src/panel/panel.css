@@ -197,7 +197,13 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 .r > :is(.idchip, .pr, .soft, .age) { align-self: baseline; }
 .soft { color: var(--faint); font-size: 11px; }
 /* A session's model, muted like the repo name; dimmed with the finished row's PR; italic while it is only asked for. */
-.r > .ml { align-self: baseline; flex: none; color: var(--faint); font-size: 11px; }
+/* The model never costs a row its title: the title keeps a floor and the model is what gives way (an ellipsis, then nothing). */
+.item:has(> .r > .ml) > .t { min-width: 56px; }
+.item > .r:has(> .ml) { min-width: 0; flex: 0 1 auto; }
+.r:has(> .ml) > :not(.ml, .soft) { flex: none; }
+/* Past the model, the repo name is what gives way (it already hides under 300 px). */
+.r:has(> .ml) > .soft { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.r > .ml { align-self: baseline; flex: 0 8 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-size: 11px; }
 .r > .ml.pending { font-style: italic; color: color-mix(in srgb, var(--muted) 55%, transparent); }
 .item.finished .ml { opacity: .7; }
 /* Narrow: the repo name goes (as the Linear chip does above); the model stays. */
