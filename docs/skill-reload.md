@@ -14,23 +14,28 @@ built.
 ## Codex: approve Orca Flow's hooks once
 
 Codex runs a hook only after you trust it. The installed Orca Flow adds three hooks named **Orca
-Flow: Reload skills** to each Orca-managed Codex account. They go into the account's `hooks.json`,
-next to Orca's own. Until you approve them, the sidebar counts that account's Codex sessions as
-unsupported and says why.
+Flow: Reload skills** to `~/.codex/hooks.json`, the system Codex home. It creates the file if it is
+missing and keeps everything else in it. Each time Orca starts a Codex agent, it rebuilds that
+account's `hooks.json` from its own hooks plus `~/.codex/hooks.json`. That is how ours reach every
+Orca-managed Codex account. Until you approve them, the sidebar counts Codex sessions as unsupported
+and says why.
 
-1. Start a Codex session in Orca (any workspace), after Orca Flow has updated.
+1. After Orca Flow has updated, start a Codex agent in Orca (any workspace).
 2. Codex opens with **Hooks need review** · "3 hooks are new or changed" · "Hooks can run outside
    the sandbox after you trust them".
 3. Choose **2. Trust all and continue**. To see them first, choose **1. Review hooks**: each event
    lists *Orca Flow: Reload skills* with its command (`node ~/.agents/skills/orca-flow/scripts/…`).
    `t` trusts all, `esc` closes. Option 3 or `esc` skips them, and they won't run.
-4. In a session that is already open, `/hooks` opens the same list.
-5. Restart Codex sessions that were already running. Codex loads hooks when a session starts, so a
-   session started before you approved never gets the note.
+4. In a session that is already open, `/hooks` opens the same list. It only lists hooks that were
+   there when the session started.
+5. Restart Codex sessions that were already running. Codex loads hooks when a session starts, and
+   Orca adds ours to an account only when it starts Codex. A session started earlier never gets the
+   note.
 
-You do this once per Codex account. Orca Flow never writes Codex's trust state: Codex records your
-choice in that account's `config.toml`. The sidebar reads it (read-only) and calls the account ready
-when all three hooks are trusted with the hash of their current command.
+You do this once. Codex records your choice in that account's `config.toml`. The next time Orca starts
+Codex, it copies that approval into `~/.codex/config.toml` and from then on carries it into every
+Orca-managed account. Orca Flow never writes trust state. The sidebar reads it (read-only) and calls
+Codex ready when all three hooks are trusted with the hash of their current command.
 
 ## What each provider supports (verified 2026-11-23)
 
@@ -53,14 +58,22 @@ tell it to.
 
 - **Hooks.** `codex features list` shows `hooks stable true`. Codex reads the `hooks.json` of its
   `CODEX_HOME`, which for Orca's sessions is an Orca-managed account home
-  (`<Orca data>/codex-accounts/<id>/home`, marked `.orca-managed-home`). Orca fills every event there
-  with its own status hook (`: orca-agent-hook-form=2; …`).
-  - When Orca rewrites the file it removes only its own commands and keeps the rest (read from Orca
-    1.4.265's bundle, `hook-trust-promotion`).
+  (`<Orca data>/codex-accounts/<id>/home`, marked `.orca-managed-home`). Codex also has hook sources
+  in `config.toml`, `-c` flags, trusted projects' `.codex/hooks.json` and plugins. The `plugin_hooks`
+  feature is off in 0.171.
+  - **Orca rebuilds that file every time it starts a Codex agent.** In Orca 1.4.265 this is the
+    hookPass worker's install (`T()` in `out/main/codex-project-trust-worker-entry.js`). It writes
+    Orca's own status hook (`: orca-agent-hook-form=2; …`) first in each of its 9 events. Next come
+    the groups of `~/.codex/hooks.json`, minus Orca's own and any command containing
+    `${CLAUDE_PLUGIN_ROOT}`, `${PLUGIN_ROOT}` or a `…_DATA` variant. It drops everything else, and its
+    trust entries with it (`On()` in `hook-trust-promotion`). The old file is left as `hooks.json.bak`.
+    Verified live: hooks added only to the account's file were gone after the next `orca agent launch`,
+    and so were their trust entries, even after Trust all and continue.
   - The input matches Claude Code's (`session_id`, `cwd`, `transcript_path`; for PostToolUse
     `tool_name: "Bash"`, `tool_input.command`). The output (`hookSpecificOutput.additionalContext`)
     reaches the model as a `developer` message.
-  - Codex panes get `ORCA_PANE_KEY`, and our scripts accept it as the pane.
+  - Codex panes get `ORCA_PANE_KEY`, and our scripts accept it as the pane. Orca starts Codex with
+    `--dangerously-bypass-approvals-and-sandbox`, so its sessions have no sandbox.
 - **Trust.** A hook runs only once trusted. `config.toml` holds one table per hook:
   `[hooks.state."<realpath>/hooks.json:<event>:<group>:<handler>"]` with
   `trusted_hash = "sha256:…"` and `enabled`.
@@ -69,9 +82,12 @@ tell it to.
     included for tool events only.
   - Our implementation reproduces Codex's hash for all nine Orca-trusted entries of a real account.
     It also reproduces the three that Codex wrote for ours after "Trust all and continue".
-  - Orca pre-trusts its own hooks. Ours are trusted by the user (see above). The trust key includes
-    the position, so if Orca reorders the entries, the sidebar falls back to "approve once" until the
-    user trusts them again.
+  - Orca pre-trusts its own hooks. It pre-trusts nothing else. For a hook it merged from
+    `~/.codex/hooks.json`, it carries the user's trust from `~/.codex/config.toml`, matched by exact
+    key or by hash within the event (`p`/`m` in the same worker). When the user approves a merged hook
+    inside an account, the next Codex start copies that approval into `~/.codex/config.toml` first
+    (`or()` in `hook-trust-promotion`). Ours sit after Orca's group: index 1 in UserPromptSubmit and
+    SessionStart, and in PostToolUse after any group of the user's own.
 - **Sandbox.** Codex's default `workspace-write` sandbox refuses writes to `~/.orca-flow` (`EPERM`).
   Hooks run outside it, so the PostToolUse hook records the confirmation when it sees
   `orca-flow skills-reloaded` run.
@@ -80,24 +96,29 @@ tell it to.
 - No skill reload command exists. `codex queue` would put a visible user turn in front of the agent.
 
 **Used:** the same three scripts as for Claude Code, through `~/.agents/skills/orca-flow` (the Codex
-user skill link), installed by `src/codex-hooks.ts` into every Orca-managed Codex account, installed
-copy only. The installer is idempotent and updates in place, so the trust key stays put. It keeps
-Orca's and every other entry, never creates `hooks.json`, and never touches `config.toml`,
-`auth.json` or any trust state. The worker checks the selected Codex account (`orca account list`,
-every 5 minutes). A Codex session counts only when that account is ready. Otherwise it is unsupported
+user skill link), so the commands stay the same across plugin updates and keep the user's trust.
+`src/codex-hooks.ts` installs them into `~/.codex/hooks.json`, installed copy only, when `~/.codex`
+exists. It creates the file when it is missing, is idempotent and updates in place. It keeps every
+other entry and key. It never writes an Orca-managed account home (Orca rebuilds those), and never
+touches `config.toml`, `auth.json` or any trust state. Plain `codex` runs outside Orca load the hooks
+too, and they do nothing there: each one checks for an Orca pane first.
+
+The worker checks the selected Codex account (`orca account list`, every 5 minutes) and reads what
+Codex will use. A Codex session counts only when that account is ready. Otherwise it is unsupported,
 with the reason and one action:
 
-| State | Reason in the sidebar |
-| --- | --- |
-| not installed | Orca Flow's hooks are not installed in this Codex account yet; update Orca Flow |
-| needs approval | approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks) |
-| disabled | Orca Flow's hooks are turned off; turn them on in Codex with /hooks |
-| unreadable | its hooks.json cannot be read; restart to reload |
-| unmanaged | the selected Codex login is not an Orca-managed account, where Orca Flow installs its hooks |
+| State | When | Reason in the sidebar |
+| --- | --- | --- |
+| not installed | ours are not in `~/.codex/hooks.json` | Orca Flow has not added its hooks to ~/.codex/hooks.json yet; update Orca Flow |
+| not merged | in `~/.codex/hooks.json`, but not (or an older version) in the account's `hooks.json` | Orca adds Orca Flow's hooks when it next starts Codex; start a Codex agent in Orca (choose Trust all and continue if asked), then restart older Codex sessions |
+| needs approval | merged, not trusted by the account's `config.toml` at the merged position, nor by `~/.codex/config.toml` for `~/.codex/hooks.json` | approve Orca Flow's hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions |
+| disabled | trusted, but turned off | Orca Flow's hooks are turned off; turn them on in Codex with /hooks |
+| unreadable | `~/.codex/hooks.json` or the account's file is not valid JSON | a hooks.json Orca Flow reads (~/.codex or this Codex account) is not valid JSON; fix it, then start a Codex agent in Orca |
+| unmanaged | the selected login is neither `~/.codex` nor Orca-managed | the selected Codex login is neither ~/.codex nor an Orca-managed account, so Orca Flow's hooks do not reach it; restart to reload |
 
-When Codex sessions are asked, the confirmation adds: "A Codex session started before you approved
-Orca Flow's hooks reloads only after a restart." A Codex row that is waiting says the same in its
-tooltip.
+With the `system` login selected, Codex reads `~/.codex` directly, and so does the check. A Codex row
+that is waiting says in its tooltip: "a Codex session started before Orca added and you approved
+the hooks needs a restart".
 
 ### Antigravity CLI (`agy`): documented hooks, fixture-tested only
 

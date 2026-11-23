@@ -68,11 +68,12 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   and runs stay as they are. Rows show waiting, reading, reloaded or unsupported (with the reason),
   and one line sums it up ("Skills: 3 reloaded · 2 waiting for next turn"); requests expire after
   24 h. Other agents cannot reload live: restart them.
-  **Codex, once per account:** Orca Flow adds three hooks named *Orca Flow: Reload skills* to each
-  Orca-managed Codex account's `hooks.json`, next to Orca's. The next time you start Codex it shows
-  **Hooks need review**: choose **Trust all and continue** (or review them, or use `/hooks` in an open
-  session), then restart Codex sessions that were already running. Until then the sidebar shows those
-  sessions as unsupported with that one step.
+  **Codex, once:** Orca Flow adds three hooks named *Orca Flow: Reload skills* to
+  `~/.codex/hooks.json`. Orca copies them into a Codex account each time it starts a Codex agent
+  there. The first Codex agent you start in Orca afterwards shows **Hooks need review**: choose
+  **Trust all and continue** (or review them, or use `/hooks`). Then restart Codex sessions that were
+  already running. Orca carries your approval to your other Codex accounts. Until then the sidebar
+  shows Codex sessions as unsupported, with that one step.
   **Antigravity (fixture-tested, not live-tested):** an `orca-flow-reload` definition in
   `~/.gemini/config/hooks.json`, next to Orca's own, gives the note through agy's documented
   `PreInvocation` hook. Google documents no approval step for hooks.
@@ -106,7 +107,7 @@ The installed copy sets up these files outside its own folder:
 | `~/orca/coordinators/CLAUDE.md` | Instructions every coordinator inherits, copied once. From then on it is yours: coordinators keep your project notes in it, and updates never change it. |
 | `~/orca/coordinators/<name>/AGENTS.md` and `CLAUDE.md` | Missing local instructions are seeded for new and existing coordinator folders. Launch prompts also explicitly supply the coordinator role and skill path. |
 | `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. One PreToolUse hook on the Agent tool denies a coordinator's or lead's native subagent so the work goes to an Orca worker; it is on by default ([Delegation](docs/model-routing.md#delegation)). One PostToolUse hook hands a busy agent the [Reload skills](docs/skill-reload.md) note; it starts `node` only while a reload request waits. The UserPromptSubmit and SessionStart hooks give that note too, with no opt-in, and only to the sessions a request names. All five run only in Orca's agent panes. Your other settings and hooks stay as they are. |
-| `~/Library/Application Support/orca/codex-accounts/<id>/home/hooks.json` | In each Orca-managed Codex account, three hooks named *Orca Flow: Reload skills* (UserPromptSubmit, SessionStart, PostToolUse) next to Orca's own entries, which stay as they are. They let Codex sessions take [Reload skills](docs/skill-reload.md#codex-approve-orca-flows-hooks-once). Codex runs them only after you approve them once (**Hooks need review** → **Trust all and continue**). Orca Flow never writes Codex's trust state, `config.toml` or `auth.json`. |
+| `~/.codex/hooks.json` | Three hooks named *Orca Flow: Reload skills* (UserPromptSubmit, SessionStart, PostToolUse), next to anything you keep there. The file is created if missing. Orca copies them into each Orca-managed Codex account's `hooks.json` when it starts Codex there, so Codex sessions can take [Reload skills](docs/skill-reload.md#codex-approve-orca-flows-hooks-once). Codex runs them only after you approve them once (**Hooks need review** → **Trust all and continue**). Outside Orca's panes they do nothing. Orca Flow never writes Codex's trust state, `config.toml` or `auth.json`, and never writes the account homes Orca manages. |
 | `~/.gemini/config/hooks.json` | An `orca-flow-reload` definition (PreInvocation, PostToolUse on `run_command`) next to Orca's `orca-status`, so Antigravity sessions can take [Reload skills](docs/skill-reload.md#antigravity-cli-agy-documented-hooks-fixture-tested-only). It is added only when Orca has created the file, and a definition you turned off stays off. Fixture-tested, not live-tested. |
 
 A real file or another source's symlink is left alone, including a dangling link whose ownership
