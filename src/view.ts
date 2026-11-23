@@ -6,7 +6,8 @@ import { askKey } from './coordinator-sessions.ts'
 // Layout (agreed in the mockup): a one-row cockpit; Up next as collapsible briefings, the first
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
-import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
+import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
+import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, reloadSummary, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
@@ -43,6 +44,8 @@ export type UiState = {
   linearGroupFolds: Set<string>
   /** The Bots section folded to its header (kept in plugin storage under BOTS_UI_KEY). */
   botsFolded: boolean
+  /** Set by render from the snapshot: each pane's skill reload still worth a mark on its row. */
+  reloads?: Map<string, SkillReloadEntry>
 }
 
 export const emptyUi = (): UiState => ({
@@ -1032,9 +1035,9 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
-  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
+  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : reloadMark(ui, p.a.paneKey) + (lead
     ? `${own ? `${chip}${prBadge(p.row.pr)}` : ''}`
-    : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
+    : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`))
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}" data-depth="${depth}" style="--node-x:${nodeX(depth)}px"`
@@ -1104,9 +1107,19 @@ const byStart = (x: Placed, y: Placed) => x.row.createdAt - y.row.createdAt || x
 /** A coordinator's color: its look's, else its one project's, else neutral. */
 const coordinatorColor = (c: Coordinator) => c.look?.color ?? (c.repos.length === 1 ? colorOf(c.repos[0]) : NEUTRAL)
 
-/** A coordinator's character in its own state (asleep without a session), for menus and the Linear section. */
-export function coordinatorCharacter(c: Coordinator, size = 16, face: Face = c.session ? faceOf(c.session) : 'idle'): string {
-  return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face, size, true, c.session ? askKindOf(c.session) : 'question')
+/** The activity to display across open panes, in the same priority order as the You group. */
+function activityAgent(panes: AgentInfo[]): AgentInfo | undefined {
+  return panes.find(asksYou) ?? panes.find((a) => faceOf(a) === 'working') ?? panes.find(monitoring) ?? panes[0]
+}
+
+function coordinatorActivity(c: Coordinator) {
+  return c.session ?? activityAgent(c.sessionPanes ?? [])
+}
+
+/** A coordinator's character in its own state, for menus and the Linear section. */
+export function coordinatorCharacter(c: Coordinator, size = 16, face?: Face): string {
+  const activity = coordinatorActivity(c)
+  return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face ?? (activity ? faceOf(activity) : 'idle'), size, true, activity ? askKindOf(activity) : 'question')
 }
 
 function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap: Snapshot, ui: UiState, mixed: boolean): string {
@@ -1117,12 +1130,9 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const sub = single ?? (c.you ? 'chats you started' : c.repos.length ? c.repos.join(', ') : 'all projects')
   // A coordinator shows its own state only; its workers show theirs below it. You has no session of
   // its own, so it shows the busiest of your chats.
-  const face: Face = c.you
-    ? ((['asks', 'working', 'monitoring'] as Face[]).find((f) => mine.some((p) => faceOf(p.a) === f)) ?? 'done')
-    : c.session ? faceOf(c.session) : 'idle'
-  // The badge of the ask it shows: its own session's, or for You the first of your chats that asks.
-  const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
-  const ask = asking ? askKindOf(asking) : 'question'
+  const activity = c.you ? activityAgent(mine.map((p) => p.a)) : coordinatorActivity(c)
+  const face: Face = activity ? faceOf(activity) : c.you ? 'done' : 'idle'
+  const ask = activity ? askKindOf(activity) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
   const done = (p: Placed) => asleep(p.row) || (faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all))
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
@@ -1150,10 +1160,13 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const ringed = !folded && mine.length > 0
   const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
   const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}${providerBadge(c.session, mixed)}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
+  const sessionStatus = c.session ? reloadMark(ui, c.session.paneKey) + modelChip(c.session)
+    : activity ? `<span class="rstatus">${esc(tip)}</span>`
+    : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? modelChip(c.session) : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? sessionStatus}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
@@ -1208,11 +1221,11 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   // stays drawn asleep at the head of their lane until they finish. Unknown liveness is not asleep.
   const live = placed.filter((p) => asleep(p.row) ? leadsOpenWork(p.a, all) : p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
-  // Grouped by the coordinator row's own status, the one its label shows: a live session (the
-  // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
+  // Grouped by the coordinator row's own status: a live selected conversation first, then You,
+  // then Sleeping and Not started, however busy their teams
   // are. Each group keeps the snapshot's order, so a refresh never reshuffles rows; a coordinator
   // moves only when it wakes, starts or sleeps. Its whole team moves with it.
-  const awake = (c: Coordinator) => Boolean(c.session)
+  const awake = (c: Coordinator) => Boolean(c.session || c.sessionPanes?.length)
   const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
   return [...snap.coordinators.filter(awake), you, ...snap.coordinators.filter((c) => !awake(c))].flatMap((c) => {
     const mine = teamOf(c.key).sort(byStart)
@@ -1301,7 +1314,44 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
 export const linearOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.linear !== false
 export const tokenSpeedOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.tokenSpeed !== false
 
-export function render(given: Snapshot, ui: UiState, linearData: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
+// ---------- Reload skills ----------
+
+/** Circular arrows: the Reload skills action and its marks. */
+export const RELOAD_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 0 1-8.6 3.5M3 8a5 5 0 0 1 8.6-3.5"/><path d="M11.8 1.8v2.8H9M4.2 14.2v-2.8H7"/></svg>'
+const RELOAD_CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>'
+const RELOAD_NONE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="M4.6 11.4l6.8-6.8"/></svg>'
+
+/** The key of the "all running agents" action's inline status (ui.status). */
+export const RELOAD_ALL = 'reload:all'
+
+/** A row's small skill-reload mark (waiting, reading, reloaded, unsupported), or '' when it has none. */
+export function reloadMark(ui: Pick<UiState, 'reloads'>, pane: string): string {
+  const e = ui.reloads?.get(pane)
+  if (!e) return ''
+  const glyph = e.state === 'reloaded' ? RELOAD_CHECK : e.state === 'unsupported' ? RELOAD_NONE : RELOAD_ICON
+  // An unsupported row says why, with the one action to take ("Codex: approve Orca Flow's hooks once; …").
+  const tip = e.state === 'unsupported' && e.reason ? e.reason
+    : e.state === 'waiting' && e.provider === 'codex' ? CODEX_WAITING_TIP
+    : e.state === 'waiting' && e.provider === 'antigravity' ? AGY_WAITING_TIP : RELOAD_TIP[e.state]
+  return `<span class="srl srl-${e.state}" role="img" aria-label="${esc(tip)}" data-tip="${esc(tip)}">${glyph}</span>`
+}
+
+/**
+ * The Coordinators heading with its one compact action, Reload skills in every running agent, and
+ * under it while any request shows, the one-line summary ("Skills: 3 reloaded · 2 waiting for next turn").
+ */
+export function treeLabel(reloading: SkillReloadEntry[], ui: UiState): string {
+  // While a click on the action runs or was refused, its status takes the summary's place.
+  const status = rowStatus(ui, RELOAD_ALL)
+  if (status) return `<div class="label tlabel"><span>Coordinators</span>${status}</div>`
+  const summary = reloadSummary(reloading)
+  const tip = 'Waiting: the agent takes the note at its next turn or tool call. Reading: it got the note. Reloaded: it confirmed reading the current files. Unsupported: restart that agent to reload.'
+  return `<div class="label tlabel"><span>Coordinators</span><button class="icon lact" data-reload-skills="all" aria-label="Reload skills in all running agents" data-tip="Reload skills">${RELOAD_ICON}</button></div>${summary ? `<div class="reload-sum" data-tip="${esc(tip)}">${RELOAD_ICON}<span>${esc(summary)}</span></div>` : ''}`
+}
+
+export function render(given: Snapshot, state: UiState, linearData: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
+  const reloading = visibleReload(given.skillReload, state.now)
+  const ui: UiState = { ...state, reloads: new Map(reloading.map((e) => [e.pane, e])) }
   // Linear off: no Linear data reaches the section or the rows' labels.
   const linear = linearOn(given) ? linearData : null
   // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
@@ -1333,7 +1383,7 @@ export function render(given: Snapshot, ui: UiState, linearData: LinearData | nu
   return {
     cockpit: cockpit(snap, ui),
     copen,
-    main: `<div class="tree"><div class="label">Coordinators</div>${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
+    main: `<div class="tree">${treeLabel(reloading, ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
     attention: upNext(asking, all, snap.coordinators, ui, mixed, snap.bots ?? []),
     bots: botsSection(snap, ui),
     linear: linearSection(snap, ui, linear),

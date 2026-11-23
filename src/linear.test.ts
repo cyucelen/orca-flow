@@ -10,7 +10,7 @@ const issue = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
 })
 const state = (name: string, type: string) => ({ name, type, color: '' })
 const data = (issues: LinearIssue[], over: Partial<LinearData> = {}): LinearData => ({
-  me: ME, teams: ['BOU'], connectedTeams: ['BOU', 'CUS'], issues, cycles: ['c-now'], sent: {}, lastSent: {}, at: 0, ...over
+  me: ME, teams: ['BOU'], issues, cycles: ['c-now'], sent: {}, lastSent: {}, at: 0, ...over
 })
 
 test('reads an issue from the CLI: one-line text, a known priority, safe color and URL; anything else is not an issue', () => {
@@ -160,7 +160,7 @@ test('loading: my teams are the ones I am a member of; each issue once, with its
   const d = await loadLinear(run, 5)
   assert.equal(d.me, ME)
   assert.deepEqual(d.teams, ['BOU'])
-  assert.deepEqual(d.connectedTeams, ['BOU', 'CUS'])
+  assert.ok(!('connectedTeams' in d), 'no list of every team: only the coordinator menu\'s removed chips used it')
   assert.deepEqual(d.issues.map((i) => [i.id, i.cycle, i.state.name]).sort(), [['BOU-1', 'c-now', 'In Progress'], ['BOU-2', 'c-now', 'In Review'], ['CUS-7', null, 'Todo']])
   assert.deepEqual(d.cycles, ['c-now'])
   assert.ok(!calls.some((c) => c.includes('--team CUS --state')), 'reads no issues of a team I am not in')
@@ -320,7 +320,7 @@ function realistic(n: number): LinearData {
       assignee: k % 5 ? { id: uuid(k % 17), name: `person${k % 17}` } : null, priority: k % 5, cycle: k % 3 ? uuid(1000 + (k % 6)) : null, updatedAt: 1794993700492 - k * 61_000
     }
   })
-  return { me: uuid(1), teams: ['BOU', 'DES'], connectedTeams: ['BOU', 'DES', 'CUS'], issues, cycles: [uuid(1001)], sent: { 'BOU-1001': { coordinator: 'bounti', at: 5 } }, lastSent: { BOU: 'bounti' }, at: 9 }
+  return { me: uuid(1), teams: ['BOU', 'DES'], issues, cycles: [uuid(1001)], sent: { 'BOU-1001': { coordinator: 'bounti', at: 5 } }, lastSent: { BOU: 'bounti' }, at: 9 }
 }
 
 test('the panel copy of 700 issues stays well under the 256 KiB Orca allows a post', () => {

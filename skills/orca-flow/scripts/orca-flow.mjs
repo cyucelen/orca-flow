@@ -10,6 +10,8 @@
 //   orca-flow summarize-run --pane <key> [--force]   Re-summarize an agent's latest turn now
 //   orca-flow bots [--repo <name>] [--json]   Orca bots you can hand work to, with the command for each
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
+//   orca-flow skills-reloaded [--request <id>]   After re-reading the skill files a "Reload skills"
+//                                             note asked for: records this session and the files' hash
 //   orca-flow types [--json]                  The user's task types (Settings → Models): id, name,
 //                                             description, model. None: every task goes by difficulty
 //   orca-flow route --role worker|lead|coordinator [--type <id>] [--kind simple|normal|hard] [--risk high]
@@ -447,6 +449,33 @@ export function role(args, { env = process.env, cwd = process.cwd(), home = home
   return clearRole(DIR, session.id) ? `Cleared the lead record of session ${session.id}.` : `Session ${session.id} had no role record.`
 }
 
+// ---------- skills-reloaded ----------
+
+const reload = await import('./skill-reload.mjs')
+
+/**
+ * `skills-reloaded`: the agent re-read its skill files after the sidebar's note (skill-reload.mjs)
+ * and records it, keyed by its Orca pane (else its Claude session), with the hash of the files as
+ * they are now. The sidebar counts it as reloaded when that hash is the one the request asked for.
+ */
+export function skillsReloaded(args, { env = process.env, cwd = process.cwd(), home = homedir(), script = process.argv[1]?.endsWith('orca-flow.mjs') ? process.argv[1] : fileURLToPath(import.meta.url), now = Date.now() } = {}) {
+  // The skill as the agent reached it (through the skill link, like the hooks' skillOf), not where the link points.
+  // Orca gives Claude Code's shell ORCA_AGENT_PANE and Codex's ORCA_PANE_KEY (shell_environment_policy.set).
+  const pane = env.ORCA_AGENT_PANE || env.ORCA_PANE_KEY || null
+  // Claude Code's session, else the Codex thread this command runs in.
+  const session = currentSession({ env, cwd, home })?.id ?? env.CODEX_THREAD_ID ?? null
+  const skill = join(script, '..', '..')
+  const data = env.ORCA_FLOW_DIR || join(home, '.orca-flow')
+  try {
+    return reload.confirmReload(data, { pane, session, skill, request: typeof args.request === 'string' ? args.request : null, now }).message
+  } catch (e) {
+    // A sandboxed shell (Codex workspace-write) cannot write ~/.orca-flow; the PostToolUse hook, which
+    // runs outside the sandbox, records this command instead. Not an error for the agent to act on.
+    if (['EPERM', 'EACCES', 'EROFS'].includes(e?.code) && pane) return `This shell cannot write ${data} (sandbox); Orca Flow's hook records the reload from this command. Nothing else to do.`
+    throw e
+  }
+}
+
 // ---------- route, dispatch, plan ----------
 
 const flow = await import('./dispatch.mjs')
@@ -500,6 +529,9 @@ async function main() {
     case 'role':
       console.log(role(args))
       break
+    case 'skills-reloaded':
+      console.log(skillsReloaded(args))
+      break
     case 'bots': {
       const b = bots(args)
       console.log(args.json ? JSON.stringify(b, null, 2) : formatBots(b))
@@ -520,7 +552,7 @@ async function main() {
       break
     }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }

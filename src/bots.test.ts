@@ -7,7 +7,7 @@ import type { AgentInfo, AgentSummary, Bot, Coordinator, Snapshot, WorkspaceRow 
 import { buildBots, folderOf, groupBots, isBotRow, nextRunOf, plainText, purposeOf, readBotFolders, soulLine, type BotFolder } from './bots.ts'
 import { askingRows, botsSection, botState, emptyUi, render, upNextOrder } from './view.ts'
 import { botsOf, fromPs, snapshot, statusOf, summaryAgents, type PsWorktree } from './worker.ts'
-import { COORDINATOR_FILE, readCoordinators, writeCoordinatorSessions, writeLinearTeams, writeLook } from './coordinators.ts'
+import { COORDINATOR_FILE, readCoordinators, writeCoordinatorSessions, writeLook } from './coordinators.ts'
 
 const NOW = 1_800_000_000_000
 const noMatch = (text: string, re: RegExp, message?: string) => assert.ok(!re.test(text), message ?? `unexpected ${re}`)
@@ -149,8 +149,6 @@ test('coordinators read `bots`, and every writer of coordinator.json keeps it', 
     const bots = () => JSON.parse(readFileSync(file, 'utf8')).bots
     writeLook(dir, { color: '#5b8def', shape: 'hex' })
     assert.deepEqual(bots(), ['live-qa', 'Replies you owe', 7, ''], 'a new look')
-    writeLinearTeams(dir, ['BOU'])
-    assert.deepEqual(bots(), ['live-qa', 'Replies you owe', 7, ''], 'Linear teams')
     writeCoordinatorSessions(dir, { version: 1, current: null, members: [] }, { sessions: { version: 1, current: null, members: [] } })
     assert.deepEqual(bots(), ['live-qa', 'Replies you owe', 7, ''], 'sessions')
   } finally { rmSync(root, { recursive: true, force: true }) }

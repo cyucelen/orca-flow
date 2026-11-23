@@ -147,6 +147,12 @@ restates leads' questions. When you have your own ask (capacity, routing, worktr
 conflict), the frame holds only that ask. Leads that wait on the user get at most one line that
 points to Up next or their chats: "2 leads wait on you in their chats; see Up next".
 
+**When Orca wakes you** (a mail notice, a task notification), it is not the user. Read the mail, act
+or reply on its route, and end the turn with one plain line (about 25 words: what arrived and what you did, no status line, no
+Ask, no ids; never an empty reply, which Claude Code answers with a nudge): no recap of the mail, no repeat of your own open ask or of a lead's, no status nobody asked for. Your last frame
+stands. A person asking "status?" or "what's next" is a normal prompt: answer with a frame. See
+"Mail and notifications" in [messages.md](../messages.md).
+
 When you route to a lead or it reports, glance at `orca orchestration worker-list`: a lead that has
 been working a long time with no workers is doing the work itself. Remind it to delegate
 (`orca orchestration send --to dispatch:<id>`).

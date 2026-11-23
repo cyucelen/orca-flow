@@ -44,6 +44,12 @@ Everything below applies to every role. Load the `orchestration` skill for comma
 `node <this skill's base directory>/scripts/orca-flow.mjs <command>`. It reads the same data as the
 user's Orca Flow sidebar, so what you rank and report matches what they see.
 
+**When told the skills changed** (a note from Orca Flow after the user pressed Reload skills, or the
+user saying so): re-read this file and your role file from disk, and any other skill you loaded in
+this conversation, even if you read them before; the new text replaces what you remember. Then run
+`orca-flow skills-reloaded` (with the note's `--request` id) and carry on. Nothing else changes:
+keep your task, open asks and run ownership, and send no message or `worker_done` because of it.
+
 ## Priority vocabulary
 
 Use these words exactly, in cards, specs, summaries and when talking to the user.
@@ -290,6 +296,12 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 - Hand implementation and any substantial or parallel task to a tracked Orca worker; your own
   subagents (Agent tool) are only for small, read-only lookups. In messages, call it "a worker".
 - End your turn as soon as work is handed off; Orca wakes you when workers report. Never poll.
+- A wake (Orca mail, a task notification) is not the user: read the mail, act or reply on its
+  route, end the turn. Don't recap the mail, don't repeat the user's open question, don't send a
+  status. Reply with one plain line (what arrived, what you did; about 25 words, no status line, no
+  Ask, no ids), never an empty reply; the open ask stands. Write to the user only for news they can act
+  on or a changed question (then one whole frame, saying the old ask is replaced). A person asking
+  "status?" is a normal prompt. See "Mail and notifications" in [messages.md](messages.md).
 - Answer a worker's question yourself when it follows from the task or the user's instructions;
   bring the user only what only they can decide.
 - Ask the user from the agent that owns the decision, in its own chat, so its card shows the ask.

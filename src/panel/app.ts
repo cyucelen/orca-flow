@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { asleep, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
@@ -17,6 +17,7 @@ import { PROVIDER_LOGOS } from '../provider-logos.ts'
 import { coordinatorHandover } from '../handover-providers.ts'
 import { openSettings, settingsHooks, settingsOpen, settingsUpdateState } from './settings.ts'
 import type { HandoverProvider } from '../handover.ts'
+import { confirmText, reloadPlan, type ReloadScope } from '../skill-reload.ts'
 
 const ui = emptyUi()
 let snap: Snapshot | null = null
@@ -216,6 +217,11 @@ document.addEventListener('click', (event) => {
   const upd = (event.target as Element).closest<HTMLElement>('[data-update]')
   if (upd) {
     void updateClick()
+    return
+  }
+  // Reload skills in every running agent: the scope confirmation names who gets it, then the worker writes the request.
+  if ((event.target as Element).closest('[data-reload-skills]')) {
+    void reloadSkills('all', 'across all coordinators and your chats', RELOAD_ALL)
     return
   }
   // The Bots section's header folds it; the fold is kept in storage.
@@ -836,6 +842,7 @@ function coordinatorMenu(key: string): MenuItem[] {
   const items: MenuItem[] = [
     ...(st && (st.tone === 'bad' || st.tone === 'warn') ? [statusHeader(st), 'separator' as const] : []),
     { label: 'New look', icon: 'shuffle', run: () => run('look', 'New look') },
+    reloadItem(c),
     ...handoverItems(c, true),
     'separator',
     { label: 'Start new conversation', icon: 'restart', danger: true, run: async () => {
@@ -845,23 +852,35 @@ function coordinatorMenu(key: string): MenuItem[] {
   const at = items.findIndex((it) => typeof it === 'object' && 'label' in it && it.label === 'New look') + 1
   if (c.members?.length) items.splice(at, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(at, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
-  // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
-  const teams = linearIsOn() ? linear?.connectedTeams ?? [] : []
-  if (teams.length) {
-    const own = c.linearTeams ?? []
-    items.splice(at, 0, {
-      chips: 'Linear teams', iconHtml: LINEAR_MARK,
-      options: teams.map((t) => ({
-        label: t,
-        active: own.includes(t),
-        run: () => inline(`coordinator:${key}`, 'Saving…', own.includes(t) ? `${t} removed` : `Owns ${t}`, () => orca.plugin.request('sidebar.setLinearTeams', { key, teams: own.includes(t) ? own.filter((x) => x !== t) : [...own, t] }))
-      }))
-    })
-  }
   items.push({ label: 'Delete coordinator', icon: 'trash', danger: true, run: async () => {
     if (await confirmAction('delete-coordinator', `Delete ${c.name}?`, 'Its sessions end and its folder is deleted. Workers it started keep running.', 'Delete')) await run('delete', 'Delete')
   } })
   return items
+}
+
+/** The coordinator menu's Reload skills, with how many of its agents it reaches on the right. */
+function reloadItem(c: Coordinator): MenuItem {
+  const n = snap ? reloadPlan(snap, { coordinator: c.key }).targets.length : 0
+  return { label: 'Reload skills', icon: 'restart', right: n ? `${n} ${n === 1 ? 'agent' : 'agents'}` : 'none running', run: () => reloadSkills({ coordinator: c.key }, `for ${c.name}`, `coordinator:${c.key}`) }
+}
+
+/**
+ * Reload skills for a scope: shows exactly who gets it by role, who cannot (Codex: restart to
+ * reload) and who is skipped (finished, asleep), then asks the worker to write the request. Its
+ * progress and outcome show on `target` (the coordinator's row, or the Coordinators heading).
+ */
+async function reloadSkills(scope: ReloadScope, where: string, target: string): Promise<void> {
+  if (!snap) return
+  const plan = reloadPlan(snap, scope)
+  const { title, text, ok } = confirmText(plan, where)
+  if (!ok) {
+    ui.status.set(target, { text: 'Nothing to reload', tone: 'warn', detail: text })
+    draw()
+    return
+  }
+  // Asked every time: the counts are the point of the dialog.
+  if (!(await confirmAction('reload-skills', title, text, 'Reload', 'restart', 'warn', false))) return
+  await inline(target, 'Requesting…', `Asked ${plan.targets.length}`, () => orca.plugin.request('sidebar.reloadSkills', { scope }, { timeoutMs: 30_000 }))
 }
 
 // The row whose menu is open keeps its active look, even across redraws.

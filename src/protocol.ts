@@ -237,6 +237,8 @@ export type Coordinator = {
   workspaceId: string | null
   /** The explicitly current member's live session, never inferred from focus or provider. */
   session?: AgentInfo | null
+  /** Multiple live panes of the selected conversation. They provide activity for display, but no unique action target. */
+  sessionPanes?: AgentInfo[]
   /** The character it was given at creation. */
   look?: Look | null
   /** Its workspace is the one focused in Orca (its row is marked only when its session's tab is, see Snapshot.focusedPanes). */
@@ -285,7 +287,24 @@ export type Snapshot = {
   bots?: Bot[] | null
   /** Settings → Features: Linear and Analytics (stored as `tokenSpeed`). Absent reads as on; false hides the section and its entry points. */
   features?: { linear: boolean; tokenSpeed: boolean }
+  /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
+  skillReload?: SkillReloadEntry[]
+  /**
+   * Whether Codex sessions (of the selected Codex account) can take the reload note: Orca Flow's hooks
+   * in its hooks.json and trusted by the user (src/codex-hooks.ts). Not ready: the reason, with the
+   * one action to take. Absent: unknown, read as not ready.
+   */
+  codexReload?: { ready: boolean; reason: string; /** The user's approval in Codex is what is missing. */ approval?: boolean }
+  /** The same for Antigravity sessions: Orca Flow's hooks in ~/.gemini/config/hooks.json (src/antigravity-hooks.ts). */
+  antigravityReload?: { ready: boolean; reason: string; approval?: boolean }
 }
+
+/**
+ * Where one pane's skill reload stands: waiting (its next turn has not come), reading (it got the
+ * note, no matching confirmation yet), reloaded (confirmed for the requested hash) or unsupported (a
+ * provider with no live reload). `doneAt`: when it confirmed.
+ */
+export type SkillReloadEntry = { pane: string; state: 'waiting' | 'reading' | 'reloaded' | 'unsupported'; role: 'coordinator' | 'lead' | 'worker' | 'chat'; provider: string | null; at: number; expiresAt: number; request: string; doneAt?: number; reason?: string }
 
 /** What the opened cockpit shows; loaded on demand because Orca's memory report is slow. */
 export type SessionRef = { paneKey: string; terminal: string | null; workspaceId: string; title: string; repo: string; memMB: number }
@@ -345,8 +364,6 @@ export type LinearData = {
   me: string | null
   /** The user's teams (keys), the ones Team and Cycle show. */
   teams: string[]
-  /** Every connected team's key, for a coordinator's "Linear teams" chips. */
-  connectedTeams: string[]
   /** Open issues (and Staging) of "Mine" and of the user's teams, each once. */
   issues: LinearIssue[]
   /** The active cycle of each of the user's teams (cycle ids). */
@@ -656,10 +673,14 @@ declare module 'orca' {
     'sidebar.checkUpdates': { output: import('./update.ts').UpdateCheck }
     /** Shows ~/.orca-flow/config.json (or its folder, while there is no file) in Finder. */
     'sidebar.revealSettings': { output: { ok: boolean } }
-    /** Sets the Linear teams a coordinator owns, in its coordinator.json. */
-    'sidebar.setLinearTeams': { input: { key: string; teams: string[] }; output: { ok: boolean; error?: string } }
     /** The Token speed section's data: agent output and traffic over time, and the last internet test. */
     'sidebar.tokenSpeed': { output: import('./token-speed.ts').TokenSpeedWire }
+    /**
+     * Asks a coordinator's team (its session, leads and workers) or every running agent to re-read
+     * their skill files: writes a request the Claude Code hooks deliver at each session's next turn.
+     * Types nothing into a terminal and sends no mail. Counts what it asked, what cannot reload, and what it skipped.
+     */
+    'sidebar.reloadSkills': { input: { scope: 'all' | { coordinator: string } }; output: { ok: boolean; error?: string; asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } }
     /** Starts `networkQuality -c` unless one is running; its result (or failure) is posted as sidebar.tokenSpeedChanged. */
     'sidebar.tokenSpeedTest': { output: { started: boolean } }
   }

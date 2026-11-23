@@ -52,6 +52,15 @@ one line, and end your turn.
 **QA, live checks, a release or a review your project has a bot for?** Hand it to that bot (see
 "Bots" in [SKILL.md](../SKILL.md)) instead of a worker.
 
+**When Orca wakes you** (a mail notice, a task notification, a worker's report, a duplicate notice), it
+is not the user. Read the mail, act or reply on its route (`orca orchestration reply --id
+<message_id>` to a worker's question, a new task to the dispatch), then end the turn: no recap of
+the mail, no repeat of the user's open question, no status nobody asked for. Reply with one plain
+line (about 25 words: what arrived and what you did, no status line, no Ask, no ids); never write
+nothing, because Claude Code answers an empty reply with a nudge. Your last frame and its Ask stand. Write to the user only for news
+they can act on, a blocker that needs them, or a question that really changed: then one whole frame
+that says the old ask is replaced. "Mail and notifications" in [messages.md](../messages.md).
+
 **Keep your own turns short** so the user can always talk to you. About to spend more than a couple
 of minutes editing? Hand it to a worker instead.
 

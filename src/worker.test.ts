@@ -3,7 +3,7 @@ import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker.ts'
 import type { ModelChoice } from './routing.ts'
 import { canRemove, monitoring, nextTarget, waitingQueue } from './rank.ts'
-import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners } from './coordinators.ts'
+import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
 import { emptyUi, render } from './view.ts'
 
@@ -1409,18 +1409,16 @@ test("a row carries the Linear issue Orca linked to its worktree, as its identif
   assert.equal(none.linearIssue, null)
 })
 
-test("a coordinator's Linear teams live in its coordinator.json; setting them keeps the rest", async () => {
-  const { mkdtempSync, readFileSync } = await import('node:fs')
+test("a coordinator's Linear teams are read from its coordinator.json as written there (no sidebar control sets them)", async () => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const root = mkdtempSync(join(tmpdir(), 'coordinators-'))
   const dir = scaffoldCoordinator(root, { name: 'bounti', look: { color: '#e07b4f', shape: 'pentagon' } })
   assert.deepEqual(readCoordinators(root)[0].linearTeams, [])
-  writeLinearTeams(dir, ['BOU', 'cus', 'BOU', 'not a key'])
+  const file = join(dir, COORDINATOR_FILE)
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), linearTeams: ['BOU', 'CUS', 7] }))
   assert.deepEqual(readCoordinators(root)[0].linearTeams, ['BOU', 'CUS'])
-  assert.equal(JSON.parse(readFileSync(join(dir, COORDINATOR_FILE), 'utf8')).look.color, '#e07b4f')
-  writeLinearTeams(dir, [])
-  assert.equal('linearTeams' in JSON.parse(readFileSync(join(dir, COORDINATOR_FILE), 'utf8')), false)
 })
 
 test('Linear sends are remembered next to the owners: the last coordinator per team and what is starting', async () => {

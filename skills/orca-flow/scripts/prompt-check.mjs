@@ -4,12 +4,15 @@
 // that session; at the agent's next prompt this hook hands it to the agent as additionalContext,
 // which the user does not see, and deletes it, so each reminder is given once. Same gates as the
 // Stop hook: an Orca pane, the user's opt-in for this folder, a coordinator or a lead.
+// It also gives the sidebar's skill-reload note to a session a "Reload skills" request names
+// (reload-check.mjs, skill-reload.mjs); that needs no opt-in.
 // Any error: exit 0, no output.
 //
 // Environment for tests: HOME moves ~ (and ~/orca/coordinators), ORCA_FLOW_DIR moves ~/.orca-flow.
 import { readFileSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { gate, reminderFile, specOf } from './stop-check.mjs'
+import { reloadNote } from './reload-check.mjs'
 
 /** The hook's answer: the additionalContext output, or null. Consumes the reminder it reads. */
 export function remind(input, { env = process.env, home = homedir(), script = process.argv[1] } = {}) {
@@ -39,11 +42,24 @@ export function remind(input, { env = process.env, home = homedir(), script = pr
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }
 }
 
+/**
+ * Both notes this hook gives, in one output: the format reminder (opt-in) and the sidebar's
+ * skill-reload note (reload-check.mjs; needs no opt-in, only a request naming this session).
+ */
+export function promptNotes(input, options = {}) {
+  let reminder = null
+  let reload = null
+  try { reminder = remind(input, options)?.hookSpecificOutput.additionalContext ?? null } catch {}
+  try { reload = reloadNote(input, 'UserPromptSubmit', options) } catch {}
+  const text = [reload, reminder].filter(Boolean).join('\n\n')
+  return text ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } } : null
+}
+
 async function main() {
   try {
     let raw = ''
     for await (const chunk of process.stdin) raw += chunk
-    const out = remind(JSON.parse(raw))
+    const out = promptNotes(JSON.parse(raw))
     if (out) process.stdout.write(`${JSON.stringify(out)}\n`)
   } catch {}
 }

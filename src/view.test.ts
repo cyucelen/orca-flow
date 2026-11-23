@@ -58,7 +58,7 @@ test('up next: the first briefing is open with about, the glance and one jump; t
 
 test('Up next is pinned under the tree, so the tree never moves when an ask comes or goes', () => {
   const asking = render(snap, emptyUi())
-  assert.match(asking.main, /^<div class="tree"><div class="label">Coordinators<\/div>/, 'the scrolling part starts with the tree')
+  assert.match(asking.main, /^<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/, 'the scrolling part starts with the tree')
   noMatch(asking.main, /Up next|class="upnext"|data-brief=/, 'nothing from Up next above or inside it')
   assert.match(asking.attention, /^<section class="upnext"><div class="label">Up next · 2<\/div>/)
   const html = readFileSync(new URL('./panel/index.html', import.meta.url).pathname, 'utf8')
@@ -68,7 +68,7 @@ test('Up next is pinned under the tree, so the tree never moves when an ask come
   const calm: Snapshot = { ...snap, rows: snap.rows.map((r) => ({ ...r, agents: r.agents.map((a) => ({ ...a, summary: a.summary ? summary() : null })) })) }
   const quiet = render(calm, emptyUi())
   assert.equal(quiet.attention, '')
-  assert.match(quiet.main, /^<div class="tree"><div class="label">Coordinators<\/div>/)
+  assert.match(quiet.main, /^<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/)
   assert.equal(render(snap, { ...emptyUi(), query: 'headline' }).attention, '', 'search shows only what it found')
 })
 
@@ -534,7 +534,7 @@ test('characters with nothing reaching outside the body are drawn centered', () 
 })
 
 test('the tree has a Coordinators section title', () => {
-  assert.match(render(snap, emptyUi()).main, /<div class="tree"><div class="label">Coordinators<\/div>/)
+  assert.match(render(snap, emptyUi()).main, /<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"/)
 })
 
 test('Orca\'s waiting always means waiting on you, and its question shows in Up next', () => {
@@ -1082,7 +1082,7 @@ test("a coordinator's badge is the kind of the ask it shows; a review with a PR 
   const review = summary({ glance: 'Review the PR?', needs: { type: 'review', ask: 'Review the PR?', options: [] } })
   const session = agent('p-home', 'Home', 'done', { summary: review })
   const s: Snapshot = { ...snap, coordinators: [{ ...snap.coordinators[0], session }, snap.coordinators[1]] }
-  const tree = render(s, emptyUi()).main.split('<div class="label">Coordinators</div>')[1]
+  const tree = render(s, emptyUi()).main.split('<span>Coordinators</span>')[1]
   const head = /<button class="coord-open"[^>]*>[\s\S]*?<\/button>/.exec(tree.split('data-menu="coordinator:alpha"')[1])![0]
   assert.match(head, /data-tip="Wants a review" data-tone="review"[\s\S]*?class="review-badge"/)
   const lead = agent('p-l', 'Checkout', 'done', { summary: review })
@@ -1214,7 +1214,7 @@ const lin = (id: string, over: Partial<LinearIssue> = {}): LinearIssue => ({
   team: 'BOU', project: null, projectColor: '', assignee: { id: 'me', name: 'me' }, priority: 3, cycle: 'c1', updatedAt: 0, ...over
 })
 const linearData = (issues: LinearIssue[], over: Partial<LinearData> = {}): LinearData => ({
-  me: 'me', teams: ['BOU'], connectedTeams: ['BOU'], issues, cycles: ['c1'], sent: {}, lastSent: {}, at: 0, ...over
+  me: 'me', teams: ['BOU'], issues, cycles: ['c1'], sent: {}, lastSent: {}, at: 0, ...over
 })
 const linearUi = (over: Partial<UiState> = {}): UiState => ({ ...emptyUi(), ...over })
 /** The issue IDs a section shows, top to bottom. */
@@ -1466,7 +1466,7 @@ test('a later ask comes after every ask that stops work, even from a working age
 test("a row's Linear label opens the issue, like its PR chip: in a row, a coordinator-folder row, never as a dead link", async () => {
   const { externalLink } = await import('./panel/links.ts')
   const { idChip } = await import('./view.ts')
-  const linear = (issues: Partial<LinearIssue>[]): LinearData => ({ at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: issues.map((i) => ({ state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0, ...i }) as LinearIssue) })
+  const linear = (issues: Partial<LinearIssue>[]): LinearData => ({ at: 1, me: null, teams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: issues.map((i) => ({ state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0, ...i }) as LinearIssue) })
   const day = { id: 'BOU-4242', title: 'Day view part ranges', url: 'https://linear.app/acme/issue/BOU-4242/day-view-part-ranges', team: 'BOU' }
   const rows = [
     row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'working', { coordinator: 'alpha' })], { linearIssue: 'BOU-4242', pr: { number: 6290, url: 'https://github.com/o/r/pull/6290', state: 'open', checks: null } }),
@@ -1497,7 +1497,7 @@ test("a row's Linear label opens the issue, like its PR chip: in a row, a coordi
 })
 
 test('Up next and search show no Linear label, so they have nothing to open', () => {
-  const linear: LinearData = { at: 1, me: null, teams: ['BOU'], connectedTeams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: [{ id: 'BOU-4242', title: 'Day', url: 'https://linear.app/acme/issue/BOU-4242', team: 'BOU', state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0 }] }
+  const linear: LinearData = { at: 1, me: null, teams: ['BOU'], cycles: [], sent: {}, lastSent: {}, issues: [{ id: 'BOU-4242', title: 'Day', url: 'https://linear.app/acme/issue/BOU-4242', team: 'BOU', state: { name: 'In Progress', type: 'started', color: '#f2c94c' }, project: null, projectColor: '', assignee: null, priority: 0, cycle: null, updatedAt: 0 }] }
   const s: Snapshot = { ...snap, rows: [row('wt-day', 'mono', [agent('p-day', 'Day view part ranges', 'done', { coordinator: 'alpha', summary: asks('Which ranges?') })], { linearIssue: 'BOU-4242' })] }
   const { attention } = render(s, emptyUi(), linear)
   assert.match(attention, /Up next · 1/)

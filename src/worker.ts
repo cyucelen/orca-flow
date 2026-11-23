@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, readEnvMemory, typicalEnv, writeEnvMemory, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
-import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLinearTeams, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
+import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
@@ -42,6 +42,10 @@ import { backgroundReader } from './background.ts'
 import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel } from './transcripts.ts'
 import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
+import { reloadPlan, type ReloadScope } from './skill-reload.ts'
+import { codexReloadReadiness, ensureOwnCodexHooks } from './codex-hooks.ts'
+import { antigravityReloadReadiness, ensureOwnAntigravityHooks } from './antigravity-hooks.ts'
+import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, readCoverage, readUsage, recordUsage, RETENTION_MS, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
 import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snapshotLinks, type DispatchInfo, type LinkRecord } from './usage-links.ts'
@@ -560,13 +564,15 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
     if (i === undefined) return [row]
     const c = coordinators[i]
     const members = c.sessions?.members.map((m) => { const a = memberAgent(m, all); return { ...m, agent: a?.live === false ? null : a } })
-    const session = members ? members.find((m) => m.id === c.sessions?.current)?.agent ?? null : sessionIn(row)
+    const current = members?.find((m) => m.id === c.sessions?.current)
+    const session = members ? current?.agent ?? null : sessionIn(row)
     c.members = members
     if (!session && !c.sessions) c.sessionNotice = 'No unambiguous coordinator session. Use Sessions to explicitly associate a member and make it current.'
     c.workspaceId = row.id
     c.active = row.active
-    // Its session counts only while a terminal is open with an agent in it.
-    c.session = row.liveTerminals > 0 ? session : null
+    c.session = session && (session.live ?? row.liveTerminals > 0) ? session : null
+    // A conversation can be awake without a unique pane to open or message.
+    c.sessionPanes = current && !session ? memberRows(current, [row]).filter((a) => a.live === true) : []
     // Every row of a member's conversation, so a pane left from before a restart is no duplicate row.
     const memberPanes = new Set((c.sessions ? c.sessions.members.flatMap((m) => memberRows(m, [row])) : session ? conversationRows(row.agents, session) : []).map((a) => a.paneKey))
     return folderRows({ ...row, agents: row.agents.filter((a) => !memberPanes.has(a.paneKey)) }, null, c.key)
@@ -1017,6 +1023,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!dir) return
     for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
     if (!repairOnly) for (const line of ensureOwnStopHook(stopHookFor(), installed)) orca.log(line)
+    // Codex: our reload hooks in ~/.codex/hooks.json, which Orca merges into every Orca-managed Codex
+    // account when it starts Codex (it rebuilds those homes' hooks.json); never trust state or auth.
+    if (!repairOnly) for (const line of ensureOwnCodexHooks(installed)) orca.log(line)
+    // Antigravity: our "orca-flow-reload" definition next to Orca's "orca-status" in ~/.gemini/config/hooks.json.
+    if (!repairOnly) for (const line of ensureOwnAntigravityHooks(installed)) orca.log(line)
   }
   if (!dir) orca.log(`plugin folder not found from ${import.meta.url}; skill and coordinator CLAUDE.md not set up`)
   else {
@@ -1041,12 +1052,36 @@ export default function activate(orca: OrcaWorkerApi): void {
   let firstProviders: Snapshot['coordinatorProviders'] = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
+  // The selected Codex account's home, looked up every 5 minutes (the installed copy then puts back
+  // our hooks in ~/.codex/hooks.json if they went missing); readiness is read from files on every snapshot.
+  let codexHome: string | null = null
+  let codexHomeAt = 0
+  const codexReady = (): Snapshot['codexReload'] => {
+    if (Date.now() - codexHomeAt > 5 * 60_000) {
+      codexHomeAt = Date.now()
+      void run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }).then((result) => {
+        codexHome = codexHomeFromAccounts({ ok: true, result })
+        if (installed) for (const line of [...ensureOwnCodexHooks(true), ...ensureOwnAntigravityHooks(true)]) if (!line.startsWith('left ')) orca.log(line)
+      }).catch(() => { codexHome = null })
+    }
+    if (!codexHome) return undefined
+    const r = codexReloadReadiness(codexHome)
+    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'needs-approval' || r.state === 'not-merged' || r.state === 'disabled' ? { approval: true } : {}) }
+  }
+  /** Antigravity: read from ~/.gemini/config/hooks.json on every snapshot (a few hundred bytes). */
+  const antigravityReady = (): Snapshot['antigravityReload'] => {
+    const r = antigravityReloadReadiness()
+    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'disabled' ? { approval: true } : {}) }
+  }
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
     const features = readSettings(DATA_DIR).settings.features
     const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
     snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
+    snap.skillReload = readSkillReload()
+    snap.codexReload = codexReady()
+    snap.antigravityReload = antigravityReady()
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
@@ -1068,6 +1103,19 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   orca.panels.handle('sidebar.list', () => refresh())
+
+  // "Reload skills": the targets are checked again against the latest snapshot, then written as one
+  // request with the hash of the skill files agents read (through the Claude profile's link).
+  orca.panels.handle('sidebar.reloadSkills', async ({ scope }) => {
+    const snap = latest ?? await refresh()
+    try {
+      const r = requestReload(snap, scope, skillFolder(dir))
+      void refresh()
+      return { ok: r.asked > 0, ...r, ...(r.asked ? {} : { error: 'No running Claude Code session to reload' }) }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, asked: 0, unsupported: 0, skipped: { finished: 0, asleep: 0 } }
+    }
+  })
 
   // ⌘⇧N and the status bar item: open the next workspace waiting on the person.
   let lastJump: { id: string; at: number } | null = null
@@ -1711,18 +1759,6 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { ...result, recipient }
   })
 
-  orca.panels.handle('sidebar.setLinearTeams', async ({ key, teams }) => {
-    const c = readCoordinators().find((x) => x.key === key)
-    if (!c) return { ok: false, error: `No coordinator ${key}` }
-    try {
-      writeLinearTeams(c.dir, teams)
-    } catch (e) {
-      return { ok: false, error: (e as Error).message }
-    }
-    refreshSoon()
-    return { ok: true }
-  })
-
   const currentAgent = (pane: string) => latest && summaryAgents(latest).find(({ agent }) => agent.paneKey === pane)?.agent
   const identityFor = (pane: string) => {
     const a = currentAgent(pane)
@@ -1832,6 +1868,48 @@ export default function activate(orca: OrcaWorkerApi): void {
     void (focusReading ?? Promise.resolve()).then(rereadFocus)
     refreshSoon()
   })
+}
+
+/** Unexpired reload requests for the snapshot; a stale gate file for the PostToolUse hook is removed. */
+function readSkillReload(): Snapshot['skillReload'] {
+  try {
+    syncActive(DATA_DIR)
+    return reloadStatus(DATA_DIR)
+  } catch {
+    return []
+  }
+}
+
+/** The skill folder agents read: the Claude profile's link when it exists, else this plugin's own copy. */
+export function skillFolder(dir: string | null, link = linksFor(dir ?? '')[0]?.from): string {
+  if (link && existsSync(join(link, 'SKILL.md'))) return link
+  if (dir) return join(dir, 'skills', 'orca-flow')
+  throw new Error('The orca-flow skill folder was not found')
+}
+
+/**
+ * Writes the reload request for a scope: every live Claude Code target with its session id (the
+ * summary's, else its transcript's name), and the unsupported ones so the sidebar can say so. Pure
+ * but for the files (`write`, `hashOf` and `sessionOf` are replaceable for tests).
+ */
+export function requestReload(
+  snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'codexReload' | 'antigravityReload'>,
+  scope: ReloadScope,
+  skill: string,
+  io: { data?: string; hashOf?: (skill: string) => string; write?: typeof writeRequest; sessionOf?: (pane: string, a: AgentInfo | undefined) => string | null; now?: number } = {}
+): { asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } {
+  const plan = reloadPlan(snap, scope)
+  if (!plan.targets.length) return { asked: 0, unsupported: plan.unsupported.length, skipped: plan.skipped }
+  const agents = new Map([...snap.rows.flatMap((r) => r.agents), ...snap.coordinators.flatMap((c) => (c.session ? [c.session] : []))].map((a) => [a.paneKey, a]))
+  const sessionOf = io.sessionOf ?? ((pane: string, a: AgentInfo | undefined) => {
+    const path = findTranscript(pane, undefined, { orcaSession: a?.orcaSession ?? undefined, provider: a?.agentType ?? undefined }).path
+    return path && path.endsWith('.jsonl') ? path.slice(path.lastIndexOf('/') + 1, -'.jsonl'.length) : null
+  })
+  // A Claude transcript is named by its session id; a Codex rollout file is not (its thread id comes from the summary).
+  const targets = [...plan.targets, ...plan.unsupported].map((t) => ({ ...t, session: t.session ?? (t.supported && t.provider === 'claude' ? sessionOf(t.pane, agents.get(t.pane)) : null) }))
+  const hash = (io.hashOf ?? skillHash)(skill)
+  ;(io.write ?? writeRequest)(io.data ?? DATA_DIR, targets, { hash, scope: scope === 'all' ? 'all' : `coordinator:${scope.coordinator}`, now: io.now })
+  return { asked: plan.targets.length, unsupported: plan.unsupported.length, skipped: plan.skipped, hash }
 }
 
 export function deactivate(): void {

@@ -176,3 +176,131 @@ test('an agent that runs orca-flow dispatch or plan start/next coordinates; read
   assert.equal(roleOf('fix the bug', [{ kind: 'tool', text: 'Bash: cat <<\'EOF\'\norca-flow dispatch --spec x\nEOF' }], null, '/h/orca/coordinators', null), 'solo', 'a heredoc body')
   assert.equal(roleOf('fix the bug', [{ kind: 'tool', text: 'Bash: orca-flow dispatch --spec x' }], null, '/h/orca/coordinators', null), 'coordinator')
 })
+
+// Mail and notifications: a wake (Orca's mail notice, a task notification) is not the user, and a short
+// acknowledgment after it must not clear the ask the user still has open.
+const WAKE = 'You have 1 orchestration message. Run `orca orchestration check`.'
+/** The shapes Orca writes: bare, with --run, with --terminal, with both, and a plural count. */
+const WAKES = [WAKE, 'You have 2 orchestration messages. Run `orca orchestration check --run run_ab12`.',
+  'You have 1 orchestration message. Run `orca orchestration check --terminal term_cd34`.',
+  'You have 1 orchestration message. Run `orca orchestration check --run run_ab12 --terminal term_cd34`.',
+  'You have 3 orchestration messages. Run `orca orchestration check`.']
+const NOTIFY = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'
+const say = (text: string) => line('assistant', [{ type: 'text', text }])
+const tool = line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'orca orchestration check' } }])
+/** A lead's session: it asks a pick, then each of `after` happens in order (a string is a user prompt or a wake, an array an assistant text). */
+const leadAfter = (...after: (string | { say: string })[]) => digest([
+  line('user', 'Your role: lead. Split short docs into lessons.'), line('user', 'go on'), say(DECISION),
+  ...after.map((e) => (typeof e === 'string' ? line('user', e) : say(e.say)))
+], '/h/orca/coordinators')!
+const PICK = 'run the plan eval on Azure OpenAI?'
+
+test('wake, no text: the card keeps the pick', () => {
+  for (const wake of WAKES) {
+    const d = leadAfter(wake, WAKE, NOTIFY)
+    assert.equal(d.lastMessage, DECISION, wake)
+  }
+  const d = leadAfter(WAKE, WAKE, NOTIFY)
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+})
+
+test('wake, short ack "Noted.": the card keeps the pick', () => {
+  for (const wake of [...WAKES, NOTIFY]) {
+    const d = leadAfter(wake, { say: 'Noted.' })
+    assert.equal(d.lastMessage, DECISION, 'the ack does not replace the frame')
+    assert.equal(frameAsk(d)?.needs.type, 'decision')
+    assert.equal(frameAsk(d)?.needs.ask, PICK)
+    assert.match(d.turn, /Noted\./, 'Haiku still sees the ack in the turn')
+  }
+})
+
+test('two or three repeated wakes with acks: still the same pick', () => {
+  const d = leadAfter(WAKE, { say: 'Noted.' }, WAKE, { say: 'Ok.' }, NOTIFY, { say: 'Got it.' })
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+})
+
+test('wake, then a changed decision as one new frame: the new ask decides', () => {
+  const next = INFO
+  const d = leadAfter(WAKE, { say: 'Noted.' }, WAKE, { say: `The worker's report changed the plan; the pick above is replaced.\n\n${next}` })
+  assert.equal(d.lastMessage.includes('Needs 2 files from you'), true)
+  assert.equal(frameAsk(d)?.needs.type, 'info')
+  assert.equal(frameAsk(d)?.needs.ask, 'where are the JBC and Foodelity source PDFs?')
+  const idle = leadAfter(WAKE, { say: RELEASED })
+  assert.deepEqual(frameAsk(idle)?.needs, { type: 'none', ask: '', options: [] }, 'Idle after a wake ends the ask')
+})
+
+test('a human prompt starts a new turn: "status?" is not a wake', () => {
+  const d = leadAfter(WAKE, { say: 'Noted.' }, 'status?')
+  assert.equal(d.lastMessage, '', 'no reply yet, and the earlier turn is not current')
+  const answered = leadAfter('status?', { say: 'Noted.' })
+  assert.equal(answered.lastMessage, 'Noted.', 'a short reply to a human is that turn\'s final message')
+  assert.equal(frameAsk(answered), null)
+  const framed = leadAfter(WAKE, 'status?', { say: ANSWER })
+  assert.equal(framed.lastMessage, ANSWER)
+})
+
+test('a human prompt that only quotes the notice is not a wake', () => {
+  for (const quoted of [`Why did I get "${WAKES[3]}" in the chat?`, `${WAKES[1]} Please also tell me the plan.`, `${WAKE}\nstatus?`]) {
+    const d = leadAfter(quoted, { say: 'Noted.' })
+    assert.equal(d.lastMessage, 'Noted.', quoted)
+    assert.equal(frameAsk(d), null)
+  }
+})
+
+test('a long message after a wake without a frame is not an acknowledgment', () => {
+  const long = 'The worker finished and all 12 tests pass. '.repeat(8).trim()
+  const d = leadAfter(WAKE, { say: long })
+  assert.equal(d.lastMessage, long)
+})
+
+test('a coordinator after a wake does not inherit a lead\'s ask', () => {
+  const lines = (...after: string[]) => [
+    line('user', 'hello', '/h/orca/coordinators/bounti'), line('user', 'next?'), say(BRIEFING), line('user', WAKE), tool,
+    line('user', [{ type: 'tool_result', content: 'From the lead: please pick A or B for the plan eval. Reply: A or B' }]),
+    ...after.map(say)
+  ]
+  const acked = digest(lines('Noted.'), '/h/orca/coordinators')!
+  assert.equal(acked.role, 'coordinator')
+  assert.equal(acked.lastMessage, BRIEFING, 'the coordinator\'s own last frame stands')
+  assert.deepEqual(frameAsk(acked)?.needs, { type: 'none', ask: '', options: [] })
+  const bare = digest([line('user', 'hello', '/h/orca/coordinators/bounti'), line('user', WAKE), tool, line('user', [{ type: 'tool_result', content: 'From the lead: pick A or B' }]), say('Noted.')], '/h/orca/coordinators')!
+  assert.equal(bare.lastMessage, 'Noted.', 'with no frame of its own, the ack decides and asks nothing')
+  assert.equal(frameAsk(bare), null)
+})
+
+test('a worker after a wake is untouched: no frame rules apply to it', () => {
+  const d = digest([line('user', 'You are a dispatched worker. Your task ID is: task_1\n=== TASK ===\nFix it'), say('Which file do you mean?'), line('user', WAKE), say('Noted.')], '/h/orca/coordinators')!
+  assert.equal(d.role, 'worker')
+  assert.equal(d.lastMessage, 'Noted.')
+})
+
+const NUDGE = '[Your previous response had no visible output. Please continue and produce a user-visible response.]'
+const meta = (text: string) => JSON.stringify({ type: 'user', isMeta: true, timestamp: '2026-11-18T12:00:00Z', message: { content: text } })
+const base = [line('user', 'Your role: lead. Split short docs into lessons.'), line('user', 'go on'), say(DECISION)]
+
+test('wake, empty reply, the host nudge, one plain line: the card keeps the pick', () => {
+  const d = digest([...base, line('user', WAKE), tool, meta(NUDGE), say('A worker sent a routine note; nothing to do.')], '/h/orca/coordinators')!
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+  const empty = digest([...base, line('user', WAKE), tool, meta(NUDGE)], '/h/orca/coordinators')!
+  assert.equal(empty.lastMessage, DECISION, 'nudge alone: the pick stands')
+  assert.equal(frameAsk(empty)?.needs.ask, PICK)
+})
+
+test('the host nudge is never a human prompt, even without a wake before it', () => {
+  const d = digest([...base, meta(NUDGE)], '/h/orca/coordinators')!
+  assert.equal(d.lastMessage, DECISION)
+  assert.equal(frameAsk(d)?.needs.ask, PICK)
+})
+
+test('meta records (skill bodies) do not start a turn; real prompts still do', () => {
+  const skill = meta('Base directory for this skill: /x\n\n# orca-flow ...')
+  const d = digest([...base, skill, say('Reading the skill.')], '/h/orca/coordinators')!
+  assert.match(d.turn, /USER: go on/, 'the turn still starts at the real prompt')
+  assert.equal(/Base directory/.test(d.turn), false, 'the skill body is not shown as the user')
+  assert.equal(/go on/.test(d.context), false, 'and it did not push the real prompt into the earlier turn')
+  const human = digest([...base, line('user', 'status?'), say('Noted.')], '/h/orca/coordinators')!
+  assert.equal(human.lastMessage, 'Noted.')
+})

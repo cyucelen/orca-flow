@@ -6,13 +6,16 @@
 // and on `startup` only for a session with a record, a lead (hookRole in stop-check.mjs, the same
 // rule the Stop hook and the sidebar use) gets a short bootstrap as additionalContext: its role and
 // the two files to read again. Anyone else (a coordinator, a worker, a chat the user started, a
-// cleared record) gets nothing. Not gated by the messageFormat opt-in. Any error: exit 0, no output.
+// cleared record) gets nothing. Not gated by the messageFormat opt-in. On resume and compact it also
+// gives the sidebar's skill-reload note to a session a "Reload skills" request names
+// (reload-check.mjs): a compaction or a resume is a turn boundary too. Any error: exit 0, no output.
 //
 // Environment for tests: HOME moves ~ (and ~/orca/coordinators), ORCA_FLOW_DIR moves ~/.orca-flow.
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { flowDir, recordedRole } from './roles.mjs'
 import { firstPromptOf, hookRole, skillOf } from './stop-check.mjs'
+import { reloadNote } from './reload-check.mjs'
 
 /** What a lead reads at once, with the skill's files as the agent reaches them (through the link). */
 export function leadBootstrap(skill) {
@@ -39,11 +42,21 @@ export function bootstrap(input, { env = process.env, home = homedir(), script =
   return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: leadBootstrap(skillOf(script)) } }
 }
 
+/** Both notes this hook gives, in one output: a lead's bootstrap and, on resume or compact, the skill-reload note. */
+export function startNotes(input, options = {}) {
+  let lead = null
+  let reload = null
+  try { lead = bootstrap(input, options)?.hookSpecificOutput.additionalContext ?? null } catch {}
+  if (input?.source === 'resume' || input?.source === 'compact') try { reload = reloadNote(input, 'SessionStart', options) } catch {}
+  const text = [lead, reload].filter(Boolean).join('\n\n')
+  return text ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } } : null
+}
+
 async function main() {
   try {
     let raw = ''
     for await (const chunk of process.stdin) raw += chunk
-    const out = bootstrap(JSON.parse(raw))
+    const out = startNotes(JSON.parse(raw))
     if (out) process.stdout.write(`${JSON.stringify(out)}\n`)
   } catch {}
 }
