@@ -1349,6 +1349,12 @@ export function treeLabel(reloading: SkillReloadEntry[], ui: UiState): string {
   return `<div class="label tlabel"><span>Coordinators</span><button class="icon lact" data-reload-skills="all" aria-label="Reload skills in all running agents" data-tip="Reload skills">${RELOAD_ICON}</button></div>${summary ? `<div class="reload-sum" data-tip="${esc(tip)}">${RELOAD_ICON}<span>${esc(summary)}</span></div>` : ''}`
 }
 
+/** A visible warning, above the tree, while the summary writer is failing; gone after the next successful summary. */
+export function summaryNotice(failure: Snapshot['summaryFailure']): string {
+  if (!failure) return ''
+  return `<div class="sumfail" role="status" data-tone="warn" data-tip="Agent cards keep their last summary until the writer works again. Writer: ${esc(failure.provider)}">${STATUS_ICON.warn}<span class="t">Summaries failing: ${esc(failure.reason)}</span></div>`
+}
+
 export function render(given: Snapshot, state: UiState, linearData: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
   const reloading = visibleReload(given.skillReload, state.now)
   const ui: UiState = { ...state, reloads: new Map(reloading.map((e) => [e.pane, e])) }
@@ -1383,7 +1389,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   return {
     cockpit: cockpit(snap, ui),
     copen,
-    main: `<div class="tree">${treeLabel(reloading, ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
+    main: `${summaryNotice(snap.summaryFailure)}<div class="tree">${treeLabel(reloading, ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
     attention: upNext(asking, all, snap.coordinators, ui, snap.bots ?? []),
     bots: botsSection(snap, ui),
     linear: linearSection(snap, ui, linear),

@@ -276,6 +276,8 @@ export type Snapshot = {
   ready?: boolean
   /** The update the worker knows of; absent or 'none' hides the panel's update button. */
   update?: UpdateState
+  /** The summary writer's last failure, until a summary succeeds again; the panel warns "Summaries failing: <reason>". */
+  summaryFailure?: { provider: string; reason: string } | null
   /**
    * The panes Orca shows in the focused workspace (`<tabId>:<leafId>`, the front tab and pane of
    * each tab group), from `orca terminal list --include-visual-layouts`; only an agent here wears

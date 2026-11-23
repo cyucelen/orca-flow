@@ -1567,3 +1567,14 @@ test('lead, worker and coordinator rows: the badge carries the provider mark eve
   assert.match(out, /<button class="session-trigger" data-handover="alpha"/, 'the coordinator’s handover picker still renders')
   noMatch(out, /<span class="mbadge[^"]*"[^>]*data-tip=/, 'no badge has a tooltip, on any row')
 })
+
+test('the sidebar warns "Summaries failing" while the writer fails, and not otherwise', () => {
+  const base: Snapshot = { rows: [], source: 'cli', capacity: null, coordinators: [] }
+  assert.ok(!/Summaries failing/.test(render(base, emptyUi()).main))
+  assert.ok(!/Summaries failing/.test(render({ ...base, summaryFailure: null }, emptyUi()).main))
+  const html = render({ ...base, summaryFailure: { provider: 'haiku', reason: 'AWS credentials expired — run aws sso login' } }, emptyUi()).main
+  assert.ok(html.includes('Summaries failing: AWS credentials expired — run aws sso login'))
+  assert.ok(/class="sumfail" role="status"/.test(html))
+  const escaped = render({ ...base, summaryFailure: { provider: 'haiku', reason: '<b>x</b>' } }, emptyUi()).main
+  assert.ok(escaped.includes('&lt;b&gt;x&lt;/b&gt;') && !escaped.includes('<b>x</b>'))
+})

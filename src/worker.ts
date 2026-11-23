@@ -1050,7 +1050,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Agent ids `orca agent installed` listed at the last refresh; the Settings dialog shows a never-used writer's CLI by it. */
   let installedAgents: string[] | null = null
   let firstProviders: Snapshot['coordinatorProviders'] = null
-  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
+  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, summaryFailure: writer.lastFailure(), focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
   // The selected Codex account's home, looked up every 5 minutes (the installed copy then puts back
   // our hooks in ~/.codex/hooks.json if they went missing); readiness is read from files on every snapshot.
@@ -1765,7 +1765,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { orcaSession: a?.orcaSession, provider: a?.agentType }
   }
   // The writers and their order come from config.json, read again for every card, so Save applies at once.
-  const writer = createWriter({ ...summaryProviders(), writers: () => configuredWriters(DATA_DIR), log: (message) => orca.log(message) })
+  const writer = createWriter({ ...summaryProviders(), writers: () => configuredWriters(DATA_DIR), log: (message) => orca.log(message), onFailureChange: () => refreshSoon() })
 
   // ---------- Settings dialog ----------
   let version: string | null = null

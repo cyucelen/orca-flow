@@ -2,7 +2,7 @@ import { assert, test } from 'orca/testing'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ANTIGRAVITY_MODEL, cliProviders, cliResolver, codexHomeFromAccounts, createWriter, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
+import { ANTIGRAVITY_MODEL, claudeSettingsEnv, cliProviders, cliResolver, codexHomeFromAccounts, createWriter, failureReason, LUNA_MODEL, PRIMARY_COOLDOWN_MS, providerFailure, runWriterCommand, WriterError, writerDiagnostic, type CommandRunner } from './writer.ts'
 import { SUMMARY_SCHEMA, summarizePane, summaryProviders, turnSummarizer, validateSummary } from './summarize.ts'
 import { configuredWriters } from './config.ts'
 import type { WriterSetting } from './settings.ts'
@@ -521,4 +521,99 @@ test('the interactive lookup takes the last valid path from noisy output; a fail
   const fallback = cliResolver(async (_f, args) => { calls.push(args[0]); if (args[0] === '-ilc') throw new Error('timed out'); return '/opt/homebrew/bin/codex\n' }, '/bin/zsh', () => true)
   assert.equal(await fallback('codex'), '/opt/homebrew/bin/codex')
   assert.deepEqual(calls, ['-ilc', '-lc'])
+})
+
+/** A fake Claude profile whose settings.json holds fake values; never real credentials. */
+const fakeProfile = (settings: string | null) => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca-flow-settings-'))
+  if (settings !== null) writeFileSync(join(dir, 'settings.json'), settings)
+  return dir
+}
+const withConfigDir = async (dir: string, body: () => Promise<void>) => {
+  const old = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = dir
+  try { await body() } finally { if (old === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = old }
+}
+
+test('the Claude writer merges the settings env block into the child env and keeps its forced keys', async () => {
+  const dir = fakeProfile(JSON.stringify({ hooks: { Stop: [] }, awsAuthRefresh: 'fake-login', env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_PROFILE: 'fake-profile', MAX_THINKING_TOKENS: '9999', CLAUDE_CONFIG_DIR: '/elsewhere', ORCA_CARD_CHILD: '0', ORCA_X: 'y', NUMERIC: 5 } }))
+  const oldProfile = process.env.AWS_PROFILE
+  process.env.AWS_PROFILE = 'process-profile'
+  try {
+    await withConfigDir(dir, async () => {
+      let seen: Parameters<CommandRunner>[0] | undefined
+      const providers = cliProviders(async (command) => { seen = command; return { stdout: JSON.stringify({ structured_output: card() }), stderr: '', error: null } })
+      await providers.haiku(request)
+      const env = seen!.env
+      assert.equal(env.CLAUDE_CODE_USE_BEDROCK, '1')
+      assert.equal(env.AWS_PROFILE, 'fake-profile', 'settings env wins, like Claude Code')
+      assert.equal(env.MAX_THINKING_TOKENS, '0')
+      assert.equal(env.ORCA_CARD_CHILD, '1')
+      assert.notEqual(env.CLAUDE_CONFIG_DIR, '/elsewhere')
+      assert.equal(env.ORCA_X, undefined)
+      assert.equal(env.NUMERIC, undefined)
+      assert.equal(env.hooks, undefined)
+      assert.equal(seen!.args[seen!.args.indexOf('--setting-sources') + 1], '')
+    })
+  } finally {
+    if (oldProfile === undefined) delete process.env.AWS_PROFILE; else process.env.AWS_PROFILE = oldProfile
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a missing or invalid settings file is tolerated', async () => {
+  for (const settings of [null, 'not json', '[]', '{"env": 3}', '{"env": ["a"]}']) {
+    const dir = fakeProfile(settings)
+    try {
+      await withConfigDir(dir, async () => {
+        assert.deepEqual(claudeSettingsEnv(null), {})
+        const providers = cliProviders(async () => ({ stdout: JSON.stringify({ structured_output: card() }), stderr: '', error: null }))
+        assert.deepEqual(await providers.haiku(request), card())
+      })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+})
+
+test('Bedrock credential errors are auth failures, and the reason says what to do', async () => {
+  for (const text of ['Could not load AWS credentials from any providers', 'ExpiredToken: The security token included in the request is expired', 'Error: SSO session associated with this profile has expired', 'Unable to locate credentials']) {
+    const e = providerFailure('haiku', null, text)
+    assert.equal(e.kind, 'auth', text)
+    assert.equal(e.hint, 'aws', text)
+    assert.equal(failureReason(e), 'AWS credentials expired — run aws sso login')
+  }
+  // awsAuthRefresh is never run by the writer: one invocation, no browser login.
+  const dir = fakeProfile(JSON.stringify({ awsAuthRefresh: 'fake-login', env: { CLAUDE_CODE_USE_BEDROCK: '1' } }))
+  try {
+    await withConfigDir(dir, async () => {
+      const calls: string[] = []
+      const providers = cliProviders(async (command) => { calls.push(command.bin); return { stdout: JSON.stringify({ is_error: true, result: 'Not logged in · Please run /login' }), stderr: '', error: null } })
+      await assert.rejects(providers.haiku(request), (e) => e instanceof WriterError && e.kind === 'auth' && e.hint === 'aws')
+      assert.equal(calls.length, 1)
+    })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('not logged in with no settings env says the Bedrock settings were not found', async () => {
+  const dir = fakeProfile(null)
+  try {
+    await withConfigDir(dir, async () => {
+      const providers = cliProviders(async () => ({ stdout: JSON.stringify({ is_error: true, result: 'Not logged in · Please run /login' }), stderr: '', error: null }))
+      await assert.rejects(providers.haiku(request), (e) => e instanceof WriterError && failureReason(e) === 'Claude not logged in (Bedrock settings not found)')
+    })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the last writer failure is kept with its reason and cleared by the next success', async () => {
+  let fail = true
+  let changes = 0
+  let t = 0
+  const writer = createWriter({ haiku: async () => { if (fail) throw new WriterError('haiku', 'auth', 'aws'); return card() }, now: () => t, onFailureChange: () => { changes++ } })
+  assert.equal(writer.lastFailure(), null)
+  await assert.rejects(writer(request))
+  assert.deepEqual(writer.lastFailure(), { provider: 'haiku', reason: 'AWS credentials expired — run aws sso login' })
+  fail = false
+  t += PRIMARY_COOLDOWN_MS + 1
+  await writer(request)
+  assert.equal(writer.lastFailure(), null)
+  assert.equal(changes, 2)
 })
