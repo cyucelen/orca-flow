@@ -76,7 +76,7 @@ export function scaffoldCoordinator(root: string, input: { name: string; look: L
 
 /** What the orchestration records say: which terminal dispatched each worker pane. */
 export type Lineage = {
-  /** worker pane -> terminal handle of the agent that dispatched it (Orca's run coordinator) */
+  /** worker pane -> terminal handle of the agent that dispatched it: its lead when the lead's terminal is open, else the run's coordinator */
   dispatcherOf: Map<string, string>
   /** terminal handle -> pane */
   paneOf: Map<string, string>
@@ -284,6 +284,10 @@ export function dirOfTerminalRecord(t: { worktreePath?: string; worktreeId?: str
  * `worker-list` alone only shows the caller's own run, so each run is listed by id, one at a time
  * (each call is a process). A coordinator that slept left its runs on its closed terminal; Orca
  * still knows which folder that terminal ran in.
+ *
+ * The full listing says which task started each worker (`projection.parent`). When that task's
+ * terminal is open, it is the worker's dispatcher (a lead's worker nests under the lead even when
+ * Orca recorded no parent pane); otherwise the run's coordinator is, as before.
  */
 export async function loadLineage(run: Run, now = Date.now(), force = false): Promise<Lineage> {
   const [terminals, runs] = await Promise.all([run(['terminal', 'list']), run(['orchestration', 'run-list', '--limit', '30', '--full'])])
@@ -298,9 +302,11 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
   for (const r of runs.runs ?? []) {
     const handle: string | null = r.coordinator_handle
     if (!handle || (!force && now - (quietRuns.get(r.id) ?? -Infinity) < QUIET_RECHECK_MS)) continue
-    const listed = await run(['orchestration', 'worker-list', '--run', r.id]).catch(() => null)
+    const listed = await run(['orchestration', 'worker-list', '--run', r.id, '--full']).catch(() => null)
     if (!listed) continue
-    const active = (listed.workers ?? []).filter((w: any) => w.terminal && w.terminalState !== 'released')
+    // The full record names fields differently from the concise one: read both.
+    const rows = (listed.workers ?? []).map((w: any) => ({ terminal: w.terminal ?? w.agentTerminalHandle, state: w.state ?? w.workerState, terminalState: w.terminalState, taskId: w.taskId, dispatchId: w.dispatchId, parentTask: w.projection?.parent?.taskId }))
+    const active = rows.filter((w: any) => w.terminal && w.terminalState !== 'released')
     if (active.length === 0) {
       // A new run gets its first worker a moment after it is created; only an older one is quiet.
       if (now - Date.parse(r.created_at ?? '') > 30 * 60_000) quietRuns.set(r.id, now)
@@ -308,10 +314,18 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
     }
     quietRuns.delete(r.id)
     coordinating.add(handle)
+    // A task can have several dispatches (retries, follow-ups): prefer one whose terminal is open.
+    const terminalOfTask = new Map<string, string>()
+    for (const w of rows) {
+      if (typeof w.taskId !== 'string' || !w.terminal) continue
+      const open = paneOf.has(w.terminal) && w.terminalState !== 'released'
+      if (open || !terminalOfTask.has(w.taskId)) terminalOfTask.set(w.taskId, w.terminal)
+    }
     for (const w of active) {
       const pane = paneOf.get(w.terminal)
       if (!pane) continue
-      dispatcherOf.set(pane, handle)
+      const creator = typeof w.parentTask === 'string' ? terminalOfTask.get(w.parentTask) : undefined
+      dispatcherOf.set(pane, creator && creator !== w.terminal && paneOf.has(creator) ? creator : handle)
       // A follow-up sent to a settled worker opens a new dispatch on the same terminal: any open one wins.
       if (dispatchOf.get(pane) !== 'open') {
         dispatchOf.set(pane, SETTLED.has(w.state) ? 'settled' : 'open')

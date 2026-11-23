@@ -845,6 +845,49 @@ test('a coordinator keeps its workers while it sleeps: its closed terminal ran i
   assert.equal(dirOfTerminalRecord(null), null)
 })
 
+test('a lead\'s workers nest under the lead even with no parent pane; the rest stay under the coordinator', async () => {
+  const { loadLineage } = await import('./coordinators.ts')
+  const coordinators = [{ key: 'alpha', name: 'alpha', repos: [], about: '', dir: '/c/alpha', workspaceId: null }]
+  const agent = (paneKey: string) => ({ paneKey, state: 'working' })
+  const rows = main.fromPs([
+    { identity: { key: 'home' }, displayName: 'alpha', repo: 'alpha', path: '/c/alpha', agents: [agent('p:coord')] },
+    { identity: { key: 'w' }, displayName: 'checkout', repo: 'shop', agents: [agent('p:lead'), agent('p:w1'), agent('p:w2'), agent('p:direct'), agent('p:orphan')] }
+  ])
+  const owned = [{ ...coordinators[0], sessions: { version: 1, current: 'c', members: [{ id: 'c', terminals: ['term-coord'], panes: ['p:coord'] }] } }] as any
+  const tab = (handle: string, leaf: string) => ({ handle, tabId: 'p', leafId: leaf })
+  // --full rows: agentTerminalHandle / workerState, with projection.parent naming the task that started each worker.
+  const full = (task: string, terminal: string, parent: string | null) => ({ taskId: task, agentTerminalHandle: terminal, workerState: 'running', terminalState: 'retained', dispatchId: `d-${task}`, projection: { parent: parent ? { taskId: parent } : null } })
+  const lineageOf = async (terminals: any[], workers: any[]) => {
+    const run = async (args: string[]) => {
+      if (args[0] === 'terminal' && args[1] === 'list') return { terminals }
+      if (args[1] === 'run-list') return { runs: [{ id: 'run-a', coordinator_handle: 'term-coord' }] }
+      if (args[1] === 'worker-list') { assert.ok(args.includes('--full')); return { workers } }
+      throw new Error(`unexpected ${args.join(' ')}`)
+    }
+    return loadLineage(run, 1_000_000, true)
+  }
+  const place = (lineage: any, pane: string) => {
+    const a = assignCoordinators(rows, owned, lineage).flatMap((r) => r.agents).find((x) => x.paneKey === pane)!
+    return [a.coordinator, a.leadPane]
+  }
+  const terminals = [tab('term-coord', 'coord'), tab('term-lead', 'lead'), tab('term-w1', 'w1'), tab('term-w2', 'w2'), tab('term-direct', 'direct')]
+  const workers = [full('lead', 'term-lead', null), full('t1', 'term-w1', 'lead'), full('t2', 'term-w2', 'lead'), full('d', 'term-direct', null)]
+  const lineage = await lineageOf(terminals, workers)
+  assert.deepEqual(place(lineage, 'p:w1'), ['alpha', 'p:lead'], 'one worker of a lead nests under the lead')
+  assert.deepEqual(place(lineage, 'p:w2'), ['alpha', 'p:lead'], 'so does a second')
+  assert.deepEqual(place(lineage, 'p:lead'), ['alpha', null], 'the lead stays directly under the coordinator')
+  assert.deepEqual(place(lineage, 'p:direct'), ['alpha', null], 'a worker the coordinator started stays a direct child')
+  // A retry on a closed terminal does not hide the lead's open one.
+  const retried = await lineageOf(terminals, [{ ...full('lead', 'term-old', null), terminalState: 'released' }, ...workers])
+  assert.deepEqual(place(retried, 'p:w1'), ['alpha', 'p:lead'])
+  // The lead's terminal is closed: its worker stays under the run's coordinator, not 'you'.
+  const closed = await lineageOf(terminals.filter((t) => t.handle !== 'term-lead'), workers)
+  assert.deepEqual(place(closed, 'p:w1'), ['alpha', null])
+  // The concise shape still works.
+  const concise = await lineageOf(terminals, [{ terminal: 'term-w1', state: 'running', terminalState: 'retained', taskId: 't1' }])
+  assert.deepEqual(place(concise, 'p:w1'), ['alpha', null])
+})
+
 test('processes an agent started outside its session are found by the tags they inherit', async () => {
   const { parsePs, parseTop, startedGroups } = await import('./started.ts')
   const tag = (pane: string) => `ORCA_WORKTREE_ID=repo1::/w/checkout ORCA_PANE_KEY=${pane} HOME=/h`
