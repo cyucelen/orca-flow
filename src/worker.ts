@@ -559,13 +559,15 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
     if (i === undefined) return [row]
     const c = coordinators[i]
     const members = c.sessions?.members.map((m) => { const a = memberAgent(m, all); return { ...m, agent: a?.live === false ? null : a } })
-    const session = members ? members.find((m) => m.id === c.sessions?.current)?.agent ?? null : sessionIn(row)
+    const current = members?.find((m) => m.id === c.sessions?.current)
+    const session = members ? current?.agent ?? null : sessionIn(row)
     c.members = members
     if (!session && !c.sessions) c.sessionNotice = 'No unambiguous coordinator session. Use Sessions to explicitly associate a member and make it current.'
     c.workspaceId = row.id
     c.active = row.active
-    // Its session counts only while a terminal is open with an agent in it.
-    c.session = row.liveTerminals > 0 ? session : null
+    c.session = session && (session.live ?? row.liveTerminals > 0) ? session : null
+    // A conversation can be awake without a unique pane to open or message.
+    c.sessionPanes = current && !session ? memberRows(current, [row]).filter((a) => a.live === true) : []
     // Every row of a member's conversation, so a pane left from before a restart is no duplicate row.
     const memberPanes = new Set((c.sessions ? c.sessions.members.flatMap((m) => memberRows(m, [row])) : session ? conversationRows(row.agents, session) : []).map((a) => a.paneKey))
     return folderRows({ ...row, agents: row.agents.filter((a) => !memberPanes.has(a.paneKey)) }, null, c.key)

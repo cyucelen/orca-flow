@@ -1107,9 +1107,19 @@ const byStart = (x: Placed, y: Placed) => x.row.createdAt - y.row.createdAt || x
 /** A coordinator's color: its look's, else its one project's, else neutral. */
 const coordinatorColor = (c: Coordinator) => c.look?.color ?? (c.repos.length === 1 ? colorOf(c.repos[0]) : NEUTRAL)
 
-/** A coordinator's character in its own state (asleep without a session), for menus and the Linear section. */
-export function coordinatorCharacter(c: Coordinator, size = 16, face: Face = c.session ? faceOf(c.session) : 'idle'): string {
-  return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face, size, true, c.session ? askKindOf(c.session) : 'question')
+/** The activity to display across open panes, in the same priority order as the You group. */
+function activityAgent(panes: AgentInfo[]): AgentInfo | undefined {
+  return panes.find(asksYou) ?? panes.find((a) => faceOf(a) === 'working') ?? panes.find(monitoring) ?? panes[0]
+}
+
+function coordinatorActivity(c: Coordinator) {
+  return c.session ?? activityAgent(c.sessionPanes ?? [])
+}
+
+/** A coordinator's character in its own state, for menus and the Linear section. */
+export function coordinatorCharacter(c: Coordinator, size = 16, face?: Face): string {
+  const activity = coordinatorActivity(c)
+  return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face ?? (activity ? faceOf(activity) : 'idle'), size, true, activity ? askKindOf(activity) : 'question')
 }
 
 function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap: Snapshot, ui: UiState, mixed: boolean): string {
@@ -1120,12 +1130,9 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const sub = single ?? (c.you ? 'chats you started' : c.repos.length ? c.repos.join(', ') : 'all projects')
   // A coordinator shows its own state only; its workers show theirs below it. You has no session of
   // its own, so it shows the busiest of your chats.
-  const face: Face = c.you
-    ? ((['asks', 'working', 'monitoring'] as Face[]).find((f) => mine.some((p) => faceOf(p.a) === f)) ?? 'done')
-    : c.session ? faceOf(c.session) : 'idle'
-  // The badge of the ask it shows: its own session's, or for You the first of your chats that asks.
-  const asking = c.you ? mine.find((p) => faceOf(p.a) === 'asks')?.a : c.session
-  const ask = asking ? askKindOf(asking) : 'question'
+  const activity = c.you ? activityAgent(mine.map((p) => p.a)) : coordinatorActivity(c)
+  const face: Face = activity ? faceOf(activity) : c.you ? 'done' : 'idle'
+  const ask = activity ? askKindOf(activity) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
   const done = (p: Placed) => asleep(p.row) || (faceOf(p.a) === 'done' && !inFlight(p.a, p.row, all))
   // Each lead (or chat) and the workers under it form a lane: one stretch of the tree's lines, in the
@@ -1153,10 +1160,13 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   const ringed = !folded && mine.length > 0
   const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
   const head = `${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}${providerBadge(c.session, mixed)}<span class="grow"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span><span class="r">${rowStatus(ui, `coordinator:${c.key}`) ?? ''}</span>`
+  const sessionStatus = c.session ? reloadMark(ui, c.session.paneKey) + modelChip(c.session)
+    : activity ? `<span class="rstatus">${esc(tip)}</span>`
+    : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? reloadMark(ui, c.session.paneKey) + modelChip(c.session) : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? sessionStatus}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
@@ -1211,11 +1221,11 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   // stays drawn asleep at the head of their lane until they finish. Unknown liveness is not asleep.
   const live = placed.filter((p) => asleep(p.row) ? leadsOpenWork(p.a, all) : p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
   const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
-  // Grouped by the coordinator row's own status, the one its label shows: a live session (the
-  // reconciled c.session) first, then You, then Sleeping and Not started, however busy their teams
+  // Grouped by the coordinator row's own status: a live selected conversation first, then You,
+  // then Sleeping and Not started, however busy their teams
   // are. Each group keeps the snapshot's order, so a refresh never reshuffles rows; a coordinator
   // moves only when it wakes, starts or sleeps. Its whole team moves with it.
-  const awake = (c: Coordinator) => Boolean(c.session)
+  const awake = (c: Coordinator) => Boolean(c.session || c.sessionPanes?.length)
   const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
   return [...snap.coordinators.filter(awake), you, ...snap.coordinators.filter((c) => !awake(c))].flatMap((c) => {
     const mine = teamOf(c.key).sort(byStart)

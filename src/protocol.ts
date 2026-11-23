@@ -237,6 +237,8 @@ export type Coordinator = {
   workspaceId: string | null
   /** The explicitly current member's live session, never inferred from focus or provider. */
   session?: AgentInfo | null
+  /** Multiple live panes of the selected conversation. They provide activity for display, but no unique action target. */
+  sessionPanes?: AgentInfo[]
   /** The character it was given at creation. */
   look?: Look | null
   /** Its workspace is the one focused in Orca (its row is marked only when its session's tab is, see Snapshot.focusedPanes). */

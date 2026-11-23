@@ -6,6 +6,7 @@ import { assert, test } from 'orca/testing'
 import { associateSession, chooseSession, conversationRows, memberAgent, memberFrom, memberRows, reconcileSessions, sessionChoices, wakeCoordinator, wakePlan, type WakeIo } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession } from './coordinators.ts'
 import { foldCoordinatorFolders, fromPs, type PsAgent } from './worker.ts'
+import { emptyUi, render } from './view.ts'
 import type { Coordinator, CoordinatorSessions } from './protocol.ts'
 
 const DIR = '/fixture/orca-flow'
@@ -125,6 +126,48 @@ test('two live panes of one conversation stay ambiguous: no pane is picked by or
   assert.equal(wakePlan(c, rows, 2).kind, 'choose')
   const { visible } = fold(rows, sessions)
   assert.equal(visible.length, 0, 'neither pane shows as a separate workstream row')
+})
+
+test('the header follows the selected conversation through duplicate live panes, sleep and wake', () => {
+  const sessions = member()
+  const history = { ...sessions.members[0], id: 'previous', orcaSession: 'previous', paneKey: 'history:1' }
+  sessions.members.unshift(history)
+  const others: PsAgent[] = [
+    { ...resumed, orcaSessionId: 'child', paneKey: 'child:1', parentPaneKey: resumed.paneKey, state: 'blocked' },
+    { ...resumed, orcaSessionId: history.orcaSession, paneKey: history.paneKey, state: 'working' }
+  ]
+  function header(own: PsAgent[]) {
+    const agents = [...others, ...own]
+    const terminals = Object.fromEntries(agents.filter((a) => a.hasLivePty).map((a) => [a.paneKey!, 'term-' + a.paneKey]))
+    const { coordinator, visible } = fold(rowsOf(agents, terminals), sessions)
+    const html = render({ coordinators: [coordinator], rows: visible, capacity: null, source: 'cli' }, emptyUi()).main
+    return html.match(/<div class="item coord[^]*?<\/div>/)![0]
+  }
+  const idle = { ...stale, hasLivePty: true }
+  for (const panes of [[idle, resumed], [resumed, idle]]) {
+    const root = header(panes)
+    assert.match(root, /data-tip="Working"/)
+    assert.match(root, />Working</)
+    assert.ok(!root.includes('Sleeping'))
+  }
+  const monitoring = { ...resumed, workingMode: 'monitoring', mainAgent: { state: 'done' }, programStatus: { state: 'done' } }
+  assert.match(header([idle, monitoring]), />Monitoring</)
+  assert.match(header([idle, { ...resumed, state: 'done' }]), /data-tip="Available"/)
+  assert.match(header([stale, { ...resumed, hasLivePty: false }]), />Sleeping</)
+  assert.match(header([stale, { ...resumed, paneKey: 'restored:1' }]), /data-tip="Working"/)
+})
+
+test('a live structured coordinator has an awake header with zero terminal panes', () => {
+  const rows = rowsOf([{ ...resumed, hasLivePty: false, structuredHostOwned: true }], {})
+  assert.equal(fold(rows, member()).coordinator.session?.state, 'working')
+  assert.equal(wakePlan(coordinator(member()), rows, 0).kind, 'choose')
+})
+
+test('a saved resume id never launches another copy when two panes already run the selected member', async () => {
+  const rows = rowsOf([{ ...stale, hasLivePty: true }, resumed], { 'old-tab:old-leaf': 'term-old', 'new-tab:new-leaf': 'term-new' })
+  const { io, calls } = wakeIo()
+  assert.equal((await wakeCoordinator(coordinator(member()), rows, 0, io)).kind, 'choose')
+  assert.deepEqual(calls, { open: [], resume: 0, fresh: 0, save: 0 })
 })
 
 test('all panes dead after a reboot: Sleeping, one exact resume of that member, no duplicate rows', async () => {

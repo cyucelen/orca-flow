@@ -28,7 +28,7 @@ export function memberRows(m: CoordinatorMember, rows: WorkspaceRow[]): AgentInf
  * The row that stands for one conversation's rows: its only row, else its only live one (a live PTY
  * or an owned structured chat). They are the same conversation, so this is identity, not ranking.
  * Several live rows, or several with none live, resolve to nothing: no pane, order, age, title or
- * focus tie-break. The caller then treats it as unavailable (Sleeping) or asks for a choice.
+ * focus tie-break. Live rows still provide display status without identifying a unique action target.
  */
 export function conversationRow<A extends { live?: boolean }>(rows: A[]): A | null {
   if (rows.length === 1) return rows[0]
@@ -436,16 +436,18 @@ export type WakePlan =
 export function wakePlan(c: Pick<Coordinator, 'sessions'>, rows: WorkspaceRow[], liveChoices: number, launching: boolean | Launch = false): WakePlan {
   const s = c.sessions
   const current = s?.members.find((m) => m.id === s.current)
-  const live = current ? memberAgent(current, rows) : null
+  const panes = current ? memberRows(current, rows) : []
+  const live = conversationRow(panes)
   if (current && live?.terminal && live.live === true) return { kind: 'open', member: current, workspaceId: current.workspaceId, terminal: live.terminal }
   if (typeof launching === 'object' && launching.member) {
     if (current?.id === launching.member && current.resumeSessionId === launching.sessionId) return { kind: 'resume', member: current, adopt: launching }
   } else if (launching) return { kind: 'adopt', agent: typeof launching === 'object' ? launching.agent : current?.agentType ?? null }
   if (current) {
+    // Resume only a closed conversation. An open one may have several panes or no terminal handle.
+    if (panes.some((a) => a.live === true)) return { kind: 'choose', reason: live
+      ? 'The main conversation is open. Orca has no terminal handle for it. Open it in its workspace.'
+      : 'The main conversation is open in multiple panes. Open the pane you want in Orca.' }
     if (current.resumeSessionId && current.agentType) return { kind: 'resume', member: current }
-    // Dead rows of the same conversation (panes from before a restart) are one closed conversation;
-    // only several live panes of it are ambiguous.
-    if (!live && memberRows(current, rows).filter((a) => a.live === true).length > 1) return { kind: 'choose', reason: 'The main conversation matches more than one session. Choose one in Sessions or start a new conversation.' }
     if (liveChoices > 0) return { kind: 'choose', reason: 'The main conversation is closed and cannot be resumed. Choose an open conversation or start a new one.' }
     return { kind: 'fresh', agent: current.agentType }
   }
