@@ -47,7 +47,7 @@ const PAGES: { id: PageId; label: string; tint: string; keys: DraftKey[]; tip: s
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
   { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
     tip: 'Before a coordinator or lead starts more work, Orca Flow checks free memory. Each agent costs about 0.5 GB, plus any dev servers its project runs.' },
-  { id: 'features', label: 'Features', tint: '#bf5af2', keys: ['bots'], tip: 'Parts of Orca Flow that are off until you switch them on.' },
+  { id: 'features', label: 'Features', tint: '#bf5af2', keys: ['bots', 'linear', 'tokenSpeed'], tip: 'Choose which sections Orca Flow shows in the sidebar. A section that is off is hidden and stops reading its data.' },
   { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' },
   { id: 'about', label: 'About', tint: '#6e6e73', keys: [], tip: 'Orca Flow’s version and updates.' }
 ]
@@ -152,8 +152,14 @@ function pageCapacity(): string {
 }
 
 function pageFeatures(): string {
-  const tip = 'Show the Bots section in the sidebar'
-  return group([row(label('Bots', tip), toggle('s-bots', d().bots, 'Bots', tip))])
+  const bots = 'Show the Bots section in the sidebar'
+  const linear = 'Show the Linear section in the sidebar, and read your Linear issues. Off: nothing is read from Linear.'
+  const speed = 'Show the Token Speed section in the sidebar, and sample the agents’ logs and network traffic. Off: nothing is sampled; the history is kept.'
+  return group([
+    row(label('Bots', bots), toggle('s-bots', d().bots, 'Bots', bots)),
+    row(label('Linear', linear), toggle('s-linear-on', d().linear, 'Linear', linear)),
+    row(label('Token Speed', speed), toggle('s-speed', d().tokenSpeed, 'Token Speed', speed))
+  ])
 }
 
 function pageAdvanced(): string {
@@ -630,6 +636,8 @@ function onChange(e: Event): void {
   else if (t.dataset.enable) { const p = t.dataset.enable as WriterProvider; void session.change((x) => { x.enabled[p] = t.checked }) }
   else if (t.id === 's-format') void session.change((x) => { x.format = t.value as Draft['format'] })
   else if (t.id === 's-bots') void session.change((x) => { x.bots = t.checked })
+  else if (t.id === 's-linear-on') void session.change((x) => { x.linear = t.checked })
+  else if (t.id === 's-speed') void session.change((x) => { x.tokenSpeed = t.checked })
   else if (t.id === 's-linear') void session.change((x) => { x.linearDryRun = t.checked })
 }
 

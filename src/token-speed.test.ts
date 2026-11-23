@@ -411,3 +411,10 @@ test('the section folded, still reading, and absent', () => {
   assert.match(tokenSpeedSection(wire({ ready: false }), ui), /Reading the last 24 h/)
   assert.equal(tokenSpeedSection(null, ui), '')
 })
+
+test('Settings → Features → Token Speed: off renders no section, folded or open; on is unchanged', () => {
+  const on = tokenSpeedSection(wire(), ui)
+  assert.equal(tokenSpeedSection(wire(), { ...ui, speedOff: false }), on)
+  assert.equal(tokenSpeedSection(wire(), { ...ui, speedOff: true }), '')
+  assert.equal(tokenSpeedSection(wire(), { ...ui, speedFolded: true, speedOff: true }), '')
+})

@@ -221,8 +221,12 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
 - **Capacity:** the memory always kept free and the extra room under memory pressure
   ([Capacity](#capacity)).
 - **Features:** Bots (off by default; shows the Bots section, bot chats in Up next and the waiting
-  count). Display only: Orca's bots, schedules and chats are untouched, and while it is off Orca Flow
-  does not read `orca bot list`. Saved as `features.bots` in the settings file.
+  count), Linear and Token Speed (on by default; each shows its sidebar section). Display only:
+  Orca's bots, schedules and chats, your Linear credentials and the Token speed history file are
+  untouched. While Bots is off Orca Flow does not read `orca bot list`; while Linear is off it reads
+  nothing from Linear and sends no issue; while Token Speed is off it does not read the agents' logs,
+  sample their traffic or run the internet test. Turning one on shows its section at once with fresh
+  data. Saved as `features.bots`, `features.linear` and `features.tokenSpeed` in the settings file.
 - **Advanced:** Linear test mode (log the Linear comments and status changes Orca Flow would send,
   and send nothing) and Show in Finder for the settings file.
 - **About:** the running version, and Check for Updates (see

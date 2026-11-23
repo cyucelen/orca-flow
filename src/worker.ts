@@ -999,7 +999,9 @@ export default function activate(orca: OrcaWorkerApi): void {
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
-    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), readSettings(DATA_DIR).settings.features.bots), readFocus(run), readInstalledProviders(run)])
+    const features = readSettings(DATA_DIR).settings.features
+    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
+    snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
@@ -1262,7 +1264,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     return []
   }
   const listDir = (dir: string) => { try { return readdirSync(dir) } catch { return null } }
-  startTokenSpeed(orca, () => logRoots(providerHomes('claude'), providerHomes('codex')))
+  startTokenSpeed(orca, () => logRoots(providerHomes('claude'), providerHomes('codex')), () => readSettings(DATA_DIR).settings.features.tokenSpeed)
 
   /** Resumes by provider id and finds the exact terminal the resume returned, or that the provider exited. */
   const resumeIo: ResumeIo = {
@@ -1592,8 +1594,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     return { ...data, sent: memory.sent, lastSent: memory.lastSent }
   }
+  // Settings → Features → Linear, read from the file each time so a save applies at once. Off: no read, no send,
+  // and the cache goes, so switching on reads fresh.
+  const linearOn = () => readSettings(DATA_DIR).settings.features.linear
   const readLinear = () =>
-    (linearReading ??= loadLinear(run)
+    !linearOn() ? Promise.resolve(null) : (linearReading ??= loadLinear(run)
       .then((next) => {
         linear = withSends(next)
         linearAt = Date.now()
@@ -1607,11 +1612,13 @@ export default function activate(orca: OrcaWorkerApi): void {
       .finally(() => (linearReading = null)))
   // The panel gets the compact copy (encodeLinear): Orca drops anything over 256 KiB.
   orca.panels.handle('sidebar.linear', async (input) => {
+    if (!linearOn()) { linear = null; linearAt = 0; return null }
     const data = !input?.force && linear && Date.now() - linearAt < LINEAR_FRESH_MS ? withSends(linear) : await readLinear()
     return data ? encodeLinear(data) : null
   })
 
   orca.panels.handle('sidebar.linearSend', async ({ issue: id, coordinator: key }) => {
+    if (!linearOn()) return { ok: false, error: 'Linear is off in Settings → Features', warnings: [] }
     const previous = readLinearMemory().sent[id]
     const blocked = deliveryBlock(previous)
     if (blocked) return { ok: false, error: blocked, recipient: previous.recipient, warnings: [] }
@@ -1845,9 +1852,10 @@ const exec = (file: string, args: string[], timeout: number, keep?: (child: Chil
  * The Token speed section's sampling, while the worker runs: the agents' logs every 30 s (only what
  * they gained, in slices of at most SPEED_SLICE_MS so a big first read never blocks the worker), and
  * a nettop snapshot of their sockets every 30 s for their traffic. The internet test runs only on the panel's Test.
+ * Settings → Features → Token Speed off: none of that runs (the timers idle) and the history file stays as it is.
  * History and cursors live in ~/.orca-flow/token-speed*.json; the panel gets speedView (a few KB).
  */
-function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[]): void {
+function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => boolean = () => true): void {
   let stopped = false
   const timers: ReturnType<typeof setTimeout>[] = []
   let nettop: Child | null = null
@@ -1889,7 +1897,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[]): void {
     post()
   }
   const sampleLogs = () => {
-    if (stopped || reading) return
+    if (stopped || reading || !on()) return
     const now = Date.now()
     try {
       reading = { paths: logsToRead(roots(), cursors, now, !ready || samples++ % SPEED_FULL_EVERY === 0), next: 0, now }
@@ -1907,6 +1915,11 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[]): void {
   let lastSockets: SocketSnapshot | null = null
   const sampleNet = async () => {
     if (stopped) return
+    if (!on()) {
+      lastSockets = null
+      timers.push(setTimeout(() => void sampleNet(), SPEED_SAMPLE_MS))
+      return
+    }
     try {
       const ps = await exec('/bin/ps', ['-A', '-o', 'pid=,comm='], 5000)
       const csv = await exec('/usr/bin/nettop', ['-L', '1', '-x', '-J', 'bytes_in,bytes_out'], 30_000, (c) => (nettop = c))
@@ -1930,10 +1943,17 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[]): void {
   }
   timers.push(setTimeout(() => void sampleNet(), 5000))
 
-  orca.panels.handle('sidebar.tokenSpeed', () => view())
+  // Switched on again: the panel's ask samples the logs now, so the section is not 30 s behind.
+  let wasOn = true
+  orca.panels.handle('sidebar.tokenSpeed', () => {
+    const now = on()
+    if (now && !wasOn) sampleLogs()
+    wasOn = now
+    return view()
+  })
   // One test at a time, only on the user's Test; its result is kept with the history.
   orca.panels.handle('sidebar.tokenSpeedTest', () => {
-    if (testing) return { started: false }
+    if (testing || !on()) return { started: false }
     testing = true
     testError = null
     post()

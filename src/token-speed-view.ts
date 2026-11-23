@@ -9,7 +9,7 @@ import type { SpeedRange, SpeedSeries, TokenSpeedWire } from './token-speed.ts'
 
 /** Where the panel keeps the section's fold and range (plugin storage). */
 export const SPEED_UI_KEY = 'speed-ui'
-export type SpeedUi = { speedFolded: boolean; speedRange: SpeedRange; now: number }
+export type SpeedUi = { speedFolded: boolean; speedRange: SpeedRange; now: number; /** Settings → Features → Token Speed is off: no section. */ speedOff?: boolean }
 export function speedUiOf(stored: unknown): { folded: boolean; range: SpeedRange } {
   const s = (stored ?? {}) as { folded?: unknown; range?: unknown }
   return { folded: s.folded === true, range: s.range === '24h' ? '24h' : '1h' }
@@ -148,7 +148,7 @@ const bucketTime = (s: SpeedSeries, k: number) => {
 }
 
 export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string {
-  if (!d) return ''
+  if (!d || ui.speedOff) return ''
   const folded = ui.speedFolded
   const net = d.net ? { up: bits(d.net.up), down: bits(d.net.down) } : null
   const netText = net ? `↑${net.up.value} ↓${net.down.value} ${net.down.unit === net.up.unit ? net.up.unit : `${net.up.unit}/${net.down.unit}`}` : ''

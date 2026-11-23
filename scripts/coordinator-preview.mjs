@@ -9,6 +9,16 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const output = join(root, '.orca/coordinator-preview')
 mkdirSync(output, { recursive: true })
 execFileSync('npx', ['-y', 'esbuild', 'src/panel/app.ts', '--bundle', '--format=esm', '--tsconfig-raw={}', `--outfile=${join(output, 'app.js')}`], { cwd: root, stdio: 'inherit' })
+// Linear and Token Speed fixtures for the sidebar sections: ?linear=off / ?speed=off turn those switches off (Settings → Features).
+const { speedView, emptyHistory, addResponse, addNet } = await import('../src/token-speed.ts')
+const T = Date.now(), MIN = 60_000
+const hist = emptyHistory()
+for (let m = 0; m < 50; m++) addResponse(hist, { model: m % 3 ? 'claude-opus-5-5' : 'claude-sonnet-5-5', out: 900 + (m * 137) % 700, start: T - (50 - m) * MIN, end: T - (50 - m) * MIN + 30_000 }, T)
+for (let m = 0; m < 40; m++) addNet(hist, { at: T - (40 - m) * MIN, up: 40_000 + (m * 911) % 9000, down: 120_000 + (m * 1733) % 30_000, secs: 30, procs: 3 })
+const speedWire = speedView(hist, T, { ready: true, testing: false, testError: null })
+const linearWire = { wire: 1, urlBase: 'https://linear.app/acme/issue/', me: 'u1', teams: ['SHP'], connectedTeams: ['SHP'], cycles: [], sent: {}, lastSent: {}, at: T,
+  states: [['In Progress', 'started', '#f2c94c'], ['Todo', 'unstarted', '#e2e2e2']], projects: [['Checkout', '#5e6ad2']], people: [['u1', 'You']], cycleIds: [],
+  issues: [['SHP-12', 'Fix the cart total rounding', 2, 0, 0, 0, -1, Math.floor(T / 1000)], ['SHP-14', 'Validate coupon stacking', 3, 1, 0, 0, -1, Math.floor(T / 1000)], ['SHP-19', 'Empty-state copy for orders', 4, 1, -1, 0, -1, Math.floor(T / 1000)]] }
 const agent = (pane, provider, title, extra = {}) => ({ paneKey: pane, agentType: provider, title, orcaSession: `session-${pane}`, live: true, state: 'working', coordinator: 'shop', leadPane: null, parentPane: null, dispatch: null, terminal: `term-${pane}`, question: null, workingMode: null, summary: null, ...extra })
 const old = agent('old', 'claude', 'Original planning conversation', { state: 'waiting', question: 'Approve the original rollout?' })
 const current = agent('current', 'codex', 'Replacement coordinator')
@@ -26,6 +36,7 @@ const fixture = { coordinatorProviders: [{id:'claude',name:'Claude'},{id:'codex'
 fixture.coordinators.push({ key: 'first', name: 'New coordinator', repos: [], workspaceId: null, session: null, sessions: { version: 1, current: null, members: [] }, members: [] })
 const bridge = `<script>
 const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
+fixture.features = { linear: new URLSearchParams(location.search).get('linear') !== 'off', tokenSpeed: new URLSearchParams(location.search).get('speed') !== 'off' };
 const listeners = new Map();
 window.previewCalls = [];
 window.previewLaunches = [];
@@ -37,7 +48,8 @@ window.orca = { plugin: {
   previewCalls.push({name, data});
   const c = fixture.coordinators[0];
   if(name==='sidebar.list') return structuredClone(fixture);
-  if(name==='sidebar.linear') return null;
+  if(name==='sidebar.linear') return new URLSearchParams(location.search).get('linear')==='off' ? null : ${JSON.stringify(linearWire)};
+  if(name==='sidebar.tokenSpeed') return ${JSON.stringify(speedWire)};
   if(name==='sidebar.createCoordinator') { fixture.coordinators.push(neverStarted(data.name,data.name));listeners.get('sidebar.changed')?.(structuredClone(fixture));return {ok:true}; }
   if(name==='sidebar.openCoordinator') {
    const c=fixture.coordinators.find(c=>c.key===data.key);
@@ -91,5 +103,5 @@ window.previewProvider=(provider)=>{const c=fixture.coordinators[0];c.session.ag
 </script>`
 const html = readFileSync(join(root, 'src/panel/index.html'), 'utf8').replace('<head>', '<head><title>Coordinator fixture · Orca Flow</title>').replace('<script type="module" src="./app.ts"></script>', `${bridge}<script type="module" src="./app.js"></script>`)
 const assets = new Map([['/', ['text/html', html]], ['/panel.css', ['text/css', readFileSync(join(root, 'src/panel/panel.css'))]], ['/app.js', ['text/javascript', readFileSync(join(output, 'app.js'))]]])
-const server = createServer((req, res) => { const a = assets.get(req.url); if(!a){res.writeHead(404);res.end();return} res.writeHead(200, {'Content-Type': a[0]});res.end(a[1]) })
+const server = createServer((req, res) => { const a = assets.get(new URL(req.url, 'http://x').pathname); if(!a){res.writeHead(404);res.end();return} res.writeHead(200, {'Content-Type': a[0]});res.end(a[1]) })
 server.listen(Number(process.env.ORCA_FLOW_PREVIEW_PORT || 0), '127.0.0.1', () => console.log(`Coordinator fixture: http://127.0.0.1:${server.address().port}`))

@@ -11,7 +11,7 @@ export type WriterSetting = { provider: WriterProvider; model?: string; enabled:
 /** Absent or "off": no check; "all": every coordinator and lead; a list: agents working under those folders. */
 export type MessageFormat = 'off' | 'all' | string[]
 /** Parts of Orca Flow that show only when switched on (Settings → Features). Display only: a switch never touches Orca's own data. */
-export type FeatureSettings = { bots: boolean }
+export type FeatureSettings = { bots: boolean; linear: boolean; tokenSpeed: boolean }
 export type FlowSettings = { writers: WriterSetting[]; messageFormat: MessageFormat; marginGB: number; warnHeadroomGB: number; linearDryRun: boolean; routing: RoutingSettings; features: FeatureSettings }
 export type SettingsKey = keyof FlowSettings
 
@@ -37,7 +37,7 @@ export const DEFAULT_SETTINGS: FlowSettings = {
   warnHeadroomGB: 2,
   linearDryRun: false,
   routing: DEFAULT_ROUTING,
-  features: { bots: false }
+  features: { bots: false, linear: true, tokenSpeed: true }
 }
 export const SETTINGS_KEYS: readonly SettingsKey[] = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun', 'routing', 'features']
 
@@ -77,9 +77,10 @@ export function normalizeFormat(value: unknown): MessageFormat {
   return 'off'
 }
 
-/** The feature switches; one that is missing or not exactly true is off, so an older or broken file shows nothing new. */
+/** The feature switches. Bots is new and off unless exactly true; Linear and Token Speed are shown today, so they are on unless exactly false. An older or broken file changes nothing on screen. */
 export function normalizeFeatures(value: unknown): FeatureSettings {
-  return { bots: isObject(value) && value.bots === true }
+  const f = isObject(value) ? value : {}
+  return { bots: f.bots === true, linear: f.linear !== false, tokenSpeed: f.tokenSpeed !== false }
 }
 
 const gb = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback)
@@ -129,6 +130,8 @@ export type Draft = {
   linearDryRun: boolean
   routing: RoutingSettings
   bots: boolean
+  linear: boolean
+  tokenSpeed: boolean
 }
 export type DraftKey = keyof Draft
 export const DEFAULT_FOLDERS = ['~/orca/coordinators']
@@ -148,7 +151,7 @@ export function toDraft(s: FlowSettings): Draft {
     writers: writers.map((w) => w.provider), enabled, models,
     format: Array.isArray(format) ? 'folders' : format,
     folders: Array.isArray(format) ? format : [...DEFAULT_FOLDERS],
-    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun, routing: clone(normalizeRouting(s.routing)), bots: normalizeFeatures(s.features).bots
+    marginGB: s.marginGB, warnHeadroomGB: s.warnHeadroomGB, linearDryRun: s.linearDryRun, routing: clone(normalizeRouting(s.routing)), ...normalizeFeatures(s.features)
   }
 }
 
@@ -156,7 +159,7 @@ export function fromDraft(d: Draft): FlowSettings {
   return normalizeSettings({
     writers: d.writers.map((provider) => ({ provider, ...(WRITER_MODELS[provider].length ? { model: d.models[provider] } : {}), enabled: d.enabled[provider] })),
     messageFormat: d.format === 'folders' ? d.folders : d.format,
-    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing, features: { bots: d.bots }
+    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing, features: { bots: d.bots, linear: d.linear, tokenSpeed: d.tokenSpeed }
   })
 }
 

@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { asleep, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, projectDot, render, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { asleep, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
@@ -102,7 +102,7 @@ function paintRows(): void {
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
   // Token speed, under Linear; hidden while searching, like the other sections.
-  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now })
+  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now, speedOff: !speedIsOn() })
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
   speedEl.classList.toggle('folded', speedUi.folded)
@@ -126,18 +126,37 @@ function toggle(set: Set<string>, key: string): void {
 // The first snapshot can take a few seconds (Orca's CLI is slow on a busy machine).
 mainEl.innerHTML = crew('Loading workspaces…')
 setTimeout(draw, LINEAGE_WAIT_MS)
-orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
-orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), draw()))
+orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
+orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw()))
+
+// Settings → Features: Linear and Token Speed. While one is off its data is dropped and not asked
+// for; switching it on asks at once, so the section shows fresh data, not what it had before.
+const linearIsOn = () => !snap || linearOn(snap)
+const speedIsOn = () => !snap || tokenSpeedOn(snap)
+let linearWasOn = true
+let speedWasOn = true
+function applyFeatures(): void {
+  const l = linearIsOn()
+  const t = speedIsOn()
+  if (!l) linear = null
+  if (!t) speed = null
+  const reread = (l && !linearWasOn) || (t && !speedWasOn)
+  const lAgain = l && !linearWasOn
+  const tAgain = t && !speedWasOn
+  linearWasOn = l
+  speedWasOn = t
+  if (reread) queueMicrotask(() => { if (lAgain) readLinear(true); if (tAgain) readSpeed() })
+}
 // Relative times ("4m") stay current.
 setInterval(draw, 60_000)
 
 // Linear: read once a minute while the panel shows (the worker answers from its cache when it is
 // fresh); a send or a new read is posted. The fold and the filter come back from storage.
 const readLinear = (force = false) => {
-  if (document.visibilityState !== 'visible') return
+  if (document.visibilityState !== 'visible' || !linearIsOn()) return
   orca.plugin.request('sidebar.linear', { force }).then((d) => { linear = decodeLinear(d); draw() }).catch(() => null)
 }
-orca.plugin.on('sidebar.linearChanged', (d) => { linear = decodeLinear(d as LinearWire | null); draw() })
+orca.plugin.on('sidebar.linearChanged', (d) => { if (linearIsOn()) { linear = decodeLinear(d as LinearWire | null); draw() } })
 orca.storage.get(LINEAR_UI_KEY).then((stored) => {
   const saved = linearUiOf(stored)
   ui.linearFolded = saved.folded
@@ -157,10 +176,10 @@ document.addEventListener('visibilitychange', () => readLinear())
 // Token speed: the worker samples every 30 s and posts each sample; the panel asks once on open and
 // when it shows again. The fold and the 1 h / 24 h range come back from storage.
 const readSpeed = () => {
-  if (document.visibilityState !== 'visible') return
+  if (document.visibilityState !== 'visible' || !speedIsOn()) return
   orca.plugin.request('sidebar.tokenSpeed').then((d) => { speed = d as TokenSpeedWire; draw() }).catch(() => null)
 }
-orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { speed = d as TokenSpeedWire; draw() })
+orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { if (speedIsOn()) { speed = d as TokenSpeedWire; draw() } })
 orca.storage.get(SPEED_UI_KEY).then((stored) => {
   Object.assign(speedUi, speedUiOf(stored))
   draw()
@@ -812,7 +831,7 @@ function coordinatorMenu(key: string): MenuItem[] {
   if (c.members?.length) items.splice(at, 0, { label: 'Conversation history', icon: 'clock', run: () => showHistoryList(key) })
   if (c.session) items.splice(at, 0, { label: 'Sleep', icon: 'moon', run: () => run('end', 'Sleep') })
   // The Linear teams it owns: a send of their issues suggests it. One chip per connected team.
-  const teams = linear?.connectedTeams ?? []
+  const teams = linearIsOn() ? linear?.connectedTeams ?? [] : []
   if (teams.length) {
     const own = c.linearTeams ?? []
     items.splice(at, 0, {

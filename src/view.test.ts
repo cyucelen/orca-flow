@@ -1226,6 +1226,16 @@ test('the Linear section is hidden until Linear data comes, and while searching'
   assert.match(render(snap, emptyUi(), linearData([lin('BOU-1')])).linear, /Linear · BOU/)
 })
 
+test('Settings → Features → Linear: off renders no section, folded or open, and no Linear label from its data; on is unchanged', () => {
+  const data = linearData([lin('BOU-1')])
+  const on = render(snap, emptyUi(), data).linear
+  assert.equal(render({ ...snap, features: { linear: true, tokenSpeed: true } }, emptyUi(), data).linear, on, 'on, set or absent, draws the same')
+  const off = { ...snap, features: { linear: false, tokenSpeed: true } }
+  assert.equal(render(off, emptyUi(), data).linear, '')
+  assert.equal(render(off, { ...emptyUi(), linearFolded: true }, data).linear, '')
+  assert.equal(render({ ...snap, features: { linear: true, tokenSpeed: false } }, emptyUi(), data).linear, on, 'the other switch does not matter')
+})
+
 test('Linear rows: status and priority icons, ID and title, escaped; a linked issue shows its lead and coordinator and sorts last', () => {
   const lead = agent('p-lead', 'Raise the body limit', 'working', { coordinator: 'alpha', summary: summary({ role: 'lead' }), terminal: 'term-1' })
   const s: Snapshot = { ...snap, rows: [...snap.rows, row('wt-87', 'mono', [lead], { linearIssue: 'BOU-87' })] }

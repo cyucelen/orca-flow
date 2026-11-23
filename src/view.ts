@@ -1279,7 +1279,13 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
  * pinned below it, and the pinned footer. Up next sits at the bottom so the tree never moves when an
  * ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
  */
-export function render(given: Snapshot, ui: UiState, linear: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
+/** Settings → Features: a section shows unless its switch is off (an older snapshot has no switches). */
+export const linearOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.linear !== false
+export const tokenSpeedOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.tokenSpeed !== false
+
+export function render(given: Snapshot, ui: UiState, linearData: LinearData | null = null): { cockpit: string; copen: string; main: string; attention: string; bots: string; linear: string; footer: string } {
+  // Linear off: no Linear data reaches the section or the rows' labels.
+  const linear = linearOn(given) ? linearData : null
   // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
   // Its label opens the issue in Linear when the data gives its page.
   const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)).map((r) => (r.linearIssue ? { ...r, linearLink: issueLink(r.linearIssue, linear) } : r)) } : given

@@ -277,6 +277,8 @@ export type Snapshot = {
   focusedPanes?: string[] | null
   /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
   bots?: Bot[] | null
+  /** Settings → Features: Linear and Token Speed. Absent reads as on; false hides the section and its entry points. */
+  features?: { linear: boolean; tokenSpeed: boolean }
 }
 
 /** What the opened cockpit shows; loaded on demand because Orca's memory report is slow. */
