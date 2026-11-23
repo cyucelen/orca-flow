@@ -151,7 +151,7 @@ square. The face and the badge at the bottom right show what Orca reports:
 amber when only another agent would fit (not a new worktree with its dev servers), and red when
 nothing fits. Disk turns amber under 25 GB and red under 10 GB.
 
-**Bots.** Between Up next and Linear, one line per Orca bot (`orca bot list`): its avatar, name,
+**Bots** (off until Settings → Features → Bots is on). Between Up next and Linear, one line per Orca bot (`orca bot list`): its avatar, name,
 what it is for, and on the right whether it waits on you, works, is paused, or when it runs next.
 A click opens its Home chat's workspace. Bots sit under the coordinator whose `coordinator.json`
 lists them in `bots` (by name or folder name; ask the coordinator to adopt one), else under
