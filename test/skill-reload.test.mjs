@@ -235,7 +235,7 @@ test('Codex panes: the hooks find the pane by ORCA_PANE_KEY, and an unsupported 
   try {
     const t0 = Date.now()
     const codexTarget = { pane: 'tab:codex', session: 'thread-9', role: 'worker', provider: 'codex', supported: true, title: 'Codex worker' }
-    const notYet = { pane: 'tab:codex2', session: null, role: 'worker', provider: 'codex', supported: false, reason: "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)", title: '' }
+    const notYet = { pane: 'tab:codex2', session: null, role: 'worker', provider: 'codex', supported: false, reason: "Codex: approve Orca Flow's hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions", title: '' }
     writeRequest(w.data, [codexTarget, notYet], { hash: skillHash(w.skill), scope: 'all', now: t0, id: 'r1' })
     const run = (name, input, env) => {
       const r = spawnSync(process.execPath, [join(w.skill, 'scripts', name)], { input: JSON.stringify(input), env: { PATH: process.env.PATH, HOME: w.home, ...env }, encoding: 'utf8' })

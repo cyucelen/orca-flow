@@ -22,8 +22,8 @@ export type ReloadPlan = {
 export const CODEX_UNKNOWN = 'Codex: Orca Flow could not check its hooks in this Codex account; restart to reload'
 /** Antigravity's reason when the snapshot does not say. */
 export const AGY_UNKNOWN = 'Antigravity: Orca Flow could not check its hooks; restart to reload'
-/** A Codex row that waits: Codex reads its hooks only when a session starts (verified live). */
-export const CODEX_WAITING_TIP = 'Reload waits for next turn; a Codex session started before you approved the hooks needs a restart'
+/** A Codex row that waits: Codex reads its hooks only when a session starts, and Orca merges ours into the account only when it starts Codex (verified live). */
+export const CODEX_WAITING_TIP = 'Reload waits for next turn; a Codex session started before Orca added and you approved the hooks needs a restart'
 /** An Antigravity row that waits: whether agy reloads hooks.json mid-session is not documented. */
 export const AGY_WAITING_TIP = 'Reload waits for next turn; an Antigravity session started before Orca Flow\'s hooks were added may need a restart'
 /** Every other provider: no hooks of ours. */
@@ -31,8 +31,9 @@ export const NO_LIVE_RELOAD = 'it has no live reload; restart to reload'
 
 /**
  * Who takes the note: Claude Code always (our hooks are in its settings.json, src/install.ts); Codex
- * only while Orca Flow's hooks are in its account's hooks.json and trusted by the user
- * (src/codex-hooks.ts, the snapshot's codexReload); Antigravity while our definition is in agy's
+ * only while Orca Flow's hooks from ~/.codex/hooks.json are merged into its account's hooks.json (Orca
+ * does that when it starts Codex) and trusted by the user (src/codex-hooks.ts, the snapshot's
+ * codexReload); Antigravity while our definition is in agy's
  * hooks.json and on (src/antigravity-hooks.ts, antigravityReload). Others are reported with a reason,
  * never typed into.
  */

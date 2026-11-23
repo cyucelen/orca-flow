@@ -2,24 +2,32 @@
 // note (skills/orca-flow/scripts/skill-reload.mjs), as Claude Code sessions do through settings.json.
 //
 // Orca starts each Codex session with CODEX_HOME = an Orca-managed account home
-// (<Orca data>/codex-accounts/<id>/home, marked by .orca-managed-home). Codex 0.171 reads that home's
-// hooks.json, whose events Orca fills with its own status hooks. We add three of ours to the same file,
-// next to Orca's (Orca's rewrite keeps entries that are not its own): UserPromptSubmit
+// (<Orca data>/codex-accounts/<id>/home, marked by .orca-managed-home), and Codex 0.171 reads that
+// home's hooks.json. Orca rebuilds that file every time it starts a Codex agent (Orca 1.4.265, the
+// hookPass worker's install in codex-project-trust-worker-entry.js, verified live): its own status hook
+// first in each event, then the groups of the system Codex home's ~/.codex/hooks.json. It drops every
+// other entry, along with its trust state. So our three hooks live in ~/.codex/hooks.json, next to
+// whatever the user keeps there, and reach every account through Orca's merge: UserPromptSubmit
 // (prompt-check.mjs), SessionStart (session-start.mjs) and PostToolUse (reload-check.mjs, gated by the
-// skill-reload `active` file). We never touch config.toml, auth.json or any trust state.
+// skill-reload `active` file). Their commands run the scripts through the Codex user skill link
+// (~/.agents/skills/orca-flow), so they stay the same across plugin updates and keep the user's trust.
+// Orca drops commands that contain ${PLUGIN_ROOT}-style variables from the merge; ours have none.
 //
 // Codex runs a hook only once the user trusted it: config.toml [hooks.state."<hooks.json>:<event>:<group>:<handler>"]
-// trusted_hash = "sha256:…". Orca pre-trusts its own; ours are trusted by the user, once, when Codex
-// starts and shows "Hooks need review" (or with /hooks). codexReloadReadiness reads that state
-// (read-only), with Codex's own key and hash, so the sidebar says exactly what is missing.
+// trusted_hash = "sha256:…". Orca pre-trusts its own. Ours are trusted by the user, once: the first
+// Codex agent Orca starts afterwards shows "Hooks need review", and "Trust all and continue" writes
+// the trust into that account's config.toml. When Orca next starts Codex it copies that approval
+// into ~/.codex/config.toml (keyed by ~/.codex/hooks.json) and from then on carries it into every
+// account, matched by hash. codexReloadReadiness reads both (read-only), with Codex's own key and
+// hash. We never write config.toml, auth.json or any trust state.
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ensureStopHook, type HookEvent, type StopHook } from './install.ts'
 
-/** Orca's data folder (codex-accounts lives in it). */
-export const ORCA_DATA = join(homedir(), 'Library', 'Application Support', 'orca')
+/** The system Codex home: Orca merges its hooks.json into every Orca-managed account. */
+export const SYSTEM_CODEX_HOME = join(homedir(), '.codex')
 
 /** Our three Codex hooks: event, Codex's event label, script. */
 export const CODEX_HOOKS = [
@@ -35,42 +43,34 @@ export const CODEX_HOOK_NAME = 'Orca Flow: Reload skills'
 const PANE = '${ORCA_AGENT_PANE:-${ORCA_PANE_KEY-}}'
 
 /**
- * Our hook entries for one Codex home, run through the Codex user skill link (~/.agents/skills/orca-flow,
- * src/install.ts linksFor), so they follow the installed plugin across updates without changing (a
- * changed command would need the user's trust again). The PostToolUse one starts node only while a
- * reload waits.
+ * Our hook entries for the system Codex home's hooks.json, run through the Codex user skill link
+ * (~/.agents/skills/orca-flow, src/install.ts linksFor), so they follow the installed plugin across
+ * updates without changing (a changed command would need the user's trust again). The PostToolUse
+ * one starts node only while a reload waits. Outside Orca's panes they do nothing.
  */
-export function codexHooksFor(codexHome: string, skill = join(homedir(), '.agents', 'skills', 'orca-flow')): StopHook[] {
+export function codexHooksFor(system = SYSTEM_CODEX_HOME, skill = join(homedir(), '.agents', 'skills', 'orca-flow')): StopHook[] {
   return CODEX_HOOKS.map(({ event, script }) => {
     const gate = event === 'PostToolUse' ? ' && [ -e "${ORCA_FLOW_DIR:-$HOME/.orca-flow}/skill-reload/active" ]' : ''
     const command = `if [ -n "${PANE}" ]${gate}; then node "${join(skill, 'scripts', script)}"; fi`
     // The name Codex shows for it in "Hooks need review" and /hooks (without one it reads "Unnamed hook").
-    return { path: join(codexHome, 'hooks.json'), event: event as HookEvent, mark: `skills/orca-flow/scripts/${script}`, entry: { hooks: [{ type: 'command', command, timeout: 10, statusMessage: CODEX_HOOK_NAME }] } }
+    return { path: join(system, 'hooks.json'), event: event as HookEvent, mark: `skills/orca-flow/scripts/${script}`, entry: { hooks: [{ type: 'command', command, timeout: 10, statusMessage: CODEX_HOOK_NAME }] } }
   })
 }
 
-/** Every Orca-managed Codex home: <Orca data>/codex-accounts/<id>/home with Orca's marker. */
-export function managedCodexHomes(data = ORCA_DATA): string[] {
-  const root = join(data, 'codex-accounts')
-  let ids: string[] = []
-  try { ids = readdirSync(root) } catch { return [] }
-  return ids.filter((id) => /^[A-Za-z0-9-]+$/.test(id)).map((id) => join(root, id, 'home')).filter((h) => existsSync(join(h, '.orca-managed-home')))
-}
-
 /**
- * Adds our hooks to a Codex home's hooks.json (each once, updated in place, Orca's and every other
- * entry kept: ensureStopHook). A home without hooks.json is left alone: Orca has not set it up yet,
- * and the file is Orca's to create. Returns what it did, for the log.
+ * Adds our hooks to the system Codex home's hooks.json, creating the file when it is missing (each
+ * hook once, updated in place, every other entry and key kept: ensureStopHook). Without a ~/.codex
+ * folder Codex has never run here, and nothing is written. Returns what it did, for the log.
  */
-export function ensureCodexHooks(codexHome: string, skill?: string): string[] {
-  if (!existsSync(join(codexHome, 'hooks.json'))) return [`left ${codexHome}: no hooks.json yet (Orca creates it)`]
-  return codexHooksFor(codexHome, skill).flatMap((h) => ensureStopHook(h))
+export function ensureCodexHooks(system = SYSTEM_CODEX_HOME, skill?: string): string[] {
+  if (!existsSync(system)) return [`left the Codex hooks: no ${system} (Codex has not run here)`]
+  return codexHooksFor(system, skill).flatMap((h) => ensureStopHook(h))
 }
 
 /** Like ensureOwnStopHook: only the installed copy writes, never a development folder. */
-export function ensureOwnCodexHooks(homes: string[], installed: boolean, skill?: string): string[] {
-  if (!installed) return homes.length ? [`left the Codex hooks in ${homes.length} Codex home(s) to the installed copy: this is a development folder`] : []
-  return homes.flatMap((h) => ensureCodexHooks(h, skill))
+export function ensureOwnCodexHooks(installed: boolean, system = SYSTEM_CODEX_HOME, skill?: string): string[] {
+  if (!installed) return existsSync(system) ? [`left the Codex hooks in ${join(system, 'hooks.json')} to the installed copy: this is a development folder`] : []
+  return ensureCodexHooks(system, skill)
 }
 
 // ---------- trust (read-only) ----------
@@ -114,48 +114,91 @@ export function readHookState(toml: string): Map<string, { trustedHash: string |
   return out
 }
 
-export type CodexReadiness = { state: 'ready' | 'not-installed' | 'needs-approval' | 'disabled' | 'unreadable' | 'unmanaged'; reason: string }
+export type CodexReadiness = { state: 'ready' | 'not-installed' | 'not-merged' | 'needs-approval' | 'disabled' | 'unreadable' | 'unmanaged'; reason: string }
 
 /** The short reason the sidebar shows for each state, with the one action to take. */
 export const CODEX_REASON: Record<CodexReadiness['state'], string> = {
   'ready': '',
-  'not-installed': 'Codex: Orca Flow\'s hooks are not installed in this Codex account yet; update Orca Flow',
-  'needs-approval': 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)',
+  'not-installed': 'Codex: Orca Flow has not added its hooks to ~/.codex/hooks.json yet; update Orca Flow',
+  'not-merged': 'Codex: Orca adds Orca Flow\'s hooks when it next starts Codex; start a Codex agent in Orca (choose Trust all and continue if asked), then restart older Codex sessions',
+  'needs-approval': 'Codex: approve Orca Flow\'s hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions',
   'disabled': 'Codex: Orca Flow\'s hooks are turned off; turn them on in Codex with /hooks',
-  'unreadable': 'Codex: its hooks.json cannot be read; restart to reload',
-  'unmanaged': 'Codex: the selected Codex login is not an Orca-managed account, where Orca Flow installs its hooks; restart to reload'
+  'unreadable': 'Codex: a hooks.json Orca Flow reads (~/.codex or this Codex account) is not valid JSON; fix it, then start a Codex agent in Orca',
+  'unmanaged': 'Codex: the selected Codex login is neither ~/.codex nor an Orca-managed account, so Orca Flow\'s hooks do not reach it; restart to reload'
 }
 
-/**
- * Whether a Codex home's sessions can take the reload note: our three hooks in its hooks.json, each
- * trusted in its config.toml with the hash of the command as it is there and enabled. Reads only.
- */
-export function codexReloadReadiness(codexHome: string): CodexReadiness {
-  const r = (state: CodexReadiness['state']): CodexReadiness => ({ state, reason: CODEX_REASON[state] })
-  if (!existsSync(join(codexHome, '.orca-managed-home'))) return r('unmanaged')
-  let hooks: Record<string, unknown>
-  try {
-    hooks = JSON.parse(readFileSync(join(codexHome, 'hooks.json'), 'utf8'))?.hooks ?? {}
-  } catch (e) {
-    return r((e as { code?: string }).code === 'ENOENT' ? 'not-installed' : 'unreadable')
+type Found = { group: number; handler: number; hook: Record<string, unknown>; matcher?: string }
+
+/** Our handler for one script in a parsed hooks.json's event: its position and itself; null when absent. */
+function findOurs(hooks: Record<string, unknown>, event: string, script: string): Found | null {
+  const groups = Array.isArray(hooks[event]) ? (hooks[event] as any[]) : []
+  for (let g = 0; g < groups.length; g++) {
+    const list = Array.isArray(groups[g]?.hooks) ? groups[g].hooks : []
+    for (let h = 0; h < list.length; h++) {
+      if (typeof list[h]?.command === 'string' && list[h].command.includes(`skills/orca-flow/scripts/${script}`)) return { group: g, handler: h, hook: list[h], ...(typeof groups[g].matcher === 'string' ? { matcher: groups[g].matcher } : {}) }
+    }
   }
-  let toml = ''
-  try { toml = readFileSync(join(codexHome, 'config.toml'), 'utf8') } catch {}
-  const state = readHookState(toml)
-  let source: string
-  try { source = join(realpathSync(codexHome), 'hooks.json') } catch { source = join(codexHome, 'hooks.json') }
+  return null
+}
+
+/** A home's hooks.json `hooks` object, 'missing', or 'unreadable'. */
+function readHooks(home: string): Record<string, unknown> | 'missing' | 'unreadable' {
+  try {
+    const hooks = JSON.parse(readFileSync(join(home, 'hooks.json'), 'utf8'))?.hooks ?? {}
+    return hooks && typeof hooks === 'object' && !Array.isArray(hooks) ? hooks : 'unreadable'
+  } catch (e) {
+    return (e as { code?: string }).code === 'ENOENT' ? 'missing' : 'unreadable'
+  }
+}
+
+const realHooksJson = (home: string) => { try { return join(realpathSync(home), 'hooks.json') } catch { return join(home, 'hooks.json') } }
+const stateOf = (home: string) => { try { return readHookState(readFileSync(join(home, 'config.toml'), 'utf8')) } catch { return new Map() } }
+const same = (a: Record<string, unknown>, b: Record<string, unknown>) => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b))
+
+/**
+ * Whether the selected Codex home's sessions can take the reload note, read from what Codex will use
+ * (read-only):
+ * - our three hooks in ~/.codex/hooks.json (else not installed);
+ * - for an Orca-managed home, the same three in that home's hooks.json, where Orca merges them when it
+ *   starts Codex (else not merged yet: Orca adds them at its next Codex start);
+ * - each trusted with the hash of its command, and enabled: by the home's own config.toml at the
+ *   merged position, or by ~/.codex/config.toml for the ~/.codex/hooks.json entry, whose trust Orca
+ *   carries into every account (matched by hash within the event, as Orca does).
+ * When the selected login is ~/.codex itself, Codex reads ~/.codex/hooks.json and its config.toml directly.
+ */
+export function codexReloadReadiness(codexHome: string, system = SYSTEM_CODEX_HOME): CodexReadiness {
+  const r = (state: CodexReadiness['state']): CodexReadiness => ({ state, reason: CODEX_REASON[state] })
+  const sysHooks = readHooks(system)
+  if (sysHooks === 'unreadable') return r('unreadable')
+  if (sysHooks === 'missing') return r('not-installed')
+  const sysSource = realHooksJson(system)
+  const isSystem = sysSource === realHooksJson(codexHome)
+  if (!isSystem && !existsSync(join(codexHome, '.orca-managed-home'))) return r('unmanaged')
+  const homeHooks = isSystem ? sysHooks : readHooks(codexHome)
+  if (homeHooks === 'unreadable') return r('unreadable')
+  const sysState = stateOf(system)
+  const homeState = isSystem ? sysState : stateOf(codexHome)
+  const homeSource = realHooksJson(codexHome)
+  const sysSources = new Set([sysSource, join(system, 'hooks.json')])
   let disabled = false
+  let unmerged = false
   for (const { event, label, script } of CODEX_HOOKS) {
-    const groups = Array.isArray(hooks[event]) ? (hooks[event] as any[]) : []
-    let found: { key: string; hash: string } | null = null
-    groups.forEach((g, gi) => (Array.isArray(g?.hooks) ? g.hooks : []).forEach((h: any, hi: number) => {
-      if (!found && typeof h?.command === 'string' && h.command.includes(`skills/orca-flow/scripts/${script}`)) found = { key: `${source}:${label}:${gi}:${hi}`, hash: codexTrustHash(label, h, g.matcher) }
-    }))
-    if (!found) return r('not-installed')
-    const { key, hash } = found as { key: string; hash: string }
-    const trust = state.get(key)
-    if (!trust || trust.trustedHash !== hash) return r('needs-approval')
+    const mine = findOurs(sysHooks, event, script)
+    if (!mine) return r('not-installed')
+    const used = homeHooks === 'missing' ? null : findOurs(homeHooks, event, script)
+    // Orca has not merged this version into the account yet (it does when it next starts Codex).
+    if (!used || !same(used.hook, mine.hook) || used.matcher !== mine.matcher) { unmerged = true; continue }
+    const hash = codexTrustHash(label, used.hook as { command: string }, used.matcher)
+    // Codex's own key for the copy it runs; else the user's ~/.codex trust for the same hook, which Orca carries over.
+    const own = homeState.get(`${homeSource}:${label}:${used.group}:${used.handler}`)
+    const carried = isSystem ? undefined : [...sysState].find(([key, t]) => {
+      const m = /^(.*):([a-z_]+):(\d+):(\d+)$/.exec(key)
+      return m !== null && sysSources.has(m[1]) && m[2] === label && t.trustedHash === hash
+    })?.[1]
+    const trust = own?.trustedHash === hash ? own : carried
+    if (!trust) return r('needs-approval')
     if (!trust.enabled) disabled = true
   }
+  if (unmerged) return r('not-merged')
   return r(disabled ? 'disabled' : 'ready')
 }

@@ -43,7 +43,7 @@ import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel
 import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
 import { reloadPlan, type ReloadScope } from './skill-reload.ts'
-import { codexReloadReadiness, ensureOwnCodexHooks, managedCodexHomes } from './codex-hooks.ts'
+import { codexReloadReadiness, ensureOwnCodexHooks } from './codex-hooks.ts'
 import { antigravityReloadReadiness, ensureOwnAntigravityHooks } from './antigravity-hooks.ts'
 import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
@@ -1016,8 +1016,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!dir) return
     for (const line of ensureOwnLinks(linksFor(dir), installed, { repairOnly })) orca.log(line)
     if (!repairOnly) for (const line of ensureOwnStopHook(stopHookFor(), installed)) orca.log(line)
-    // Codex: our reload hooks next to Orca's in each Orca-managed Codex account's hooks.json; never its trust or auth.
-    if (!repairOnly) for (const line of ensureOwnCodexHooks(managedCodexHomes(), installed)) orca.log(line)
+    // Codex: our reload hooks in ~/.codex/hooks.json, which Orca merges into every Orca-managed Codex
+    // account when it starts Codex (it rebuilds those homes' hooks.json); never trust state or auth.
+    if (!repairOnly) for (const line of ensureOwnCodexHooks(installed)) orca.log(line)
     // Antigravity: our "orca-flow-reload" definition next to Orca's "orca-status" in ~/.gemini/config/hooks.json.
     if (!repairOnly) for (const line of ensureOwnAntigravityHooks(installed)) orca.log(line)
   }
@@ -1044,8 +1045,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   let firstProviders: Snapshot['coordinatorProviders'] = null
   const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
-  // The selected Codex account's home, looked up every 5 minutes (also when a Codex account was added:
-  // the installed copy then adds our hooks to it); its readiness is read from files on every snapshot.
+  // The selected Codex account's home, looked up every 5 minutes (the installed copy then puts back
+  // our hooks in ~/.codex/hooks.json if they went missing); readiness is read from files on every snapshot.
   let codexHome: string | null = null
   let codexHomeAt = 0
   const codexReady = (): Snapshot['codexReload'] => {
@@ -1053,12 +1054,12 @@ export default function activate(orca: OrcaWorkerApi): void {
       codexHomeAt = Date.now()
       void run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }).then((result) => {
         codexHome = codexHomeFromAccounts({ ok: true, result })
-        if (installed) for (const line of [...ensureOwnCodexHooks(managedCodexHomes(), true), ...ensureOwnAntigravityHooks(true)]) if (!line.startsWith('left ')) orca.log(line)
+        if (installed) for (const line of [...ensureOwnCodexHooks(true), ...ensureOwnAntigravityHooks(true)]) if (!line.startsWith('left ')) orca.log(line)
       }).catch(() => { codexHome = null })
     }
     if (!codexHome) return undefined
     const r = codexReloadReadiness(codexHome)
-    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'needs-approval' || r.state === 'disabled' ? { approval: true } : {}) }
+    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'needs-approval' || r.state === 'not-merged' || r.state === 'disabled' ? { approval: true } : {}) }
   }
   /** Antigravity: read from ~/.gemini/config/hooks.json on every snapshot (a few hundred bytes). */
   const antigravityReady = (): Snapshot['antigravityReload'] => {

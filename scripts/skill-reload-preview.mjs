@@ -24,7 +24,7 @@ const agent = (paneKey, title, over = {}) => ({
 })
 const row = (id, repo, agents, over = {}) => ({ id, name: id, branch: id, repo, path: `/fixture/${id}`, main: false, agents, state: agents[0].state, priority: null, card: null, parentId: null,
   liveTerminals: agents.length, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: now - 7 * 60_000, createdAt: 1, pr: null, ...over })
-const APPROVE = "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)"
+const APPROVE = "Codex: approve Orca Flow's hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions"
 const entry = (pane, state, r, over = {}) => ({ pane, state, role: r, provider: 'claude', at: now - 4 * 60_000, expiresAt: now + 20 * 3600_000, request: 'r1', ...over })
 const fixture = {
   source: 'cli', capacity: null, ready: true, focusedPanes: [],

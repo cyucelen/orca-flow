@@ -64,7 +64,7 @@ test('the confirmation is short: the counts, then one line per problem; the deta
   assert.ok(ok)
   assert.equal(title, 'Reload skills in 5 agents across all coordinators and your chats?')
   assert.equal(text, '1 coordinator, 2 leads, 1 worker, 1 chat re-read their skills at their next turn.\nCannot reload: 1 Codex (see the row).\nSkipped: 1 finished, 1 asleep.')
-  const approve = "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)"
+  const approve = "Codex: approve Orca Flow's hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions"
   const none = confirmText({ targets: [], unsupported: [
     { pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c', reason: approve, approval: true },
     { pane: 'y', session: null, role: 'worker', provider: 'antigravity', supported: false, title: '', coordinator: 'c', reason: 'Antigravity: …' },
@@ -79,7 +79,7 @@ test('the confirmation is short: the counts, then one line per problem; the deta
 const entry = (pane: string, state: SkillReloadEntry['state'], over: Partial<SkillReloadEntry> = {}): SkillReloadEntry => ({ pane, state, role: 'worker', provider: 'claude', at: 1000, expiresAt: 1000 + 86_400_000, request: 'r1', ...over })
 
 test('Codex sessions take the note only once its hooks are installed and trusted; until then they are unsupported with the reason, never requested', () => {
-  const approve = 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)'
+  const approve = 'Codex: approve Orca Flow\'s hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions'
   const waiting = reloadPlan({ ...snap, codexReload: { ready: false, reason: approve, approval: true } }, { coordinator: 'alpha' })
   assert.deepEqual(waiting.unsupported.map((t) => [t.pane, t.reason, t.approval]), [['p-codex', approve, true]])
   assert.match(confirmText(waiting, 'for alpha').text, /\nNeeds approval: 1 Codex \(see the row\)\./)
@@ -88,7 +88,7 @@ test('Codex sessions take the note only once its hooks are installed and trusted
   assert.deepEqual(ready.targets.map((t) => [t.pane, t.role]), [['p-alpha', 'coordinator'], ['p-lead', 'lead'], ['p-w1', 'worker'], ['p-codex', 'worker']])
   assert.deepEqual(ready.unsupported, [])
   assert.equal(confirmText(ready, 'for alpha').text, '1 coordinator, 1 lead, 2 workers re-read their skills at their next turn.\nSkipped: 1 finished, 1 asleep.', 'the restart caveat lives on the row')
-  assert.match(reloadMark({ reloads: new Map([['p-codex', entry('p-codex', 'waiting', { provider: 'codex' })]]) }, 'p-codex'), /a Codex session started before you approved the hooks needs a restart/)
+  assert.match(reloadMark({ reloads: new Map([['p-codex', entry('p-codex', 'waiting', { provider: 'codex' })]]) }, 'p-codex'), /a Codex session started before Orca added and you approved the hooks needs a restart/)
   // Its Codex thread id goes with it when the summary bound one.
   const bound = { ...codex, summary: summary({ role: 'worker', providerSession: { provider: 'codex', id: 'thread-1' } }) }
   const withThread = reloadPlan({ ...snap, rows: [row('lead', [lead, worker, finished, bound])], codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
@@ -130,8 +130,8 @@ test('rows wear a small mark per state, and the heading carries the action and t
   assert.match(reloadMark({ reloads }, 'p-w1'), /class="srl srl-waiting"[^>]*data-tip="Reload waits for next turn"/)
   assert.match(reloadMark({ reloads }, 'p-lead'), /srl-reloaded/)
   assert.match(reloadMark({ reloads }, 'p-codex'), /Restart to reload skills/)
-  const why = new Map([['p-codex', entry('p-codex', 'unsupported', { provider: 'codex', reason: 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)' })]])
-  assert.match(reloadMark({ reloads: why }, 'p-codex'), /data-tip="Codex: approve Orca Flow&#39;s hooks once; start Codex, choose Trust all and continue \(or \/hooks\)"/, 'an unsupported row says why and what to do')
+  const why = new Map([['p-codex', entry('p-codex', 'unsupported', { provider: 'codex', reason: 'Codex: approve Orca Flow\'s hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions' })]])
+  assert.match(reloadMark({ reloads: why }, 'p-codex'), /data-tip="Codex: approve Orca Flow&#39;s hooks once; start a Codex agent in Orca and choose Trust all and continue \(or \/hooks\), then restart older Codex sessions"/, 'an unsupported row says why and what to do')
   assert.equal(reloadMark({ reloads }, 'p-other'), '')
   const label = treeLabel([...reloads.values()], emptyUi())
   assert.match(label, /data-reload-skills="all" aria-label="Reload skills in all running agents"/)
