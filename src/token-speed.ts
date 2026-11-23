@@ -17,7 +17,7 @@
 //   comes after the tool ran, so it is no end).
 //
 // Network: a `nettop` snapshot of the agents' sockets each sample (the agents' processes found by
-// their executable name in `ps`), diffed against the last; loopback sockets are not network. Internet: `networkQuality -c`, only when the user presses Test.
+// their executable name in `ps`), diffed against the last; loopback sockets are not network. Internet: the last result kept in the history (no test runs any more).
 //
 // Usage: the same read also yields one usage observation per completed response (Usage below), for
 // the usage store (usage-store.ts). It takes every response, also those too long or with no start to
@@ -676,16 +676,6 @@ export function socketDelta(prev: SocketSnapshot, cur: SocketSnapshot): { up: nu
   return { up, down, procs: procs.size, secs: Math.max(0, (cur.at - prev.at) / 1000) }
 }
 
-/** `networkQuality -c` JSON: down and up in bit/s, base RTT in ms, responsiveness in RPM. */
-export function parseNetworkQuality(text: string, at: number): InternetResult | null {
-  let j: any
-  try { j = JSON.parse(text) } catch { return null }
-  const down = Number(j?.dl_throughput), up = Number(j?.ul_throughput)
-  if (!(down > 0) || !(up > 0)) return null
-  const rtt = Number(j.base_rtt), rpm = Number(j.responsiveness)
-  return { at, down, up, rtt: Number.isFinite(rtt) ? rtt : null, rpm: Number.isFinite(rpm) ? rpm : null }
-}
-
 // ---------- what the panel shows ----------
 
 export type SpeedSeries = {
@@ -711,8 +701,6 @@ export type TokenSpeedWire = {
   /** The agents' traffic in the last nettop sample, bit/s; null before the first. */
   net: { at: number; up: number; down: number; procs: number } | null
   internet: InternetResult | null
-  testing: boolean
-  testError: string | null
   models: SpeedModel[]
   series: Record<SpeedRange, SpeedSeries>
   /** The sidebar's usage line (last 7 days, tokens and estimate); absent while the usage store is not open. */
@@ -765,7 +753,7 @@ function series(h: History, now: number, span: number, step: number): SpeedSerie
 }
 
 /** The panel's view of the history at `now` (a few KB: 60 one-minute and 96 quarter-hour buckets). */
-export function speedView(h: History, now: number, state: { ready: boolean; testing: boolean; testError: string | null }): TokenSpeedWire {
+export function speedView(h: History, now: number, state: { ready: boolean }): TokenSpeedWire {
   const cur = Math.floor(now / MINUTE) * MINUTE
   const into = (now - cur) / MINUTE
   const tokIn = (t: number) => (h.minutes.get(t)?.tok ?? []).reduce((s, v) => s + (v ?? 0), 0)
@@ -789,8 +777,6 @@ export function speedView(h: History, now: number, state: { ready: boolean; test
     tokPerSec: Math.round(tokPerSec * 10) / 10,
     net,
     internet: h.internet,
-    testing: state.testing,
-    testError: state.testError,
     models,
     series: { '1h': series(h, now, HOUR, MINUTE), '24h': series(h, now, DAY, 15 * MINUTE) }
   }

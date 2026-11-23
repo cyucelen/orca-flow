@@ -3,9 +3,9 @@
 import { assert, test } from 'orca/testing'
 import { analyticsView, buildModel, workstreamView } from './analytics.ts'
 import { fixtureInputs, fixtureModel } from './analytics-fixture.ts'
-import { backfillText, dur, tok, UNATTRIBUTED, usageLine, usagePage, usageUi, usd, type UsageData, type UsageUi } from './analytics-view.ts'
+import { axisLabels, backfillText, dayColumns, dur, niceTop, tok, UNATTRIBUTED, usageLine, usagePage, usageUi, usd, type UsageData, type UsageUi } from './analytics-view.ts'
 import { normalizeRouting } from './routing.ts'
-import { tokenSpeedSection } from './token-speed-view.ts'
+import { tokenSpeedSection, type SpeedUi, type SpeedUsage } from './token-speed-view.ts'
 import type { AnalyticsWindow } from './protocol.ts'
 import type { TokenSpeedWire } from './token-speed.ts'
 
@@ -144,25 +144,115 @@ test('task titles are escaped', () => {
 
 // ---------- the sidebar section ----------
 
+/** Seven days ending 2026-11-23, the busiest on the 19th, today with a Codex share (no price). */
+const WEEK = [3, 5, 4, 9, 6, 0, 2].map((m, k) => ({ start: new Date(2026, 10, 17 + k).getTime(), tokens: m * 1e6, cost: m * 0.9, unpriced: k === 6 ? 500_000 : 0 }))
+/** The section with its usage block for the fixture's 7 days. */
+const side = (over: Partial<SpeedUi> = {}, usage: Partial<SpeedUsage> = {}): SpeedUi => ({ speedFolded: false, speedRange: '1h', now: 0, usage: { view: view('7d'), window: '7d', metric: 'tokens', details: false, ...usage }, ...over })
 const wire = (over: Partial<TokenSpeedWire> = {}): TokenSpeedWire => ({
-  now: 0, ready: true, tokPerSec: 85, net: null, internet: null, testing: false, testError: null, models: [],
+  now: 0, ready: true, tokPerSec: 85, net: null, internet: null, models: [],
   series: { '1h': { start: 0, step: 60_000, up: [], down: [], netSecs: 0, tok: {}, count: {} } as never, '24h': { start: 0, step: 60_000, up: [], down: [], netSecs: 0, tok: {}, count: {} } as never },
-  usage: { days: 7, tokens: 52_400_000, cost: 48.2, unpriced: 0, prices: 'prices v1, 2026-11-03', tip: 'x' }, ...over
+  usage: { days: 7, tokens: 52_400_000, cost: 48.2, unpriced: 0, prices: 'prices v1, 2026-11-03', tip: 'x', daily: WEEK }, ...over
 })
 
-test('the sidebar section is Analytics: the speed glance kept, one usage line, a note when nothing opened', () => {
-  const html = tokenSpeedSection(wire(), { speedFolded: false, speedRange: '1h', now: 0 })
+test('the sidebar section is Analytics: the speed glance kept, usage in the section itself, no Usage page link', () => {
+  const html = tokenSpeedSection(wire(), side())
   assert.match(html, /<span>Analytics<\/span>/)
   assert.ok(!html.includes('Token speed'))
   assert.match(html, /tok\/s/)
   assert.match(html, /Internet not tested yet/)
-  assert.match(html, /<button class="uline" data-usage-open data-tip="at API list prices · not your bill\nprices v1, 2026-11-03"><span class="ut">This week <b>52.4M<\/b> tokens · ≈ \$48<\/span><span class="go">Usage ›<\/span><\/button>/)
-  assert.ok(!html.includes('terr'), 'no note')
-  const noted = tokenSpeedSection(wire(), { speedFolded: false, speedRange: '1h', now: 0, usageNote: 'Focus a workspace first: the Usage tab opens inside it.' })
-  assert.match(noted, /role="alert">Focus a workspace first/)
-  // folded: the glance and this week's tokens; not ready: the line is still there
-  assert.match(tokenSpeedSection(wire(), { speedFolded: true, speedRange: '1h', now: 0 }), /85 tok\/s<span class="sepd">52.4M this week/)
-  assert.match(tokenSpeedSection(wire({ ready: false }), { speedFolded: false, speedRange: '1h', now: 0 }), /data-usage-open/)
-  // no usage store: no line, the rest as before
-  assert.ok(!tokenSpeedSection(wire({ usage: null }), { speedFolded: false, speedRange: '1h', now: 0 }).includes('data-usage-open'))
+  assert.ok(!html.includes('data-usage-open') && !html.includes('Usage ›'), 'no link to a separate page')
+  // folded: the glance and this week's tokens, no usage block
+  const folded = tokenSpeedSection(wire(), side({ speedFolded: true }))
+  assert.match(folded, /85 tok\/s<span class="sepd">52.4M this week/)
+  assert.ok(!folded.includes('class="usb"'))
+  // not ready (speed): usage is still there
+  assert.match(tokenSpeedSection(wire({ ready: false }), side()), /class="usb"/)
+  // no usage block asked: the rest as before
+  assert.ok(!tokenSpeedSection(wire(), { speedFolded: false, speedRange: '1h', now: 0 }).includes('class="usb"'))
+})
+
+// ---------- usage per day ----------
+
+const cols = (html: string) => (html.match(/class="uccol"/g) ?? []).length
+
+test('Usage tab: a per-day chart under the strip, one column per day, stacked in the strip\'s model colors', () => {
+  for (const w of ['7d', '30d', 'all'] as const) {
+    const html = page(w)
+    clean(html)
+    assert.ok(html.includes('Usage per day'))
+    assert.equal(cols(html), view(w).daily.length, `${w}: a column per day`)
+    assert.ok(html.indexOf('Usage per day') > html.indexOf('class="strip"') && html.indexOf('Usage per day') < html.indexOf('By task kind'), 'between the strip and the routing table')
+  }
+  const html = page('7d')
+  assert.ok(/data-metric="tokens" aria-pressed="true"/.test(html), 'tokens by default')
+  assert.ok(html.includes('Today'), 'today is labeled')
+  assert.ok(html.includes('today so far'), 'and its tooltip says it is still filling')
+  assert.equal((html.match(/class="uccap"/g) ?? []).length, 1, 'only the busiest day carries its value')
+  assert.ok(/class="uclegend"><span><i class="dot s0">/.test(html), 'a legend in the strip\'s order')
+})
+
+test('Usage tab: Est. cost measures the estimate on its own axis, says what has no price, and Details gives a table', () => {
+  const html = page('7d', { metric: 'cost' })
+  clean(html)
+  assert.ok(/data-metric="cost" aria-pressed="true"/.test(html))
+  assert.ok(html.includes('estimated at API list prices'))
+  assert.ok(/<span class="ucg" style="top:0%"><b>\$/.test(html), 'the axis is in dollars')
+  assert.ok(html.includes('not in the estimate'), 'the Codex tokens with no price are named')
+  const details = page('7d', { details: true })
+  clean(details)
+  assert.ok(details.includes('<th>Est. cost</th>'))
+  assert.ok(details.includes('(so far)'), 'today first, still filling')
+})
+
+test('day columns: nice tops, thinned axis labels with today always labeled, empty days draw no bar', () => {
+  assert.equal(niceTop(8.2e6), 1e7)
+  assert.equal(niceTop(623), 800)
+  assert.equal(niceTop(0), 1)
+  const days = Array.from({ length: 30 }, (_, k) => new Date(2026, 9, 25 + k).getTime())
+  const labels = axisLabels(days, true)
+  assert.equal(labels[29], 'Today')
+  assert.ok(labels.filter(Boolean).length <= 11 && labels.filter(Boolean).length >= 8)
+  assert.deepEqual(axisLabels(days.slice(-3), false), ['Sat', 'Sun', 'Today'])
+  const html = dayColumns([{ start: 0, total: 0, parts: [], tip: 'a', label: '' }, { start: 1, total: 5, parts: [{ cls: 's0', value: 5 }], tip: 'b', label: 'Today' }], { metric: 'tokens' })
+  assert.equal((html.match(/class="ucbar"/g) ?? []).length, 1)
+})
+
+test('sidebar usage: the window toggle, the strip, per day with tokens or $, and a narrow Details table', () => {
+  for (const w of ['7d', '30d', 'all'] as const) {
+    const html = tokenSpeedSection(wire(), side({}, { view: view(w), window: w }))
+    clean(html)
+    assert.ok(new RegExp(`data-uwin="${w}" aria-pressed="true"`).test(html), `${w} pressed`)
+    assert.equal(cols(html), view(w).daily.length, `${w}: a column per day`)
+    assert.ok(html.includes('class="strip"') && html.includes('Model share') && html.includes('Input from cache') && html.includes('Most expensive task'))
+  }
+  const html = tokenSpeedSection(wire(), side())
+  assert.ok(html.indexOf('class="usb"') > html.indexOf('class="tnet"'), 'speed & traffic first, usage at the bottom')
+  assert.ok(/data-umetric="tokens" aria-pressed="true"/.test(html) && html.includes(' tokens over 7 days'))
+  // Each part's controls stand on its own header; the section's header only folds.
+  const sechead = html.slice(0, html.indexOf('</div>'))
+  assert.ok(!sechead.includes('data-trange') && !sechead.includes('data-uwin'), 'no controls on the section header')
+  const usageHead = html.indexOf('<span class="thead">Usage</span>'), speedHead = html.indexOf('Speed &amp; traffic')
+  assert.ok(usageHead > 0 && usageHead < html.indexOf('data-uwin') && html.indexOf('data-umetric') < html.indexOf('class="uchart'), 'window and measure on the Usage header, above the chart')
+  assert.ok(speedHead < usageHead && speedHead < html.indexOf('data-trange') && html.indexOf('data-trange') < html.indexOf('class="tnet"'), '1h / 24h on the Speed & traffic header, above the internet line and the speed charts')
+  // One headline for the section: today's tokens and estimate beside tok/s and traffic, above both parts.
+  const stats = html.slice(html.indexOf('class="tstats"'), html.indexOf('class="tsub'))
+  assert.ok(html.indexOf('class="tstats"') < speedHead, 'the headline comes first')
+  assert.match(stats, /<b>2.00M<\/b><span>tokens<\/span><small>today so far<\/small>/)
+  assert.match(stats, /<b>≈ \$1.80\+<\/b><span><\/span><small>est. cost today<\/small>/)
+  assert.ok(stats.indexOf('today so far') < stats.indexOf('tok/s') && stats.indexOf('tok/s') < stats.indexOf('agent traffic'), 'today, then tok/s and traffic')
+  assert.ok(!/data-act=|data-win=|data-metric=/.test(html), 'the panel\'s own attributes only')
+  assert.ok(/class="uchart side"/.test(html))
+  const cost = tokenSpeedSection(wire(), side({}, { metric: 'cost' }))
+  assert.ok(cost.includes(' est. over 7 days') && /data-umetric="cost" aria-pressed="true"/.test(cost))
+  assert.ok(cost.includes('not in the estimate'))
+  const details = tokenSpeedSection(wire(), side({}, { details: true }))
+  clean(details)
+  assert.ok(/data-udetails aria-expanded="true"/.test(details))
+  assert.ok(details.includes('<th>Day</th><th>Total</th><th>Output</th><th>Est. cost</th>'), 'four columns fit 340 px')
+  assert.ok(details.includes('(so far)') && /<tr data-tip="input [\d,]+ · cache read/.test(details), 'all four categories in each row\'s tooltip')
+  // states: still reading, a failed read, nothing recorded yet
+  assert.ok(tokenSpeedSection(wire(), side({}, { view: null })).includes('Reading usage…'))
+  assert.ok(tokenSpeedSection(wire(), side({}, { view: null, error: 'boom' })).includes('Could not read usage: boom'))
+  const empty = analyticsView(buildModel({ now: Date.now(), usage: [], coverage: new Map(), links: [], routes: [], routing: normalizeRouting(undefined) }), '7d', { state: 'running', read: 3, total: 9 })
+  assert.ok(tokenSpeedSection(wire(), side({}, { view: empty })).includes('backfill reading 3 of 9 logs'))
 })

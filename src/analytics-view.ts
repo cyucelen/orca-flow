@@ -6,7 +6,7 @@
 // One question per screen: Usage (curiosity strip, By task kind, Lead overhead, Policy comparison,
 // Biggest workstreams) → a row's tasks → a workstream; and a comparison. Details sit behind a toggle.
 import { modelLabel } from './model-label.ts'
-import type { AnalyticsTask, AnalyticsView, AnalyticsWindow, Comparison, KindRow, Spend, TaskResult, WorkstreamDetail, WorkstreamLine, WorkstreamRow } from './protocol.ts'
+import type { AnalyticsTask, AnalyticsView, AnalyticsWindow, Comparison, KindRow, Spend, TaskResult, UsageDay, WorkstreamDetail, WorkstreamLine, WorkstreamRow } from './protocol.ts'
 
 export const WINDOWS: { id: AnalyticsWindow; label: string }[] = [{ id: '7d', label: '7 days' }, { id: '30d', label: '30 days' }, { id: 'all', label: 'All' }]
 /** What the usage of sessions with no Orca binding is called: coordinators and plain terminals are not workstreams. */
@@ -15,8 +15,12 @@ export const UNATTRIBUTED = 'Coordinators and plain terminals'
 export const ESTIMATE_NOTE = 'at API list prices · not your bill'
 
 export type Screen = { view: 'usage' } | { view: 'kind'; id: string } | { view: 'ws'; id: string } | { view: 'cmp'; id: string }
+/** What the per-day charts measure: tokens, or the estimate at API list prices. Never both on one axis. */
+export type UsageMetric = 'tokens' | 'cost'
+export const usageMetric = (v: unknown): UsageMetric => (v === 'cost' ? 'cost' : 'tokens')
 export type UsageUi = {
   window: AnalyticsWindow
+  metric: UsageMetric
   /** The screens opened so far, the one shown last; the first is Usage. */
   stack: Screen[]
   details: boolean
@@ -28,7 +32,7 @@ export type UsageData = {
   /** The last request failed. */
   error?: string | null
 }
-export const usageUi = (): UsageUi => ({ window: '7d', stack: [{ view: 'usage' }], details: false })
+export const usageUi = (): UsageUi => ({ window: '7d', metric: 'tokens', stack: [{ view: 'usage' }], details: false })
 
 export const esc = (s: unknown) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -119,9 +123,175 @@ function emptyState(v: AnalyticsView): string {
     + '<p class="note">Orca Flow reads token counts from the Claude Code and Codex logs on this Mac (never messages) and keeps them for 90 days.</p></div>'
 }
 
+// ---------- usage per day: one column chart, the Usage tab's and the sidebar's ----------
+
+/** One column: its day, its height (the metric's total) and its stacked parts, bottom first. */
+export type DayColumn = { start: number; total: number; parts: { cls: string; value: number }[]; tip: string; label: string }
+
+/**
+ * The y scale's top: the first of 1, 2, 3, 4, 5, 6, 8, 10 × a power of ten at or above v, so the
+ * half line is round too (same rule as the speed charts).
+ */
+export function niceTop(v: number): number {
+  if (!(v > 0)) return 1
+  const p = 10 ** Math.floor(Math.log10(v))
+  return Number((([1, 2, 3, 4, 5, 6, 8, 10].find((m) => m * p >= v * (1 - 1e-9)) ?? 10) * p).toPrecision(6))
+}
+
+const weekday = (t: number) => new Date(t).toLocaleDateString('en-US', { weekday: 'short' })
+const monthDay = (t: number) => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+/** "Mon, Nov 17". */
+export const dayName = (t: number) => new Date(t).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+
+/**
+ * The axis label under each column: every day up to 7 ("Mon", today "Today"); above that every k-th
+ * day counted back from today ("Nov 17"), so today always has one and labels never touch.
+ */
+export function axisLabels(starts: number[], wide: boolean): string[] {
+  const n = starts.length
+  const every = n <= 7 ? 1 : Math.ceil(n / (wide ? 10 : 5))
+  return starts.map((t, i) => {
+    const back = n - 1 - i
+    if (back % every) return ''
+    if (back === 0) return 'Today'
+    return n <= 7 ? (wide ? `${weekday(t)} ${new Date(t).getDate()}` : weekday(t)) : monthDay(t)
+  })
+}
+
+/** A metric value as an axis or cap label: "8.2M" tokens, "$4.82". */
+export const metricText = (metric: UsageMetric, v: number) => (metric === 'cost' ? usd(v) : tok(v))
+
+/**
+ * Daily columns on one baseline: gridlines at 0, half and the top with their values, columns of at
+ * most 24 px with a 4 px rounded top and 2 px gaps between stacked parts, the busiest day's value on
+ * its cap, an axis label per day (thinned when many), and a hover target per day, as tall as the
+ * plot, whose tooltip gives the day in full.
+ */
+export function dayColumns(cols: DayColumn[], o: { metric: UsageMetric; compact?: boolean; size?: 'side' }): string {
+  const top = niceTop(Math.max(0, ...cols.map((c) => c.total)))
+  let peak = -1
+  cols.forEach((c, i) => { if (c.total > 0 && (peak < 0 || c.total > cols[peak].total)) peak = i })
+  // Ticks are round by construction: "20M", not "20.0M".
+  const tick = (v: number) => metricText(o.metric, v).replace(/\.0+(?=[KMB]?$)/, '')
+  const grid = [[0, tick(top)], [50, tick(top / 2)], [100, o.metric === 'cost' ? '$0' : '0']]
+    .map(([y, t]) => `<span class="ucg${y === 100 ? ' base' : ''}" style="top:${y}%"><b>${esc(t)}</b></span>`).join('')
+  const bars = cols.map((c, i) => {
+    const h = c.total > 0 ? Math.max(1.5, (c.total / top) * 100) : 0
+    const parts = c.parts.filter((p) => p.value > 0).map((p) => `<i class="${p.cls}" style="flex-grow:${p.value}"></i>`).join('')
+    const cap = i === peak ? `<span class="uccap" style="bottom:${h.toFixed(2)}%">${esc(metricText(o.metric, c.total))}</span>` : ''
+    return `<div class="uccol" tabindex="0" role="img" aria-label="${esc(c.tip.replace(/\n/g, '; '))}" data-tip="${esc(c.tip)}">`
+      + (h ? `<span class="ucbar" style="height:${h.toFixed(2)}%">${parts}</span>` : '') + cap + '</div>'
+  }).join('')
+  const axis = cols.map((c) => `<span>${esc(c.label)}</span>`).join('')
+  return `<div class="uchart${o.compact ? ' compact' : ''}${o.size ? ` ${o.size}` : ''}" style="--n:${cols.length}"><div class="ucplot">${grid}<div class="uccols">${bars}</div></div><div class="ucaxis">${axis}</div></div>`
+}
+
+/** A spend's estimate in a tooltip: "≈ $4.82", "≈ $4.82 + 1.2M tokens with no price", "no estimate". */
+const costSay = (cost: number, unpriced: number, tokens: number) =>
+  tokens === 0 ? '≈ $0' : unpriced > 0 && cost === 0 ? 'no estimate' : `≈ ${usd(cost)}${unpriced > 0 ? ` + ${tok(unpriced)} tokens with no price` : ''}`
+
+/** What the strip and the per-day block read of the UI: the window, the measure, Details open. */
+export type UsageOpts = Pick<UsageUi, 'window' | 'metric' | 'details'>
+/**
+ * The controls' attributes: the Usage tab's (data-win, data-metric, data-act), or the sidebar's
+ * (data-uwin, data-umetric, data-udetails: the panel already uses data-act for its own buttons).
+ */
+const attrs = (side: boolean) => (side ? { win: 'data-uwin', metric: 'data-umetric', details: 'data-udetails' } : { win: 'data-win', metric: 'data-metric', details: 'data-act="details"' })
+
+/**
+ * Usage per day: stacked by model (the strip's colors), tokens or estimate, a per-day table behind
+ * Details. In the sidebar (`side`) the chart is shorter and the table keeps Day, Total, Output and
+ * Est. cost, the four categories in each row's tooltip.
+ */
+function perDay(v: AnalyticsView, ui: UsageOpts, slot: ReturnType<typeof slots>, side = false): string {
+  const days = v.daily ?? []
+  if (!days.length) return ''
+  const cost = ui.metric === 'cost'
+  const today = days[days.length - 1].start
+  const labels = axisLabels(days.map((d) => d.start), !side)
+  // Parts per color: the top models keep their strip color; the rest share "Other".
+  const nameOf = (cls: string, model: string | null) => (cls === 'sx' ? 'Other' : model ? modelLabel(model) : 'Unknown model')
+  const shown = new Map<string, string>()
+  const cols: DayColumn[] = days.map((d, i) => {
+    const by = new Map<string, number>()
+    for (const m of d.models) {
+      const cls = slot(m.model)
+      const value = cost ? m.cost : m.tokens
+      if (value > 0 && !shown.has(cls)) shown.set(cls, nameOf(cls, m.model))
+      by.set(cls, (by.get(cls) ?? 0) + value)
+    }
+    const s = d.spend
+    const lines = [
+      `${dayName(d.start)}${d.start === today ? ' · today so far' : ''}`,
+      s.total ? `${tok(s.total)} tokens · ${costSay(s.cost, s.unpriced, s.total)}` : 'no usage recorded',
+      ...d.models.filter((m) => m.tokens > 0).slice(0, 5).map((m) => `${m.model ? modelLabel(m.model) : 'Unknown model'}: ${tok(m.tokens)} · ${m.unpriced && !m.cost ? 'no estimate' : usd(m.cost)}`),
+      s.total ? `input ${tok(s.in)} · cache read ${tok(s.cacheRead)} · cache write ${tok(s.cacheWrite5m + s.cacheWrite1h)} · output ${tok(s.out)}` : ''
+    ].filter(Boolean)
+    return {
+      start: d.start, label: labels[i], tip: lines.join('\n'),
+      total: cost ? s.cost : s.total,
+      parts: [...by].map(([cls, value]) => ({ cls, value })).sort((a, b) => order(a.cls) - order(b.cls))
+    }
+  })
+  const sum = days.reduce((a, d) => a + (cost ? d.spend.cost : d.spend.total), 0)
+  const unpriced = days.reduce((a, d) => a + d.spend.unpriced, 0)
+  const busiest = cols.reduce<DayColumn | null>((b, c) => (c.total > 0 && (!b || c.total > b.total) ? c : b), null)
+  const a = attrs(side)
+  const seg = `<span class="seg${side ? ' sm' : ''}" role="group" aria-label="Measure">${(['tokens', 'cost'] as const).map((m) => `<button ${a.metric}="${m}" aria-pressed="${m === ui.metric}">${m === 'tokens' ? 'Tokens' : side ? '$' : 'Est. cost'}</button>`).join('')}</span>`
+  const figs = `<div class="figline"><span><b>${esc(metricText(ui.metric, sum))}</b>${side ? (cost ? ' est.' : ' tokens') : ''} over ${days.length} days</span>`
+    + `<span>avg ${esc(metricText(ui.metric, sum / days.length))}${side ? '/day' : ' per day'}</span>`
+    + (busiest ? `<span>busiest ${esc(monthDay(busiest.start))}, ${esc(metricText(ui.metric, busiest.total))}</span>` : '') + '</div>'
+  const legend = [...shown].sort((a, b) => order(a[0]) - order(b[0])).map(([cls, name]) => `<span><i class="dot ${cls}"></i>${esc(name)}</span>`).join('')
+  const note = cost && unpriced > 0 ? `<div class="note">${tok(unpriced)} tokens of models with no price (Codex, unknown) are not in the estimate.</div>` : ''
+  const dayCell = (d: UsageDay) => `<td>${esc(dayName(d.start))}${d.start === today ? ' (so far)' : ''}</td>`
+  const sideTip = (d: UsageDay) => `input ${full(d.spend.in)} · cache read ${full(d.spend.cacheRead)}\ncache write ${full(d.spend.cacheWrite5m + d.spend.cacheWrite1h)} · output ${full(d.spend.out)}`
+  const table = side
+    ? '<table class="u"><thead><tr><th>Day</th><th>Total</th><th>Output</th><th>Est. cost</th></tr></thead><tbody>'
+      + [...days].reverse().map((d) => `<tr data-tip="${esc(sideTip(d))}">${dayCell(d)}<td>${tok(d.spend.total)}</td><td>${tok(d.spend.out)}</td><td>${costTxt(d.spend)}</td></tr>`).join('')
+    : '<table class="u"><thead><tr><th>Day</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total</th><th>Est. cost</th></tr></thead><tbody>'
+      + [...days].reverse().map((d) => `<tr>${dayCell(d)}${cats(d.spend)}<td>${costTxt(d.spend)}</td></tr>`).join('')
+  const details = ui.details
+    ? `<div class="details"><div class="tw">${table}</tbody></table></div><div class="note">Calendar days on this Mac’s clock. Every recorded response counts, coordinators and plain terminals included.</div></div>`
+    : ''
+  const toggle = `<button class="dtoggle" ${a.details} aria-expanded="${ui.details}">${CHEV}Details</button>`
+  // In the sidebar the measure toggle stands on the Usage header (sidebarUsage), with the window's.
+  const title = side
+    ? ''
+    : `<div class="vhead"><div class="label">Usage per day <span class="lab2">· ${cost ? `estimated ${ESTIMATE_NOTE}` : 'all four token categories'}</span></div><span class="grow"></span>${seg}</div>`
+  return `<div class="block">${title}`
+    + figs + dayColumns(cols, { metric: ui.metric, size: side ? 'side' : undefined })
+    + (legend ? `<div class="uclegend">${legend}</div>` : '') + note + toggle + details + '</div>'
+}
+/** Stack order: the strip's slots bottom up, Other on top. */
+const order = (cls: string) => (cls === 'sx' ? 99 : Number(cls.slice(1)) || 0)
+
+// ---------- the sidebar's usage block ----------
+
+/** The window toggle's short labels, for 340 px. */
+const SHORT: Record<AnalyticsWindow, string> = { '7d': '7d', '30d': '30d', all: 'All' }
+
+/**
+ * The Analytics section's usage, in place of a Usage tab: the window toggle, usage per day with its
+ * Details table, then the strip (tokens and estimate, biggest workstream, model share, input from
+ * cache, most expensive task). Null view: still reading.
+ */
+export function sidebarUsage(v: AnalyticsView | null, ui: UsageOpts, error?: string | null): string {
+  const win = `<span class="seg sm" role="group" aria-label="Time window" data-tip="Totals are what was recorded in the window; the biggest workstream and most expensive task are those finished in it.">${WINDOWS.map((w) => `<button data-uwin="${w.id}" aria-pressed="${w.id === ui.window}">${SHORT[w.id]}</button>`).join('')}</span>`
+  const measure = `<span class="seg sm" role="group" aria-label="Measure" data-tip="Tokens, or the estimate ${ESTIMATE_NOTE}">${(['tokens', 'cost'] as const).map((m) => `<button data-umetric="${m}" aria-pressed="${m === ui.metric}">${m === 'tokens' ? 'Tokens' : '$'}</button>`).join('')}</span>`
+  // The part's header: its name, then the two toggles that set everything under it.
+  const head = `<div class="tsub first"><span class="thead">Usage</span><span class="tctl">${win}${measure}</span></div>`
+  if (!v) return `<div class="usb">${head}<div class="empty">${error ? `Could not read usage: ${esc(error)}` : 'Reading usage…'}</div></div>`
+  const none = v.strip.tokens.total === 0 && (v.daily ?? []).every((d) => d.spend.total === 0)
+  if (none) return `<div class="usb">${head}<div class="empty">${esc(backfillText(v.backfill))}.</div></div>`
+  const slot = slots(v)
+  const filling = v.backfill.state === 'running' ? `<div class="terr" role="note">Still filling in: ${esc(backfillText(v.backfill))}.</div>` : ''
+  // The chart first: in a 45vh section it is what shows without scrolling; the strip's totals follow.
+  return `<div class="usb">${head}${filling}${perDay(v, ui, slot, true)}${strip(v, ui, slot)}</div>`
+}
+
 // ---------- Usage ----------
 
-function strip(v: AnalyticsView, ui: UsageUi, slot: ReturnType<typeof slots>): string {
+function strip(v: AnalyticsView, ui: Pick<UsageUi, 'window'>, slot: ReturnType<typeof slots>): string {
   const s = v.strip
   const t = s.tokens
   const w = WINDOWS.find((x) => x.id === ui.window)!
@@ -132,9 +302,11 @@ function strip(v: AnalyticsView, ui: UsageUi, slot: ReturnType<typeof slots>): s
   const share = top.map((m) => `<span class="nw">${esc(m.label)} ${pct(m.share)}</span>`).join(' · ') + (rest ? ` · <span class="nw">other ${pct(rest / total)}</span>` : '')
   const price = `${esc(v.prices.tip)}\nPrice table ${v.prices.version}, dated ${v.prices.dated}.${t.unpriced ? ` Excludes ${tok(t.unpriced)} tokens with no price.` : ''}`
   const est = t.unpriced > 0 && t.cost === 0 && t.total > 0 ? 'no estimate' : `≈ ${usd(t.cost)}${t.unpriced ? '+' : ''}`
+  // A finished workstream that spent nothing is no "biggest": it would read "0" beside a title.
+  const big = s.biggest && s.biggest.tokens > 0 ? s.biggest : null
   return `<div class="strip">`
     + `<div class="cell"><span class="k">Tokens · ${esc(w.label)}</span><span class="v" data-tip="${esc(`Recorded ${windowSay(ui.window)}. Includes ${UNATTRIBUTED.toLowerCase()} ${tok(s.unattributed.total)}.`)}">${tok(t.total)}</span><span class="s" data-tip="${price}">${est} ${ESTIMATE_NOTE}</span></div>`
-    + `<div class="cell"><span class="k">Biggest workstream</span><span class="v sm">${s.biggest ? tok(s.biggest.tokens) : '–'}</span><span class="s ell">${s.biggest ? esc(s.biggest.title) : 'none finished'}</span></div>`
+    + `<div class="cell"><span class="k">Biggest workstream</span><span class="v sm">${big ? tok(big.tokens) : '–'}</span><span class="s ell"${big ? ` data-tip="${esc(big.title)}"` : ''}>${big ? esc(big.title) : s.biggest ? 'none finished with usage' : 'none finished'}</span></div>`
     + `<div class="cell"><span class="k">Model share</span>${t.total ? bar : ''}<span class="s">${t.total ? share : '–'}</span></div>`
     + `<div class="cell"><span class="k">Input from cache</span><span class="v sm">${s.cacheShare == null ? '–' : pct(s.cacheShare)}</span><span class="s">cache reads of all input tokens</span></div>`
     + `<div class="cell"><span class="k">Most expensive task</span><span class="v sm">${s.priciest ? usd(s.priciest.cost) : '–'}</span><span class="s ell">${s.priciest ? `${esc(s.priciest.name)} · ${esc(s.priciest.workstream.title)}` : ''}</span></div>`
@@ -231,7 +403,7 @@ function usageScreen(v: AnalyticsView, ui: UsageUi): string {
   const none = v.strip.tokens.total === 0 && v.rows.every((r) => r.n === 0 && r.running === 0) && v.workstreams.finished === 0
   if (none) return `${head}${emptyState(v)}`
   const filling = v.backfill.state === 'running' ? `<div class="banner" role="note"><b>Still filling in.</b><span>${esc(backfillText(v.backfill))}. Older numbers will grow.</span></div>` : ''
-  return `${head}${filling}${strip(v, ui, slot)}${kinds(v, slot)}${leadOverhead(v)}${policy(v)}${biggest(v)}`
+  return `${head}${filling}${strip(v, ui, slot)}${perDay(v, ui, slot)}${kinds(v, slot)}${leadOverhead(v)}${policy(v)}${biggest(v)}`
 }
 
 // ---------- one row's tasks ----------

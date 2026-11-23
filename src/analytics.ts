@@ -24,7 +24,7 @@
 // - Estimates (§7): per response at its model's list price; a model with no price adds to
 //   `unpriced` and never to `cost`.
 import type {
-  AnalyticsTask, AnalyticsView, AnalyticsWindow, ArmStats, Comparison, KindRow, Spend, TaskResult, UsageSummaryWire, WorkstreamDetail, WorkstreamLine, WorkstreamRow
+  AnalyticsTask, AnalyticsView, AnalyticsWindow, ArmStats, Comparison, KindRow, Spend, TaskResult, UsageDay, UsageSummaryWire, WorkstreamDetail, WorkstreamLine, WorkstreamRow
 } from './protocol.ts'
 import { ESTIMATE_LABEL, ESTIMATE_TIP, estimate, PRICES, type PriceTable } from './prices.ts'
 import { choiceLabel, findType, rowFor, taskKind, TASK_KINDS, type ModelChoice, type RoutingSettings } from './routing.ts'
@@ -594,8 +594,66 @@ export function analyticsView(model: AnalyticsModel, window: AnalyticsWindow, ba
     },
     comparisons,
     backfill,
-    workstreams: { top: finished.slice(0, 5).map((w) => line(w, act.byWorkstream.get(w.id)?.total ?? 0)), finished: finished.length, running: { count: live.length, spend: sumSpend(live.map((w) => w.spend)) } }
+    workstreams: { top: finished.slice(0, 5).map((w) => line(w, act.byWorkstream.get(w.id)?.total ?? 0)), finished: finished.length, running: { count: live.length, spend: sumSpend(live.map((w) => w.spend)) } },
+    daily: windowDays(model, window)
   }
+}
+
+// ---------- usage over time ----------
+
+/** Days the chart shows per window; All starts on the first recorded day (at most the 90 days kept). */
+export const CHART_DAYS: Record<Exclude<AnalyticsWindow, 'all'>, number> = { '7d': 7, '30d': 30 }
+const MAX_DAYS = 92
+
+/** Local midnight `k` days after the day of `t` (k may be negative). Calendar arithmetic, so a DST day is 23 or 25 h. */
+export function dayStart(t: number, k = 0): number {
+  const d = new Date(t)
+  d.setHours(0, 0, 0, 0)
+  if (k) d.setDate(d.getDate() + k)
+  return d.getTime()
+}
+
+/** The local midnights of the `n` days ending today, oldest first. */
+export const lastDays = (now: number, n: number): number[] => Array.from({ length: n }, (_, k) => dayStart(now, k - n + 1))
+
+/**
+ * Every record whose end falls on one of `days` (ascending local midnights; the last day runs to its
+ * own midnight), summed per day and per model. Records outside the days are skipped.
+ */
+export function dailyUsage(lists: Usage[][], days: number[], prices: PriceTable = PRICES): UsageDay[] {
+  const out = days.map((start) => ({ start, spend: zeroSpend(), byModel: new Map<string | null, Spend>() }))
+  if (!days.length) return []
+  const end = dayStart(days[days.length - 1], 1)
+  for (const list of lists) for (const u of list) {
+    if (u.end < days[0] || u.end >= end) continue
+    // The last day starting at or before the record's end.
+    let lo = 0, hi = days.length - 1
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (days[mid] <= u.end) lo = mid; else hi = mid - 1 }
+    const day = out[lo]
+    addUsage(day.spend, u, prices)
+    const m = knownModel(u.model)
+    let s = day.byModel.get(m)
+    if (!s) day.byModel.set(m, (s = zeroSpend()))
+    addUsage(s, u, prices)
+  }
+  return out.map((d) => ({
+    start: d.start,
+    spend: d.spend,
+    models: [...d.byModel]
+      .map(([model, s]) => ({ model, tokens: s.total, cost: s.cost, unpriced: s.unpriced }))
+      .sort((a, b) => b.tokens - a.tokens || String(a.model).localeCompare(String(b.model)))
+  }))
+}
+
+/** The window's days: 7 or 30 ending today; All from the first record's day (at least 7, at most the retention). */
+function windowDays(model: AnalyticsModel, window: AnalyticsWindow): UsageDay[] {
+  const lists = [model.attributed.map((a) => a.u), model.unattributed]
+  if (window !== 'all') return dailyUsage(lists, lastDays(model.now, CHART_DAYS[window]), model.prices)
+  let first = model.now
+  for (const list of lists) for (const u of list) if (u.end < first) first = u.end
+  // The days from the first record's day through today (rounded: a DST day is 23 or 25 h).
+  const n = Math.round((dayStart(model.now) - dayStart(first)) / DAY) + 1
+  return dailyUsage(lists, lastDays(model.now, Math.min(MAX_DAYS, Math.max(7, n))), model.prices)
 }
 
 /** One workstream: lead sessions, workers and retries, each with its whole-run spend; null when unknown. */
@@ -668,6 +726,8 @@ export function usageSummary(usage: Usage[], now: number, prices: PriceTable = P
   const from = now - SUMMARY_DAYS * DAY
   const s = zeroSpend()
   for (const u of usage) if (u.end >= from && u.end <= now) addUsage(s, u, prices)
-  return { days: SUMMARY_DAYS, tokens: s.total, cost: s.cost, unpriced: s.unpriced, prices: `prices ${prices.version}, ${prices.dated}`, tip: ESTIMATE_TIP }
+  // The 7 calendar days ending today start after `from` (today's midnight − 6 days ≥ now − 7 days), so `usage` covers them.
+  const daily = dailyUsage([usage], lastDays(now, SUMMARY_DAYS), prices).map((d) => ({ start: d.start, tokens: d.spend.total, cost: d.spend.cost, unpriced: d.spend.unpriced }))
+  return { days: SUMMARY_DAYS, tokens: s.total, cost: s.cost, unpriced: s.unpriced, prices: `prices ${prices.version}, ${prices.dated}`, tip: ESTIMATE_TIP, daily }
 }
 

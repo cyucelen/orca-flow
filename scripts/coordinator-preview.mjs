@@ -15,7 +15,7 @@ const T = Date.now(), MIN = 60_000
 const hist = emptyHistory()
 for (let m = 0; m < 50; m++) addResponse(hist, { model: m % 3 ? 'claude-opus-5-5' : 'claude-sonnet-5-5', out: 900 + (m * 137) % 700, start: T - (50 - m) * MIN, end: T - (50 - m) * MIN + 30_000 }, T)
 for (let m = 0; m < 40; m++) addNet(hist, { at: T - (40 - m) * MIN, up: 40_000 + (m * 911) % 9000, down: 120_000 + (m * 1733) % 30_000, secs: 30, procs: 3 })
-const speedWire = speedView(hist, T, { ready: true, testing: false, testError: null })
+const speedWire = speedView(hist, T, { ready: true })
 const linearWire = { wire: 1, urlBase: 'https://linear.app/acme/issue/', me: 'u1', teams: ['SHP'], cycles: [], sent: {}, lastSent: {}, at: T,
   states: [['In Progress', 'started', '#f2c94c'], ['Todo', 'unstarted', '#e2e2e2']], projects: [['Checkout', '#5e6ad2']], people: [['u1', 'You']], cycleIds: [],
   issues: [['SHP-12', 'Fix the cart total rounding', 2, 0, 0, 0, -1, Math.floor(T / 1000)], ['SHP-14', 'Validate coupon stacking', 3, 1, 0, 0, -1, Math.floor(T / 1000)], ['SHP-19', 'Empty-state copy for orders', 4, 1, -1, 0, -1, Math.floor(T / 1000)]] }

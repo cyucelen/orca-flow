@@ -2,9 +2,10 @@
 // editor code. No plugin install, no worker, nothing read from ~/.orca-flow: `orca` is a stub that
 // answers from src/analytics-fixture.ts (the same data the tests use).
 //   node scripts/analytics-preview.mjs                 serve; open the printed URL
-//                                                      /sidebar?theme=light   the panel at 340 px (add &note=1 for the no-workspace note, &fold=1 folded)
+//                                                      /sidebar?theme=light   the panel at 340 px (add &w=30d, &m=cost, &details=1, &fold=1 folded)
 //                                                      /editor?theme=dark&w=30d&click=<selector>&details=1&empty=running
 //   node scripts/analytics-preview.mjs --shots <dir>   capture the sidebar and the Usage tab, dark and light, then exit
+//   add --live                                         the views from the running local.flow (orca plugin dev request analytics.view) in place of the fixture
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -34,6 +35,11 @@ export function dump() {
 `)
 esbuild([join(build, 'dump.ts'), '--format=esm', '--platform=node', '--packages=external', `--outfile=${join(build, 'dump.mjs')}`])
 const data = (await import(pathToFileURL(join(build, 'dump.mjs')).href)).dump()
+// --live: this Mac's usage, as the running development plugin answers it (read only).
+if (process.argv.includes('--live')) {
+  const ask = (w) => JSON.parse(execFileSync('orca', ['plugin', 'dev', 'request', 'local.flow', 'analytics.view', '--data', JSON.stringify({ window: w }), '--json'], { maxBuffer: 64 << 20 })).result.result
+  data.views = Object.fromEntries(['7d', '30d', 'all'].map((w) => [w, ask(w)]))
+}
 
 const LIGHT = { '--orca-background': '#f7f7f9', '--orca-foreground': '#1c1c20', '--orca-muted-foreground': '#5f5f69', '--orca-border': '#e1e1e7', '--orca-accent': '#ececf0', '--orca-popover': '#ffffff', '--orca-popover-foreground': '#1c1c20' }
 const DARK = { '--orca-background': '#161618', '--orca-foreground': '#e9e9ec', '--orca-muted-foreground': '#8d8d96', '--orca-border': '#27272c', '--orca-accent': '#1f1f23', '--orca-popover': '#232328', '--orca-popover-foreground': '#e9e9ec' }
@@ -43,6 +49,8 @@ const light = q.get('theme') === 'light';
 if (light) document.documentElement.classList.add('light');
 for (const [k, v] of Object.entries(light ? ${JSON.stringify(LIGHT)} : ${JSON.stringify(DARK)})) document.documentElement.style.setProperty(k, v);
 document.head.insertAdjacentHTML('beforeend', '<style>.tip { transition: none !important; }</style>');
+// tall=1: the Analytics section unclipped (it scrolls at 45vh in Orca), to look at its whole layout.
+if (q.get('tall')) document.head.insertAdjacentHTML('beforeend', '<style>.tsec { max-height: none !important; }</style>');
 if (q.get('click')) setTimeout(() => document.querySelector(q.get('click'))?.click(), 600);
 if (q.get('click2')) setTimeout(() => document.querySelector(q.get('click2'))?.click(), 900);
 </script>`
@@ -64,7 +72,7 @@ const series = (n, step) => ({
 })
 const speed = {
   now, ready: true, tokPerSec: 118, net: { at: now, up: 41000, down: 232000, procs: 4 },
-  internet: { at: Date.now() - 3 * 3600_000, down: 412e6, up: 48e6, rtt: 18, rpm: 1420 }, testing: false, testError: null,
+  internet: { at: Date.now() - 3 * 3600_000, down: 412e6, up: 48e6, rtt: 18, rpm: 1420 },
   models: [['claude-opus-5-5', 'Opus 5.5', 62, 58, 1184], ['claude-sonnet-5-5', 'Sonnet 5.5', 91, 87, 902], ['gpt-6.2-astra', 'GPT-6.2 Astra', 118, 104, 311]]
     .map(([id, label, m1, m24, c], slot) => ({ id, label, slot, median1h: m1, median24h: m24, count1h: Math.round(c / 20), count24h: c, tokens24h: c * 900 })),
   series: { '1h': series(60, 60_000), '24h': series(96, 900_000) },
@@ -73,19 +81,20 @@ const speed = {
 const sidebarBridge = `${theme}<script>
 const snapshot = ${JSON.stringify(snapshot)};
 const speed = ${JSON.stringify(speed)};
+const views = ${JSON.stringify(data.views)};
 window.previewCalls = [];
 window.orca = {
   plugin: {
     request: async (name, d) => { previewCalls.push({ name, data: d });
       if (name === 'sidebar.list') return snapshot;
       if (name === 'sidebar.tokenSpeed') return speed;
-      if (name === 'usage.open') return q.get('note') ? { opened: false, reason: 'Focus a workspace first: the Usage tab opens inside it.' } : { opened: true };
+      if (name === 'analytics.view') return views[d?.window ?? '7d'];
       return null; },
     on: () => () => {}
   },
-  storage: { get: async (k) => (k === 'speed-ui' && q.get('fold') ? { folded: true, range: '1h' } : null), set: async () => {} }, shell: { openExternal: async () => {} }
+  storage: { get: async (k) => (k === 'speed-ui' ? { folded: !!q.get('fold'), range: '1h', window: q.get('w') || '7d', metric: q.get('m') || 'tokens' } : null), set: async () => {} }, shell: { openExternal: async () => {} }
 };
-if (q.get('note')) window.addEventListener('load', () => setTimeout(() => document.querySelector('[data-usage-open]')?.click(), 700));
+if (q.get('details')) window.addEventListener('load', () => setTimeout(() => document.querySelector('[data-udetails]')?.click(), 900));
 </script>`
 const sidebarHtml = readFileSync(join(root, 'src/panel/index.html'), 'utf8')
   .replace('<head>', '<head><title>Analytics sidebar fixture</title>')
@@ -138,7 +147,7 @@ server.listen(0, '127.0.0.1', () => {
   const profile = mkdtempSync(join(tmpdir(), 'orca-flow-chrome-'))
   const jobs = []
   for (const theme of ['dark', 'light']) {
-    jobs.push({ name: `sidebar-${theme}-340`, path: '/sidebar', q: `theme=${theme}`, w: 340, h: 760 })
+    jobs.push({ name: `sidebar-${theme}-340`, path: '/sidebar', q: `theme=${theme}`, w: 340, h: 1100 })
     jobs.push({ name: `sidebar-${theme}-340-folded`, path: '/sidebar', q: `theme=${theme}&fold=1`, w: 340, h: 420 })
     jobs.push({ name: `usage-${theme}-desktop`, path: '/editor', q: `theme=${theme}&w=7d`, w: 1280, h: 1500, plain: true })
     jobs.push({ name: `usage-${theme}-narrow`, path: '/editor', q: `theme=${theme}&w=7d`, w: 420, h: 1800 })
@@ -151,7 +160,10 @@ server.listen(0, '127.0.0.1', () => {
     jobs.push({ name: `usage-${theme}-empty`, path: '/editor', q: `theme=${theme}&empty=1`, w: 1280, h: 420, plain: true })
     jobs.push({ name: `usage-${theme}-filling`, path: '/editor', q: `theme=${theme}&fill=1&w=30d`, w: 1280, h: 640, plain: true })
   }
-  jobs.push({ name: 'sidebar-dark-340-note', path: '/sidebar', q: 'theme=dark&note=1', w: 340, h: 760 })
+  jobs.push({ name: 'sidebar-dark-340-30d-cost', path: '/sidebar', q: 'theme=dark&w=30d&m=cost', w: 340, h: 1100 })
+  jobs.push({ name: 'sidebar-dark-340-details', path: '/sidebar', q: 'theme=dark&details=1', w: 340, h: 1400 })
+  jobs.push({ name: 'sidebar-dark-340-tall', path: '/sidebar', q: 'theme=dark&tall=1', w: 340, h: 2000 })
+  jobs.push({ name: 'sidebar-light-340-tall', path: '/sidebar', q: 'theme=light&tall=1&w=30d&m=cost', w: 340, h: 2000 })
   const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null
   const run = async () => {
     for (const j of jobs.filter((x) => !only || x.name.includes(only))) {

@@ -24,8 +24,8 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   actions.
 - **Analytics:** what your agents run at and what they spend. The sidebar section keeps Token
   Speed's glance: output tok/s over the last minute (summed over every agent), the agents' network
-  traffic and your internet speed (the `networkQuality` test, about 25 s and 100+ MB, runs only when
-  you press Test), two charts for the last hour or 24 h, and each model's median response speed.
+  traffic and the last internet speed result kept from earlier (there is no Test button any more),
+  two charts for the last hour or 24 h, and each model's median response speed.
   One line under them, "This week 52.4M tokens · ≈ $48 · Usage ›", opens the **Usage tab**: a
   full-width editor tab in the workspace you are in (with no workspace focused the sidebar says so
   and opens nothing). It has one window toggle (7 days, 30 days, All) and answers, in order of the

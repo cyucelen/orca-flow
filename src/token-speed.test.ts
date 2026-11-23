@@ -1,12 +1,12 @@
 // The Token speed section: log parsing (Claude Code, Codex), incremental reads, bucket math, nettop
-// and networkQuality output, the panel's view and its HTML.
+// output, the panel's view and its HTML.
 import { assert, test } from 'orca/testing'
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   addNet, addResponse, agentPids, binRate, claudeLine, codexLine, decodeCursors, decodeHistory, emptyHistory, encodeCursors, encodeHistory,
-  flushStale, histogramMedian, isSpeedFile, logRoots, logsToRead, modelLabel, newCursor, parseNettop, parseNetworkQuality, prune, rateBin,
+  flushStale, histogramMedian, isSpeedFile, logRoots, logsToRead, modelLabel, newCursor, parseNettop, prune, rateBin,
   logSession, readAppended, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type Cursor, type Response, type Usage
 } from './token-speed.ts'
 import { ago, bits, chart, niceMax, speedUiOf, tokenSpeedSection } from './token-speed-view.ts'
@@ -332,7 +332,7 @@ test('the view: tok/s over the last minute, medians, counts, series, traffic', (
   addResponse(h, { model: 'claude-opus-5-5', out: 1200, start: T0 + 29 * MIN, end: T0 + 30 * MIN }, now)
   addResponse(h, { model: 'claude-sonnet-5-5', out: 600, start: T0 + 30 * MIN + 1000, end: T0 + 30 * MIN + 11_000 }, now)
   addNet(h, { at: T0 + 29 * MIN + 50_000, up: 30_000, down: 15_000, secs: 30, procs: 4 })
-  const v = speedView(h, now, { ready: true, testing: false, testError: null })
+  const v = speedView(h, now, { ready: true })
   assert.equal(v.tokPerSec, 20)
   assert.deepEqual(v.net, { at: T0 + 29 * MIN + 50_000, up: 8000, down: 4000, procs: 4 })
   assert.deepEqual(v.models.map((m) => [m.label, m.slot, m.median1h, m.count1h, m.count24h]), [['Opus 5.5', 0, 20, 1, 1], ['Sonnet 5.5', 1, 60, 1, 1]])
@@ -342,7 +342,7 @@ test('the view: tok/s over the last minute, medians, counts, series, traffic', (
   assert.equal(v.series['1h'].up.filter((x) => x != null).length, 1)
   assert.ok(JSON.stringify(v).length < 16_000)
   // An hour on, the last-hour median and counts are empty; the 24 h ones stay.
-  const later = speedView(h, now + 61 * MIN, { ready: true, testing: false, testError: null })
+  const later = speedView(h, now + 61 * MIN, { ready: true })
   assert.deepEqual(later.models.map((m) => [m.median1h, m.count1h, m.count24h]), [[null, 0, 1], [null, 0, 1]])
 })
 
@@ -412,12 +412,6 @@ test('nettop: the agents\' sockets past this machine, diffed between snapshots',
   assert.equal(parseNettop('garbage', pids, T0).sockets.size, 0)
 })
 
-test('networkQuality -c: throughput in bit/s, base RTT and responsiveness', () => {
-  const json = JSON.stringify({ base_rtt: 177.99, dl_throughput: 35673104, ul_throughput: 20522772, responsiveness: 57.66, end_date: '2026-11-22 18:13:15.783', il_h2_req_resp: [1, 2] })
-  assert.deepEqual(parseNetworkQuality(json, T0), { at: T0, down: 35673104, up: 20522772, rtt: 177.99, rpm: 57.66 })
-  assert.equal(parseNetworkQuality('{"dl_throughput":0}', T0), null)
-  assert.equal(parseNetworkQuality('nope', T0), null)
-})
 
 // ---------- the section ----------
 
@@ -439,8 +433,9 @@ test('formatting helpers', () => {
   // The y top: just above the highest value, with a round half.
   assert.deepEqual([350, 412, 623, 2127, 400, 0.035, 9].map(niceMax), [400, 500, 800, 3000, 400, 0.04, 10])
   assert.equal(niceMax(0), 1)
-  assert.deepEqual(speedUiOf({ folded: true, range: '24h' }), { folded: true, range: '24h' })
-  assert.deepEqual(speedUiOf(null), { folded: false, range: '1h' })
+  assert.deepEqual(speedUiOf({ folded: true, range: '24h' }), { folded: true, range: '24h', metric: 'tokens', window: '7d' })
+  assert.deepEqual(speedUiOf({ metric: 'cost', window: '30d' }), { folded: false, range: '1h', metric: 'cost', window: '30d' })
+  assert.deepEqual(speedUiOf(null), { folded: false, range: '1h', metric: 'tokens', window: '7d' })
 })
 
 const wire = (over: Partial<ReturnType<typeof speedView>> = {}, netMinutes = 1) => {
@@ -452,7 +447,7 @@ const wire = (over: Partial<ReturnType<typeof speedView>> = {}, netMinutes = 1) 
     addNet(h, { at: T0 + (29 - m) * MIN, up: 3000, down: 1500, secs: 30, procs: 3 })
     addNet(h, { at: T0 + (29 - m) * MIN - 30_000, up: 3000, down: 1500, secs: 30, procs: 3 })
   }
-  return { ...speedView(h, now, { ready: true, testing: false, testError: null }), ...over }
+  return { ...speedView(h, now, { ready: true }), ...over }
 }
 const ui = { speedFolded: false, speedRange: '1h' as const, now: T0 + 30 * MIN }
 
@@ -463,7 +458,7 @@ test('the section: headline, internet line with Test, the tokens chart read at a
   assert.match(html, /<b>20<\/b><span>tok\/s/) // 1200 tokens over the last minute
   assert.match(html, /↑0\.8 ↓0\.4/)
   assert.match(html, /Internet not tested yet/)
-  assert.match(html, /data-ttest/)
+  assert.ok(!html.includes('data-ttest'), 'no Test button')
   // A plain title, labeled gridlines (the top with its unit), the time axis at start, middle and now.
   assert.match(html, /<div class="thead">Tokens per second, all agents<\/div>/)
   assert.match(html, /<span class="ty" style="top:0%">20 tok\/s<\/span><span class="ty" style="top:50%">10<\/span><span class="ty" style="top:100%">0<\/span>/)
@@ -492,7 +487,7 @@ test('traffic: collecting until five minutes of samples, then a kbit/s chart wit
   assert.match(html, /class="tendv tdown"[^>]*>↓0\.4</)
   assert.match(html, /class="tendv tup"[^>]*>↑0\.8</)
   assert.match(html, /<span class="ty" style="top:0%">0\.8 kbit\/s<\/span>/)
-  assert.match(html, /Test to see a share/)
+  assert.ok(!html.includes("Test to see a share"), "no hint pointing at a Test button")
   assert.match(html, /data-tip="\d\d:\d\d · ↓0\.4 ↑0\.8 kbit\/s"/)
 })
 
@@ -506,16 +501,14 @@ test('a chart labels its peak where it is, not when the peak is the latest point
   assert.ok(!chart({ title: 'T', unit: 'u', lines: [line([1, 2, 3, 9])], s, tips: [], range: '1h', fmt: String }).includes('tpeak'))
 })
 
-test('the section with a test: Mbit/s, latency, age, traffic as % of the connection; testing and failure', () => {
+test('the section with a kept test result: Mbit/s, latency, age, traffic as % of the connection; no Test button', () => {
   const tested = wire({ internet: { at: T0 + 30 * MIN - 3 * 3_600_000, down: 35_673_104, up: 20_522_772, rtt: 178, rpm: 58 } }, 6)
   const html = tokenSpeedSection(tested, ui)
   assert.match(html, /Internet ↓35\.7 ↑20\.5 Mbit\/s · 178 ms/)
   assert.match(html, /tested 3h ago/)
   assert.match(html, /Agent network traffic \(% of your connection\)/)
   assert.match(html, /<span class="ty" style="top:0%">0\.004 %<\/span>/)
-  assert.match(tokenSpeedSection({ ...tested, testing: true }, ui), /testing…/)
-  assert.ok(!tokenSpeedSection({ ...tested, testing: true }, ui).includes('data-ttest'))
-  assert.match(tokenSpeedSection({ ...tested, testError: 'The speed test failed: offline' }, ui), /class="terr"[^>]*>The speed test failed: offline/)
+  assert.ok(!html.includes('data-ttest') && !html.includes('>Test<'), 'no Test button')
 })
 
 test('the section folded, still reading, and absent', () => {

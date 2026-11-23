@@ -2,7 +2,7 @@
 // src/analytics-view.ts, and handles window toggle, navigation (rows → tasks → workstream, back),
 // the Details toggle and tooltips. The file the tab shows is only a stub (src/usage-open.ts): its
 // content is ignored and never changed.
-import { usagePage, usageUi, WINDOWS, type Screen, type UsageData } from '../analytics-view.ts'
+import { usageMetric, usagePage, usageUi, WINDOWS, type Screen, type UsageData } from '../analytics-view.ts'
 import type { AnalyticsWindow, WorkstreamDetail } from '../protocol.ts'
 
 const app = document.getElementById('app')!
@@ -53,13 +53,14 @@ function open(target: string): void {
 }
 
 function saveUi(): void {
-  void orca.storage.set(STORAGE_KEY, { window: ui.window }).catch(() => null)
+  void orca.storage.set(STORAGE_KEY, { window: ui.window, metric: ui.metric }).catch(() => null)
 }
 
 app.addEventListener('click', (event) => {
-  const t = (event.target as Element).closest<HTMLElement>('[data-go],[data-win],[data-back],[data-act]')
+  const t = (event.target as Element).closest<HTMLElement>('[data-go],[data-win],[data-metric],[data-back],[data-act]')
   if (!t) return
   if (t.dataset.go) return open(t.dataset.go)
+  if (t.dataset.metric) { ui.metric = usageMetric(t.dataset.metric); saveUi(); draw(); return }
   if (t.dataset.win) {
     if (!WINDOWS.some((w) => w.id === t.dataset.win)) return
     ui.window = t.dataset.win as AnalyticsWindow
@@ -113,8 +114,9 @@ async function start(): Promise<void> {
   // The stub's text is never read; asking for the document only tells Orca the frame is up.
   void Promise.resolve((orca as unknown as { document?: { get(): Promise<unknown> } }).document?.get()).catch(() => null)
   try {
-    const saved = (await orca.storage.get(STORAGE_KEY)) as { window?: unknown } | null
+    const saved = (await orca.storage.get(STORAGE_KEY)) as { window?: unknown; metric?: unknown } | null
     if (WINDOWS.some((w) => w.id === saved?.window)) ui.window = saved!.window as AnalyticsWindow
+    ui.metric = usageMetric(saved?.metric)
   } catch {
     // no storage: the 7-day window
   }

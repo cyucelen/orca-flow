@@ -46,7 +46,7 @@ import { reloadPlan, type ReloadScope } from './skill-reload.ts'
 import { codexReloadReadiness, ensureOwnCodexHooks } from './codex-hooks.ts'
 import { antigravityReloadReadiness, ensureOwnAntigravityHooks } from './antigravity-hooks.ts'
 import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
-import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
+import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, readCoverage, readUsage, recordUsage, RETENTION_MS, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
 import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snapshotLinks, type DispatchInfo, type LinkRecord } from './usage-links.ts'
 import { ensureUsageStub, USAGE_PATH } from './usage-open.ts'
@@ -2009,8 +2009,6 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   const cursors = store.cursors ?? new Map()
   // No cursors yet: the first sample reads the last 24 h of logs, and the section says so until then.
   let ready = store.cursors != null
-  let testing = false
-  let testError: string | null = null
   let samples = 0
   let reading: { paths: [string, LogKind][]; next: number; now: number } | null = null
   // Usage: a store failing to open leaves Token speed as it was.
@@ -2047,7 +2045,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   let backfillChecked = false
   let backfillSaved = 0
 
-  const view = (): TokenSpeedWire => ({ ...speedView(history, Date.now(), { ready, testing, testError }), usage: summary() })
+  const view = (): TokenSpeedWire => ({ ...speedView(history, Date.now(), { ready }), usage: summary() })
   const post = () => orca.panels.post('sidebar.tokenSpeedChanged', view())
   const save = () => {
     try { writeSpeedStore(DATA_DIR, { history, cursors }, Date.now()) } catch (e) { orca.log(`saving token speed failed: ${(e as Error).message}`) }
@@ -2169,30 +2167,6 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
     if (now && !wasOn) sampleLogs()
     wasOn = now
     return view()
-  })
-  // One test at a time, only on the user's Test; its result is kept with the history.
-  orca.panels.handle('sidebar.tokenSpeedTest', () => {
-    if (testing || !on()) return { started: false }
-    testing = true
-    testError = null
-    post()
-    exec('/usr/bin/networkQuality', ['-c'], 120_000)
-      .then((out) => {
-        const result = parseNetworkQuality(out, Date.now())
-        if (result) {
-          history.internet = result
-          save()
-        } else testError = 'The speed test gave no result.'
-      })
-      .catch((e: Error) => {
-        testError = `The speed test failed: ${e.message.split('\n')[0]}`
-        orca.log(`networkQuality failed: ${e.message}`)
-      })
-      .finally(() => {
-        testing = false
-        if (!stopped) post()
-      })
-    return { started: true }
   })
 }
 

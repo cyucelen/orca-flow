@@ -3,7 +3,7 @@
 // handover, a comparable and an incomparable pair; and every level adds up.
 import { assert, test } from 'orca/testing'
 import {
-  activity, analyticsView, analyticsWindow, buildModel, shortId, usageSummary, workstreamView, zeroSpend, addSpend,
+  activity, analyticsView, analyticsWindow, buildModel, dailyUsage, dayStart, lastDays, shortId, usageSummary, workstreamView, zeroSpend, addSpend,
   type AnalyticsInputs, type AnalyticsModel
 } from './analytics.ts'
 import { estimate, priceFor, priceKey, PRICES } from './prices.ts'
@@ -401,4 +401,65 @@ test('a task is called by its Orca task title, else its worktree name, else the 
   assert.equal(shortId('ctx_52c9d7f4887d'), '52c9d7f4')
   // Without titles nothing changes against the worktree names.
   assert.equal(model.workstreams.get('L')!.title, 'perm')
+})
+
+// ---------- usage per day ----------
+
+test('per day: 7 and 30 local calendar days ending today; All from the first record; midnights only', () => {
+  const v7 = analyticsView(model, '7d'), v30 = analyticsView(model, '30d'), all = analyticsView(model, 'all')
+  assert.equal(v7.daily.length, 7)
+  assert.equal(v30.daily.length, 30)
+  for (const v of [v7, v30, all]) {
+    assert.equal(v.daily[v.daily.length - 1].start, dayStart(NOW), 'today last')
+    v.daily.forEach((d, i) => {
+      assert.equal(new Date(d.start).getHours(), 0, 'a local midnight')
+      if (i) assert.ok(d.start > v.daily[i - 1].start, 'ascending')
+    })
+  }
+  const first = Math.min(...usage.map((u) => u.end))
+  assert.equal(all.daily[0].start, dayStart(first), 'All starts on the first recorded day')
+})
+
+test('per day: every record counted once, attributed or not; models add up to the day; estimate kept apart from unpriced', () => {
+  const all = analyticsView(model, 'all')
+  const days = all.daily
+  const sum = days.reduce((a, d) => addSpend(a, d.spend), zeroSpend())
+  const inRange = usage.filter((u) => u.end >= days[0].start && u.end <= NOW)
+  close(sum.total, inRange.reduce((a, u) => a + u.in + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h + u.out, 0), 'all tokens')
+  for (const d of days) {
+    close(d.models.reduce((a, m) => a + m.tokens, 0), d.spend.total, 'model tokens')
+    close(d.models.reduce((a, m) => a + m.cost, 0), d.spend.cost, 'model cost')
+    close(d.models.reduce((a, m) => a + m.unpriced, 0), d.spend.unpriced, 'model unpriced')
+    for (let k = 1; k < d.models.length; k++) assert.ok(d.models[k - 1].tokens >= d.models[k].tokens, 'most tokens first')
+  }
+  assert.ok(days.some((d) => d.spend.unpriced > 0), 'the Codex usage has no price')
+})
+
+test('per day: a record at midnight belongs to the new day; outside the days it is skipped', () => {
+  const days = lastDays(NOW, 2)
+  const u = (end: number, out: number): Usage => ({ provider: 'claude', session: 's', id: `x${end}`, model: SONNET, start: end - 1000, end, in: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, out })
+  const d = dailyUsage([[u(days[1], 10), u(days[1] - 1, 5), u(days[0] - 1, 100), u(dayStart(NOW, 1), 1000)]], days)
+  assert.deepEqual(d.map((x) => x.spend.out), [5, 10])
+  close(d[1].spend.cost, (10 * 10) / 1e6, 'priced at Sonnet 5.5 output')
+  assert.deepEqual(dailyUsage([[u(NOW, 1)]], []), [])
+})
+
+test('per day: calendar arithmetic, so a DST change still lands on midnights', () => {
+  // Late March and late October cross a DST change in many zones; every day must still start at 00:00 local.
+  for (const at of [Date.parse('2026-03-30T12:00:00Z'), Date.parse('2026-10-26T12:00:00Z')]) {
+    const days = lastDays(at, 5)
+    for (const t of days) assert.equal(new Date(t).getHours(), 0)
+    assert.equal(new Set(days.map((t) => new Date(t).getDate())).size, 5, 'five different dates')
+  }
+})
+
+test('sidebar: the last 7 calendar days one by one, each the records ending on it', () => {
+  const s = usageSummary(usage, NOW)
+  assert.equal(s.daily.length, 7)
+  assert.equal(s.daily[6].start, dayStart(NOW))
+  const v = analyticsView(model, '7d')
+  s.daily.forEach((d, i) => {
+    close(d.tokens, v.daily[i].spend.total, 'same as the Usage tab')
+    close(d.cost, v.daily[i].spend.cost, 'same estimate')
+  })
 })

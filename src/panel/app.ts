@@ -4,6 +4,8 @@
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
+import type { UsageMetric } from '../analytics-view.ts'
+import type { AnalyticsView, AnalyticsWindow } from '../protocol.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
 import { pressGate } from './press.ts'
@@ -25,16 +27,9 @@ let snap: Snapshot | null = null
 let linear: LinearData | null = null
 /** The Analytics section's data from the worker, and its fold and range (kept in storage). */
 let speed: TokenSpeedWire | null = null
-const speedUi: { folded: boolean; range: SpeedRange } = { folded: false, range: '1h' }
-/** Why "Usage ›" opened nothing; shown under the usage line for a few seconds. */
-let usageNote: string | null = null
-let usageNoteTimer: ReturnType<typeof setTimeout> | undefined
-const showNote = (text: string) => {
-  usageNote = text
-  clearTimeout(usageNoteTimer)
-  usageNoteTimer = setTimeout(() => { usageNote = null; draw() }, 8000)
-  draw()
-}
+const speedUi: { folded: boolean; range: SpeedRange; metric: UsageMetric; window: AnalyticsWindow } = { folded: false, range: '1h', metric: 'tokens', window: '7d' }
+/** The section's usage block: the worker's analytics.view for the chosen window, and Details open or not (not kept). */
+const usage: { view: AnalyticsView | null; details: boolean; error: string | null; at: number } = { view: null, details: false, error: null, at: 0 }
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
@@ -112,7 +107,7 @@ function paintRows(): void {
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
   // Analytics, under Linear; hidden while searching, like the other sections.
-  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now, speedOff: !speedIsOn(), usageNote })
+  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, usage: { view: usage.view, window: speedUi.window, metric: speedUi.metric, details: usage.details, error: usage.error }, now: ui.now, speedOff: !speedIsOn() })
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
   speedEl.classList.toggle('folded', speedUi.folded)
@@ -185,18 +180,32 @@ orca.storage.get(BOTS_UI_KEY).then((stored) => {
 document.addEventListener('visibilitychange', () => readLinear())
 // Analytics (Token speed's glance): the worker samples every 30 s and posts each sample; the panel asks once on open and
 // when it shows again. The fold and the 1 h / 24 h range come back from storage.
+/** Usage changes with each 30 s sample, but a minute is fresh enough; the worker rebuilds at most every 30 s. */
+const USAGE_REFRESH_MS = 60_000
+const readUsage = (force = false) => {
+  if (document.visibilityState !== 'visible' || !speedIsOn() || speedUi.folded) return
+  if (!force && Date.now() - usage.at < USAGE_REFRESH_MS) return
+  usage.at = Date.now()
+  const asked = speedUi.window
+  orca.plugin.request('analytics.view', { window: asked })
+    .then((v) => { if (asked === speedUi.window) { usage.view = v as AnalyticsView; usage.error = null; draw() } })
+    .catch((e: Error) => { usage.error = e.message; draw() })
+}
 const readSpeed = () => {
   if (document.visibilityState !== 'visible' || !speedIsOn()) return
   orca.plugin.request('sidebar.tokenSpeed').then((d) => { speed = d as TokenSpeedWire; draw() }).catch(() => null)
+  readUsage()
 }
-orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { if (speedIsOn()) { speed = d as TokenSpeedWire; draw() } })
+orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { if (speedIsOn()) { speed = d as TokenSpeedWire; readUsage(); draw() } })
 orca.storage.get(SPEED_UI_KEY).then((stored) => {
+  const was = speedUi.window
   Object.assign(speedUi, speedUiOf(stored))
+  if (speedUi.window !== was) { usage.view = null; readUsage(true) }
   draw()
 }).catch(() => null)
 readSpeed()
 document.addEventListener('visibilitychange', readSpeed)
-const saveSpeedUi = () => void orca.storage.set(SPEED_UI_KEY, { folded: speedUi.folded, range: speedUi.range }).catch(() => null)
+const saveSpeedUi = () => void orca.storage.set(SPEED_UI_KEY, { folded: speedUi.folded, range: speedUi.range, metric: speedUi.metric, window: speedUi.window }).catch(() => null)
 const saveLinearUi = () =>
   void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter, display: ui.linearDisplay, groupFolds: [...ui.linearGroupFolds] }).catch(() => null)
 // No Orca event reports a switch between tabs of one workspace. While the panel shows, the worker
@@ -231,22 +240,15 @@ document.addEventListener('click', (event) => {
     draw()
     return
   }
-  // The Analytics section: fold, range, and the internet test (one at a time; the worker posts its result).
-  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-ttest],[data-usage-open]')
+  // The Analytics section: fold, range, usage window, measure and Details.
+  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-umetric],[data-uwin],[data-udetails]')
   if (sp) {
     const d = sp.dataset
-    // "Usage ›": the worker opens the Usage tab in the focused workspace; with none focused it says so here.
-    if ('usageOpen' in d) {
-      usageNote = null
-      void orca.plugin.request('usage.open').then((r) => { if (!r.opened) showNote(r.reason ?? 'The Usage tab did not open.') }).catch((e: Error) => showNote(`Could not open the Usage tab: ${e.message}`))
-      return
-    }
-    if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi() }
+    if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi(); readUsage() }
+    if ((d.uwin === '7d' || d.uwin === '30d' || d.uwin === 'all') && d.uwin !== speedUi.window) { speedUi.window = d.uwin; saveSpeedUi(); usage.view = null; readUsage(true) }
+    if ('udetails' in d) usage.details = !usage.details
     if (d.trange === '1h' || d.trange === '24h') { speedUi.range = d.trange; saveSpeedUi() }
-    if ('ttest' in d && speed && !speed.testing) {
-      speed = { ...speed, testing: true, testError: null }
-      void orca.plugin.request('sidebar.tokenSpeedTest').catch((e: Error) => { if (speed) speed = { ...speed, testing: false, testError: e.message }; draw() })
-    }
+    if (d.umetric === 'tokens' || d.umetric === 'cost') { speedUi.metric = d.umetric; saveSpeedUi() }
     draw()
     return
   }

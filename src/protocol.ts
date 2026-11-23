@@ -567,6 +567,21 @@ export type AnalyticsView = {
   backfill: { state: 'pending' | 'running' | 'done'; read: number; total: number }
   /** 4. Biggest workstreams finished in the window (top 5, whole-run tokens), and what runs now. */
   workstreams: { top: WorkstreamLine[]; finished: number; running: { count: number; spend: Spend } }
+  /**
+   * Usage per calendar day (local midnight to midnight), oldest first, today last and still filling:
+   * 7 or 30 days for those windows, every day since the first record for All. Every record of the day
+   * counts, attributed or not; the days add up to the store, not to the rolling window's total.
+   */
+  daily: UsageDay[]
+}
+
+/** One calendar day of usage: the four categories and their estimate, and the same per logged model. */
+export type UsageDay = {
+  /** Local midnight that starts the day (ms). */
+  start: number
+  spend: Spend
+  /** Per logged model (null = the log named none), most tokens first. */
+  models: { model: string | null; tokens: number; cost: number; unpriced: number }[]
 }
 
 export type WorkstreamRow = {
@@ -609,8 +624,10 @@ export type WorkstreamDetail = {
   byModel: { model: string | null; label: string; spend: Spend }[]
 }
 
-/** The sidebar's usage line: the last 7 days, "52.4M tokens · ≈ $48". */
-export type UsageSummaryWire = { days: number; tokens: number; cost: number; unpriced: number; prices: string; tip: string }
+/** The sidebar's usage line: the last 7 days, "52.4M tokens · ≈ $48", and the last 7 calendar days one by one (today last). */
+export type UsageSummaryWire = { days: number; tokens: number; cost: number; unpriced: number; prices: string; tip: string; daily: UsageDayTotal[] }
+/** One calendar day's total, for the sidebar's small chart. */
+export type UsageDayTotal = { start: number; tokens: number; cost: number; unpriced: number }
 
 declare module 'orca' {
   interface PluginRequests {
@@ -683,8 +700,6 @@ declare module 'orca' {
      * Types nothing into a terminal and sends no mail. Counts what it asked, what cannot reload, and what it skipped.
      */
     'sidebar.reloadSkills': { input: { scope: 'all' | { coordinator: string } }; output: { ok: boolean; error?: string; asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } }
-    /** Starts `networkQuality -c` unless one is running; its result (or failure) is posted as sidebar.tokenSpeedChanged. */
-    'sidebar.tokenSpeedTest': { output: { started: boolean } }
   }
   interface PluginPanelEvents {
     /** Posted to open panels when a workspace or agent status changes. */
