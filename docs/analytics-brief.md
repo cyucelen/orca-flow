@@ -2,32 +2,40 @@
 
 Status: design draft, 2026-11-23. Nothing here is built. Interactive prototype: `docs/analytics-draft/index.html`, published at https://claude.ai/artifact/ScBD1dTBSuN822Z3gk1MbD (private until shared). All numbers in the prototype are sample data, computed from one data object; a footer check confirms every level adds up.
 
-## 1. Problem
+## 1. Problem and goal
 
-Token Speed answers "how fast are the agents writing right now". The user now needs to answer what the work cost:
+Token Speed answers "how fast are the agents writing right now". Analytics optimises for two things, in this order (agreed with the user, "A + curiosity"):
 
-1. **Which completed workstreams use the most tokens?**
-2. **Where did those tokens go?** Lead vs workers, which model, retries.
+**A. Tune routing and delegation.** The decisions are made in Settings → Models (which model, effort and fallback each kind row and task type starts on) and in when work is split into workers. The questions:
+
+1. **Which kinds of task cost what, and do they succeed?** Per Settings → Models row: tasks finished, median tokens and cost per task, how often they fail and are retried, whether the fallback ran.
+2. **Where did a workstream's tokens go?** Lead vs workers, which model, retries.
 3. **Did a change in delegation policy help?** Comparable work finished more cheaply, faster, at equivalent quality.
 
-Token Speed cannot answer any of the three. It keeps only output tokens, only per model, only for 24 h, and knows nothing about who spent them (§3).
+**Curiosity second:** a glanceable strip of facts (tokens this window, biggest workstream, model share, cache share, most expensive task) that informs no single decision.
+
+Token Speed cannot answer any of this. It keeps only output tokens, only per model, only for 24 h, and knows nothing about who spent them (§3).
 
 ## 2. Proposal: Analytics replaces Token Speed
 
 **(a) Compact sidebar section "Analytics"**, in Token Speed's place and with its fold/range behaviour (`src/token-speed-view.ts:155-159`):
 
-- Keeps the glanceable throughput: output tok/s of all agents over the last minute and the per-model rate glance (today's headline and chart, `token-speed-view.ts:162-165`, `:191-194`).
-- Keeps network access as it is: agent traffic (nettop) as a headline stat and the internet line with its Test button (`token-speed-view.ts:162-173`). The traffic chart (`:196-211`) stays one click away behind "Agent traffic chart", so the section is shorter by default.
-- Adds **one usage line**: "Today 15.1M tokens · Usage ›" (no workstream name: it would wrap at sidebar width). No breakdowns, costs, comparisons or partial-data warnings in the sidebar; they live in the Usage view.
-- Settings → Features keeps one switch, renamed from Token Speed (`src/settings.ts:14`, `:80-83`; `src/panel/app.ts:132**(b) Three screens, one question each** (opened from the sidebar):
+- Keeps the glanceable throughput: output tok/s of all agents over the last minute and the per-model rate glance (`token-speed-view.ts:162-165`, `:191-194`).
+- Keeps network access as it is: agent traffic (nettop) as a headline stat and the internet line with its Test button (`token-speed-view.ts:162-173`). The traffic chart (`:196-211`) stays one click away behind "Agent traffic chart".
+- Adds **one usage line**: "This week 52.4M tokens · ≈ $48 · Usage ›" ("at API prices, not your bill" is its tooltip, so it fits 340 px). No breakdowns or warnings in the sidebar.
+- Settings → Features keeps one switch, renamed from Token Speed (`src/settings.ts:14`, `:80-83`; `src/panel/app.ts:132-150`).
 
-- **Usage** — which completed workstreams used the most? One window toggle (7 days · 30 days · All); one big number, tokens recorded in the window, with "≈ $X at API prices · not your bill" under it; one list of **completed workstreams**: runs that finished inside the window, ranked by whole-run total tokens (never clipped), one line each: name · tokens · est. cost, plus a Partial or failed chip only when it applies. Under it one muted line: "N running · X so far · Unattributed Y". Running runs and Unattributed are never ranked.
-- **Workstream** — where did it go? One line of figures (whole-run tokens, est. cost, wall time, accepted/failed), then one row per lead session, worker and retry ("retry of <worker>") with model badge, tokens and est. cost. "Compare with baseline ›" when the run is a labelled arm.
-- **Comparison** — did the policy change help? Baseline vs variant (policy, n runs), four rows: tokens per accepted run, est. cost per accepted run, time per run, runs that passed; the change as "−46 %", green when better; one caveat line. An incomparable pair is one sentence saying why, no table (§8).
+**(b) Usage view, top to bottom.** The order follows the goal: the strip is small and first because it costs one glance; the routing table is the main block because it is what the user changes; delegation (lead overhead, then the policy comparison) next; the biggest-workstream list last, as context.
 
-**What the UI shows vs what lives in Details.** Each screen shows only what its question needs. The four token categories per row, the handover and dedupe notes and the coverage explanation sit behind one closed "Details" toggle on the workstream screen; the per-run table and the metric definitions sit behind "Details" on the comparison screen; price-table version, assumed prices and what the window controls are tooltips. The rules in §3–§8 are unchanged: the screens apply them without displaying them.
+0. **Curiosity strip**: tokens in the window with "≈ $X at API prices · not your bill", biggest workstream, model share (one thin bar), share of input served from cache, most expensive single task. No controls.
+1. **By task kind**: one row per Settings → Models row (simple, normal, hard, each user task type) plus a Lead row. Columns: model and effort, tasks finished, median tokens, median est. cost, failed %, median time. A row says when its fallback ran; under 3 tasks it says "few tasks" instead of medians. A task counts on the row it **ran on** (kind or type, one up for high risk, at least normal for large context, one more per retry, as `src/routing.ts` decides), not the kind it was dispatched as. A row opens its tasks (task · tokens · cost · result), each opening its workstream.
+2. **Lead overhead**: median share of a workstream's tokens spent by its lead, over finished workstreams with workers, and the three heaviest. High = coordination costs more than the work.
+3. **Policy comparison**: the four-row Baseline/Variant/Change table with its caveat; other labelled pairs as links. An incomparable pair is one sentence saying why.
+4. **Biggest workstreams**: the five largest finished in the window, by whole-run tokens, one line each.
 
-e (§8).
+One window toggle (7 days · 30 days · All) sets the activity totals and which finished tasks and workstreams are counted (§5). The **workstream** screen is one line of figures and one row per lead session, worker and retry, with model badge, the task's kind → row, tokens and est. cost. The **comparison** screen is the same four-row table.
+
+**What the UI shows vs what lives in Details.** Each block shows only what its question needs. The four token categories, handover and dedupe notes, how each task's row was derived, the per-run comparison table and the metric definitions sit behind closed "Details" toggles; partial coverage, Unattributed, prices and "no estimate" are quiet chips or tooltips. The rules in §3–§8 are unchanged: the screens apply them without displaying them.
 
 ## 3. Current capability vs required instrumentation
 
@@ -51,6 +59,8 @@ What Token Speed reads today (`src/token-speed.ts`):
 | Timestamp | start/end, bucketed | exact per response | response end (and start, for speed) |
 | Model | yes | — | model id as logged |
 | Attribution | none | session → dispatch → task → workstream | join at read time (§4) |
+
+**Routing inputs already exist.** `routes.jsonl` already records, per dispatch, the requested kind, risk, context, task type, attempt, the chosen agent/model/effort and the decision source (kind, type, fallback, role, override, default) with its reason ("normal task, high risk → Claude Opus · high"); `src/routing.ts` derives the row from those fields. "By task kind" needs no new routing data, only the join from dispatch to usage (§4).
 
 **The existing rolling data cannot be upgraded.** It is per model, output only, and 24 h deep. It cannot reconstruct historical per-run input, cache use or cost. A backfill is possible only by re-reading provider logs that are still on disk; where logs were rotated or deleted, that period stays "not recorded".
 
