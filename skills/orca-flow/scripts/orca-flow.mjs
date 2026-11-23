@@ -459,10 +459,20 @@ const reload = await import('./skill-reload.mjs')
  */
 export function skillsReloaded(args, { env = process.env, cwd = process.cwd(), home = homedir(), script = process.argv[1]?.endsWith('orca-flow.mjs') ? process.argv[1] : fileURLToPath(import.meta.url), now = Date.now() } = {}) {
   // The skill as the agent reached it (through the skill link, like the hooks' skillOf), not where the link points.
-  const pane = env.ORCA_AGENT_PANE || null
-  const session = currentSession({ env, cwd, home })?.id ?? null
+  // Orca gives Claude Code's shell ORCA_AGENT_PANE and Codex's ORCA_PANE_KEY (shell_environment_policy.set).
+  const pane = env.ORCA_AGENT_PANE || env.ORCA_PANE_KEY || null
+  // Claude Code's session, else the Codex thread this command runs in.
+  const session = currentSession({ env, cwd, home })?.id ?? env.CODEX_THREAD_ID ?? null
   const skill = join(script, '..', '..')
-  return reload.confirmReload(env.ORCA_FLOW_DIR || join(home, '.orca-flow'), { pane, session, skill, request: typeof args.request === 'string' ? args.request : null, now }).message
+  const data = env.ORCA_FLOW_DIR || join(home, '.orca-flow')
+  try {
+    return reload.confirmReload(data, { pane, session, skill, request: typeof args.request === 'string' ? args.request : null, now }).message
+  } catch (e) {
+    // A sandboxed shell (Codex workspace-write) cannot write ~/.orca-flow; the PostToolUse hook, which
+    // runs outside the sandbox, records this command instead. Not an error for the agent to act on.
+    if (['EPERM', 'EACCES', 'EROFS'].includes(e?.code) && pane) return `This shell cannot write ${data} (sandbox); Orca Flow's hook records the reload from this command. Nothing else to do.`
+    throw e
+  }
 }
 
 // ---------- route, dispatch, plan ----------

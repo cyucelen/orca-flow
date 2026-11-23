@@ -24,4 +24,8 @@ export function targetFor(requests: Record<string, StoredTarget>, who: { pane?: 
 export function reloadText(options: { skill: string; role: ReloadRole; request: string; event: string }): string
 export function deliverReload(input: unknown, options: { event: string; pane?: string | null; data: string; skill: string; role?: (t: StoredTarget) => string; now?: number }): string | null
 export function confirmReload(data: string, options: { pane?: string | null; session?: string | null; skill: string; request?: string | null; now?: number }): { entry: { pane: string | null; session: string | null; hash: string; request: string | null; at: number }; message: string }
+export const CONFIRM_WINDOW_MS: number
+export function readingTargets(data: string, now?: number): [string, StoredTarget][]
+export function confirmCommandOf(input: unknown): string | null
+export function confirmFromToolCall(input: unknown, options: { pane?: string | null; data: string; skill: string; now?: number }): boolean
 export function reloadStatus(data: string, now?: number): ReloadStatusEntry[]

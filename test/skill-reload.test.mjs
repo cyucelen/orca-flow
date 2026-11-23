@@ -3,12 +3,12 @@
 // (only to targeted sessions, once per request, role-aware), and `orca-flow skills-reloaded`.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { activeFile, confirmReload, deliverReload, readRequests, reloadStatus, reloadText, RELOAD_TTL_MS, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
+import { activeFile, CONFIRM_WINDOW_MS, confirmCommandOf, confirmFromToolCall, confirmReload, deliverReload, readRequests, reloadStatus, reloadText, RELOAD_TTL_MS, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { targetRole } from '../skills/orca-flow/scripts/reload-check.mjs'
 
 const SCRIPTS = fileURLToPath(new URL('../skills/orca-flow/scripts/', import.meta.url))
@@ -90,7 +90,9 @@ test('only a targeted session gets the note, only once per request, and not a su
     assert.equal(deliverReload({ session_id: LEAD_SESSION }, opts('tab:lead')), null, 'the lead had it')
     assert.ok(existsSync(activeFile(w.data)), 'the coordinator still waits')
     assert.ok(deliverReload({ session_id: 'c' }, opts('tab:coord')))
-    assert.ok(!existsSync(activeFile(w.data)), 'nothing waits: the gate closes')
+    assert.ok(existsSync(activeFile(w.data)), 'all delivered, none confirmed: the gate stays open so the hook can record confirmations')
+    assert.equal(syncActive(w.data, 2000 + CONFIRM_WINDOW_MS), false, 'after the confirmation window it closes')
+    assert.ok(!existsSync(activeFile(w.data)))
     // A newer request gives the note again.
     writeRequest(w.data, [targets[1]], { hash: skillHash(w.skill), scope: 'all', now: 3000, id: 'r2' })
     assert.match(deliverReload({ session_id: 'x' }, { ...opts('tab:worker'), now: 3001 }), /request r2/)
@@ -184,5 +186,46 @@ test('skills-reloaded records the pane, session and hash; confirmed only when th
     assert.notEqual(outside.status, 0)
     assert.match(outside.stderr, /nothing to record/)
     assert.deepEqual(readdirSync(join(w.data, 'skill-reload', 'confirmed')).sort(), ['tab_lead.json', 'tab_worker.json'])
+  } finally { rmSync(w.home, { recursive: true }) }
+})
+
+test('the PostToolUse hook records the confirmation when the agent runs the confirm command (a sandboxed shell cannot)', () => {
+  const w = world()
+  try {
+    // Which commands confirm, and for which request.
+    const cmd = (command) => confirmCommandOf({ tool_input: { command } })
+    assert.equal(cmd('node /x/skills/orca-flow/scripts/orca-flow.mjs skills-reloaded --request r1'), 'r1')
+    assert.equal(cmd("cd /w && node '/x/orca-flow.mjs' skills-reloaded"), '')
+    assert.equal(confirmCommandOf({ tool_input: { cmd: 'orca-flow skills-reloaded --request=r7' } }), 'r7')
+    assert.equal(cmd('grep skills-reloaded README.md'), null)
+    assert.equal(cmd('cat /x/skills/orca-flow/SKILL.md'), null)
+    assert.equal(confirmCommandOf({ tool_input: { file_path: '/x' } }), null)
+
+    const t0 = Date.now()
+    writeRequest(w.data, targets, { hash: skillHash(w.skill), scope: 'all', now: t0, id: 'r1' })
+    const ran = (session, command) => ({ session_id: session, tool_name: 'Bash', tool_input: { command }, tool_response: 'EPERM' })
+    const confirm = `node ${w.skill}/scripts/orca-flow.mjs skills-reloaded --request r1`
+    const opts = (pane) => ({ pane, data: w.data, skill: w.skill, now: t0 + 10 })
+    assert.equal(confirmFromToolCall(ran('x', confirm), opts('tab:worker')), false, 'not before its note was given')
+    deliverReload({ session_id: 'x' }, { event: 'UserPromptSubmit', pane: 'tab:worker', data: w.data, skill: w.skill, now: t0 + 5 })
+    assert.equal(confirmFromToolCall(ran('x', confirm.replace('r1', 'r0')), opts('tab:worker')), false, 'another request id')
+    assert.equal(confirmFromToolCall({ ...ran('x', confirm), agent_id: 'sub' }, opts('tab:worker')), false, 'a subagent')
+    assert.equal(confirmFromToolCall(ran('x', confirm), opts('tab:someone')), false, 'another pane')
+    assert.equal(confirmFromToolCall(ran('x', confirm), opts('tab:worker')), true)
+    assert.equal(confirmFromToolCall(ran('x', confirm), opts('tab:worker')), false, 'once')
+    assert.equal(Object.fromEntries(reloadStatus(w.data, t0 + 20).map((s) => [s.pane, s.state]))['tab:worker'], 'reloaded')
+
+    // End to end through the hook process, and the CLI in a shell that cannot write the data folder.
+    deliverReload({ session_id: LEAD_SESSION }, { event: 'UserPromptSubmit', pane: 'tab:lead', data: w.data, skill: w.skill, now: t0 + 30 })
+    chmodSync(join(w.data, 'skill-reload', 'confirmed'), 0o555)
+    const cli = spawnSync(process.execPath, [join(w.skill, 'scripts', 'orca-flow.mjs'), 'skills-reloaded', '--request', 'r1'], {
+      env: { PATH: process.env.PATH, HOME: w.home, ORCA_PANE_KEY: 'tab:lead', CODEX_THREAD_ID: 'thread-1' }, encoding: 'utf8'
+    })
+    chmodSync(join(w.data, 'skill-reload', 'confirmed'), 0o755)
+    assert.equal(cli.status, 0, cli.stderr)
+    assert.match(cli.stdout, /cannot write .* \(sandbox\); Orca Flow's hook records the reload from this command/)
+    assert.equal(hook(w, 'reload-check.mjs', ran(LEAD_SESSION, `node '${w.skill}/scripts/orca-flow.mjs' skills-reloaded --request r1`), 'tab:lead'), null, 'no second note')
+    const lead = reloadStatus(w.data).find((s) => s.pane === 'tab:lead')
+    assert.equal(lead.state, 'reloaded', 'recorded by the hook')
   } finally { rmSync(w.home, { recursive: true }) }
 })

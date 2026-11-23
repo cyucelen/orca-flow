@@ -18,7 +18,11 @@ export type ReloadPlan = {
   skipped: { finished: number; asleep: number }
 }
 
-/** Only Claude Code takes the note: its hooks are ours (src/install.ts). Others are reported, never typed into. */
+/**
+ * Only Claude Code takes the note: its hooks are ours (src/install.ts). Codex 0.171 runs the same
+ * hooks when they are configured (docs/skill-reload.md), but Orca launches Codex with the account's
+ * Orca-managed hooks.json and trust state, which hold none of ours. Others are reported, never typed into.
+ */
 export const reloadSupported = (agentType: string | null) => providerOf(agentType) === 'claude'
 
 /** The role the note names, by the sidebar's own reading (view.ts shapeOf): a coordinator's session, a lead, a worker, or a chat you started. */
@@ -82,7 +86,10 @@ export function confirmText(plan: ReloadPlan, where: string): { title: string; t
   const parts: string[] = []
   if (n) parts.push(`${rolesText(plan.targets)} re-read their skill files at their next turn (a busy one after its next tool call) and confirm. Nothing is typed into their terminals; their tasks, open asks and runs stay as they are.`)
   else parts.push('No running Claude Code session here can take a reload.')
-  if (plan.unsupported.length) parts.push(`${unsupportedText(plan.unsupported)} ${plan.unsupported.length === 1 ? 'session has' : 'sessions have'} no live reload: restart to reload.`)
+  // Codex takes the same note through the same hooks (verified live), but Orca starts its Codex
+  // sessions with only Orca's own trusted hooks (the account's hooks.json); Orca Flow's are not there.
+  const codex = plan.unsupported.some((t) => t.provider === 'codex') ? ' (Orca starts Codex without Orca Flow\'s hooks)' : ''
+  if (plan.unsupported.length) parts.push(`${unsupportedText(plan.unsupported)} ${plan.unsupported.length === 1 ? 'session has' : 'sessions have'} no live reload${codex}: restart to reload.`)
   const skipped = [plan.skipped.finished ? `${plan.skipped.finished} finished` : '', plan.skipped.asleep ? `${plan.skipped.asleep} asleep or closed` : ''].filter(Boolean)
   if (skipped.length) parts.push(`Skipped: ${skipped.join(', ')}.`)
   return { title: n ? `Reload skills in ${plural(n, 'agent')} ${where}?` : `Nothing to reload ${where}`, text: parts.join(' '), ok: n > 0 }

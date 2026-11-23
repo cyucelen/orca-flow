@@ -14,7 +14,9 @@
 //   active                   exists while a supported target waits for delivery; the PostToolUse
 //                            hook's shell gate checks it, so no node starts on other tool calls
 //   delivered/<pane>.<id>    created once per request and pane (exclusive create): the note is given once
-//   confirmed/<pane>.json    { pane, session, hash, request, at }, written by `orca-flow skills-reloaded`
+//   confirmed/<pane>.json    { pane, session, hash, request, at }, written by `orca-flow skills-reloaded`,
+//                            or by the PostToolUse hook when it sees that command run: a sandboxed
+//                            shell (Codex's workspace-write) cannot write ~/.orca-flow, hooks can
 // "Confirmed" means a confirmation whose hash equals the request's hash. No dependencies.
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
@@ -99,9 +101,30 @@ export function pendingTargets(data, now = Date.now()) {
   return Object.entries(readRequests(data, now)).filter(([pane, t]) => t.supported !== false && !wasDelivered(data, pane, t.request))
 }
 
-/** Keeps the PostToolUse gate file in step with what waits: present only while a note is undelivered. */
+/** How long after its note a target keeps the PostToolUse gate open, so the hook can record its confirmation. */
+export const CONFIRM_WINDOW_MS = 30 * 60_000
+
+/** When the note was given to this pane for this request (ms), or null. */
+function deliveredAt(data, pane, request) {
+  const d = readJson(deliveredFile(data, pane, request), null)
+  return isObject(d) && Number.isFinite(Number(d.at)) ? Number(d.at) : null
+}
+
+/** Targets that got the note within the confirmation window and have not confirmed it. */
+export function readingTargets(data, now = Date.now()) {
+  return Object.entries(readRequests(data, now)).filter(([pane, t]) => {
+    if (t.supported === false) return false
+    const at = deliveredAt(data, pane, t.request)
+    return at !== null && now - at < CONFIRM_WINDOW_MS && !isConfirmed(t, readConfirmation(data, { pane, session: t.session }))
+  })
+}
+
+/**
+ * Keeps the PostToolUse gate file in step: present while a note is undelivered, or was given in the
+ * last 30 minutes and is not confirmed yet (the hook may still record the confirmation).
+ */
 export function syncActive(data, now = Date.now()) {
-  const waiting = pendingTargets(data, now).length > 0
+  const waiting = pendingTargets(data, now).length > 0 || readingTargets(data, now).length > 0
   try {
     if (waiting) {
       mkdirSync(reloadDir(data), { recursive: true })
@@ -156,7 +179,7 @@ export function reloadText({ skill, role, request, event }) {
     : [`- ${join(skill, 'SKILL.md')}`, `- ${join(skill, 'roles', own)} (your role: ${role})`]
   return [
     `A note from Orca Flow for you, not for the user: the user updated the skill files on disk and asked running agents to reload them (request ${request}).`,
-    'Re-read these from disk now with the Read tool, even if you read them earlier in this conversation. Where the new text differs, it replaces what you remember:',
+    'Re-read these from disk now (open each file again), even if you read them earlier in this conversation. Where the new text differs, it replaces what you remember:',
     ...files,
     '- the SKILL.md of any other skill you loaded in this conversation (for example orchestration or orca-cli), from the folder it loaded from.',
     `Then record it: node ${join(skill, 'scripts', 'orca-flow.mjs')} skills-reloaded --request ${request}`,
@@ -192,9 +215,42 @@ export function deliverReload(input, { event, pane, data, skill, role = (t) => t
   return reloadText({ skill, role: ROLES.includes(r) ? r : 'worker', request: target.request, event })
 }
 
+/** The confirm command in a shell command line: `orca-flow skills-reloaded` or `node …/orca-flow.mjs skills-reloaded`, and its --request id. */
+const CONFIRM_COMMAND = /(?:^|[;&|(]\s*|\s)(?:node\s+)?['"]?[^\s'"]*orca-flow(?:\.mjs)?['"]?\s+skills-reloaded\b([^;&|\n]*)/
+
+/** The request id a tool call's command confirms (or '' when it names none); null when it runs no confirm command. */
+export function confirmCommandOf(input) {
+  const cmd = input?.tool_input?.command ?? input?.tool_input?.cmd
+  const line = Array.isArray(cmd) ? cmd.join(' ') : typeof cmd === 'string' ? cmd : null
+  const m = line && CONFIRM_COMMAND.exec(line)
+  if (!m) return null
+  return /--request[ =]['"]?([A-Za-z0-9._-]+)/.exec(m[1])?.[1] ?? ''
+}
+
+/**
+ * The PostToolUse hook's half of the confirmation: when this session just ran the confirm command
+ * for its delivered request, record it here, outside any sandbox, with the hash of the files as they
+ * are now. Nothing for another session, an undelivered note, another request id, or a subagent.
+ */
+export function confirmFromToolCall(input, { pane, data, skill, now = Date.now() }) {
+  if (!isObject(input) || input.agent_id || !data) return false
+  const request = confirmCommandOf(input)
+  if (request === null) return false
+  const session = typeof input.session_id === 'string' ? input.session_id : null
+  const hit = targetFor(readRequests(data, now), { pane, session })
+  if (!hit) return false
+  const [key, target] = hit
+  if ((request && request !== target.request) || !wasDelivered(data, key, target.request)) return false
+  if (isConfirmed(target, readConfirmation(data, { pane: key, session }))) return false
+  writeJson(confirmedFile(data, key), { pane: key, session, hash: skillHash(skill), request: target.request, at: now, by: 'hook' })
+  syncActive(data, now)
+  return true
+}
+
 /**
  * `orca-flow skills-reloaded`: records that this session re-read the skill, with the hash of the
- * files as they are now. Keyed by the Orca pane (ORCA_AGENT_PANE), else by the Claude session.
+ * files as they are now. Keyed by the Orca pane (ORCA_AGENT_PANE, ORCA_PANE_KEY in Codex), else by
+ * the session (Claude Code's, or the Codex thread).
  */
 export function confirmReload(data, { pane, session, skill, request, now = Date.now() }) {
   if (!pane && !session) throw new Error('no Orca pane or Claude Code session found: nothing to record')

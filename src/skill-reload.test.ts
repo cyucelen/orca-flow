@@ -65,11 +65,11 @@ test('the confirmation names the exact count by role, the unsupported provider a
   assert.equal(title, 'Reload skills in 5 agents across all coordinators and your chats?')
   assert.match(text, /^1 coordinator, 2 leads, 1 worker, 1 chat re-read their skill files at their next turn/)
   assert.match(text, /Nothing is typed into their terminals; their tasks, open asks and runs stay as they are\./)
-  assert.match(text, /1 Codex session has no live reload: restart to reload\./)
+  assert.match(text, /1 Codex session has no live reload \(Orca starts Codex without Orca Flow's hooks\): restart to reload\./)
   assert.match(text, /Skipped: 1 finished, 1 asleep or closed\./)
   const none = confirmText({ targets: [], unsupported: [{ pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c' }], skipped: { finished: 0, asleep: 0 } }, 'for c')
   assert.deepEqual([none.ok, none.title], [false, 'Nothing to reload for c'])
-  assert.match(none.text, /No running Claude Code session here can take a reload\. 1 Codex session has no live reload/)
+  assert.match(none.text, /No running Claude Code session here can take a reload\. 1 Codex session has no live reload \(Orca starts Codex/)
   assert.equal(rolesText([{ role: 'worker' }, { role: 'lead' }, { role: 'worker' }]), '1 lead, 2 workers')
 })
 
