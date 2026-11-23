@@ -3,6 +3,8 @@
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
+import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
@@ -23,6 +25,8 @@ const ui = emptyUi()
 let snap: Snapshot | null = null
 /** The Linear section's data; null hides the section (Linear not connected, or not read yet). */
 let linear: LinearData | null = null
+/** The Goals section's goals; null hides the section (not read yet). */
+let goals: GoalView[] | null = null
 /** The Token speed section's data from the worker, and its fold and range (kept in storage). */
 let speed: TokenSpeedWire | null = null
 const speedUi: { folded: boolean; range: SpeedRange } = { folded: false, range: '1h' }
@@ -38,6 +42,12 @@ const copenEl = $('copen')
 const updateEl = $('update-slot')
 const linearEl = $('linear')
 const botsEl = $('bots')
+const goalsEl = $('goals')
+const goalsHeadEl = $('goals-head')
+const goalsRowsEl = $('goals-rows')
+const goalAddEl = $('goal-add')
+const goalNewEl = $('goal-new') as HTMLInputElement
+const goalPop = $('goalpop')
 const speedEl = $('tokenspeed')
 const toastEl = $('toast')
 
@@ -50,11 +60,12 @@ function paint(): void {
   paintRows()
   keepAnimationPhase()
   restoreFocus(focused)
+  paintGoalCard()
   followTip()
 }
 
 /** The redrawn sections; keyboard focus inside them is kept across a redraw by its logical key. */
-const painted = () => [cockpitEl, copenEl, mainEl, attentionEl, botsEl, linearEl, speedEl, footerEl, updateEl]
+const painted = () => [cockpitEl, copenEl, goalsHeadEl, goalsRowsEl, mainEl, attentionEl, botsEl, linearEl, speedEl, footerEl, updateEl]
 let restoringFocus = false
 function focusKey(): string | null {
   const el = document.activeElement
@@ -86,9 +97,15 @@ function paintRows(): void {
     return
   }
   ui.now = Date.now()
-  const { cockpit, copen, main, attention, bots, linear: linearHtml, footer } = render(snap, ui, linear)
+  const { cockpit, copen, goalsHead, goalsRows, main, attention, bots, linear: linearHtml, footer } = render(snap, ui, linear, goals)
   cockpitEl.innerHTML = cockpit
   copenEl.innerHTML = copen
+  // Goals, above the tree. Its add box and the open card are not part of what is redrawn, so typing in them survives.
+  goalsHeadEl.innerHTML = goalsHead
+  goalsRowsEl.innerHTML = goalsRows
+  goalsEl.hidden = !goalsHead
+  goalsEl.classList.toggle('folded', ui.goalsFolded)
+  if (!goalsHead) goalAddEl.hidden = true
   copenEl.hidden = !copen // an empty slot would still take a gap in the column
   mainEl.innerHTML = main
   // What asks you, pinned under the tree, so the tree never moves when an ask comes or goes.
@@ -1168,3 +1185,187 @@ function showHistoryList(key: string): void {
   sessionDialog(`${c.name} / History`, members.map((m, i) => `<button class="session-history-choice" data-history-index="${i}">${esc(m.agentType ?? 'Session')} · ${esc(m.title)}</button>`).join('') || '<p>No recorded conversation history is available.</p>')
   sessionsDialog.querySelectorAll<HTMLElement>('[data-history-index]').forEach((b) => b.addEventListener('click', () => void showHistory(key, members[Number(b.dataset.historyIndex)].id)))
 }
+
+// ---------- Goals ----------
+// The section (header and rows) is redrawn with the rest. The add box and the details card are not: they
+// live outside every redrawn section, so a live repaint never takes the focus or the text out of them.
+// The card is redrawn part by part, leaving the one the person types in alone.
+
+const GOAL_CLICKS = '[data-gfold],[data-gdone],[data-gadd],[data-gopen],[data-gstep],[data-gfinish],[data-greopen],[data-gconfirm],[data-gnot]'
+const saveGoalsUi = () => void orca.storage.set(GOALS_UI_KEY, { folded: ui.goalsFolded, showDone: ui.goalsShowDone }).catch(() => null)
+orca.storage.get(GOALS_UI_KEY).then((stored) => {
+  const saved = goalsUiOf(stored)
+  ui.goalsFolded = saved.folded
+  ui.goalsShowDone = saved.showDone
+  draw()
+}).catch(() => null)
+const readGoals = () => orca.plugin.request('sidebar.goals').then((g) => { goals = g as GoalView[]; draw() }).catch(() => null)
+orca.plugin.on('sidebar.goalsChanged', (g) => { goals = g as GoalView[]; draw() })
+readGoals()
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void readGoals() })
+
+/** Runs one of the user's edits; the answer is the goals after it. A refusal is said in the toast. */
+async function goalAct(a: GoalAction): Promise<boolean> {
+  try {
+    const r = await orca.plugin.request('sidebar.goalAction', a)
+    goals = r.goals
+    if (!r.ok) {
+      clearTimeout(toastTimer)
+      toastEl.innerHTML = `<span class="t">${esc(r.error ?? 'Could not change the goal')}</span>`
+      toastEl.hidden = false
+      toastTimer = setTimeout(hideToast, 6000)
+    }
+    draw()
+    return r.ok
+  } catch (e) {
+    void readGoals()
+    return false
+  }
+}
+
+const goalById = (id: string | undefined) => goals?.find((g) => g.id === id)
+const goalRowEl = (id: string) => goalsRowsEl.querySelector<HTMLElement>(`[data-gopen="${CSS.escape(id)}"]`)
+
+function setGoalAdding(on: boolean): void {
+  if (on && ui.goalsFolded) { ui.goalsFolded = false; saveGoalsUi() }
+  goalAddEl.hidden = !on
+  if (on) { closeGoalCard(); draw(); goalNewEl.focus() } else { goalNewEl.value = ''; if (document.activeElement === goalNewEl) goalNewEl.blur() }
+}
+
+/** Saves the field the person was in, if it changed: the card's text fields, or a new step. */
+function commitGoalEdit(el: HTMLElement): void {
+  const field = el.dataset.gedit
+  const g = goalById(el.dataset.g)
+  if (!field || !g) return
+  const value = (el.textContent ?? '').trim()
+  if (field === 'newStep') {
+    el.textContent = ''
+    if (value) void goalAct({ action: 'addStep', id: g.id, text: value })
+    return
+  }
+  const key = field as 'title' | 'note' | 'next' | 'doneWhen'
+  if (key === 'title' && !value) { el.textContent = g.title; return }
+  if (value !== (g[key] ?? '')) void goalAct({ action: 'update', id: g.id, patch: { [key]: value } })
+}
+
+function closeGoalCard(restoreFocusToRow = false): void {
+  const id = ui.goalOpen
+  if (!id) return
+  const active = document.activeElement
+  if (active instanceof HTMLElement && goalPop.contains(active)) {
+    if (active.dataset.gedit) commitGoalEdit(active)
+    if (restoreFocusToRow) queueMicrotask(() => goalRowEl(id)?.focus({ preventScroll: true }))
+  }
+  ui.goalOpen = null
+  goalPop.hidden = true
+  goalPop.innerHTML = ''
+  draw()
+}
+
+/** Puts the card under its row (above it when there is no room below) and keeps it on screen. */
+function placeGoalCard(): void {
+  const row = ui.goalOpen ? goalRowEl(ui.goalOpen) : null
+  if (!row || goalPop.hidden) return
+  const r = row.getBoundingClientRect()
+  const h = goalPop.getBoundingClientRect().height
+  const below = r.bottom + 4
+  const top = below + h <= window.innerHeight - 8 ? below : r.top - 4 - h >= 8 ? r.top - 4 - h : Math.max(8, window.innerHeight - 8 - h)
+  goalPop.style.top = `${Math.round(top)}px`
+}
+
+/** Brings the open card up to date with the goals: part by part, leaving what the person types in alone. */
+function sync(cur: Element, fresh: Element): void {
+  const active = document.activeElement
+  if (!active || !cur.contains(active)) {
+    if (cur.innerHTML !== fresh.innerHTML) cur.innerHTML = fresh.innerHTML
+    return
+  }
+  for (let i = 0; i < cur.children.length && i < fresh.children.length; i++) {
+    const c = cur.children[i]
+    if (c === active || c.contains(active)) continue
+    if (c.outerHTML !== fresh.children[i].outerHTML) c.replaceWith(fresh.children[i].cloneNode(true))
+  }
+}
+
+function paintGoalCard(): void {
+  const g = goalById(ui.goalOpen ?? undefined)
+  if (!g || !goalRowEl(g.id)) {
+    if (ui.goalOpen) { ui.goalOpen = null; goalPop.hidden = true; goalPop.innerHTML = '' }
+    return
+  }
+  const html = goalCard(g, ui.now)
+  if (goalPop.hidden) {
+    goalPop.innerHTML = html
+    goalPop.hidden = false
+  } else {
+    const fresh = document.createElement('div')
+    fresh.innerHTML = html
+    const names = (root: Element) => [...root.children].map((c) => (c as HTMLElement).dataset.part).join()
+    if (names(goalPop) !== names(fresh)) {
+      // A part came or went (the proposal note): rebuild, unless the person is typing in the card.
+      if (!goalPop.contains(document.activeElement)) goalPop.innerHTML = html
+    } else for (let i = 0; i < goalPop.children.length; i++) sync(goalPop.children[i], fresh.children[i])
+  }
+  placeGoalCard()
+}
+goalsEl.addEventListener('scroll', placeGoalCard, { passive: true })
+window.addEventListener('resize', placeGoalCard)
+
+document.addEventListener('click', (event) => {
+  const el = (event.target as Element).closest<HTMLElement>(GOAL_CLICKS)
+  if (!el) return
+  const d = el.dataset
+  if ('gfold' in d) { ui.goalsFolded = !ui.goalsFolded; saveGoalsUi(); draw(); return }
+  if ('gdone' in d) { ui.goalsShowDone = !ui.goalsShowDone; saveGoalsUi(); draw(); return }
+  if ('gadd' in d) { setGoalAdding(!!goalAddEl.hidden); return }
+  if (d.gopen) {
+    const was = ui.goalOpen
+    if (was) closeGoalCard()
+    if (was !== d.gopen) { setGoalAdding(false); ui.goalOpen = d.gopen; el.scrollIntoView({ block: 'nearest' }); draw(); paintGoalCard() }
+    return
+  }
+  if (d.gstep) {
+    const step = Number(d.gstep)
+    const g = el.dataset.g
+    if (g) void goalAct({ action: 'step', id: g, step, done: el.getAttribute('aria-checked') !== 'true' })
+    return
+  }
+  const id = d.gfinish ?? d.greopen ?? d.gconfirm ?? d.gnot
+  if (!id) return
+  const action = d.gfinish ? 'done' : d.greopen ? 'reopen' : d.gconfirm ? 'confirm' : 'reject'
+  closeGoalCard()
+  void goalAct({ action, id })
+})
+
+// Esc closes the card, or the add box; a press outside the card closes it (a press on a row toggles it in its click).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!ctx.hidden || settingsOpen()) return
+    if (!goalAddEl.hidden && (document.activeElement === goalNewEl || !ui.goalOpen)) { e.preventDefault(); setGoalAdding(false); return }
+    if (ui.goalOpen) { e.preventDefault(); closeGoalCard(true) }
+    return
+  }
+  const t = e.target as HTMLElement
+  if (t === goalNewEl && e.key === 'Enter') {
+    e.preventDefault()
+    const title = goalNewEl.value.trim()
+    if (title) { setGoalAdding(false); void goalAct({ action: 'add', title }) }
+    return
+  }
+  if (t.dataset?.gedit && e.key === 'Enter' && !e.shiftKey && t.dataset.gedit !== 'note') {
+    e.preventDefault()
+    if (t.dataset.gedit === 'newStep') commitGoalEdit(t)
+    else t.blur()
+    return
+  }
+  if (t.dataset?.gstep && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); t.click() }
+})
+document.addEventListener('pointerdown', (e) => {
+  if (!ui.goalOpen) return
+  const t = e.target as Element
+  if (!goalPop.contains(t) && !t.closest('[data-gopen]')) closeGoalCard()
+}, true)
+goalPop.addEventListener('focusout', (e) => { const t = e.target as HTMLElement; if (t.dataset?.gedit) commitGoalEdit(t) })
+// "+" keeps the add box's focus on press, so a click on it closes the box instead of blurring it and opening it again.
+goalsHeadEl.addEventListener('pointerdown', (e) => { if ((e.target as Element).closest('[data-gadd]')) e.preventDefault() })
+goalNewEl.addEventListener('blur', () => { if (!goalNewEl.value.trim()) setGoalAdding(false) })

@@ -951,3 +951,63 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .srl-unsupported { color: var(--warn); }
 @keyframes srl-turn { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .srl-reading svg { animation: none; } }
+
+/* Goals: the first section, above the tree. A header (fold, "· N done", +), two-line rows, and a card under the row
+   that is clicked. The card is Orca's popover colors, like the Linear Display popover. */
+.gsec { flex: none; max-height: 40vh; overflow-y: auto; margin-inline: -12px; padding: 0 12px; }
+.gsec .sechead { top: 0; gap: 4px; }
+.ghead .gc { margin-left: 2px; letter-spacing: 0; font-weight: 500; color: var(--faint); }
+.gdn { flex: none; font-size: 11px; color: var(--faint); padding: 1px 5px; border-radius: 4px; }
+.gdn:hover { background: var(--hover); color: var(--muted); }
+.gdn.on { color: var(--ink); background: var(--card); }
+.gplus { margin-left: auto; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 5px; color: var(--muted); font-size: 15px; line-height: 1; }
+.gplus:hover { background: var(--hover); color: var(--ink); }
+.goals { display: grid; }
+.g { display: flex; align-items: center; gap: 8px; width: calc(100% + 12px); margin-inline: -6px; padding: 5px 6px; border-radius: 6px; min-width: 0; }
+.g:hover, .g.menu-open { background: var(--hover); }
+.g .m { flex: 1; min-width: 0; display: grid; text-align: left; }
+.g .ti { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g .nx { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.g .nx.none { font-style: italic; }
+.g .nx.says { color: var(--review); }
+.g .cnt { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.g .wd { width: 6px; height: 6px; border-radius: 50%; background: var(--action); flex: none; }
+.g.fin .ti { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.gsec .add { margin: 2px 0 4px; }
+.gsec .add input { all: unset; box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--ask); user-select: text; -webkit-user-select: text; }
+.gsec .add input::placeholder { color: var(--faint); }
+.gpop { position: fixed; z-index: 30; left: 8px; right: 8px; max-height: calc(100vh - 16px); overflow-y: auto; padding: 10px 12px 0; border-radius: 10px; display: grid; gap: 10px;
+  background: var(--orca-popover, #1c1c20); color: var(--orca-popover-foreground, var(--ink)); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); box-shadow: 0 16px 36px -14px rgba(0, 0, 0, .75);
+  user-select: text; -webkit-user-select: text; }
+.gpop .f { display: grid; gap: 3px; }
+.gpop .k { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.gpop .ed { border-radius: 5px; padding: 2px 5px; margin: -2px -5px; outline: none; min-height: 18px; overflow-wrap: anywhere; cursor: text; white-space: pre-wrap; }
+.gpop .ed:hover { background: var(--card); }
+.gpop .ed:focus { background: var(--card-hover); box-shadow: 0 0 0 1px var(--ask); }
+.gpop .ed.ph { font-weight: 600; line-height: 1.35; }
+.gpop .ed.note { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.gpop .ed:empty::before { content: attr(data-ph); color: var(--faint); font-style: italic; }
+.gpop .ed.addstep { margin-top: 2px; }
+.gpop .steps { display: grid; gap: 1px; margin: 0 -4px; }
+.gpop .step { display: flex; align-items: flex-start; gap: 8px; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
+.gpop .step:hover { background: var(--card); }
+.gpop .box { flex: none; width: 14px; height: 14px; margin-top: 2px; border-radius: 4px; border: 1.5px solid var(--faint); display: grid; place-items: center; }
+.gpop .box svg { width: 9px; height: 9px; opacity: 0; color: var(--bg); }
+.gpop .step.done .box { background: var(--ask); border-color: var(--ask); }
+.gpop .step.done .box svg { opacity: 1; }
+.gpop .step.done .s { color: var(--faint); text-decoration: line-through; }
+.gpop .step .s { min-width: 0; overflow-wrap: anywhere; }
+.gpop .links { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.gpop .link { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--card); font-size: 11px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpop .link .mono { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); }
+.gpop .nolinks { color: var(--faint); font-style: italic; font-size: 12px; }
+.gpop .gsays { font-size: 12px; color: var(--review); }
+.gpop .pfoot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; margin: 0 -12px; padding: 8px 12px; border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); background: var(--orca-popover, #1c1c20); }
+.gpop .pfoot .meta { flex: 1; min-width: 0; font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gbtn { display: inline-flex; align-items: center; flex: none; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: var(--action); background: color-mix(in srgb, var(--action) 14%, transparent); white-space: nowrap; }
+.gbtn:hover { background: color-mix(in srgb, var(--action) 24%, transparent); }
+.gbtn.quiet { color: var(--muted); background: var(--card); }
+.gbtn.quiet:hover { color: var(--ink); background: var(--card-hover); }
+.gpop .pfoot.wrap { flex-wrap: wrap; }
+.gpop .pfoot.wrap .meta { flex: 1 0 100%; }
+.gpop .pfoot.wrap .gbtn:first-of-type { margin-left: auto; }

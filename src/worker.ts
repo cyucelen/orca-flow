@@ -18,6 +18,7 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, readEnvMemory, typicalEnv, writeEnvMemory, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
+import { applyGoalAction, readGoals } from './goals.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
@@ -1082,11 +1083,30 @@ export default function activate(orca: OrcaWorkerApi): void {
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
     orca.panels.post('sidebar.changed', shared(latest))
+    postGoals() // an agent starting or stopping lights or clears a goal's dot
     void orca.host.call('statusBar.update', statusOf(latest)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     // Members bound without a resume id (a migrated one, a picked one) get it from their exact terminal.
     if (latest.source === 'cli') void captureResumeIds()
     return shared(latest)
   }
+  // Goals: one file each under DATA_DIR/goals. An agent's `orca-flow goal` and the panel's edits change them; the
+  // panel gets the list (with each goal's working dot) on open, after its own edit, and whenever a file changes.
+  const goalRows = () => latest?.rows ?? allRows
+  const postGoals = () => {
+    try { orca.panels.post('sidebar.goalsChanged', readGoals(goalRows(), DATA_DIR)) } catch (e) { orca.log(`reading goals failed: ${(e as Error).message}`) }
+  }
+  let goalsTimer: ReturnType<typeof setTimeout> | null = null
+  disposers.push(() => goalsTimer && clearTimeout(goalsTimer))
+  const goalsSoon = () => {
+    if (goalsTimer) clearTimeout(goalsTimer)
+    goalsTimer = setTimeout(() => { goalsTimer = null; postGoals() }, 120)
+  }
+  orca.panels.handle('sidebar.goals', () => readGoals(goalRows(), DATA_DIR))
+  orca.panels.handle('sidebar.goalAction', (input) => {
+    const result = applyGoalAction(input, goalRows(), DATA_DIR)
+    if (result.ok) postGoals()
+    return result
+  })
   const refreshSoon = () => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
@@ -1829,7 +1849,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   try {
     mkdirSync(DATA_DIR, { recursive: true })
     // The Token speed files change every 30 s and are no part of the snapshot.
-    const watcher = watch(DATA_DIR, { recursive: true }, (_event: string, name: string | null) => { if (!isSpeedFile(name)) refreshSoon() })
+    const watcher = watch(DATA_DIR, { recursive: true }, (_event: string, name: string | null) => {
+      // A goal's file changed: only the goals list is read again, not the whole snapshot.
+      if (name && /^goals[\\/]/.test(name)) { if (!name.endsWith('.tmp')) goalsSoon(); return }
+      if (!isSpeedFile(name)) refreshSoon()
+    })
     disposers.push(() => watcher.close())
   } catch (e) {
     orca.log(`not watching ${DATA_DIR}: ${(e as Error).message}`)

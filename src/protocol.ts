@@ -448,6 +448,10 @@ declare module 'orca' {
      * the panel asks every few seconds while it is visible. A change is posted as sidebar.changed.
      */
     'sidebar.focus': { output: { changed: boolean } }
+    /** The Goals section's goals, each with whether an agent on a linked worktree is working. */
+    'sidebar.goals': { output: import('./goals-view.ts').GoalView[] }
+    /** One edit by the user from the Goals section; answers the goals after it, or why it was refused. */
+    'sidebar.goalAction': { input: import('./goals.ts').GoalAction; output: { ok: boolean; error?: string; goals: import('./goals-view.ts').GoalView[] } }
     /** The Linear section's data, read again when older than a minute; null when Linear is not connected. */
     'sidebar.linear': { input: { force?: boolean }; output: LinearWire | null }
     /**
@@ -478,6 +482,8 @@ declare module 'orca' {
   interface PluginPanelEvents {
     /** Posted to open panels when a workspace or agent status changes. */
     'sidebar.changed': Snapshot
+    /** Posted when the goals changed (an agent's `orca-flow goal`, an edit) or an agent started or stopped working. */
+    'sidebar.goalsChanged': import('./goals-view.ts').GoalView[]
     /** Posted when the Linear section's data changed (a new read, a send). */
     'sidebar.linearChanged': LinearWire | null
     /** Posted after each log and network sample, and when a speed test starts or ends. */

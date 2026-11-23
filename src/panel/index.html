@@ -17,6 +17,11 @@
       <button id="settings-open" class="icon" aria-label="Orca Flow settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
     </div>
     <div id="copen"></div>
+    <section id="goals" class="gsec" aria-label="Goals" hidden>
+      <div id="goals-head"></div>
+      <div id="goal-add" class="add" hidden><input id="goal-new" placeholder="A goal in one sentence" aria-label="New goal" autocomplete="off" spellcheck="false" /></div>
+      <div id="goals-rows" class="goals"></div>
+    </section>
     <main id="main" aria-busy="true"></main>
     <section id="attention" class="attention" aria-label="Up next" hidden></section>
     <section id="bots" class="lsec bsec" aria-label="Bots" hidden></section>
@@ -40,6 +45,7 @@
         </div>
       </form>
     </div>
+    <div id="goalpop" class="gpop" role="dialog" aria-label="Goal details" hidden></div>
     <div id="ctx" class="ctx" role="menu" tabindex="-1" hidden></div>
     <div id="toast" class="toast" role="status" hidden></div>
     <div id="confirm" class="modal" hidden>
