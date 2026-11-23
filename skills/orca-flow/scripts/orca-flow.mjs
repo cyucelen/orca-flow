@@ -12,6 +12,7 @@
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
 //   orca-flow skills-reloaded [--request <id>]   After re-reading the skill files a "Reload skills"
 //                                             note asked for: records this session and the files' hash
+// Goals is a Settings → Features switch, off by default: while off every goal command prints one line and changes nothing.
 //   orca-flow goal add "<title>" [--note ..] [--next ..] [--done-when ..] [--step ..]... [--linear ID]...
 //       [--worktree <sel>]                    A goal: what the user needs to get done (title only is fine)
 //   orca-flow goal list [--worktree <sel>] [--all] [--json]   Open and proposed goals (--all: done too);
@@ -524,6 +525,8 @@ export function formatGoals(list) {
 export function goalCommand(args, ctx = {}) {
   const [, sub, id, ...rest] = args._
   const data = ctx.data ?? DIR
+  // Off in Settings → Features: say so, and read and write nothing.
+  if (!goals.goalsEnabled({ data })) return goals.GOALS_OFF
   const by = () => goalBy(args, ctx)
   const shown = (g) => (args.json ? g : formatGoal(g))
   const id1 = () => {

@@ -22,6 +22,19 @@ const TEXT_FIELDS = ['title', 'note', 'next', 'doneWhen']
 const flowDir = (env = process.env) => env.ORCA_FLOW_DIR || join(homedir(), '.orca-flow')
 const goalsDir = (data) => join(data ?? flowDir(), GOALS_DIR)
 const fileOf = (data, id) => join(goalsDir(data), `${id}.json`)
+/**
+ * Settings → Features → Goals: on only when config.json says features.goals is exactly true (the plugin reads it
+ * the same way, src/settings.ts normalizeFeatures). Absent, broken or anything else: off.
+ */
+export function goalsEnabled({ data, env = process.env } = {}) {
+  try {
+    return JSON.parse(readFileSync(join(data ?? flowDir(env), 'config.json'), 'utf8'))?.features?.goals === true
+  } catch {
+    return false
+  }
+}
+export const GOALS_OFF = 'Goals is off (Orca Flow Settings → Features); nothing changed.'
+
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const clean = (s) => String(s ?? '').trim()
 

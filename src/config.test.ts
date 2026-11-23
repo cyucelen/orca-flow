@@ -105,8 +105,8 @@ test('the Bots switch is saved under features, leaves other keys as written, and
   try {
     writeFileSync(configFile(dir), JSON.stringify({ marginGB: 2, futureKey: { a: 1 }, linearDryRun: true }))
     assert.equal(readSettings(dir).settings.features.bots, false)
-    writeSettings(withSettings({ linearDryRun: true, features: { bots: true, linear: true, tokenSpeed: true } }), dir)
-    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: { a: 1 }, linearDryRun: true, features: { bots: true, linear: true, tokenSpeed: true } })
+    writeSettings(withSettings({ linearDryRun: true, features: { bots: true, goals: false, linear: true, tokenSpeed: true } }), dir)
+    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: { a: 1 }, linearDryRun: true, features: { bots: true, goals: false, linear: true, tokenSpeed: true } })
     assert.equal(readSettings(dir).settings.features.bots, true)
     writeSettings(withSettings({ linearDryRun: true }), dir)
     assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: { a: 1 }, linearDryRun: true })
@@ -119,11 +119,11 @@ test('the Linear and Token Speed switches are saved under features; a 0.2.81 fil
   const dir = temp()
   try {
     writeFileSync(configFile(dir), JSON.stringify({ marginGB: 2, futureKey: 1, features: { bots: true } }))
-    assert.deepEqual(readSettings(dir).settings.features, { bots: true, linear: true, tokenSpeed: true })
-    writeSettings(withSettings({ features: { bots: true, linear: false, tokenSpeed: true } }), dir)
-    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: 1, features: { bots: true, linear: false, tokenSpeed: true } })
+    assert.deepEqual(readSettings(dir).settings.features, { bots: true, goals: false, linear: true, tokenSpeed: true })
+    writeSettings(withSettings({ features: { bots: true, goals: false, linear: false, tokenSpeed: true } }), dir)
+    assert.deepEqual(fileOf(dir), { marginGB: 2, futureKey: 1, features: { bots: true, goals: false, linear: false, tokenSpeed: true } })
     assert.equal(readSettings(dir).settings.features.linear, false)
-    writeSettings(withSettings({ features: { bots: true, linear: true, tokenSpeed: true } }), dir)
+    writeSettings(withSettings({ features: { bots: true, goals: false, linear: true, tokenSpeed: true } }), dir)
     assert.deepEqual(fileOf(dir).futureKey, 1)
     assert.equal(readSettings(dir).settings.features.linear, true)
   } finally { rmSync(dir, { recursive: true, force: true }) }

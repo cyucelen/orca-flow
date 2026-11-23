@@ -20,6 +20,9 @@ export type Goal = {
 type Opts = { data?: string }
 export const GOALS_DIR: string
 export const STATUSES: GoalStatus[]
+/** Settings → Features → Goals: true only when config.json has features.goals: true. */
+export function goalsEnabled(options?: Opts & { env?: Record<string, string | undefined> }): boolean
+export const GOALS_OFF: string
 export function list(options?: Opts & { status?: GoalStatus }): Goal[]
 export function get(id: string, options?: Opts): Goal | null
 export function add(title: string, fields?: { note?: string; next?: string; doneWhen?: string; steps?: (string | GoalStep)[]; linear?: string[]; worktrees?: WorktreeLink[] }, options?: Opts & { by?: string; now?: number }): Goal

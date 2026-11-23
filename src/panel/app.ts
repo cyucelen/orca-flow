@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
@@ -150,8 +150,10 @@ orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdate
 // Settings → Features: Linear and Token Speed. While one is off its data is dropped and not asked
 // for; switching it on asks at once, so the section shows fresh data, not what it had before.
 const linearIsOn = () => !snap || linearOn(snap)
+const goalsIsOn = () => !!snap && goalsOn(snap)
 const speedIsOn = () => !snap || tokenSpeedOn(snap)
 let linearWasOn = true
+let goalsWasOn = false
 let speedWasOn = true
 function applyFeatures(): void {
   const l = linearIsOn()
@@ -162,6 +164,11 @@ function applyFeatures(): void {
   const lAgain = l && !linearWasOn
   const tAgain = t && !speedWasOn
   linearWasOn = l
+  // Goals: off hides the section and its card at once and drops the data; on reads the goals at once.
+  const gOn = goalsIsOn()
+  if (!gOn && (goals || ui.goalOpen)) { goals = null; ui.goalOpen = null; goalPop.hidden = true; goalPop.innerHTML = '' }
+  if (gOn && !goalsWasOn) queueMicrotask(() => void readGoals())
+  goalsWasOn = gOn
   speedWasOn = t
   if (reread) queueMicrotask(() => { if (lAgain) readLinear(true); if (tAgain) readSpeed() })
 }
@@ -1199,13 +1206,13 @@ orca.storage.get(GOALS_UI_KEY).then((stored) => {
   ui.goalsShowDone = saved.showDone
   draw()
 }).catch(() => null)
-const readGoals = () => orca.plugin.request('sidebar.goals').then((g) => { goals = g as GoalView[]; draw() }).catch(() => null)
-orca.plugin.on('sidebar.goalsChanged', (g) => { goals = g as GoalView[]; draw() })
-readGoals()
+const readGoals = () => !goalsIsOn() ? Promise.resolve() : orca.plugin.request('sidebar.goals').then((g) => { if (goalsIsOn()) { goals = g as GoalView[]; draw() } }).catch(() => null)
+orca.plugin.on('sidebar.goalsChanged', (g) => { if (!goalsIsOn()) return; goals = g as GoalView[]; draw() })
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void readGoals() })
 
 /** Runs one of the user's edits; the answer is the goals after it. A refusal is said in the toast. */
 async function goalAct(a: GoalAction): Promise<boolean> {
+  if (!goalsIsOn()) return false
   try {
     const r = await orca.plugin.request('sidebar.goalAction', a)
     goals = r.goals

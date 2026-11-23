@@ -1,7 +1,7 @@
 // node --test test/goals.test.mjs
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, chmodSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -29,7 +29,12 @@ if (a[0] === 'worktree' && a[1] === 'show' && name) {
   return bin
 }
 
+// Goals is a Settings → Features switch, off by default: these CLI runs have it on unless the test set its own config.json.
 function cli(dir, bin, ...argv) {
+  if (!existsSync(join(dir, 'config.json'))) writeFileSync(join(dir, 'config.json'), JSON.stringify({ features: { goals: true } }))
+  return cliRaw(dir, bin, ...argv)
+}
+function cliRaw(dir, bin, ...argv) {
   const r = spawnSync(process.execPath, [CLI, ...argv], { encoding: 'utf8', env: { ...process.env, ORCA_FLOW_DIR: dir, ORCA_CLI_BIN_DIR: bin, CLAUDE_CODE_SESSION_ID: '', CLAUDECODE: '' } })
   return { out: r.stdout.trim(), err: r.stderr.trim(), code: r.status }
 }
@@ -167,4 +172,47 @@ test('CLI: unknown goal and missing usage exit 1 with a message; by falls back t
   const id = JSON.parse(cli(dir, bin, 'goal', 'add', 'No by', '--json').out).id
   assert.equal(JSON.parse(cli(dir, bin, 'goal', 'show', id, '--json').out).lastChange.by, 'agent alpha')
   assert.equal(JSON.parse(readFileSync(join(dir, 'goals', `${id}.json`), 'utf8')).title, 'No by')
+})
+
+const OFF = 'Goals is off (Orca Flow Settings → Features); nothing changed.'
+const SUBS = [['add', 'Hire'], ['list'], ['list', '--all', '--json'], ['show', 'g_x'], ['set', 'g_x', '--next', 'n'], ['step', 'g_x', 'add', 's'], ['link', 'g_x', '--linear', 'DES-1'], ['unlink', 'g_x', '--linear', 'DES-1'], ['propose-done', 'g_x'], ['done', 'g_x'], ['reopen', 'g_x']]
+
+test('CLI: with the Goals switch off (absent, false, broken or not exactly true) every goal command prints one line, exits 0 and touches nothing', () => {
+  const bin = fakeOrca()
+  for (const config of [null, '{}', '{"features":{"goals":false}}', '{"features":{"goals":"true"}}', '{"features":{"bots":true}}', '{ not json']) {
+    const dir = tmp()
+    if (config !== null) writeFileSync(join(dir, 'config.json'), config)
+    for (const sub of SUBS) {
+      const r = cliRaw(dir, bin, 'goal', ...sub)
+      assert.deepEqual([r.out, r.err, r.code], [OFF, '', 0], `${sub[0]} with ${config}`)
+    }
+    assert.equal(existsSync(join(dir, 'goals')), false, 'nothing was written')
+  }
+})
+
+test('CLI: the switch hides goals without touching them; turning it on shows them again', () => {
+  const bin = fakeOrca()
+  const dir = tmp()
+  const added = cli(dir, bin, 'goal', 'add', 'Keep me', '--json')
+  assert.equal(added.code, 0)
+  const id = JSON.parse(added.out).id
+  const before = readFileSync(join(dir, 'goals', `${id}.json`), 'utf8')
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ features: { goals: false } }))
+  assert.equal(cli(dir, bin, 'goal', 'list').out, OFF)
+  assert.equal(cli(dir, bin, 'goal', 'done', id).out, OFF)
+  assert.equal(readFileSync(join(dir, 'goals', `${id}.json`), 'utf8'), before, 'the file is as it was')
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ features: { goals: true } }))
+  assert.match(cli(dir, bin, 'goal', 'list').out, /Keep me/)
+})
+
+test('goalsEnabled reads the switch exactly as the plugin does', async () => {
+  const { normalizeFeatures } = await import('../src/settings.ts').catch(() => ({ normalizeFeatures: null }))
+  for (const features of [undefined, {}, { goals: true }, { goals: false }, { goals: 'true' }, { goals: 1 }, 'oops', null]) {
+    const dir = tmp()
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ features }))
+    assert.equal(goals.goalsEnabled({ data: dir }), features?.goals === true, JSON.stringify(features))
+    if (normalizeFeatures) assert.equal(goals.goalsEnabled({ data: dir }), normalizeFeatures(features).goals)
+  }
+  assert.equal(goals.goalsEnabled({ data: tmp() }), false, 'no config file: off')
+  assert.equal(goals.goalsEnabled({ data: '/nonexistent/x' }), false)
 })

@@ -1072,7 +1072,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     // When the coordinator lineage finishes loading, draw again with it.
     const features = readSettings(DATA_DIR).settings.features
     const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
-    snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
+    snap.features = { goals: features.goals, linear: features.linear, tokenSpeed: features.tokenSpeed }
     snap.skillReload = readSkillReload()
     snap.codexReload = codexReady()
     snap.antigravityReload = antigravityReady()
@@ -1092,7 +1092,10 @@ export default function activate(orca: OrcaWorkerApi): void {
   // Goals: one file each under DATA_DIR/goals. An agent's `orca-flow goal` and the panel's edits change them; the
   // panel gets the list (with each goal's working dot) on open, after its own edit, and whenever a file changes.
   const goalRows = () => latest?.rows ?? allRows
+  // Settings → Features → Goals, read from the file each time so a save applies at once. Off: no goal is read or posted, and the panel's edits are refused. The files are never touched by the switch.
+  const goalsOn = () => readSettings(DATA_DIR).settings.features.goals
   const postGoals = () => {
+    if (!goalsOn()) return
     try { orca.panels.post('sidebar.goalsChanged', readGoals(goalRows(), DATA_DIR)) } catch (e) { orca.log(`reading goals failed: ${(e as Error).message}`) }
   }
   let goalsTimer: ReturnType<typeof setTimeout> | null = null
@@ -1101,8 +1104,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (goalsTimer) clearTimeout(goalsTimer)
     goalsTimer = setTimeout(() => { goalsTimer = null; postGoals() }, 120)
   }
-  orca.panels.handle('sidebar.goals', () => readGoals(goalRows(), DATA_DIR))
+  orca.panels.handle('sidebar.goals', () => (goalsOn() ? readGoals(goalRows(), DATA_DIR) : []))
   orca.panels.handle('sidebar.goalAction', (input) => {
+    if (!goalsOn()) return { ok: false, error: 'Goals is off in Settings → Features', goals: [] }
     const result = applyGoalAction(input, goalRows(), DATA_DIR)
     if (result.ok) postGoals()
     return result

@@ -1733,7 +1733,7 @@ test('the worker answers the Goals section: the list, and edits it refuses witho
   // Refused edits only (an unknown goal, an empty title): this test never writes to the real data folder.
   const gone = (await worker.request('sidebar.goalAction', { action: 'update', id: 'g_no-such-goal-0000', patch: { next: 'x' } })) as { ok: boolean; error?: string }
   assert.equal(gone.ok, false)
-  assert.match(gone.error ?? '', /no goal/)
+  assert.ok(gone.error, 'says why')
   const empty = (await worker.request('sidebar.goalAction', { action: 'add', title: ' ' })) as { ok: boolean }
   assert.equal(empty.ok, false)
   await worker.deactivate()

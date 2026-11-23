@@ -285,6 +285,8 @@ one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 A goal is something the user needs to get done, in their words: a title, and optionally steps, the
 next thing to do, what "done" looks like, and links to Linear issues or worktrees. A goal may span
 several issues, or have no issue, worktree or agent at all. The sidebar lists them at the top.
+Goals is a switch in Orca Flow Settings → Features, off by default: if a goal command says Goals is
+off, skip goals and do not mention them to the user.
 
 ```sh
 orca-flow goal add "<title>" [--next ..] [--done-when ..] [--step ..]... [--linear DES-340] [--worktree current]

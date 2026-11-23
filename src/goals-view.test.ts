@@ -127,7 +127,7 @@ test('who changed it last reads in one line', () => {
 })
 
 test('render() puts the section above the tree and drops it while searching or before the goals are read', () => {
-  const snap = { rows: [] as WorkspaceRow[], source: 'cli', capacity: null, coordinators: [], ready: true } as Snapshot
+  const snap = { rows: [] as WorkspaceRow[], source: 'cli', capacity: null, coordinators: [], ready: true, features: { goals: true, linear: true, tokenSpeed: true } } as Snapshot
   const ui = emptyUi()
   assert.equal(render(snap, ui, null, null).goalsHead, '', 'not read yet')
   const out = render(snap, ui, null, [view()])
@@ -216,3 +216,26 @@ test('what an agent writes with `orca-flow goal` is what the panel reads, with t
   assert.equal(lit[0].lastChange.by, 'the DES-340 lead')
   assert.match(readFileSync(join(dir, 'goals', `${g.id}.json`), 'utf8'), /"title": "Ship"/)
 }))
+
+test('Goals off (the default): nothing is drawn, even with goals in hand', () => {
+  const base = { rows: [] as WorkspaceRow[], source: 'cli', capacity: null, coordinators: [], ready: true } as Snapshot
+  for (const features of [undefined, { linear: true, tokenSpeed: true }, { goals: false, linear: true, tokenSpeed: true }]) {
+    const out = render({ ...base, ...(features ? { features } : {}) }, emptyUi(), null, [view()])
+    assert.equal(out.goalsHead + out.goalsRows, '')
+  }
+})
+
+test('Goals off: the worker reads nothing, posts nothing and refuses the panel\'s edits', async () => {
+  const { mountWorker, mockHost } = await import('orca/testing')
+  const main = await import('./worker.ts')
+  const worker = await mountWorker(main, { host: mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } }) })
+  // A development machine's config could have the switch on; the refusal is the point only while it is off.
+  const { readSettings } = await import('./config.ts')
+  const { homedir } = await import('node:os')
+  if (readSettings(join(homedir(), '.orca-flow')).settings.features.goals) { await worker.deactivate(); return }
+  assert.deepEqual(await worker.request('sidebar.goals'), [])
+  const r = (await worker.request('sidebar.goalAction', { action: 'add', title: 'Nope' })) as { ok: boolean; error?: string }
+  assert.equal(r.ok, false)
+  assert.match(r.error ?? '', /Goals is off/)
+  await worker.deactivate()
+})

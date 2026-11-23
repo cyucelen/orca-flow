@@ -31,7 +31,7 @@ const settings = {
   version: '0.2.64', error: null,
   settings: {
     writers: [{ provider: 'claude', model: 'haiku', enabled: true }, { provider: 'codex', model: 'gpt-6-luna', enabled: true }, { provider: 'antigravity', model: 'gemini-3.8-flash-low', enabled: false }],
-    messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false, features: { bots: false, linear: true, tokenSpeed: true },
+    messageFormat: ['~/orca/coordinators', '~/orca/workspaces/shop'], marginGB: 2, warnHeadroomGB: 2, linearDryRun: false, features: { bots: false, goals: false, linear: true, tokenSpeed: true },
     routing: {
       coordinator: { agent: 'claude', model: 'opus', effort: 'high' }, lead: null,
       workers: {
@@ -83,6 +83,8 @@ if (q.get('click')) setTimeout(() => { const el = document.querySelector(q.get('
 if (q.get('eval')) setTimeout(async () => { try { document.title = 'EVAL ' + JSON.stringify(await (0, eval)(q.get('eval'))); } catch (e) { document.title = 'EVAL ERROR ' + e.message; } }, 1500);
 // ?bots=on: the Bots switch starts on (Settings → Features).
 if (q.get('bots') === 'on') settings.settings.features.bots = true;
+// ?goals=on: the Goals switch starts on (off by default).
+if (q.get('goals') === 'on') settings.settings.features.goals = true;
 // ?linear=off / ?speed=off: those switches start off.
 if (q.get('linear') === 'off') settings.settings.features.linear = false;
 if (q.get('speed') === 'off') settings.settings.features.tokenSpeed = false;

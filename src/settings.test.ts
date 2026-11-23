@@ -164,22 +164,22 @@ test('precedence from stored settings: override > role > kind row', () => {
 })
 
 test('features: bots is off unless the file says true; a missing or malformed key reads as off and keeps every other setting', () => {
-  assert.deepEqual(DEFAULT_SETTINGS.features, { bots: false, linear: true, tokenSpeed: true })
-  assert.deepEqual(normalizeSettings({}).features, { bots: false, linear: true, tokenSpeed: true })
-  for (const bad of [undefined, null, true, 'bots', [], [true], {}, { bots: 'true' }, { bots: 1 }, { bots: null }, { bots: false }]) assert.deepEqual(normalizeFeatures(bad), { bots: false, linear: true, tokenSpeed: true })
-  assert.deepEqual(normalizeFeatures({ bots: true, other: 1 }), { bots: true, linear: true, tokenSpeed: true })
+  assert.deepEqual(DEFAULT_SETTINGS.features, { bots: false, goals: false, linear: true, tokenSpeed: true })
+  assert.deepEqual(normalizeSettings({}).features, { bots: false, goals: false, linear: true, tokenSpeed: true })
+  for (const bad of [undefined, null, true, 'bots', [], [true], {}, { bots: 'true' }, { bots: 1 }, { bots: null }, { bots: false }]) assert.deepEqual(normalizeFeatures(bad), { bots: false, goals: false, linear: true, tokenSpeed: true })
+  assert.deepEqual(normalizeFeatures({ bots: true, other: 1 }), { bots: true, goals: false, linear: true, tokenSpeed: true })
   const older = normalizeSettings({ marginGB: 3.5, linearDryRun: true, features: 'oops' })
   assert.deepEqual(older, { ...DEFAULT_SETTINGS, marginGB: 3.5, linearDryRun: true })
 })
 
 test('features: the toggle round-trips through the draft and writes only its own key', () => {
-  const on = { ...DEFAULT_SETTINGS, features: { bots: true, linear: true, tokenSpeed: true } }
+  const on = { ...DEFAULT_SETTINGS, features: { bots: true, goals: false, linear: true, tokenSpeed: true } }
   assert.equal(toDraft(on).bots, true)
   assert.deepEqual(fromDraft(toDraft(on)), on)
   assert.equal(DEFAULT_DRAFT.bots, false)
   const raw = { marginGB: 'x', futureKey: [1], messageFormat: ['~/y'] }
-  assert.deepEqual(applySettings(raw, { ...on, messageFormat: ['~/y'] }), { ...raw, features: { bots: true, linear: true, tokenSpeed: true } })
-  assert.deepEqual(applySettings({ ...raw, features: { bots: true, linear: true, tokenSpeed: true } }, { ...DEFAULT_SETTINGS, messageFormat: ['~/y'] }), raw, 'back to off removes the key; the rest stays')
+  assert.deepEqual(applySettings(raw, { ...on, messageFormat: ['~/y'] }), { ...raw, features: { bots: true, goals: false, linear: true, tokenSpeed: true } })
+  assert.deepEqual(applySettings({ ...raw, features: { bots: true, goals: false, linear: true, tokenSpeed: true } }, { ...DEFAULT_SETTINGS, messageFormat: ['~/y'] }), raw, 'back to off removes the key; the rest stays')
 })
 
 test('features: the dialog saves the Bots switch at once and Reset puts it back off', async () => {
@@ -187,10 +187,10 @@ test('features: the dialog saves the Bots switch at once and Reset puts it back 
   const session = settingsSession(async (settings) => { saved.push(settings); return { ok: true, settings } })
   session.load(DEFAULT_SETTINGS)
   await session.change((d) => { d.bots = true })
-  assert.deepEqual(saved.at(-1)?.features, { bots: true, linear: true, tokenSpeed: true })
+  assert.deepEqual(saved.at(-1)?.features, { bots: true, goals: false, linear: true, tokenSpeed: true })
   assert.equal(session.isDefault(['bots']), false)
   await session.reset(['bots'])
-  assert.deepEqual(saved.at(-1)?.features, { bots: false, linear: true, tokenSpeed: true })
+  assert.deepEqual(saved.at(-1)?.features, { bots: false, goals: false, linear: true, tokenSpeed: true })
   assert.equal(session.shown.bots, false)
 })
 
@@ -200,28 +200,49 @@ test('features: Linear and Token Speed are on unless exactly false; a 0.2.81 fil
     assert.equal(normalizeFeatures({ [key]: false })[key], false)
   }
   const older = normalizeSettings({ marginGB: 3, features: { bots: true } })
-  assert.deepEqual(older.features, { bots: true, linear: true, tokenSpeed: true })
+  assert.deepEqual(older.features, { bots: true, goals: false, linear: true, tokenSpeed: true })
   assert.equal(older.marginGB, 3)
-  assert.deepEqual(normalizeSettings({ features: { linear: false, tokenSpeed: false, bots: 'x' } }).features, { bots: false, linear: false, tokenSpeed: false })
+  assert.deepEqual(normalizeSettings({ features: { linear: false, tokenSpeed: false, bots: 'x' } }).features, { bots: false, goals: false, linear: false, tokenSpeed: false })
   assert.deepEqual(normalizeSettings({ features: 'oops' }).features, DEFAULT_SETTINGS.features)
 })
 
 test('features: the new switches round-trip through the draft, save at once and Reset puts them back on', async () => {
-  const off = { ...DEFAULT_SETTINGS, features: { bots: false, linear: false, tokenSpeed: false } }
+  const off = { ...DEFAULT_SETTINGS, features: { bots: false, goals: false, linear: false, tokenSpeed: false } }
   assert.equal(toDraft(off).linear, false)
   assert.equal(toDraft(off).tokenSpeed, false)
   assert.deepEqual(fromDraft(toDraft(off)), off)
   assert.equal(DEFAULT_DRAFT.linear, true)
   assert.equal(DEFAULT_DRAFT.tokenSpeed, true)
   const raw = { futureKey: [1], features: { bots: true } }
-  assert.deepEqual(applySettings(raw, { ...DEFAULT_SETTINGS, features: { bots: true, linear: false, tokenSpeed: true } }), { futureKey: [1], features: { bots: true, linear: false, tokenSpeed: true } })
+  assert.deepEqual(applySettings(raw, { ...DEFAULT_SETTINGS, features: { bots: true, goals: false, linear: false, tokenSpeed: true } }), { futureKey: [1], features: { bots: true, goals: false, linear: false, tokenSpeed: true } })
   assert.deepEqual(applySettings({ futureKey: [1], features: { bots: false, linear: false, tokenSpeed: true } }, DEFAULT_SETTINGS), { futureKey: [1] }, 'all on again removes the key')
   const saved: FlowSettings[] = []
   const session = settingsSession(async (settings) => { saved.push(settings); return { ok: true, settings } })
   session.load(DEFAULT_SETTINGS)
   await session.change((d) => { d.linear = false; d.tokenSpeed = false })
-  assert.deepEqual(saved.at(-1)?.features, { bots: false, linear: false, tokenSpeed: false })
+  assert.deepEqual(saved.at(-1)?.features, { bots: false, goals: false, linear: false, tokenSpeed: false })
   assert.equal(session.isDefault(['linear', 'tokenSpeed']), false)
   await session.reset(['linear', 'tokenSpeed'])
   assert.deepEqual(saved.at(-1)?.features, DEFAULT_SETTINGS.features)
+})
+
+test('features: Goals is off unless exactly true, saves at once, writes only its own key and Reset puts it back off', async () => {
+  assert.equal(DEFAULT_SETTINGS.features.goals, false)
+  assert.equal(DEFAULT_DRAFT.goals, false)
+  for (const v of [undefined, null, 'true', 1, 'on', [], {}]) assert.equal(normalizeFeatures({ goals: v }).goals, false, JSON.stringify(v))
+  assert.equal(normalizeFeatures({ goals: true }).goals, true)
+  assert.equal(normalizeSettings({ marginGB: 3, features: { bots: true } }).features.goals, false, 'an older file shows no Goals')
+  const on = { ...DEFAULT_SETTINGS, features: { ...DEFAULT_SETTINGS.features, goals: true } }
+  assert.equal(toDraft(on).goals, true)
+  assert.deepEqual(fromDraft(toDraft(on)), on)
+  assert.deepEqual(applySettings({ futureKey: [1] }, on), { futureKey: [1], features: { bots: false, goals: true, linear: true, tokenSpeed: true } })
+  assert.deepEqual(applySettings({ futureKey: [1], features: { goals: true } }, DEFAULT_SETTINGS), { futureKey: [1] }, 'back to off removes the key; the rest stays')
+  const saved: FlowSettings[] = []
+  const session = settingsSession(async (settings) => { saved.push(settings); return { ok: true, settings } })
+  session.load(DEFAULT_SETTINGS)
+  await session.change((d) => { d.goals = true })
+  assert.equal(saved.at(-1)?.features.goals, true)
+  assert.equal(session.isDefault(['goals']), false)
+  await session.reset(['goals'])
+  assert.equal(saved.at(-1)?.features.goals, false)
 })

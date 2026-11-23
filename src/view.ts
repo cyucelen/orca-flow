@@ -1307,6 +1307,8 @@ function foldList(key: string, title: string, rows: string[], ui: UiState, count
  */
 /** Settings → Features: a section shows unless its switch is off (an older snapshot has no switches). */
 export const linearOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.linear !== false
+/** Goals is off unless Settings → Features says so: an absent switch reads as off. */
+export const goalsOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.goals === true
 export const tokenSpeedOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.tokenSpeed !== false
 
 // ---------- Reload skills ----------
@@ -1354,8 +1356,9 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)).map((r) => (r.linearIssue ? { ...r, linearLink: issueLink(r.linearIssue, linear) } : r)) } : given
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   // Goals, at the top above the tree; hidden while searching, like the other sections.
+  const goalsData = goalsOn(given) ? goals : null
   const gs = { folded: ui.goalsFolded, showDone: ui.goalsShowDone, open: ui.goalOpen, now: ui.now }
-  const goalsOut = { goalsHead: goalsHead(goals ?? [], gs, !!ui.query || !goals), goalsRows: goalsRows(goals ?? [], gs, !!ui.query || !goals) }
+  const goalsOut = { goalsHead: goalsHead(goalsData ?? [], gs, !!ui.query || !goalsData), goalsRows: goalsRows(goalsData ?? [], gs, !!ui.query || !goalsData) }
   const all = snap.rows.flatMap((r) => r.agents)
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.

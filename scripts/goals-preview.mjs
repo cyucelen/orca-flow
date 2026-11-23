@@ -23,7 +23,7 @@ const agent = (paneKey, agentType, over = {}) => ({
 })
 const wrow = (id, name, state, over = {}) => ({ id, name, branch: name, repo: 'bounti', path: `/fixture/${name}`, main: false, agents: [agent(`${name} lead`, 'claude', { state })], state, priority: null, card: null, parentId: null, liveTerminals: 1, pinned: false, unread: false, active: false, workspaceStatus: null, lastActivityAt: now - H, createdAt: 1, pr: null, ...over })
 const snapshot = {
-  source: 'cli', capacity: null, ready: true, focusedPanes: [],
+  source: 'cli', capacity: null, ready: true, focusedPanes: [], features: { goals: true, linear: true, tokenSpeed: true },
   coordinators: [{ key: 'home', name: 'bounti', repos: ['bounti'], workspaceId: 'home', session: agent('Coordinator', 'claude', { state: 'done', dispatch: null }) }],
   rows: [
     wrow('identity:des-340', 'des-340-super-admin-permissions', 'working', { linearIssue: 'DES-340' }),

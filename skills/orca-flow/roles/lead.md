@@ -21,7 +21,8 @@ At the start of the workstream run `orca-flow goal list --worktree current`. A l
 the user is trying to get done. When a worker's result completes one of its steps, tick it
 (`orca-flow goal step <id> tick <n>`) and set what comes next (`orca-flow goal set <id> --next
 "..."`). When its done criteria are met, run `orca-flow goal propose-done <id>` and tell the user in
-the frame; only the user marks a goal done. Do not create goals yourself unless the user asks.
+the frame; only the user marks a goal done. Do not create goals yourself unless the user asks. If a goal command says Goals is off, skip goals
+and do not mention them.
 
 ## Each request from the user
 
