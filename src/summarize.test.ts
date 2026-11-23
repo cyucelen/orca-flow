@@ -180,6 +180,11 @@ test('an agent that runs orca-flow dispatch or plan start/next coordinates; read
 // Mail and notifications: a wake (Orca's mail notice, a task notification) is not the user, and a short
 // acknowledgment after it must not clear the ask the user still has open.
 const WAKE = 'You have 1 orchestration message. Run `orca orchestration check`.'
+/** The shapes Orca writes: bare, with --run, with --terminal, with both, and a plural count. */
+const WAKES = [WAKE, 'You have 2 orchestration messages. Run `orca orchestration check --run run_ab12`.',
+  'You have 1 orchestration message. Run `orca orchestration check --terminal term_cd34`.',
+  'You have 1 orchestration message. Run `orca orchestration check --run run_ab12 --terminal term_cd34`.',
+  'You have 3 orchestration messages. Run `orca orchestration check`.']
 const NOTIFY = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'
 const say = (text: string) => line('assistant', [{ type: 'text', text }])
 const tool = line('assistant', [{ type: 'tool_use', name: 'Bash', input: { command: 'orca orchestration check' } }])
@@ -191,13 +196,17 @@ const leadAfter = (...after: (string | { say: string })[]) => digest([
 const PICK = 'run the plan eval on Azure OpenAI?'
 
 test('wake, no text: the card keeps the pick', () => {
+  for (const wake of WAKES) {
+    const d = leadAfter(wake, WAKE, NOTIFY)
+    assert.equal(d.lastMessage, DECISION, wake)
+  }
   const d = leadAfter(WAKE, WAKE, NOTIFY)
   assert.equal(d.lastMessage, DECISION)
   assert.equal(frameAsk(d)?.needs.ask, PICK)
 })
 
 test('wake, short ack "Noted.": the card keeps the pick', () => {
-  for (const wake of [WAKE, NOTIFY]) {
+  for (const wake of [...WAKES, NOTIFY]) {
     const d = leadAfter(wake, { say: 'Noted.' })
     assert.equal(d.lastMessage, DECISION, 'the ack does not replace the frame')
     assert.equal(frameAsk(d)?.needs.type, 'decision')
@@ -230,6 +239,14 @@ test('a human prompt starts a new turn: "status?" is not a wake', () => {
   assert.equal(frameAsk(answered), null)
   const framed = leadAfter(WAKE, 'status?', { say: ANSWER })
   assert.equal(framed.lastMessage, ANSWER)
+})
+
+test('a human prompt that only quotes the notice is not a wake', () => {
+  for (const quoted of [`Why did I get "${WAKES[3]}" in the chat?`, `${WAKES[1]} Please also tell me the plan.`, `${WAKE}\nstatus?`]) {
+    const d = leadAfter(quoted, { say: 'Noted.' })
+    assert.equal(d.lastMessage, 'Noted.', quoted)
+    assert.equal(frameAsk(d), null)
+  }
 })
 
 test('a long message after a wake without a frame is not an acknowledgment', () => {

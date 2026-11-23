@@ -514,6 +514,11 @@ test('prompt hook: the same gates as the Stop hook; bad input exits 0 quietly', 
 // Mail and notifications (messages.md): a wake is not the user, so a short acknowledgment after it
 // is not checked as a frame; a human prompt such as "status?" is a normal turn.
 const WAKE = 'You have 1 orchestration message. Run `orca orchestration check`.'
+// The shapes Orca writes: bare, with --run, with --terminal, with both, and a plural count.
+const WAKES = [WAKE, 'You have 2 orchestration messages. Run `orca orchestration check --run run_ab12`.',
+  'You have 1 orchestration message. Run `orca orchestration check --terminal term_cd34`.',
+  'You have 1 orchestration message. Run `orca orchestration check --run run_ab12 --terminal term_cd34`.',
+  'You have 3 orchestration messages. Run `orca orchestration check`.']
 const NOTIFY = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'
 const wakeWorld = (prompts, last, role = 'lead') => {
   const w = world({ config: { messageFormat: 'all' }, firstPrompt: role === 'lead' ? 'Your role: lead. Fix BOU-1.' : 'hello' })
@@ -527,13 +532,17 @@ test('the transcript marks a turn that a wake started', () => {
   const t = (...prompts) => readTranscript([entry('user', 'Your role: lead.'), ...prompts.map((p) => entry('user', p)), entry('assistant', [{ type: 'text', text: 'x' }])])
   assert.equal(t(WAKE).wake, true)
   assert.equal(t(NOTIFY).wake, true)
+  for (const w of WAKES) assert.equal(t(w).wake, true, w)
   assert.equal(t(`${WAKE} Please also tell me the plan.`).wake, false, 'text beyond the notice is a prompt')
+  assert.equal(t(`${WAKES[3]} Please also tell me the plan.`).wake, false, 'text beyond a notice with flags is a prompt')
+  assert.equal(t(`Why did I get "${WAKES[3]}" in the chat?`).wake, false, 'a prompt that quotes the notice')
+  assert.equal(t('Run `orca orchestration check` now').wake, false)
   assert.equal(t(WAKE, 'status?').wake, false, 'a human prompt after a wake is a normal turn')
   assert.equal(readTranscript([entry('user', WAKE), entry('user', 'Your role: lead.')]).first, 'Your role: lead.')
 })
 
 test('stop hook: a short acknowledgment after a wake neither blocks nor leaves a reminder', () => {
-  for (const [prompts, cwdRole] of [[[WAKE], 'lead'], [[WAKE, WAKE, WAKE], 'lead'], [[NOTIFY], 'lead'], [[WAKE], 'coordinator']]) {
+  for (const [prompts, cwdRole] of [[[WAKE], 'lead'], [[WAKES[3]], 'lead'], [[WAKES[1], WAKES[2], WAKES[4]], 'lead'], [[WAKE, WAKE, WAKE], 'lead'], [[NOTIFY], 'lead'], [[WAKE], 'coordinator']]) {
     const w = wakeWorld(prompts, 'Noted.', cwdRole)
     const cwd = cwdRole === 'coordinator' ? join(w.home, 'orca', 'coordinators', 'bounti') : w.worktree
     assert.equal(hook(w, { cwd }), null, `${prompts.length} wake(s), ${cwdRole}`)
