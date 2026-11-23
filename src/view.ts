@@ -202,17 +202,13 @@ function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size 
 
 /**
  * The session's model, muted, first on the row's right (panel.css .ml): seen in its latest reply, or
- * dimmed and italic while only asked for or the provider's default. Its tooltip says where the name
- * came from, and holds the route dispatch chose (which used to sit under the status).
+ * dimmed and italic (`pending`) while only asked for or the provider's default. The visible name is
+ * the whole label: no tooltip, so the row shows the name and nothing more.
  */
 export function modelTag(a: AgentInfo | null | undefined): string {
   const m = a?.model
   if (!a || !m) return ''
-  const effort = m.effort ? ` · ${m.effort}` : ''
-  const tip = m.source === 'default' ? `${m.provider ?? 'The provider'}’s default model\nNo reply yet, so the model is not known.\nThe name shows after its first reply.`
-    : m.source === 'asked' ? `${m.name}${effort}\nAsked for: ${a.route ?? m.name}\nNo reply yet.`
-    : `${m.name}${effort}\nSeen in its latest reply.${a.route ? `\nAsked for: ${a.route}` : ''}`
-  return `<span class="ml${m.source === 'seen' ? '' : ' pending'}" data-tip="${esc(tip)}">${esc(m.name)}</span>`
+  return `<span class="ml${m.source === 'seen' ? '' : ' pending'}">${esc(m.name)}</span>`
 }
 
 // ---------- reading the model ----------
