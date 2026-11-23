@@ -55,6 +55,8 @@ export type DispatchInfo = {
 export type RouteLine = {
   at?: string; role?: string; taskId?: string | null; dispatchId?: string | null; workspace?: string | null
   choice?: { agent?: string; model?: string; effort?: string } | null
+  /** routing.ts RouteDecision source: kind, type, fallback, role, override, default. */
+  source?: string | null
   type?: string | null; kind?: string | null; class?: string | null; risk?: string | null; context?: string | null; attempt?: number
   retryOf?: string; arm?: Arm; pair?: string
 }

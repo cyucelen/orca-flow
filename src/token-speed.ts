@@ -715,6 +715,8 @@ export type TokenSpeedWire = {
   testError: string | null
   models: SpeedModel[]
   series: Record<SpeedRange, SpeedSeries>
+  /** The sidebar's usage line (last 7 days, tokens and estimate); absent while the usage store is not open. */
+  usage?: import('./protocol.ts').UsageSummaryWire | null
 }
 
 /** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5", "gpt-5.6-sol" → "GPT-5.6 Sol"; other ids as they are. */

@@ -392,8 +392,207 @@ export type SettingsState = {
   updateCheck?: import('./update.ts').UpdateCheck | null
 }
 
+// ---------- Analytics (src/analytics.ts computes these; docs/analytics-brief.md is the spec) ----------
+
+/** The Usage view's window: activity in it, and which finished tasks and workstreams it lists (brief §5). */
+export type AnalyticsWindow = '7d' | '30d' | 'all'
+
+/**
+ * Tokens in the four categories (cache write split by TTL) and their estimate. `total` is the sum of
+ * the five counts. `cost` is the estimate of the priced tokens only, in $ at API list prices;
+ * `unpriced` is the tokens with no price (left out of `cost`, shown as "no estimate").
+ */
+export type Spend = { in: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number; out: number; total: number; cost: number; unpriced: number }
+
+/** accepted / failed: the worker_done outcome; unknown: settled with no (or an unknown) outcome; running: not settled. */
+export type TaskResult = 'accepted' | 'failed' | 'unknown' | 'running'
+
+/** One dispatch: a worker attempt (a retry is its own), or a lead. Tokens are its whole-run total. */
+export type AnalyticsTask = {
+  dispatchId: string
+  taskId: string | null
+  workstream: { id: string; title: string }
+  role: 'lead' | 'worker'
+  /** The Settings → Models row it ran on (kind id, type id, lead, other, unrouted). */
+  row: string
+  /** What it was dispatched as: "normal, high risk, retry 1", a type's name, "explicit model", "not routed". */
+  dispatchedAs: string
+  attempt: number
+  retryOf: string | null
+  /** A later dispatch retried it. */
+  retried: boolean
+  /** The row's fallback ran (routes.jsonl source "fallback"). */
+  fallback: boolean
+  /** The routed choice ("Claude Sonnet · medium"), null when not routed. */
+  routed: string | null
+  /** The logged model that spent most of its tokens; null when none or unknown. */
+  model: string | null
+  result: TaskResult
+  startedAt: number | null
+  finishedAt: number | null
+  durationMs: number | null
+  spend: Spend
+}
+
+/** One row of "By task kind": a Settings → Models row, Lead, or the visible leftovers (other, unrouted). */
+export type KindRow = {
+  id: string
+  name: string
+  kind: 'kind' | 'type' | 'lead' | 'other' | 'unrouted'
+  /** Settings → Models: the row's model and effort ("Claude Sonnet · medium"); Lead: its pick or "provider default". */
+  model: string | null
+  fallback: string | null
+  /** The logged model most of the row's finished tasks ran on. */
+  loggedModel: string | null
+  /** Tasks finished in the window (by finish date). */
+  n: number
+  running: number
+  /** n < 3: no medians are given. */
+  few: boolean
+  medianTokens: number | null
+  /** Over the row's fully priced tasks; null when none is. */
+  medianCost: number | null
+  /** Finished tasks with tokens that have no price. */
+  unpricedTasks: number
+  failed: number
+  retried: number
+  /** Share of finished tasks that failed or were retried, 0..1; null when n is 0. */
+  failedOrRetried: number | null
+  medianMs: number | null
+  /** Finished tasks on which the row's fallback ran. */
+  fallbackRan: number
+  /** Finished tasks that are retries (attempt > 0). */
+  retries: number
+  /** Its finished tasks, most tokens first. */
+  tasks: AnalyticsTask[]
+}
+
+/** A workstream as one line: whole-run tokens; partial when its logs cover less than all of its active time. */
+export type WorkstreamLine = {
+  id: string
+  title: string
+  result: TaskResult
+  finishedAt: number | null
+  /** Whole run. */
+  spend: Spend
+  /** The part of its tokens recorded inside the window (brief §5: "In window" vs "Whole run"). */
+  inWindow: number
+  /** Share of its dispatches' active time their logs cover, 0..1. */
+  coverage: number
+  partial: boolean
+}
+
+export type ArmStats = {
+  /** Finished runs of the arm (whole history), and how many passed or failed. */
+  runs: number
+  accepted: number
+  failed: number
+  running: number
+  /** All tokens of its finished runs, failed runs and retries included. */
+  spend: Spend
+  tokensPerAccepted: number | null
+  costPerAccepted: number | null
+  /** Median wall time (first dispatch → last completion) of accepted runs. */
+  medianWallMs: number | null
+  /** The lowest coverage of its runs. */
+  coverage: number
+  /** The routed models (per role and row) the arm ran on. */
+  models: string[]
+}
+
+export type Comparison = {
+  pair: string
+  baseline: ArmStats
+  variant: ArmStats
+  comparable: boolean
+  /** Why it is not comparable. */
+  why: ('models-differ' | 'arm-missing')[]
+  /** Caveats of a comparable pair. */
+  notes: ('small-sample' | 'partial')[]
+  /** One sentence for an incomparable pair ("Not comparable: model changed."), else null. */
+  sentence: string | null
+  /** variant − baseline; null when not comparable (or a side has nothing to compare). */
+  delta: { tokensPerAccepted: number | null; costPerAccepted: number | null; wallMs: number | null; passed: number } | null
+  runs: { workstream: string; title: string; arm: 'baseline' | 'variant'; result: TaskResult; finishedAt: number | null; wallMs: number | null; spend: Spend; coverage: number }[]
+}
+
+export type AnalyticsView = {
+  now: number
+  window: AnalyticsWindow
+  /** The window's start; null for all. */
+  from: number | null
+  prices: { version: string; dated: string; label: string; tip: string }
+  /** 0. The curiosity strip: activity in the window (clipped), plus two finished-in-window facts. */
+  strip: {
+    tokens: Spend
+    /** Part of `tokens`: sessions with no Orca binding. */
+    unattributed: Spend
+    /** Part of `tokens`: responses whose log named no model. */
+    unknownModel: number
+    biggest: { id: string; title: string; tokens: number } | null
+    /** Model share of the window's tokens, largest first; model null = unknown. */
+    models: { model: string | null; label: string; tokens: number; share: number }[]
+    /** Cache reads ÷ all input (uncached + cache read + cache write); null with no input. */
+    cacheShare: number | null
+    priciest: { dispatchId: string; name: string; workstream: { id: string; title: string }; cost: number } | null
+  }
+  /** 1. By task kind: the Settings → Models rows in their order, then Lead, then other and unrouted when they have tasks. */
+  rows: KindRow[]
+  /** 2. Lead overhead over finished workstreams with workers. */
+  leadOverhead: { median: number | null; n: number; heaviest: { id: string; title: string; share: number; leadTokens: number; tokens: number }[] }
+  /** 3. Labelled pairs with a run finished in the window or running; comparable first. */
+  comparisons: Comparison[]
+  /** 4. Biggest workstreams finished in the window (top 5, whole-run tokens), and what runs now. */
+  workstreams: { top: WorkstreamLine[]; finished: number; running: { count: number; spend: Spend } }
+}
+
+export type WorkstreamRow = {
+  who: 'lead' | 'worker' | 'retry'
+  label: string
+  dispatchId: string
+  taskId: string | null
+  /** "claude:<id>"; null for a dispatch whose session was never seen. */
+  session: string | null
+  /** The session that continued this one (a handover); nothing is moved to it. */
+  continuedIn: string | null
+  model: string | null
+  row: string | null
+  rowName: string | null
+  dispatchedAs: string | null
+  fallback: boolean
+  result: TaskResult
+  durationMs: number | null
+  spend: Spend
+}
+
+export type WorkstreamDetail = {
+  id: string
+  title: string
+  workspace: string | null
+  runId: string | null
+  result: TaskResult
+  startedAt: number | null
+  finishedAt: number | null
+  wallMs: number | null
+  coverage: number
+  partial: boolean
+  pair: { id: string; arm: 'baseline' | 'variant' } | null
+  /** Whole run. Equals the sum of `rows`, and of `byModel`. */
+  spend: Spend
+  /** Lead sessions first (one row per session), then workers and retries. */
+  rows: WorkstreamRow[]
+  byModel: { model: string | null; label: string; spend: Spend }[]
+}
+
+/** The sidebar's usage line: the last 7 days, "52.4M tokens · ≈ $48". */
+export type UsageSummaryWire = { days: number; tokens: number; cost: number; unpriced: number; prices: string; tip: string }
+
 declare module 'orca' {
   interface PluginRequests {
+    /** The Usage view for a window (computed on request from the usage store, links and routes). */
+    'analytics.view': { input: { window?: AnalyticsWindow }; output: AnalyticsView }
+    /** One workstream's breakdown; null when it is not known. */
+    'analytics.workstream': { input: { id: string }; output: WorkstreamDetail | null }
     /** Every workspace with its live agent status. */
     'sidebar.list': { output: Snapshot }
     /** Memory, heaviest sessions, finished sessions and merged worktrees, for the opened cockpit. */
