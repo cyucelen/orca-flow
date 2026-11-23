@@ -21,7 +21,7 @@ button { all: unset; cursor: pointer; box-sizing: border-box; }
 [hidden] { display: none !important; }
 /* The middle scrolls; the footer stays pinned to the bottom and grows up to a cap. */
 main { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; margin-inline: -12px; padding: 0 12px 12px; }
-footer { flex: none; margin: -14px -12px 0; padding: 3.5px 12px 4.5px; border-top: 1px solid var(--line); }
+footer { flex: none; margin: -14px -12px 0; padding: 4.5px 12px 3.5px; border-top: 1px solid var(--line); }
 /* What asks you (Up next): pinned under the tree and above the footer, so the tree never moves when
    an ask comes or goes. Capped so the tree keeps most of a short panel; several asks scroll here. */
 .attention { flex: none; max-height: min(45vh, 360px); overflow-y: auto; margin: -14px -12px 0; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
@@ -468,11 +468,11 @@ button.item.coord { padding: 5px 6px; }
 
 /* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it
    is capped and scrolls on its own under a sticky header; folded, it is its header row. */
-/* A divided block (Up next, a section, the footer) owns the space inside its two dividers. Its top margin
+/* A divided block (Up next, a section, the footer) owns the space inside its two dividers (capitals sit a pixel above their line box's centre, so a header row takes 1px more above than below). Its top margin
    takes back the body's 14px gap above its divider, so a row's height is its own padding and never
    depends on what follows it; the room above a divider is the block above's own bottom padding. */
-.lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -14px -12px 0; padding: 5px 12px 12px; border-top: 1px solid var(--line); }
-.lsec.folded { padding-bottom: 6px; }
+.lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -14px -12px 0; padding: 6px 12px 12px; border-top: 1px solid var(--line); }
+.lsec.folded { padding-bottom: 5px; }
 .sechead { display: flex; align-items: center; gap: 8px; position: sticky; top: -6px; z-index: 2; background: var(--bg); padding-block: 2px; }
 .sechead .label { padding-bottom: 0; }
 /* The title button's padding is even top and bottom (2px keeps the header at its old height): `.sechead .label` above would otherwise win
