@@ -43,6 +43,10 @@ free memory and continues it later in a new terminal):
 
 ## Each request
 
+**The user says what they need to get done** ("I need to ...", "I have to ..."): add it as a goal,
+one sentence is enough, and do not interrogate: `orca-flow goal add "<their words>"`. Say so in one
+line. Add `--next` only when they said it. When the same message also asks for work, route it below.
+
 A reported problem (failing CI, a bug, a broken deploy, a mislabeled card) is a request like any
 other: route it at once. Hand it to a lead when it belongs on that lead's branch or PR (step 2),
 otherwise start a new workstream (step 3). Pass the user's words, and any screenshots or links,
@@ -105,6 +109,7 @@ verbatim as the lead's context. Do not diagnose: finding the cause is the lead's
 
    Then write its card from the receipt's `workspace` (`<repoId>::<path>`):
    `orca-flow set --worktree path:<path> --priority <level> --goal "..." --fits "..."`.
+   When the workstream is for a goal, link it: `orca-flow goal link <id> --worktree path:<path>`.
    When dispatch refuses (or `orca-flow capacity --repo <name>` is not `ok`), first offer what makes room:
    reusing an existing worktree for this, or the largest item under `reclaimable` (an idle
    environment, a finished worktree to remove; see Worktree cleanup). Otherwise queue it (see the

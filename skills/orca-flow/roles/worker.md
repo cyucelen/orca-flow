@@ -15,8 +15,9 @@ says which files you may change, what other workers own, and what evidence prove
    ask instead of expanding it. Your lead picked your model for the task it described: when the
    task turns out much harder (a "small fix" that needs design or deep debugging), say so in your
    ask, so it can rerun the task on a stronger model.
-5. **Commit** your work on the worktree's branch. Do not push or open a PR; your lead does.
-6. **Report** with `worker_done`: the outcome in one line, the evidence (test output, screenshot,
+5. **Goals are not yours.** Do not run `orca-flow goal` commands; your lead keeps them.
+6. **Commit** your work on the worktree's branch. Do not push or open a PR; your lead does.
+7. **Report** with `worker_done`: the outcome in one line, the evidence (test output, screenshot,
    the commit), and anything left open. It is exempt from the user message frame in
    [messages.md](../messages.md). Then end your turn. Orca closes you when you are done and
    reopens you, with this conversation, if a follow-up comes.

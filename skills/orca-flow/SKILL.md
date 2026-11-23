@@ -280,6 +280,26 @@ or level changes (`orca-flow set --worktree current --priority now`). Workers ne
 share their worktree's, and the first line of a worker's spec is its goal, so write that line as a
 one-sentence outcome. `orca-flow get --worktree <selector>` shows a card.
 
+## Goals
+
+A goal is something the user needs to get done, in their words: a title, and optionally steps, the
+next thing to do, what "done" looks like, and links to Linear issues or worktrees. A goal may span
+several issues, or have no issue, worktree or agent at all. The sidebar lists them at the top.
+
+```sh
+orca-flow goal add "<title>" [--next ..] [--done-when ..] [--step ..]... [--linear DES-340] [--worktree current]
+orca-flow goal list [--worktree current] [--all]     # open and proposed; current = linked to this worktree
+orca-flow goal show <id>
+orca-flow goal set <id> --next "<the next thing to do>"
+orca-flow goal step <id> add "<text>" | tick <n|text> | untick <n|text>
+orca-flow goal link <id> --worktree <selector> | --linear <ID>     # unlink removes
+orca-flow goal propose-done <id>
+```
+
+The user and leads keep a goal current: tick steps, set `next`. Agents never mark a goal done: they
+`propose-done` and the user confirms it in the sidebar. `goal done` and `goal reopen` run only on
+the user's word. Workers do not touch goals.
+
 ## Keeping the user's attention cheap
 
 - Coordinators and leads end every message to the user as [messages.md](messages.md) says: read

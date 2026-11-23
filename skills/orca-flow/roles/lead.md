@@ -15,6 +15,14 @@ code): never edit files there, and never create a branch or a PR there. As soon 
 a code change, ask your coordinator for a worktree with `orca orchestration ask`, tell the user in
 one line, and end your turn.
 
+## Goals
+
+At the start of the workstream run `orca-flow goal list --worktree current`. A linked goal is what
+the user is trying to get done. When a worker's result completes one of its steps, tick it
+(`orca-flow goal step <id> tick <n>`) and set what comes next (`orca-flow goal set <id> --next
+"..."`). When its done criteria are met, run `orca-flow goal propose-done <id>` and tell the user in
+the frame; only the user marks a goal done. Do not create goals yourself unless the user asks.
+
 ## Each request from the user
 
 1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at

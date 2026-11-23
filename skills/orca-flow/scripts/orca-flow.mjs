@@ -12,6 +12,18 @@
 //   orca-flow role lead|clear                 Record (or clear) that the user made this session a lead
 //   orca-flow skills-reloaded [--request <id>]   After re-reading the skill files a "Reload skills"
 //                                             note asked for: records this session and the files' hash
+//   orca-flow goal add "<title>" [--note ..] [--next ..] [--done-when ..] [--step ..]... [--linear ID]...
+//       [--worktree <sel>]                    A goal: what the user needs to get done (title only is fine)
+//   orca-flow goal list [--worktree <sel>] [--all] [--json]   Open and proposed goals (--all: done too);
+//                                             --worktree current: goals linked to this worktree
+//   orca-flow goal show <id> [--json]         One goal with its steps, links and who changed it last
+//   orca-flow goal set <id> [--title ..] [--note ..] [--next ..] [--done-when ..]
+//   orca-flow goal step <id> add "<text>" | tick <n|text> | untick <n|text>   (n counts from 1)
+//   orca-flow goal link|unlink <id> --worktree <sel> | --linear <ID>
+//   orca-flow goal propose-done <id>          Agents: say the goal looks done; the user confirms
+//   orca-flow goal done <id> | reopen <id>    Only on the user's word
+//                                             Every goal command takes --by <name>; default is your
+//                                             role or worktree name, else "an agent"
 //   orca-flow types [--json]                  The user's task types (Settings → Models): id, name,
 //                                             description, model. None: every task goes by difficulty
 //   orca-flow route --role worker|lead|coordinator [--type <id>] [--kind simple|normal|hard] [--risk high]
@@ -36,7 +48,7 @@
 // Data lives in ~/.orca-flow (ORCA_FLOW_DIR overrides): cards/<worktree>.json written by
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
 // limits and `routing` (Settings → Models), roles.json for leads the user named (roles.mjs),
-// routes.jsonl (one line per routed start), plans/<slug>-<path hash>.json (plan state),
+// goals/<id>.json (goals.mjs, one file per goal), routes.jsonl (one line per routed start), plans/<slug>-<path hash>.json (plan state),
 // pending-starts.json (dispatches whose outcome is unknown), models-cache.json. The Orca plugin reads
 // them too. No dependencies.
 import { execFileSync } from 'node:child_process'
@@ -59,12 +71,16 @@ const LEVELS = { P0: 'now', P1: 'today', P2: 'soon', P3: 'someday' }
 
 // ---------- small helpers ----------
 
+// Flags that may repeat (goal add --step a --step b): their value is an array.
+const REPEATABLE = new Set(['step', 'linear'])
+
 function parseArgs(argv) {
   const out = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (!a.startsWith('--')) out._.push(a)
     else if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) out[a.slice(2)] = true
+    else if (REPEATABLE.has(a.slice(2))) out[a.slice(2)] = [...(out[a.slice(2)] ?? []), argv[++i]]
     else out[a.slice(2)] = argv[++i]
   }
   return out
@@ -424,7 +440,7 @@ export function formatBots({ repo, bots }) {
 
 // ---------- role ----------
 
-const { clearRole, currentSession, recordLead } = await import('./roles.mjs')
+const { clearRole, currentSession, recordLead, recordedRole } = await import('./roles.mjs')
 
 /**
  * `role lead` records that the user made this Claude session the lead of its workstream, so the
@@ -446,6 +462,116 @@ export function role(args, { env = process.env, cwd = process.cwd(), home = home
     return `Recorded session ${session.id} as the lead of this workstream (from ${session.from}). The lead instructions come back on every resume and compaction; \`orca-flow role clear\` removes it.`
   }
   return clearRole(DIR, session.id) ? `Cleared the lead record of session ${session.id}.` : `Session ${session.id} had no role record.`
+}
+
+// ---------- goals ----------
+
+const goals = await import('./goals.mjs')
+
+/** Who a goal change is recorded for: --by, else the recorded lead / coordinator folder / worktree name, else "an agent". */
+function goalBy(args, { env = process.env, cwd = process.cwd(), home = homedir() } = {}) {
+  if (typeof args.by === 'string' && args.by.trim()) return args.by.trim()
+  const coordinators = join(home, 'orca', 'coordinators')
+  if (cwd === coordinators || cwd.startsWith(`${coordinators}/`)) return `coordinator ${cwd.slice(coordinators.length + 1).split('/')[0]}`.trim()
+  let name
+  try {
+    name = resolveWorktree('current').name
+  } catch {}
+  const session = currentSession({ env, cwd, home })
+  const lead = session && recordedRole(DIR, session.id) === 'lead'
+  return name ? `${lead ? 'lead' : 'agent'} ${name}` : lead ? 'lead' : 'an agent'
+}
+
+/** A worktree selector as the link a goal stores. */
+function worktreeLink(selector) {
+  const wt = resolveWorktree(selector)
+  if (!wt.key && !wt.path) throw new Error(`could not resolve worktree "${selector}"`)
+  return { key: wt.key, path: wt.path, name: wt.name, worktreeId: wt.worktreeId }
+}
+
+const many = (v) => (v === undefined ? [] : [].concat(v)).filter((x) => typeof x === 'string')
+const WHEN = (at) => {
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000))
+  return mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`
+}
+
+/** One goal as plain text. */
+export function formatGoal(g) {
+  const done = g.steps.filter((s) => s.done).length
+  const out = [`${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}`]
+  if (g.next) out.push(`  next: ${g.next}`)
+  if (g.doneWhen) out.push(`  done when: ${g.doneWhen}`)
+  g.steps.forEach((s, i) => out.push(`  ${i + 1}. [${s.done ? 'x' : ' '}] ${s.text}`))
+  if (g.note) out.push(`  note: ${g.note}`)
+  const links = [...g.links.linear, ...g.links.worktrees.map((w) => w.name || w.path || w.key)]
+  if (links.length) out.push(`  linked: ${links.join(', ')}`)
+  out.push(`  last change: ${g.lastChange.by}, ${g.lastChange.field}, ${WHEN(g.lastChange.at)}`)
+  return out.join('\n')
+}
+
+/** The list: one line per goal, then its next step. */
+export function formatGoals(list) {
+  if (!list.length) return 'No goals.'
+  return list
+    .map((g) => {
+      const done = g.steps.filter((s) => s.done).length
+      return `${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}${g.next ? `\n    next: ${g.next}` : ''}`
+    })
+    .join('\n')
+}
+
+/** `orca-flow goal ...`: returns the text to print (or the JSON value with --json). */
+export function goalCommand(args, ctx = {}) {
+  const [, sub, id, ...rest] = args._
+  const data = ctx.data ?? DIR
+  const by = () => goalBy(args, ctx)
+  const shown = (g) => (args.json ? g : formatGoal(g))
+  const id1 = () => {
+    if (!id) throw new Error(`usage: orca-flow goal ${sub} <id> (orca-flow goal list shows the ids)`)
+    return id
+  }
+  switch (sub) {
+    case 'add': {
+      const title = args._.slice(2).join(' ')
+      const worktrees = args.worktree ? [worktreeLink(args.worktree)] : []
+      const g = goals.add(title, { note: args.note, next: args.next, doneWhen: args['done-when'], steps: many(args.step), linear: many(args.linear), worktrees }, { data, by: by() })
+      return args.json ? g : `Added.\n${formatGoal(g)}`
+    }
+    case 'list': {
+      let list = goals.list({ data })
+      if (args.worktree) list = goals.forWorktree(worktreeLink(args.worktree), { data, all: !!args.all })
+      else if (!args.all) list = list.filter((g) => g.status !== 'done')
+      return args.json ? list : formatGoals(list)
+    }
+    case 'show': {
+      const g = goals.get(id1(), { data })
+      if (!g) throw new Error(`no goal "${id}"`)
+      return shown(g)
+    }
+    case 'set':
+      return shown(goals.update(id1(), { title: args.title, note: args.note, next: args.next, doneWhen: args['done-when'] }, by(), { data }))
+    case 'step': {
+      const [action, ...words] = rest
+      const text = words.join(' ')
+      if (action === 'add') return shown(goals.addStep(id1(), text, by(), { data }))
+      if (action === 'tick' || action === 'untick') return shown(goals.setStep(id1(), text, action === 'tick', by(), { data }))
+      throw new Error('usage: orca-flow goal step <id> add "<text>" | tick <n|text> | untick <n|text>')
+    }
+    case 'link':
+    case 'unlink': {
+      const target = args.linear ? { linear: String([].concat(args.linear)[0]) } : args.worktree ? { worktree: worktreeLink(args.worktree) } : null
+      if (!target) throw new Error(`usage: orca-flow goal ${sub} <id> --worktree <sel> | --linear <ID>`)
+      return shown(goals[sub](id1(), target, by(), { data }))
+    }
+    case 'propose-done':
+      return shown(goals.propose(id1(), by(), { data }))
+    case 'done':
+      return shown(goals.done(id1(), by(), { data }))
+    case 'reopen':
+      return shown(goals.reopen(id1(), by(), { data }))
+    default:
+      throw new Error('usage: orca-flow goal add|list|show|set|step|link|unlink|propose-done|done|reopen (see the header of scripts/orca-flow.mjs)')
+  }
 }
 
 // ---------- skills-reloaded ----------
@@ -528,6 +654,11 @@ async function main() {
     case 'role':
       console.log(role(args))
       break
+    case 'goal': {
+      const out = goalCommand(args)
+      console.log(typeof out === 'string' ? out : JSON.stringify(out, null, 2))
+      break
+    }
     case 'skills-reloaded':
       console.log(skillsReloaded(args))
       break
@@ -551,7 +682,7 @@ async function main() {
       break
     }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|goal|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }
