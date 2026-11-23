@@ -326,7 +326,68 @@ followed by Reads of `SKILL.md` and `roles/worker.md`, and `orca-flow.mjs skills
 The busy path was run once more with the final code (hook-recorded confirmation, gate window):
 GRAPE, status `reloaded`, gate closed afterwards.
 
-### Codex 0.171, in a real Orca pane, with an isolated `CODEX_HOME`
+### Codex 0.171, launched by Orca (`orca agent launch`), on the real selected account
+
+These runs use the code as committed (cad6f72, `git archive` snapshot). The hooks' commands pointed at
+the snapshot's scripts under a disposable skill folder, because the installed 0.2.86 lacks
+`reload-check.mjs`. The request came from this branch's `requestReload`, and the status from
+`reloadStatus`, `reloadSummary` and `reloadMark`. Before the run, `~/.codex/hooks.json` did not exist.
+`~/.codex/config.toml` and the selected account's `hooks.json`, `config.toml`, `.bak` files and trust
+provenance were backed up first. No `auth.json` was copied. All three accounts' `auth.json` hashes
+were unchanged afterwards.
+
+```
+readiness: {"state":"not-installed", …}
+ensureCodexHooks: added the UserPromptSubmit / SessionStart / PostToolUse hook in ~/.codex/hooks.json
+readiness: {"state":"not-merged","reason":"Codex: Orca adds Orca Flow's hooks when it next starts Codex; …"}
+$ orca agent launch --agent codex --worktree current --surface terminal
+  account hooks.json, rebuilt by Orca: UserPromptSubmit [0 Reporting status to Orca, 1 Orca Flow: Reload skills],
+  SessionStart [same], PostToolUse [same]
+readiness: {"state":"needs-approval", …}
+  Hooks need review · 3 hooks are new or changed. · Hooks can run outside the sandbox after you trust them.
+  › 2. Trust all and continue
+readiness: {"state":"ready","reason":""}
+  account config.toml: [hooks.state."…/home/hooks.json:{user_prompt_submit,session_start,post_tool_use}:1:0"]
+› Read <scratch>/SKILL.md now … follow its instruction in every reply …
+• I'll end each reply with PINEAPPLE.
+[14:00:03] SKILL.md on disk now says: End every reply with the word BANANA.
+[14:00:03] status: [["rmwt9wmxl","waiting"]] | "Skills: 1 waiting for next turn"
+› What is 3+3? One short sentence.                       ← next prompt (delivered: UserPromptSubmit)
+• Explored └ Read SKILL.md, worker.md
+• Ran node …/orca-flow.mjs skills-reloaded --request rmwt9wmxl └ Recorded: skills reloaded (orca-flow 78ba9c5d18fe97af).
+• 3 + 3 = 6, BANANA.
+[14:00:30] status: [["rmwt9wmxl","reloaded"]] | "Skills: 1 reloaded" | gate closed
+› Run this shell command: `sleep 15; echo finished` …    ← busy
+[14:00:42] SKILL.md on disk now says: End every reply with the word MANGO.   status: waiting
+• Ran sleep 15; echo finished └ finished                 (delivered: PostToolUse)
+• Explored └ Read SKILL.md, worker.md
+• Ran node …/orca-flow.mjs skills-reloaded --request rmwt9xhdi └ Recorded: skills reloaded (orca-flow 03fc3fd4c2a3674a).
+• It printed finished, MANGO.                             ← same turn
+[14:01:17] status: [["rmwt9xhdi","reloaded"]] | "Skills: 1 reloaded" | gate closed
+== /quit, second orca agent launch
+  no review; ours still at index 1; the account's three trust tables kept (Orca added enabled = true)
+  ~/.codex/config.toml gained [hooks.state."/Users/…/.codex/hooks.json:{post_tool_use,session_start,user_prompt_submit}:0:0"]
+  with the same three hashes (Orca's promotion)
+  /hooks: PostToolUse 2/2, SessionStart 2/2, UserPromptSubmit 2/2 installed/active
+readiness: {"state":"ready","reason":""}
+```
+
+Afterwards `~/.codex/hooks.json` was deleted. The three promoted tables were removed from
+`~/.codex/config.toml`, which was then byte-identical to the backup. The account's `hooks.json`,
+`config.toml`, both `.bak` files and `.orca-hook-trust-provenance.json` were restored from the
+backup (`cmp`: identical). The other two accounts were never touched (`cmp`: identical).
+`~/.orca-flow/skill-reload` was deleted.
+
+An earlier run with this branch's first design shows why the hooks moved. It added the hooks to the
+account's own `hooks.json`. The next `orca agent launch` rewrote that file back to Orca's 9 entries
+(ours went to `hooks.json.bak`), so the session never got them and no review appeared. After Trust all
+in a Codex started by hand in that pane, the next launch removed both the hooks and their trust.
+
+### Codex 0.171, in a real Orca pane, with an isolated `CODEX_HOME` (first design)
+
+This run predates the move to `~/.codex/hooks.json`. It started Codex by hand, so Orca's launch-time
+rebuild did not run.
+
 
 Setup:
 - A scratch `CODEX_HOME` holding a copy of the selected account's `auth.json` only (chmod 600).
@@ -419,13 +480,18 @@ byte-identical, and `history.jsonl` was unchanged since that run.
   - fading and expiry;
   - row marks and heading rendering;
   - the worker's `requestReload`.
-- `src/codex-hooks.test.ts`:
+- `src/codex-hooks.test.ts` (fixtures shaped like Orca 1.4.265's merge: Orca's group first, then
+  `~/.codex/hooks.json`'s groups, and the trust keys Codex and Orca's promotion write):
   - Codex's trust hash against a real account's Orca-trusted entries;
-  - the installer next to Orca's entries: idempotent, other entries kept, `config.toml` and
-    `auth.json` untouched, a missing or broken `hooks.json` left alone, nothing from a development
-    copy;
-  - readiness (not installed, needs approval, two of three trusted, wrong position, ready, disabled,
-    changed command, unreadable, unmanaged);
+  - the installer in `~/.codex/hooks.json`: created when missing, idempotent, the user's entries and
+    other keys kept, no `${PLUGIN_ROOT}`-style variable, commands through `~/.agents/skills/orca-flow`,
+    a broken file or a missing `~/.codex` left alone, nothing from a development copy, and no account
+    home, `config.toml` or `auth.json` written;
+  - readiness: not installed, not merged, ours at index 1 after Orca's, needs approval, two of three
+    trusted, the wrong position, ready, disabled, another hash, an update not merged yet;
+  - readiness with the approval promoted into `~/.codex/config.toml` (carried by hash; another file's
+    trust does not count; the account's own key wins), the `~/.codex` login itself, unreadable files,
+    unmanaged;
   - the `hooks.state` reader.
 - `src/antigravity-hooks.test.ts` (fixtures: the documented format and the shape of Orca's
   `orca-status`): the `/bin/sh -c` command and its gate; the installer next to `orca-status` and a
@@ -454,11 +520,15 @@ byte-identical, and `history.jsonl` was unchanged since that run.
   so every Orca Claude Code session starts `node` on its tool calls during that time.
 - Codex readiness is read for the selected Codex account. A session running under another account is
   judged by the selected one.
-- Codex sessions that started before the hooks were installed or approved need a restart. They show
-  as waiting, never as reloaded.
-- Not tested live: a Codex session started by Orca itself (as opposed to one I started in an Orca
-  terminal), Orca's structured Codex chat (no TUI review there), Orca rewriting `hooks.json` with
-  ours in it, and Codex's SessionStart `resume` path.
+- Codex sessions that started before Orca merged our hooks into their account, or before they were
+  approved, need a restart. They show as waiting, never as reloaded.
+- Orca's merge is Orca 1.4.265 behavior read from its bundle and checked live, not a documented
+  contract. If a later Orca stops merging `~/.codex/hooks.json`, readiness reports "not merged" and
+  Codex sessions count as unsupported. They are never counted as reloaded.
+- Not tested live: Orca's structured Codex chat (no TUI review there), Codex's SessionStart `resume`
+  path, the hook-recorded confirmation in a sandboxed Codex (Orca starts Codex without a sandbox),
+  Orca carrying the promoted approval into a second account, and a plugin update changing a command
+  (readiness then reports "not merged" until Orca next starts Codex; fixture-tested).
 - Antigravity is not live-tested (`agy` was not installed). Unverified: that agy passes Orca's env
   to hooks, that hooks run outside its terminal sandbox, the `run_command` argument names, whether
   `ephemeralMessage` is enough for the agent to finish the re-read across several model calls, and
