@@ -21,10 +21,10 @@ button { all: unset; cursor: pointer; box-sizing: border-box; }
 [hidden] { display: none !important; }
 /* The middle scrolls; the footer stays pinned to the bottom and grows up to a cap. */
 main { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; margin-inline: -12px; padding: 0 12px 12px; }
-footer { flex: none; margin-inline: -12px; padding: 6px 12px 10px; border-top: 1px solid var(--line); }
+footer { flex: none; margin: -14px -12px 0; padding: 3.5px 12px 4.5px; border-top: 1px solid var(--line); }
 /* What asks you (Up next): pinned under the tree and above the footer, so the tree never moves when
    an ask comes or goes. Capped so the tree keeps most of a short panel; several asks scroll here. */
-.attention { flex: none; max-height: min(45vh, 360px); overflow-y: auto; margin: -6px -12px 0; padding: 10px 12px 0; border-top: 1px solid var(--line); }
+.attention { flex: none; max-height: min(45vh, 360px); overflow-y: auto; margin: -14px -12px 0; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
 .fold-list { max-height: 40vh; overflow-y: auto; margin-inline: -12px; padding-inline: 12px; }
 
 /* cockpit */
@@ -355,6 +355,8 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
 
 /* coordinators: the row opens the session, the chevron folds the team */
 .item.coord { padding: 0; gap: 6px; }
+/* The status at the row's end gets the inset the character has at its start (the fold button, when there is one, brings its own). */
+.item.coord > .r:last-child { margin-right: 6px; }
 .coord-open { flex: none; display: flex; align-items: center; padding: 5px 6px; border-radius: 6px; }
 .coord-name { flex: 1; min-width: 0; display: flex; padding: 5px 0; border-radius: 6px; text-align: left; }
 .coord-fold { display: inline-flex; padding: 6px 8px; color: var(--faint); border-radius: 5px; }
@@ -466,8 +468,11 @@ button.item.coord { padding: 5px 6px; }
 
 /* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it
    is capped and scrolls on its own under a sticky header; folded, it is its header row. */
-.lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -6px -12px 0; padding: 6px 12px 8px; border-top: 1px solid var(--line); }
-.lsec.folded { padding-bottom: 7px; }
+/* A divided block (Up next, a section, the footer) owns the space inside its two dividers. Its top margin
+   takes back the body's 14px gap above its divider, so a row's height is its own padding and never
+   depends on what follows it; the room above a divider is the block above's own bottom padding. */
+.lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -14px -12px 0; padding: 5px 12px 12px; border-top: 1px solid var(--line); }
+.lsec.folded { padding-bottom: 6px; }
 .sechead { display: flex; align-items: center; gap: 8px; position: sticky; top: -6px; z-index: 2; background: var(--bg); padding-block: 2px; }
 .sechead .label { padding-bottom: 0; }
 /* The title button's padding is even top and bottom (2px keeps the header at its old height): `.sechead .label` above would otherwise win
@@ -491,10 +496,6 @@ button.item.coord { padding: 5px 6px; }
 .foldsum > .sepd { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 @container (max-width: 260px) { .foldsum > .sepd { display: none; } }
 @container (max-width: 210px) { .sechead > .foldsum { display: none; } }
-/* A folded section sits centred between its dividers: the next divider is this section's bottom edge, so
-   the 8px the panel's gap would add under the header (14px gap, the section's -6px top margin) is taken
-   back; open, the section keeps that room under its last row. */
-.lsec.folded:has(~ .lsec:not([hidden])) { margin-bottom: -8px; }
 @media (prefers-reduced-motion: reduce) { .lfold > svg:first-child { transition: none; } }
 .seg { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 7px; background: var(--card); }
 .seg button { padding: 2px 8px; border-radius: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
