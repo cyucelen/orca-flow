@@ -66,7 +66,8 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   call when busy: re-read the skill files, then confirm. Nothing is typed into a terminal and no mail
   is sent; tasks, open asks and runs stay as they are. Rows show waiting, reading, reloaded or
   unsupported, and one line sums it up ("Skills: 3 reloaded · 2 waiting for next turn"); requests
-  expire after 24 h. Codex and other agents cannot reload live: restart them.
+  expire after 24 h. Codex and other agents cannot reload live (Orca starts Codex without Orca
+  Flow's hooks): restart them.
   [How it works and what each provider supports](docs/skill-reload.md)
 
 ## Requirements
