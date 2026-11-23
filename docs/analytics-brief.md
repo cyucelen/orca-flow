@@ -24,8 +24,8 @@ Token Speed cannot answer any of the three. It keeps only output tokens, only pe
 **(b) Usage view** (a full panel, opened from the sidebar):
 
 - Time window picker: Today · 7 d · 30 d · All recorded. One control.
-- Totals for the window: total tokens with the four categories, estimated cost, coverage of the window.
-- Workstreams ranked by tokens, with Unattributed and Unknown as visible rows.
+- Activity in the window: total tokens with the four categories, estimated cost, coverage of the window, split into Orca workstreams and Unattributed (Unattributed is a row of the activity total, never a ranked workstream).
+- **Completed workstreams** (answers Q1): runs that finished inside the window, ranked by whole-run total tokens, never clipped to the window. Each row: whole-run tokens, estimated cost or "no estimate", wall time, workers + retries, accepted/failed, the partial-coverage chip when it applies, and a thin category bar. Running workstreams are not ranked; at most one line under the list: "N running · X tokens so far".
 - Drilldown: workstream → lead / workers / retries → model, each row with input, cache read, cache write, output.
 - Comparison: for a task the user labelled as a baseline/variant pair, the two arms side by side (§8).
 
@@ -87,7 +87,9 @@ What each source can and cannot give (checked on this machine):
 
 - **Window activity**: usage whose timestamp falls inside the window. A run that spans the window edge contributes only its in-window part (clipped). Used for the window totals.
 - **Whole-run total**: everything the workstream ever spent, regardless of window. Used in the workstream breakdown and comparisons.
-- The UI labels both every time: "In window" vs "Whole run". The ranking list sorts by in-window tokens and shows the whole-run total beside it.
+- The UI labels both every time: "In window" vs "Whole run".
+- **The window does two jobs, stated in one line in the view:** (a) activity, clipped: the "recorded in window" total, the per-day chart and the by-model table; (b) selection: which completed runs are listed, by finish date (the run's last recorded activity), each with its whole-run total. A ranking by in-window tokens is not offered: a window slice mixes running work, half-finished runs and partial coverage, so its order answers no decision.
+- A run that spans the window edge (e.g. a 9-day run finishing yesterday) appears in the 7-day list at its whole-run total; only its in-window part counts toward the activity total.
 - **Partial coverage**: a run that started before instrumentation, or whose logs were rotated, shows "Partial · 62 % covered" (covered = share of the run's active time for which logs were read). Its numbers are a floor, never extrapolated.
 
 ## 6. Token categories and normalisation

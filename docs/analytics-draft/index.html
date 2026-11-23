@@ -177,6 +177,7 @@ button { all: unset; cursor: pointer; box-sizing: border-box; }
 .wrow .wsub { grid-column: 2; text-align: right; font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .wrow .cbar { grid-column: 1 / -1; margin-left: 20px; margin-top: 4px; }
 .sep { border-top: 1px solid var(--line); margin: 4px 0; }
+table.u.act { min-width: 0; max-width: 520px; }
 /* tables */
 .tw { overflow-x: auto; margin-inline: -4px; padding-inline: 4px; }
 table.u { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 620px; }
@@ -351,6 +352,8 @@ function sessionUse(s, maxDays = Infinity) {
 }
 const sum = (list, maxDays) => list.reduce((a, s) => add(a, sessionUse(s, maxDays)), zero())
 const sessionsOf = (wsId) => S.filter((s) => s.ws === wsId)
+/** Days ago a finished run ended: its last recorded activity. */
+const finishDay = (w) => Math.min(...sessionsOf(w.id).flatMap((s) => s.chunks.map((c) => c[0])))
 const wsById = Object.fromEntries(WS.map((w) => [w.id, w]))
 
 // ---------------- formatting ----------------
@@ -480,19 +483,28 @@ function usageView() {
       + `<div class="days"><span class="dtop">${tok(top)}</span>${cols.map(({ v, d }) => `<i class="${v ? '' : 'zero'}" data-tip="${esc(`${dateOf(d)} · ${v ? full(v) + ' tokens' : 'no recorded usage'}`)}"><b style="height:${v ? Math.max(2, (v / top) * 100) : 2}%"></b></i>`).join('')}</div>`
       + `<div class="daxis"><span>${dateOf(span - 1)}</span><span>today</span></div></div>`
   }
-  // workstreams ranked by in-window tokens
-  const rows = WS.map((w) => ({ w, u: sum(sessionsOf(w.id), W.max), whole: sum(sessionsOf(w.id)) })).filter((r) => total(r.u) > 0).sort((a, b) => total(b.u) - total(a.u))
+  // activity in the window, split into Orca workstreams and Unattributed (adds up to the headline)
   const un = sum(S.filter((s) => !s.ws), W.max)
+  const att = sum(S.filter((s) => s.ws), W.max)
+  const unN = S.filter((s) => !s.ws && total(sessionUse(s, W.max)) > 0).length
+  const costTxt = (x) => (x.unpriced && !x.cost ? '<span class="ne">no estimate</span>' : usd(x.cost) + (x.unpriced ? '<span class="ne"> +?</span>' : ''))
+  const split = `<div class="tw"><table class="u act"><tbody>
+    <tr><td>Orca workstreams <span class="sub">running and finished, clipped to the window</span></td><td>${full(total(att))}</td><td>${costTxt(att)}</td></tr>
+    <tr data-tip="Sessions with no Orca binding, such as a plain terminal. Counted in every activity total; never ranked as a workstream."><td>Unattributed <span class="sub">no Orca session · ${unN} session${unN === 1 ? '' : 's'}</span></td><td>${full(total(un))}</td><td>${costTxt(un)}</td></tr>
+    <tr class="sum"><td>Recorded in window</td><td>${full(total(u))}</td><td>${costTxt(u)}</td></tr></tbody></table></div>`
+  // completed workstreams: finished inside the window, ranked by whole-run total (never clipped)
+  const done = WS.filter((w) => w.accepted != null).map((w) => ({ w, end: finishDay(w), whole: sum(sessionsOf(w.id)) }))
+    .filter((r) => r.end < W.max).sort((a, b) => total(b.whole) - total(a.whole))
+  const running = WS.filter((w) => w.accepted == null).map((w) => sum(sessionsOf(w.id)))
   const chips = (w) => [
+    w.accepted ? '<span class="chip good">accepted</span>' : '<span class="chip bad">failed</span>',
     w.coverage < 1 ? `<span class="chip warn" data-tip="${esc(`${Math.round(w.coverage * 100)} % of this run was recorded: ${w.partialWhy}. Its numbers are a floor.`)}">Partial · ${Math.round(w.coverage * 100)} %</span>` : '',
-    sessionsOf(w.id).some((s) => s.role === 'retry') ? '<span class="chip">retry</span>' : '',
-    w.accepted === false ? '<span class="chip bad">failed acceptance</span>' : '',
-    w.accepted == null ? '<span class="chip ask">running</span>' : '',
     w.pair ? `<span class="chip" data-tip="Labelled as the ${w.arm} arm of a comparison">${w.arm}</span>` : ''
   ].join('')
-  const list = rows.map((r, i) => `<button class="wrow" data-go="ws-${r.w.id}"><span class="wt"><span class="rank">${i + 1}</span><span class="t">${esc(r.w.title)}</span></span><span class="wv"><b>${tok(total(r.u))}</b></span>`
-    + `<span class="wmeta"><span>${esc(r.w.repo)}</span>${chips(r.w)}</span><span class="wsub" data-tip="Everything this run spent, whatever the window">whole run ${tok(total(r.whole))}</span>${catBar(r.u, true)}</button>`).join('')
-  const unRow = total(un) > 0 ? `<div class="sep"></div><div class="wrow static" data-tip="Sessions with no Orca binding, such as a plain terminal. Counted in every total, never folded into a workstream."><span class="wt"><span class="rank"></span><span class="t">Unattributed</span></span><span class="wv"><b>${tok(total(un))}</b></span><span class="wmeta"><span>no Orca session · ${S.filter((s) => !s.ws && total(sessionUse(s, W.max)) > 0).length} sessions</span>${un.unpriced ? '<span class="chip">part has no price</span>' : ''}</span><span class="wsub">${un.unpriced && !un.cost ? 'no estimate' : usd(un.cost)}</span>${catBar(un, true)}</div>` : ''
+  const crew = (w) => { const ss = sessionsOf(w.id), n = ss.filter((s) => s.role === 'worker').length, r = ss.filter((s) => s.role === 'retry').length; return `${n} worker${n === 1 ? '' : 's'}${r ? ` + ${r} retr${r === 1 ? 'y' : 'ies'}` : ''}` }
+  const list = done.map((r, i) => `<button class="wrow" data-go="ws-${r.w.id}"><span class="wt"><span class="rank">${i + 1}</span><span class="t">${esc(r.w.title)}</span></span><span class="wv"><b>${tok(total(r.whole))}</b></span>`
+    + `<span class="wmeta"><span>finished ${ago(r.end)} · ${mins(r.w.wall)} · ${crew(r.w)}</span>${chips(r.w)}</span><span class="wsub">${costTxt(r.whole)}</span>${catBar(r.whole, true)}</button>`).join('')
+  const runLine = running.length ? `<div class="note">${running.length} running · ${tok(total(running.reduce(add, zero())))} tokens so far · not ranked until they finish</div>` : ''
   // by model
   const byModel = {}
   for (const s of S) { const key = String(s.model); byModel[key] = add(byModel[key] ?? zero(), sessionUse(s, W.max)) }
@@ -505,9 +517,11 @@ function usageView() {
       <div class="fig win"><span class="k">Recorded in window · ${esc(W.label)}</span><span class="v">${tok(total(u))}</span><span class="n">${full(total(u))} tokens, all four categories</span></div>
       <div class="fig"><span class="k">Estimated cost</span><span class="v sm">${usd(u.cost)}</span><span class="est" data-tip="${esc(`Price table ${PRICES.version}, dated ${PRICES.dated}. Claude Max and ChatGPT plans are flat subscriptions: this is not what you pay.`)}">Estimated at API list prices · not your bill</span>${u.unpriced ? `<span class="est">excludes ${tok(u.unpriced)} tokens with no price</span>` : ''}</div>
     </div>${catBar(u)}${catLegend(u)}
-    ${partial.length ? `<div class="note">Includes ${partial.length} partial workstream (${partial.map((w) => `${esc(w.title)}, ${Math.round(w.coverage * 100)} % recorded`).join('; ')}): window totals are a floor.</div>` : ''}</div>
+    ${split}
+    ${partial.length ? `<div class="note">Includes ${partial.length} partial workstream (${partial.map((w) => `${esc(w.title)}, ${Math.round(w.coverage * 100)} % recorded`).join('; ')}): window totals are a floor.</div>` : ''}
+    <div class="note">The window sets two things: the activity above, the per-day chart and the by-model table (usage inside the window, clipped), and which completed runs are listed below (by finish date, whole-run totals).</div></div>
     ${days}
-    <div class="block"><div class="bhead"><span class="label">Workstreams by tokens in window</span><span class="note">right: whole-run total</span></div><div class="wlist">${list || '<div class="empty">No workstream usage in this window.</div>'}${unRow}</div></div>
+    <div class="block"><div class="bhead"><span class="label">Completed workstreams</span><span class="note">finished in window · ranked by whole-run tokens · right: est. cost</span></div><div class="wlist">${list || '<div class="empty">No workstream finished in this window.</div>'}</div>${runLine}</div>
     <div class="block"><div class="bhead"><span class="label">By model, in window</span></div>${mtable}</div>`
 }
 
