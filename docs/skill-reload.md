@@ -6,8 +6,10 @@ Skill files change on disk all the time: a plugin update repoints `<Claude profi
 not notice. It read `SKILL.md` and its role file earlier, and that text stays in its conversation.
 Refreshing the files does not fix that. The agent has to read them again in the same conversation.
 
-**Reload skills** in the sidebar asks it to. Delivery uses our hooks in Claude Code and in Codex:
-nothing is typed into a terminal, and no Orca mail is sent.
+**Reload skills** in the sidebar asks it to. Delivery uses our hooks in Claude Code, Codex and
+Antigravity: nothing is typed into a terminal, and no Orca mail is sent. Claude Code and Codex are
+live-tested. Antigravity is **fixture-tested only**, because `agy` was not installed where it was
+built.
 
 ## Codex: approve Orca Flow's hooks once
 
@@ -97,6 +99,77 @@ When Codex sessions are asked, the confirmation adds: "A Codex session started b
 Orca Flow's hooks reloads only after a restart." A Codex row that is waiting says the same in its
 tooltip.
 
+### Antigravity CLI (`agy`): documented hooks, fixture-tested only
+
+`agy` is not installed on the verification machine. Everything below comes from Google's docs and
+from Orca 1.4.265's own Antigravity integration. It is covered by fixtures and has **not** been
+tested live.
+
+- **Hooks exist** ([Hooks](https://antigravity.google/docs/hooks/)). Global hooks live in
+  `~/.gemini/config/hooks.json`, workspace hooks in `.agents/hooks.json`. "Hooks in
+  `~/.gemini/antigravity-cli/settings.json` aren't loaded."
+  - The file is an object of named hook definitions. Each definition maps events to handlers, and
+    may set `enabled` (default `true`).
+  - Events: `SessionStart`, `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`.
+    `SessionStart`, `PreInvocation`, `PostInvocation` and `Stop` take a list of handlers.
+    `PreToolUse` and `PostToolUse` take `[{matcher, hooks}]`.
+  - A handler is `{type: "command", command, timeout}`; the timeout defaults to 30 s.
+  - Input and output are camelCase JSON on stdin and stdout. Every hook gets `conversationId`,
+    `workspacePaths`, `transcriptPath`, `artifactDirectoryPath`, `modelName` and `lastUserInput`.
+- **Injection at the next prompt and after a tool call.** `PreInvocation` "fires before the model is
+  called", with `invocationNum` (0 for the first call of a turn), and can answer
+  `{"injectSteps": [{"ephemeralMessage": "…"}]}`. Because it fires before every model call, a busy
+  agent gets the note at its next model call after a tool result. `PostToolUse` "returns an empty
+  JSON object `{}`" (it cannot inject) and receives `toolCall` (`name`, `args`).
+- **Orca already uses this file.** Orca writes its own definition `orca-status` there: PreInvocation,
+  PostInvocation and Stop handlers, and PreToolUse and PostToolUse with matcher `*`. Each command is
+  `/bin/sh -c '…'` with `{}` as the fallback output. Orca's writer replaces only that key and keeps
+  the rest (Orca bundle, `managed-agent-hook-controls`). Orca's hook script reads `ORCA_PANE_KEY`, so
+  agy hooks inherit the pane's env.
+- **Trust: not documented.** The hooks, permissions and sandbox pages describe no trust or approval
+  step for hooks. `/hooks` "adds, edits, and turns hooks on or off". Workspace trust
+  (`trustedWorkspaces`) is about folders.
+- **Sandbox.** The terminal sandbox is optional (`enableTerminalSandbox`, `--sandbox`, on with
+  `agentMode: "auto"`). Sandboxed commands "can write to your workspace, temporary directories, and
+  common build caches" ([Sandbox](https://antigravity.google/docs/sandbox/)), so
+  `orca-flow skills-reloaded` may not be able to write `~/.orca-flow`. Whether hooks run inside the
+  sandbox is not documented. Orca's own hook writes under `~/.orca`, which suggests they don't.
+- **Skills** ([Agent skills](https://antigravity.google/docs/skills/),
+  [Customization discovery](https://antigravity.google/docs/customization-discovery/)). Global skills
+  are in `~/.gemini/config/skills`. "On every turn, the agent sees a list of available skills with
+  their names and descriptions. If a skill looks relevant to your task, the agent reads the full
+  instructions." `/skills reload` updates the list ("Reloaded 12 skills: 1 added, 0 updated, 0
+  removed"), and "Antigravity rereads your rules and skills before each turn". Nothing says a skill
+  body the agent already read is put into the conversation again, so a reload note is still needed.
+- No environment variable for the conversation is documented. It arrives as `conversationId` in the
+  hook input.
+
+**Used:** an `orca-flow-reload` definition next to Orca's `orca-status` (`src/antigravity-hooks.ts`):
+- `PreInvocation` runs `scripts/agy-hook.mjs`, which gives the note once per request as an
+  `ephemeralMessage`. Its wording depends on `invocationNum`: answer the user's message, or continue
+  the task.
+- `PostToolUse` (matcher `run_command`) records the confirmation when it sees `orca-flow
+  skills-reloaded` among the call's string arguments. The argument names are not documented, so it
+  checks them all.
+- Commands are `/bin/sh -c` like Orca's, run through `~/.gemini/config/skills/orca-flow`, and start
+  `node` only while a reload waits; otherwise they answer `{}`.
+- The pane comes from `ORCA_PANE_KEY`. Without it, only the request's own conversation id matches.
+- The installer is idempotent and keeps every other key and a user's `enabled: false`. It never
+  creates the file (Orca does when it sets Antigravity up), and never touches `settings.json` or
+  credentials. Only the installed copy installs.
+
+Readiness, read-only on each snapshot:
+
+| State | Reason in the sidebar |
+| --- | --- |
+| not installed | Orca Flow's hooks are not installed yet; update Orca Flow (it adds them once Orca has set up Antigravity) |
+| disabled | Orca Flow's hooks are turned off; turn orca-flow-reload on with /hooks in agy |
+| unreadable | ~/.gemini/config/hooks.json cannot be read; restart to reload |
+
+There is no "needs approval" state, because no trust step is documented. A waiting Antigravity row
+adds that a session started before the hooks were added "may need a restart". Whether agy reads
+`hooks.json` once per session is not documented.
+
 ### Orca 1.4.265: why not mail or typed prompts
 
 - `orca terminal send --help` says: "To message another agent, use orca orchestration send; never
@@ -121,9 +194,12 @@ live, because the chosen design uses neither path.
    A session is a target only when it is live (`live === true`) and its dispatch has not settled.
    Finished and asleep or closed sessions are skipped and counted. They are never woken. Claude Code
    sessions get the note. So do Codex sessions once the selected Codex account's hooks are
-   installed and trusted (`codexReload`). Every other session is listed as unsupported, with its
-   reason and the action to take.
-2. **Confirmation** (panel): "Reload skills in 6 agents across all coordinators and your chats?
+   installed and trusted (`codexReload`), and Antigravity sessions while our `orca-flow-reload`
+   definition is in `~/.gemini/config/hooks.json` and on (`antigravityReload`). Every other session
+   is listed as unsupported, with its reason and the action to take.
+2. **Confirmation** (panel), short: the counts by role, then at most one line each for "Needs
+   approval", "Cannot reload" and "Skipped". Each row's tooltip carries the reason and the action.
+   An earlier, longer version read: "Reload skills in 6 agents across all coordinators and your chats?
    2 coordinators, 2 leads, 1 worker, 1 chat re-read their skill files … 1 Codex session has no live
    reload: restart to reload. Skipped: 1 finished." It is asked every time and is never remembered.
 3. **Request** (`sidebar.reloadSkills` → `requestReload` in src/worker.ts): the worker re-checks the
@@ -330,6 +406,15 @@ byte-identical, and `history.jsonl` was unchanged since that run.
   - readiness (not installed, needs approval, two of three trusted, wrong position, ready, disabled,
     changed command, unreadable, unmanaged);
   - the `hooks.state` reader.
+- `src/antigravity-hooks.test.ts` (fixtures: the documented format and the shape of Orca's
+  `orca-status`): the `/bin/sh -c` command and its gate; the installer next to `orca-status` and a
+  user's definition (idempotent, a user's `enabled: false` kept, `settings.json` untouched, a
+  missing, broken or non-object file left alone, nothing from a development copy); readiness (not
+  installed, ready, turned off, a missing event, unreadable).
+- `test/skill-reload.test.mjs`, Antigravity: `agy-hook.mjs` with the documented input. It covers
+  PreInvocation `injectSteps` once per request, wording by `invocationNum`, untargeted and broken
+  input answering `{}`, PostToolUse recording the confirmation from a `run_command` argument, and a
+  match by `conversationId` without the pane env.
 - `src/install.test.ts`: the PostToolUse entry (gated command, no matcher, idempotent, repointed in
   place, other settings kept).
 
@@ -353,3 +438,7 @@ byte-identical, and `history.jsonl` was unchanged since that run.
 - Not tested live: a Codex session started by Orca itself (as opposed to one I started in an Orca
   terminal), Orca's structured Codex chat (no TUI review there), Orca rewriting `hooks.json` with
   ours in it, and Codex's SessionStart `resume` path.
+- Antigravity is not live-tested (`agy` was not installed). Unverified: that agy passes Orca's env
+  to hooks, that hooks run outside its terminal sandbox, the `run_command` argument names, whether
+  `ephemeralMessage` is enough for the agent to finish the re-read across several model calls, and
+  whether agy reads `hooks.json` once per session.

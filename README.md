@@ -61,7 +61,8 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
 - **Reload skills:** after a skill update, running agents keep the old text in their conversation.
   Right-click a coordinator and choose **Reload skills** (its session, leads and workers), or use the
   circular-arrows button on the Coordinators heading (every running agent). A confirmation names who
-  gets it ("1 coordinator, 2 leads, 1 worker; skipped: 1 finished"). Each Claude Code and Codex
+  gets it, in a few short lines ("1 coordinator, 2 leads, 1 worker re-read their skills at their
+  next turn. Needs approval: 1 Codex. Skipped: 1 finished."). Each Claude Code, Codex and Antigravity
   session gets a short note at its next turn, or after its next tool call when busy: re-read the
   skill files, then confirm. Nothing is typed into a terminal and no mail is sent; tasks, open asks
   and runs stay as they are. Rows show waiting, reading, reloaded or unsupported (with the reason),
@@ -72,6 +73,9 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   **Hooks need review**: choose **Trust all and continue** (or review them, or use `/hooks` in an open
   session), then restart Codex sessions that were already running. Until then the sidebar shows those
   sessions as unsupported with that one step.
+  **Antigravity (fixture-tested, not live-tested):** an `orca-flow-reload` definition in
+  `~/.gemini/config/hooks.json`, next to Orca's own, gives the note through agy's documented
+  `PreInvocation` hook. Google documents no approval step for hooks.
   [How it works and what each provider supports](docs/skill-reload.md)
 
 ## Requirements
@@ -103,6 +107,7 @@ The installed copy sets up these files outside its own folder:
 | `~/orca/coordinators/<name>/AGENTS.md` and `CLAUDE.md` | Missing local instructions are seeded for new and existing coordinator folders. Launch prompts also explicitly supply the coordinator role and skill path. |
 | `<Claude profile>/settings.json` | One Stop hook that checks a coordinator's or lead's last message against the [message format](#message-format), and one UserPromptSubmit hook that passes its quiet reminders to the agent; both do nothing until you opt in. One SessionStart hook gives a lead its role instructions back when its session resumes or compacts (see [How work flows](#how-work-flows)); it needs no opt-in and gives other agents nothing. One PreToolUse hook on the Agent tool denies a coordinator's or lead's native subagent so the work goes to an Orca worker; it is on by default ([Delegation](docs/model-routing.md#delegation)). One PostToolUse hook hands a busy agent the [Reload skills](docs/skill-reload.md) note; it starts `node` only while a reload request waits. The UserPromptSubmit and SessionStart hooks give that note too, with no opt-in, and only to the sessions a request names. All five run only in Orca's agent panes. Your other settings and hooks stay as they are. |
 | `~/Library/Application Support/orca/codex-accounts/<id>/home/hooks.json` | In each Orca-managed Codex account, three hooks named *Orca Flow: Reload skills* (UserPromptSubmit, SessionStart, PostToolUse) next to Orca's own entries, which stay as they are. They let Codex sessions take [Reload skills](docs/skill-reload.md#codex-approve-orca-flows-hooks-once). Codex runs them only after you approve them once (**Hooks need review** → **Trust all and continue**). Orca Flow never writes Codex's trust state, `config.toml` or `auth.json`. |
+| `~/.gemini/config/hooks.json` | An `orca-flow-reload` definition (PreInvocation, PostToolUse on `run_command`) next to Orca's `orca-status`, so Antigravity sessions can take [Reload skills](docs/skill-reload.md#antigravity-cli-agy-documented-hooks-fixture-tested-only). It is added only when Orca has created the file, and a definition you turned off stays off. Fixture-tested, not live-tested. |
 
 A real file or another source's symlink is left alone, including a dangling link whose ownership
 cannot be verified. Only our installed release links are repointed. A `settings.json` that is not
@@ -419,7 +424,7 @@ orca plugin uninstall cyucelen.flow
 
 Then remove what it set up outside its folder, if you no longer want it: the `orca-flow` link in
 your Claude profile's `skills` folder, the hooks that run `stop-check.mjs`, `prompt-check.mjs`, `session-start.mjs`,
-`delegation-check.mjs` and `reload-check.mjs` in its `settings.json` (and the three *Orca Flow: Reload skills* entries in each Codex account's `hooks.json`), `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
+`delegation-check.mjs` and `reload-check.mjs` in its `settings.json` (and the three *Orca Flow: Reload skills* entries in each Codex account's `hooks.json`, and `orca-flow-reload` in `~/.gemini/config/hooks.json`), `~/.orca-flow`, and `~/orca/coordinators` (your coordinators and notes).
 
 ## Limitations
 
