@@ -1727,3 +1727,30 @@ test('a row’s model: seen in the latest reply, else asked for, else default, e
   assert.equal(main.modelName('claude', 'claude-sonnet-5-5'), 'Sonnet 5.5')
   assert.equal(main.parseRoutes(JSON.stringify({ dispatchId: 'x', choice: { agent: 'codex', model: 'm' } })).choices.get('x')?.model, 'm')
 })
+
+test('usage.open: with a workspace focused it writes the stub in its folder and opens the tab; with none it says so and opens nothing', async () => {
+  const { mkdtempSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'usage-open-worker-'))
+  try {
+    const host = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': { workspaceId: 'ws1', branch: 'main', displayName: 'ws', terminals: [] }, 'workspace.list': { workspaces: [{ id: 'ws1', kind: 'worktree', name: 'ws', path: root, branch: 'main', hostId: 'local' }], truncated: false }, 'editor.open': { opened: true } } })
+    const worker = await mountWorker(main, { host })
+    const done = await worker.request('usage.open') as { opened: boolean }
+    assert.equal(done.opened, true)
+    assert.deepEqual(host.callsOf('editor.open'), [{ workspaceId: 'ws1', path: '.orca/orca-flow/usage.orcaflow-usage' }])
+    assert.equal(readFileSync(join(root, '.orca/orca-flow/.gitignore'), 'utf8'), '*\n')
+    assert.ok(existsSync(join(root, '.orca/orca-flow/usage.orcaflow-usage')))
+    await worker.deactivate()
+
+    const none = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': null, 'workspace.list': { workspaces: [], truncated: false } } })
+    const w2 = await mountWorker(main, { host: none })
+    const r = await w2.request('usage.open') as { opened: boolean; reason?: string }
+    assert.equal(r.opened, false)
+    assert.match(r.reason ?? '', /Focus a workspace/)
+    assert.deepEqual(none.callsOf('editor.open'), [])
+    await w2.deactivate()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

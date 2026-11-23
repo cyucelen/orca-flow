@@ -890,6 +890,12 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .tnet .rstatus { margin-left: auto; }
 .terr { color: var(--warn); font-size: 11.5px; padding-bottom: 2px; }
 .tchart { padding-top: 10px; }
+/* The one usage line: "This week 52.4M tokens · ≈ $48" and the way to the Usage tab; the text gives way (ellipsis), never the link. */
+.uline { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 6px 8px; border-radius: 7px; background: var(--card); font-size: 12px; min-width: 0; width: 100%; box-sizing: border-box; }
+.uline:hover { background: var(--card-hover); }
+.uline .ut { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-variant-numeric: tabular-nums; }
+.uline .ut b { color: var(--ink); font-weight: 650; }
+.uline .go { color: var(--ask); font-weight: 600; white-space: nowrap; flex: none; }
 .thead { font-size: 11.5px; color: var(--ink); font-weight: 550; }
 /* The plot leaves room above for the top label and the peak, and on the right for the latest values. */
 .tframe { margin-right: 44px; }

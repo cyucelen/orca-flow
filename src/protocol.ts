@@ -283,7 +283,7 @@ export type Snapshot = {
   focusedPanes?: string[] | null
   /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
   bots?: Bot[] | null
-  /** Settings → Features: Linear and Token Speed. Absent reads as on; false hides the section and its entry points. */
+  /** Settings → Features: Linear and Analytics (stored as `tokenSpeed`). Absent reads as on; false hides the section and its entry points. */
   features?: { linear: boolean; tokenSpeed: boolean }
 }
 
@@ -411,6 +411,8 @@ export type TaskResult = 'accepted' | 'failed' | 'unknown' | 'running'
 export type AnalyticsTask = {
   dispatchId: string
   taskId: string | null
+  /** The Orca task's title; else the worktree's name; else the short dispatch id. */
+  title: string
   workstream: { id: string; title: string }
   role: 'lead' | 'worker'
   /** The Settings → Models row it ran on (kind id, type id, lead, other, unrouted). */
@@ -542,6 +544,8 @@ export type AnalyticsView = {
   leadOverhead: { median: number | null; n: number; heaviest: { id: string; title: string; share: number; leadTokens: number; tokens: number }[] }
   /** 3. Labelled pairs with a run finished in the window or running; comparable first. */
   comparisons: Comparison[]
+  /** The one-time backfill from the agents' logs still on disk: "pending" until it starts, then the logs read of all it found. */
+  backfill: { state: 'pending' | 'running' | 'done'; read: number; total: number }
   /** 4. Biggest workstreams finished in the window (top 5, whole-run tokens), and what runs now. */
   workstreams: { top: WorkstreamLine[]; finished: number; running: { count: number; spend: Spend } }
 }
@@ -551,6 +555,8 @@ export type WorkstreamRow = {
   label: string
   dispatchId: string
   taskId: string | null
+  /** The Orca task's title; else the worktree's name; else the short dispatch id. */
+  title: string
   /** "claude:<id>"; null for a dispatch whose session was never seen. */
   session: string | null
   /** The session that continued this one (a handover); nothing is moved to it. */
@@ -593,6 +599,8 @@ declare module 'orca' {
     'analytics.view': { input: { window?: AnalyticsWindow }; output: AnalyticsView }
     /** One workstream's breakdown; null when it is not known. */
     'analytics.workstream': { input: { id: string }; output: WorkstreamDetail | null }
+    /** The sidebar's "Usage ›": opens the Usage tab in the focused workspace; `reason` says why nothing opened. */
+    'usage.open': { output: { opened: boolean; reason?: string } }
     /** Every workspace with its live agent status. */
     'sidebar.list': { output: Snapshot }
     /** Memory, heaviest sessions, finished sessions and merged worktrees, for the opened cockpit. */

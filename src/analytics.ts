@@ -28,7 +28,7 @@ import type {
 } from './protocol.ts'
 import { ESTIMATE_LABEL, ESTIMATE_TIP, estimate, PRICES, type PriceTable } from './prices.ts'
 import { choiceLabel, findType, rowFor, taskKind, TASK_KINDS, type ModelChoice, type RoutingSettings } from './routing.ts'
-import { modelLabel } from './token-speed.ts'
+import { modelLabel } from './model-label.ts'
 import { resolve, type DispatchLink, type LinkRecord, type RouteLine } from './usage-links.ts'
 import type { Coverage, Usage } from './usage-store.ts'
 
@@ -99,12 +99,16 @@ export type AnalyticsInputs = {
   routes: RouteLine[]
   routing: RoutingSettings
   prices?: PriceTable
+  /** Orca task titles by task id (the `--task-title` given at dispatch). Metadata, never chat or log content. */
+  titles?: Record<string, string>
 }
 
 type RowKind = KindRow['kind']
 
 export type Dispatch = {
   id: string
+  /** The task's title; else the worktree's name; else the short dispatch id. */
+  title: string
   link: DispatchLink
   route: RouteLine | null
   role: 'lead' | 'worker'
@@ -202,12 +206,15 @@ const linkChoice = (link: DispatchLink): ModelChoice | null =>
 const resultOf = (link: DispatchLink): TaskResult =>
   link.outcome === 'accepted' ? 'accepted' : link.outcome === 'failed' ? 'failed' : link.completedAt ? 'unknown' : 'running'
 
-/** The worktree folder's name ("repo::/a/b/tree" → "tree"), else the run id. */
+/** The worktree folder's name ("repo::/a/b/tree" → "tree"), else the fallback. */
 function titleOf(workspace: string | null, fallback: string): string {
   const path = workspace?.includes('::') ? workspace.split('::').slice(1).join('::') : workspace
   const name = path?.split('/').filter(Boolean).pop()
   return name || fallback
 }
+
+/** "ctx_52c9d7f4887d" → "52c9d7f4": what a dispatch is called when nothing better is known. */
+export const shortId = (id: string) => id.replace(/^[a-z]+_/, '').slice(0, 8)
 
 /** Length of the union of [a, b] spans clipped to [from, to]. */
 function covered(spans: [number, number][], from: number, to: number): number {
@@ -286,8 +293,10 @@ export function buildModel(inputs: AnalyticsInputs): AnalyticsModel {
     const completedAt = ms(link.completedAt)
     const lastUse = usage.length ? usage[usage.length - 1].end : null
     const retryOf = link.retryOf ?? (typeof route?.retryOf === 'string' ? route.retryOf : null)
+    const named = link.taskId ? inputs.titles?.[link.taskId]?.trim() : ''
     dispatches.set(id, {
       id, link, route, role,
+      title: named || titleOf(link.workspace, shortId(id)),
       parent: link.parentDispatchId && latest.has(link.parentDispatchId) ? link.parentDispatchId : null,
       workstream: '',
       sessions: sessionsOf.get(id) ?? [],
@@ -366,7 +375,7 @@ export function buildModel(inputs: AnalyticsInputs): AnalyticsModel {
     const workspace = g.root.link.workspace ?? members.find((d) => d.link.workspace)?.link.workspace ?? null
     workstreams.set(id, {
       id,
-      title: titleOf(workspace, g.root.link.runId ?? g.root.id),
+      title: (g.lead ?? g.root).title,
       workspace,
       runId: g.root.link.runId,
       lead: g.lead,
@@ -422,7 +431,7 @@ export function activity(model: AnalyticsModel, window: AnalyticsWindow) {
 function taskOf(d: Dispatch, model: AnalyticsModel): AnalyticsTask {
   const w = model.workstreams.get(d.workstream)!
   return {
-    dispatchId: d.id, taskId: d.link.taskId, workstream: { id: w.id, title: w.title }, role: d.role, row: d.row, dispatchedAs: d.dispatchedAs,
+    dispatchId: d.id, taskId: d.link.taskId, title: d.title, workstream: { id: w.id, title: w.title }, role: d.role, row: d.row, dispatchedAs: d.dispatchedAs,
     attempt: d.attempt, retryOf: d.retryOf, retried: d.retried, fallback: d.fallback, routed: d.routed, model: d.model, result: d.result,
     startedAt: d.startedAt, finishedAt: d.finishedAt, durationMs: d.durationMs, spend: { ...d.spend }
   }
@@ -531,7 +540,7 @@ function comparison(pair: string, runs: Workstream[]): Comparison {
 const taskName = (d: Dispatch) => (d.role === 'lead' ? 'Lead' : d.attempt > 0 || d.retryOf ? `Retry · ${d.dispatchedAs}` : `Worker · ${d.dispatchedAs}`)
 
 /** The Usage view for one window. */
-export function analyticsView(model: AnalyticsModel, window: AnalyticsWindow): AnalyticsView {
+export function analyticsView(model: AnalyticsModel, window: AnalyticsWindow, backfill: AnalyticsView['backfill'] = { state: 'pending', read: 0, total: 0 }): AnalyticsView {
   const now = model.now
   const from = windowStart(window, now)
   const act = activity(model, window)
@@ -584,6 +593,7 @@ export function analyticsView(model: AnalyticsModel, window: AnalyticsWindow): A
       heaviest: [...shares].sort((a, b) => b.share - a.share || a.id.localeCompare(b.id)).slice(0, 3)
     },
     comparisons,
+    backfill,
     workstreams: { top: finished.slice(0, 5).map((w) => line(w, act.byWorkstream.get(w.id)?.total ?? 0)), finished: finished.length, running: { count: live.length, spend: sumSpend(live.map((w) => w.spend)) } }
   }
 }
@@ -595,7 +605,7 @@ export function workstreamView(model: AnalyticsModel, id: string): WorkstreamDet
   const prices = model.prices
   const rows: WorkstreamRow[] = []
   const base = (d: Dispatch) => ({
-    dispatchId: d.id, taskId: d.link.taskId, model: d.model,
+    dispatchId: d.id, taskId: d.link.taskId, title: d.title, model: d.model,
     row: d.role === 'lead' ? null : d.row, rowName: d.role === 'lead' ? null : d.rowName, dispatchedAs: d.role === 'lead' ? null : d.dispatchedAs,
     fallback: d.fallback, result: d.result, durationMs: d.durationMs
   })

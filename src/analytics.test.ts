@@ -3,7 +3,7 @@
 // handover, a comparable and an incomparable pair; and every level adds up.
 import { assert, test } from 'orca/testing'
 import {
-  activity, analyticsView, analyticsWindow, buildModel, usageSummary, workstreamView, zeroSpend, addSpend,
+  activity, analyticsView, analyticsWindow, buildModel, shortId, usageSummary, workstreamView, zeroSpend, addSpend,
   type AnalyticsInputs, type AnalyticsModel
 } from './analytics.ts'
 import { estimate, priceFor, priceKey, PRICES } from './prices.ts'
@@ -382,4 +382,23 @@ test('sidebar line: last 7 days, tokens and estimate, unpriced kept apart', () =
   assert.equal(s.prices, 'prices v1, 2026-11-03')
   assert.equal(analyticsWindow('30d'), '30d')
   assert.equal(analyticsWindow('bogus'), '7d')
+})
+
+// ---------- titles ----------
+
+test('a task is called by its Orca task title, else its worktree name, else the short dispatch id; a workstream by its lead', () => {
+  const titled = buildModel({ ...inputs, titles: { 'task-L': 'Permission prompts', 'task-W1': 'Escalate high risk' } })
+  const v = analyticsView(titled, '7d')
+  assert.equal(titled.workstreams.get('L')!.title, 'Permission prompts')
+  assert.equal(row(v, 'hard').tasks.find((t) => t.dispatchId === 'W1')!.title, 'Escalate high risk')
+  assert.equal(row(v, 'hard').tasks.find((t) => t.dispatchId === 'W2r')!.title, 'perm', 'no title: the worktree')
+  const detail = workstreamView(titled, 'L')!
+  assert.equal(detail.title, 'Permission prompts')
+  assert.equal(detail.rows.find((r) => r.dispatchId === 'W1')!.title, 'Escalate high risk')
+  // Neither a title nor a worktree: the short dispatch id.
+  const bare = buildModel({ ...inputs, links: links.map((l) => (l.type === 'dispatch' ? { ...l, workspace: null } : l)) })
+  assert.equal(bare.dispatches.get('W1')!.title, 'W1')
+  assert.equal(shortId('ctx_52c9d7f4887d'), '52c9d7f4')
+  // Without titles nothing changes against the worktree names.
+  assert.equal(model.workstreams.get('L')!.title, 'perm')
 })

@@ -77,7 +77,7 @@ export function normalizeFormat(value: unknown): MessageFormat {
   return 'off'
 }
 
-/** The feature switches. Bots is new and off unless exactly true; Linear and Token Speed are shown today, so they are on unless exactly false. An older or broken file changes nothing on screen. */
+/** The feature switches. Bots is new and off unless exactly true; Linear and Analytics are shown today, so they are on unless exactly false (Analytics is stored as `tokenSpeed`, its name before 0.2.87, so older files keep working). An older or broken file changes nothing on screen. */
 export function normalizeFeatures(value: unknown): FeatureSettings {
   const f = isObject(value) ? value : {}
   return { bots: f.bots === true, linear: f.linear !== false, tokenSpeed: f.tokenSpeed !== false }

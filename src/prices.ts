@@ -61,6 +61,18 @@ export const PRICES: PriceTable = {
  */
 export function priceKey(model: string | null | undefined, table: PriceTable = PRICES): string | null {
   if (typeof model !== 'string' || !model) return null
+  // A store holds a handful of model ids on hundreds of thousands of records: normalise each once.
+  let known = keys.get(table)
+  if (!known) keys.set(table, (known = new Map()))
+  const hit = known.get(model)
+  if (hit !== undefined) return hit
+  const key = normalizedKey(model, table)
+  if (known.size < 512) known.set(model, key)
+  return key
+}
+const keys = new WeakMap<PriceTable, Map<string, string | null>>()
+
+function normalizedKey(model: string, table: PriceTable): string | null {
   const id = model.trim().toLowerCase()
     .replace(/\[[^\]]*\]$/, '')
     .replace(/^(?:[a-z]{2,6}\.)?anthropic\./, '')

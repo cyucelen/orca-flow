@@ -154,11 +154,11 @@ function pageCapacity(): string {
 function pageFeatures(): string {
   const bots = 'Show the Bots section in the sidebar'
   const linear = 'Show the Linear section in the sidebar, and read your Linear issues. Off: nothing is read from Linear.'
-  const speed = 'Show the Token Speed section in the sidebar, and sample the agents’ logs and network traffic. Off: nothing is sampled; the history is kept.'
+  const speed = 'Show the Analytics section in the sidebar, and record the agents’ token usage from their logs (counts only, never messages) with their network traffic. Off: nothing is read or recorded; what was recorded is kept.'
   return group([
     row(label('Bots', bots), toggle('s-bots', d().bots, 'Bots', bots)),
     row(label('Linear', linear), toggle('s-linear-on', d().linear, 'Linear', linear)),
-    row(label('Token Speed', speed), toggle('s-speed', d().tokenSpeed, 'Token Speed', speed))
+    row(label('Analytics', speed), toggle('s-speed', d().tokenSpeed, 'Analytics', speed))
   ])
 }
 

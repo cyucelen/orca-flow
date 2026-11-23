@@ -1,0 +1,129 @@
+// The Usage tab's frame: asks the worker for analytics.view / analytics.workstream, draws
+// src/analytics-view.ts, and handles window toggle, navigation (rows → tasks → workstream, back),
+// the Details toggle and tooltips. The file the tab shows is only a stub (src/usage-open.ts): its
+// content is ignored and never changed.
+import { usagePage, usageUi, WINDOWS, type Screen, type UsageData } from '../analytics-view.ts'
+import type { AnalyticsWindow, WorkstreamDetail } from '../protocol.ts'
+
+const app = document.getElementById('app')!
+const ui = usageUi()
+const data: UsageData = { view: null, ws: {}, error: null }
+const STORAGE_KEY = 'usage-ui'
+/** Refresh while the tab is visible: new responses are recorded every 30 s. */
+const REFRESH_MS = 60_000
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).split('\n')[0]
+const current = (): Screen => ui.stack[ui.stack.length - 1]
+
+function draw(): void {
+  const keep = { x: window.scrollX, y: window.scrollY }
+  app.innerHTML = usagePage(data, ui)
+  window.scrollTo(keep.x, keep.y)
+}
+
+async function loadView(): Promise<void> {
+  try {
+    data.view = await orca.plugin.request('analytics.view', { window: ui.window })
+    data.error = null
+  } catch (e) {
+    data.error = message(e)
+  }
+  draw()
+}
+
+async function loadWorkstream(id: string): Promise<void> {
+  try {
+    data.ws[id] = (await orca.plugin.request('analytics.workstream', { id })) as WorkstreamDetail | null
+  } catch (e) {
+    data.ws[id] = null
+    data.error = message(e)
+  }
+  draw()
+}
+
+function open(target: string): void {
+  const [view, ...rest] = target.split(':')
+  const id = rest.join(':')
+  if (view !== 'kind' && view !== 'ws' && view !== 'cmp') return
+  ui.stack.push({ view, id })
+  ui.details = false
+  if (view === 'ws') { delete data.ws[id]; void loadWorkstream(id) }
+  draw()
+  window.scrollTo({ top: 0 })
+}
+
+function saveUi(): void {
+  void orca.storage.set(STORAGE_KEY, { window: ui.window }).catch(() => null)
+}
+
+app.addEventListener('click', (event) => {
+  const t = (event.target as Element).closest<HTMLElement>('[data-go],[data-win],[data-back],[data-act]')
+  if (!t) return
+  if (t.dataset.go) return open(t.dataset.go)
+  if (t.dataset.win) {
+    if (!WINDOWS.some((w) => w.id === t.dataset.win)) return
+    ui.window = t.dataset.win as AnalyticsWindow
+    saveUi()
+    void loadView()
+    return
+  }
+  if ('back' in t.dataset) {
+    if (ui.stack.length > 1) ui.stack.pop()
+    ui.details = false
+    draw()
+    window.scrollTo({ top: 0 })
+    return
+  }
+  if (t.dataset.act === 'details') { ui.details = !ui.details; draw() }
+})
+app.addEventListener('keydown', (event) => {
+  const e = event as KeyboardEvent
+  const row = (e.target as Element).closest?.<HTMLElement>('tr[data-go]')
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(row.dataset.go!) }
+})
+
+// ---------- tooltips: one floating element for every [data-tip], in Orca's popover colors ----------
+const tip = document.createElement('div')
+tip.className = 'tip'
+tip.setAttribute('role', 'tooltip')
+document.body.append(tip)
+const showTip = (el: HTMLElement, x: number, y: number) => {
+  tip.textContent = el.dataset.tip ?? ''
+  tip.classList.add('on')
+  const r = tip.getBoundingClientRect()
+  tip.style.left = `${Math.max(8, Math.min(x + 12, window.innerWidth - r.width - 8))}px`
+  tip.style.top = `${y + 16 + r.height > window.innerHeight ? Math.max(8, y - r.height - 10) : y + 16}px`
+}
+const hideTip = () => tip.classList.remove('on')
+document.addEventListener('pointermove', (e) => {
+  const el = (e.target as Element).closest?.<HTMLElement>('[data-tip]')
+  if (el) showTip(el, e.clientX, e.clientY)
+  else hideTip()
+})
+document.addEventListener('pointerleave', hideTip)
+document.addEventListener('focusin', (e) => {
+  const el = (e.target as Element).closest?.<HTMLElement>('[data-tip]')
+  if (el) { const r = el.getBoundingClientRect(); showTip(el, r.left, r.bottom) }
+})
+document.addEventListener('focusout', hideTip)
+
+// ---------- start ----------
+async function start(): Promise<void> {
+  draw()
+  // The stub's text is never read; asking for the document only tells Orca the frame is up.
+  void Promise.resolve((orca as unknown as { document?: { get(): Promise<unknown> } }).document?.get()).catch(() => null)
+  try {
+    const saved = (await orca.storage.get(STORAGE_KEY)) as { window?: unknown } | null
+    if (WINDOWS.some((w) => w.id === saved?.window)) ui.window = saved!.window as AnalyticsWindow
+  } catch {
+    // no storage: the 7-day window
+  }
+  await loadView()
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') return
+    void loadView()
+    const s = current()
+    if (s.view === 'ws') void loadWorkstream(s.id)
+  }, REFRESH_MS)
+}
+void start()

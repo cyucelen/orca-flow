@@ -1,4 +1,4 @@
-// The Token speed section: how fast the agents write, what they send and receive over the network,
+// The Analytics section's speed glance (once Token speed): how fast the agents write, what they send and receive over the network,
 // and the internet speed the user last tested.
 //
 // Speed comes from the agents' own logs, read incrementally: each sample reads only the bytes a log
@@ -719,14 +719,8 @@ export type TokenSpeedWire = {
   usage?: import('./protocol.ts').UsageSummaryWire | null
 }
 
-/** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5", "gpt-5.6-sol" → "GPT-5.6 Sol"; other ids as they are. */
-export function modelLabel(id: string): string {
-  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id)
-  if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}`
-  const g = /^gpt-(\d+(?:\.\d+)*)((?:-[a-z][a-z0-9]*)*)$/.exec(id)
-  if (g) return `GPT-${g[1]}${g[2].split('-').filter(Boolean).map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).map((w) => ` ${w}`).join('')}`
-  return id
-}
+import { modelLabel } from './model-label.ts'
+export { modelLabel }
 
 /** The median of binned rates (each bin's center), so within 2.5 % of the exact one. */
 export function histogramMedian(bins: Map<number, number>): number | null {

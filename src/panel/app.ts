@@ -22,9 +22,18 @@ const ui = emptyUi()
 let snap: Snapshot | null = null
 /** The Linear section's data; null hides the section (Linear not connected, or not read yet). */
 let linear: LinearData | null = null
-/** The Token speed section's data from the worker, and its fold and range (kept in storage). */
+/** The Analytics section's data from the worker, and its fold and range (kept in storage). */
 let speed: TokenSpeedWire | null = null
 const speedUi: { folded: boolean; range: SpeedRange } = { folded: false, range: '1h' }
+/** Why "Usage ›" opened nothing; shown under the usage line for a few seconds. */
+let usageNote: string | null = null
+let usageNoteTimer: ReturnType<typeof setTimeout> | undefined
+const showNote = (text: string) => {
+  usageNote = text
+  clearTimeout(usageNoteTimer)
+  usageNoteTimer = setTimeout(() => { usageNote = null; draw() }, 8000)
+  draw()
+}
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
@@ -101,8 +110,8 @@ function paintRows(): void {
   linearEl.innerHTML = linearHtml
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
-  // Token speed, under Linear; hidden while searching, like the other sections.
-  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now, speedOff: !speedIsOn() })
+  // Analytics, under Linear; hidden while searching, like the other sections.
+  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now, speedOff: !speedIsOn(), usageNote })
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
   speedEl.classList.toggle('folded', speedUi.folded)
@@ -129,7 +138,7 @@ setTimeout(draw, LINEAGE_WAIT_MS)
 orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
 orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw()))
 
-// Settings → Features: Linear and Token Speed. While one is off its data is dropped and not asked
+// Settings → Features: Linear and Analytics (stored as tokenSpeed). While one is off its data is dropped and not asked
 // for; switching it on asks at once, so the section shows fresh data, not what it had before.
 const linearIsOn = () => !snap || linearOn(snap)
 const speedIsOn = () => !snap || tokenSpeedOn(snap)
@@ -173,7 +182,7 @@ orca.storage.get(BOTS_UI_KEY).then((stored) => {
   draw()
 }).catch(() => null)
 document.addEventListener('visibilitychange', () => readLinear())
-// Token speed: the worker samples every 30 s and posts each sample; the panel asks once on open and
+// Analytics (Token speed's glance): the worker samples every 30 s and posts each sample; the panel asks once on open and
 // when it shows again. The fold and the 1 h / 24 h range come back from storage.
 const readSpeed = () => {
   if (document.visibilityState !== 'visible' || !speedIsOn()) return
@@ -216,10 +225,16 @@ document.addEventListener('click', (event) => {
     draw()
     return
   }
-  // The Token speed section: fold, range, and the internet test (one at a time; the worker posts its result).
-  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-ttest]')
+  // The Analytics section: fold, range, and the internet test (one at a time; the worker posts its result).
+  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-ttest],[data-usage-open]')
   if (sp) {
     const d = sp.dataset
+    // "Usage ›": the worker opens the Usage tab in the focused workspace; with none focused it says so here.
+    if ('usageOpen' in d) {
+      usageNote = null
+      void orca.plugin.request('usage.open').then((r) => { if (!r.opened) showNote(r.reason ?? 'The Usage tab did not open.') }).catch((e: Error) => showNote(`Could not open the Usage tab: ${e.message}`))
+      return
+    }
     if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi() }
     if (d.trange === '1h' || d.trange === '24h') { speedUi.range = d.trange; saveSpeedUi() }
     if ('ttest' in d && speed && !speed.testing) {

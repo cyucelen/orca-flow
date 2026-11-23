@@ -21,7 +21,7 @@ import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder,
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions, AnalyticsView, AnalyticsWindow } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
@@ -45,6 +45,8 @@ import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, readCoverage, readUsage, recordUsage, RETENTION_MS, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
 import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snapshotLinks, type DispatchInfo, type LinkRecord } from './usage-links.ts'
+import { ensureUsageStub, USAGE_PATH } from './usage-open.ts'
+import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
 import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
 
 const background = backgroundReader()
@@ -1890,6 +1892,13 @@ const SPEED_SLICE_MS = 40
 const BACKFILL_GAP_MS = 40
 const BACKFILL_SAVE_MS = 5000
 const USAGE_PRUNE_MS = 86_400_000
+/** Where the one-time backfill is, for the Usage view's empty state (analytics.view reads it). */
+/**
+ * What startTokenSpeed tells the Usage view's model: a record or a link was added since it was built
+ * (`dirty`), and each new record (`sink`), so the 90 days are read from disk once and kept, not per request.
+ */
+const analyticsFeed: { dirty: boolean; sink: ((u: Usage) => void) | null } = { dirty: false, sink: null }
+let backfillInfo: { state: 'pending' | 'running' | 'done'; read: number; total: number } = { state: 'pending', read: 0, total: 0 }
 
 type Child = { kill?: (signal?: string) => void }
 const exec = (file: string, args: string[], timeout: number, keep?: (child: Child) => void) =>
@@ -1934,7 +1943,10 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   let week: Usage[] | null = null
   const weekFrom = () => Date.now() - SUMMARY_DAYS * 86_400_000
   const record = (u: Usage) => {
-    if (usage && recordUsage(usage, u, Date.now()) && week && u.end >= weekFrom()) week.push(u)
+    if (!usage || !recordUsage(usage, u, Date.now())) return
+    analyticsFeed.dirty = true
+    analyticsFeed.sink?.(u)
+    if (week && u.end >= weekFrom()) week.push(u)
   }
   const summary = () => {
     if (!usage || !week) return null
@@ -1998,6 +2010,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
       orca.log(`usage backfill not started: ${(e as Error).message}`)
       backfill = null
     }
+    backfillInfo = backfill ? { state: 'running', read: backfill.state.read.length, total: backfill.state.read.length + backfill.paths.length } : { state: 'done', read: 0, total: 0 }
     if (backfill) timers.push(setTimeout(backfillStep, BACKFILL_GAP_MS))
   }
   const backfillStep = () => {
@@ -2013,6 +2026,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
       backfill.next++ // the log it failed on is left out
     }
     const now = Date.now()
+    backfillInfo = finished ? { state: 'done', read: backfillInfo.total, total: backfillInfo.total } : { ...backfillInfo, read: Math.min(backfillInfo.total, backfillInfo.total - (backfill.paths.length - backfill.next)) }
     if (finished || now - backfillSaved > BACKFILL_SAVE_MS) {
       backfillSaved = now
       saveUsage()
@@ -2158,6 +2172,7 @@ function linkSnapshots(orca: OrcaWorkerApi): () => void {
         known ??= readLinks()
         const added = snapshotLinks({ at: new Date(now).toISOString(), dispatches: current, bindings, routes: readRouteLines(), previous: known })
         appendLinks(added)
+        if (added.length) analyticsFeed.dirty = true
         known.push(...added)
         tracked = new Set(current.filter(live).map((i) => i.dispatchId))
         for (const id of [...infos.keys()]) if (!ids.has(id)) infos.delete(id)
@@ -2172,6 +2187,11 @@ function linkSnapshots(orca: OrcaWorkerApi): () => void {
 
 /** One built model serves the requests of a view being opened and clicked through. */
 const ANALYTICS_CACHE_MS = 30_000
+/** With nothing new recorded, the model is rebuilt anyway after this (its "now" and Settings → Models move on). */
+const ANALYTICS_IDLE_MS = 5 * 60_000
+/** Task titles: runs asked per request, and how long before a run that gave none is asked again. */
+const TITLE_RUNS = 6
+const TITLE_RETRY_MS = 10 * 60_000
 
 /**
  * The Usage view's data, on request from the panel or the Usage editor (src/analytics.ts): the
@@ -2180,20 +2200,93 @@ const ANALYTICS_CACHE_MS = 30_000
  */
 function startAnalytics(orca: OrcaWorkerApi): void {
   let cache: { at: number; model: AnalyticsModel } | null = null
+  let titles: Titles | null = null
+  const asked = new Map<string, number>()
+  let fetching = false
+  const run = orcaRunner(ORCA_BIN)
+  // Task titles come from Orca's task records, a run at a time, in the background: a request answers
+  // with the titles known so far (worktree names meanwhile) and the next one has the new ones.
+  const fetchTitles = (links: LinkRecord[]) => {
+    if (fetching || !titles) return
+    const now = Date.now()
+    const runs = runsMissingTitles(links.filter((l): l is Extract<LinkRecord, { type: 'dispatch' }> => l?.type === 'dispatch'), titles)
+      .filter((id) => now - (asked.get(id) ?? -Infinity) > TITLE_RETRY_MS).slice(0, TITLE_RUNS)
+    if (!runs.length) return
+    fetching = true
+    void (async () => {
+      let added = false
+      for (const id of runs) {
+        asked.set(id, Date.now())
+        try {
+          const found = parseTaskTitles(await run(['orchestration', 'task-list', '--run', id], { timeoutMs: 10_000 }))
+          for (const [task, title] of Object.entries(found)) if (titles![task] !== title) { titles![task] = title; added = true }
+        } catch (e) {
+          orca.log(`task titles of ${id} not read: ${(e as Error).message}`)
+        }
+      }
+      if (added) {
+        cache = null
+        try { writeTitles(DATA_DIR, titles!) } catch (e) { orca.log(`saving task titles failed: ${(e as Error).message}`) }
+      }
+    })().finally(() => { fetching = false })
+  }
+  // The 90 days are read from disk once and kept (the recorder feeds new responses in); the model is
+  // rebuilt only when something was added and the last build is 30 s old, or after 5 minutes, and each
+  // window's view is computed once per model. On a store of ~123k records (this Mac's 90 days) a build
+  // is ~0.35 s and a view under 0.1 s, so no precomputed rollup is kept (see the README's Analytics section).
+  let memory: Usage[] | null = null
+  let trimmedAt = Date.now()
+  const views = new Map<string, AnalyticsView>()
   const model = (): AnalyticsModel => {
     const now = Date.now()
-    if (cache && now - cache.at < ANALYTICS_CACHE_MS) return cache.model
+    if (cache && (now - cache.at < ANALYTICS_CACHE_MS || (!analyticsFeed.dirty && now - cache.at < ANALYTICS_IDLE_MS))) return cache.model
+    titles ??= readTitles(DATA_DIR)
+    if (!memory) {
+      memory = readUsage(DATA_DIR, now - RETENTION_MS, Infinity)
+      analyticsFeed.sink = (u) => { memory?.push(u) }
+    }
+    // Records older than the retention leave the kept copy once a day (the store prunes its files on its own).
+    if (now - trimmedAt > 86_400_000) { trimmedAt = now; memory = memory.filter((u) => u.end >= now - RETENTION_MS) }
+    analyticsFeed.dirty = false
+    const links = readLinks()
     const built = buildModel({
       now,
-      usage: readUsage(DATA_DIR, now - RETENTION_MS, Infinity),
+      usage: memory,
       coverage: readCoverage(DATA_DIR),
-      links: readLinks(),
+      links,
       routes: readRouteLines(),
-      routing: readSettings(DATA_DIR).settings.routing
+      routing: readSettings(DATA_DIR).settings.routing,
+      titles
     })
     cache = { at: now, model: built }
+    views.clear()
+    fetchTitles(links)
     return built
   }
-  orca.panels.handle('analytics.view', (input) => analyticsView(model(), analyticsWindow(input?.window)))
+  const viewOf = (window: AnalyticsWindow): AnalyticsView => {
+    const m = model()
+    const key = `${window}@${backfillInfo.state}:${backfillInfo.read}`
+    let v = views.get(key)
+    if (!v) { v = analyticsView(m, window, backfillInfo); if (views.size > 12) views.clear(); views.set(key, v) }
+    return v
+  }
+  orca.panels.handle('analytics.view', (input) => viewOf(analyticsWindow(input?.window)))
   orca.panels.handle('analytics.workstream', (input) => (typeof input?.id === 'string' ? workstreamView(model(), input.id) : null))
+  // "Usage ›" in the sidebar: the Usage tab opens in the focused workspace (an editor tab needs a real
+  // file in it: see usage-open.ts). With no workspace focused, or one on another machine, nothing opens.
+  orca.panels.handle('usage.open', async () => {
+    try {
+      const ctx = await orca.host.call('workspace.readContext')
+      if (!ctx?.workspaceId) return { opened: false, reason: 'Focus a workspace first: the Usage tab opens inside it.' }
+      const workspace = (await orca.host.call('workspace.list')).workspaces.find((w) => w.id === ctx.workspaceId)
+      if (!workspace) return { opened: false, reason: 'Orca did not list the focused workspace.' }
+      if (workspace.hostId && workspace.hostId !== 'local') return { opened: false, reason: 'The focused workspace is on another machine; focus one on this Mac.' }
+      ensureUsageStub(workspace.path)
+      await orca.host.call('editor.open', { workspaceId: ctx.workspaceId, path: USAGE_PATH })
+      return { opened: true }
+    } catch (e) {
+      orca.log(`usage.open failed: ${(e as Error).message}`)
+      return { opened: false, reason: `Could not open the Usage tab: ${(e as Error).message}` }
+    }
+  })
 }

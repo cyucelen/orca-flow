@@ -1,15 +1,17 @@
-// The Token speed section as a pure function: the worker's TokenSpeedWire and the section's UI state
+// The Analytics section (Token Speed's glance, kept, and the usage line) as a pure function: the worker's TokenSpeedWire and the section's UI state
 // in, HTML out (no DOM, no Node), so it is tested in Node and the panel imports it as is.
 //
 // A headline (all agents' output tok/s over the last minute, their traffic, the last internet test
 // with its Test button), two small charts on one time axis (output tok/s per model; agent traffic as
 // a share of the tested connection, or in kbit/s before any test: never two scales on one chart),
-// then one row per model with its median speed over the last hour and the last 24 h.
+// then one row per model with its median speed over the last hour and the last 24 h. One line, "This week
+// 52.4M tokens · ≈ $48 · Usage ›", opens the Usage tab (src/analytics-view.ts, src/editor/).
+import { ESTIMATE_NOTE, usageLine } from './analytics-view.ts'
 import type { SpeedRange, SpeedSeries, TokenSpeedWire } from './token-speed.ts'
 
 /** Where the panel keeps the section's fold and range (plugin storage). */
 export const SPEED_UI_KEY = 'speed-ui'
-export type SpeedUi = { speedFolded: boolean; speedRange: SpeedRange; now: number; /** Settings → Features → Token Speed is off: no section. */ speedOff?: boolean }
+export type SpeedUi = { speedFolded: boolean; speedRange: SpeedRange; now: number; /** Settings → Features → Analytics is off: no section. */ speedOff?: boolean; /** Why "Usage ›" opened nothing (no workspace focused), shown under the usage line. */ usageNote?: string | null }
 export function speedUiOf(stored: unknown): { folded: boolean; range: SpeedRange } {
   const s = (stored ?? {}) as { folded?: unknown; range?: unknown }
   return { folded: s.folded === true, range: s.range === '24h' ? '24h' : '1h' }
@@ -152,9 +154,10 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
   const folded = ui.speedFolded
   const net = d.net ? { up: bits(d.net.up), down: bits(d.net.down) } : null
   const netText = net ? `↑${net.up.value} ↓${net.down.value} ${net.down.unit === net.up.unit ? net.up.unit : `${net.up.unit}/${net.down.unit}`}` : ''
-  const fold = `<button class="label lfold" data-tfold aria-expanded="${!folded}">${CHEV}<span>Token speed</span></button>`
+  const fold = `<button class="label lfold" data-tfold aria-expanded="${!folded}">${CHEV}<span>Analytics</span></button>`
+  const week = d.usage ? usageLine(d.usage).tokens : ''
   const right = folded
-    ? `<span class="foldsum">${esc(round(d.tokPerSec))} tok/s${netText ? `<span class="sepd">${esc(netText)}</span>` : ''}</span>`
+    ? `<span class="foldsum">${esc(round(d.tokPerSec))} tok/s${week ? `<span class="sepd">${esc(week)} this week</span>` : netText ? `<span class="sepd">${esc(netText)}</span>` : ''}</span>`
     : `<span class="seg" role="group" aria-label="Range">${(['1h', '24h'] as const).map((r) => `<button data-trange="${r}" aria-pressed="${r === ui.speedRange}">${r}</button>`).join('')}</span>`
   const head = `<div class="sechead">${fold}${right}</div>`
   if (folded) return head
@@ -164,6 +167,12 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
     + `<div class="tstat" data-tip="${esc(d.net ? `Network traffic of ${d.net.procs} agent ${d.net.procs === 1 ? 'process' : 'processes'} over the last 30 s sample (nettop)` : 'The first 30 s traffic sample is still running')}">${net ? `<b>↑${esc(net.up.value)} ↓${esc(net.down.value)}</b><span>${esc(net.down.unit)}</span>` : '<b>…</b>'}<small>agent traffic</small></div>`
     + '</div>'
 
+  // One line to the Usage tab: the last 7 days at API list prices (an estimate, not a bill).
+  const u = d.usage ? usageLine(d.usage) : null
+  const usage = u
+    ? `<button class="uline" data-usage-open data-tip="${esc(`${ESTIMATE_NOTE}\n${d.usage!.prices}`)}"><span class="ut">This week <b>${esc(u.tokens)}</b> tokens · ${esc(u.cost)}</span><span class="go">Usage ›</span></button>`
+    : ''
+  const note = u && ui.usageNote ? `<div class="terr" role="alert">${esc(ui.usageNote)}</div>` : ''
   const i = d.internet
   const test = d.testing
     ? '<span class="rstatus pending"><span class="refreshing"></span>testing…</span>'
@@ -172,7 +181,7 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
     ? `<span class="tnetv" data-tip="${esc(`Internet, tested ${new Date(i.at).toLocaleString()}${i.rpm != null ? ` · responsiveness ${Math.round(i.rpm)} RPM` : ''}`)}">Internet ↓${esc(mbit(i.down))} ↑${esc(mbit(i.up))} Mbit/s${i.rtt != null ? ` · ${esc(Math.round(i.rtt))} ms` : ''}</span><span class="tago">tested ${esc(ago(i.at, ui.now))}</span>`
     : '<span class="tnetv muted">Internet not tested yet</span>'}${test}</div>${d.testError && !d.testing ? `<div class="terr" role="alert">${esc(d.testError)}</div>` : ''}`
 
-  if (!d.ready) return `${head}${stats}${internet}<div class="empty">Reading the last 24 h of agent logs…</div>`
+  if (!d.ready) return `${head}${stats}${internet}${usage}${note}<div class="empty">Reading the last 24 h of agent logs…</div>`
 
   const s = d.series[ui.speedRange]
   const slotOf = new Map(d.models.map((m) => [m.id, m]))
@@ -217,5 +226,5 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
     ? `<table class="tmodels"><thead><tr><th></th><th colspan="2" class="tgrp" data-tip="Output tokens per second of one response, from its prompt or tool result to its last block; half the responses were faster">Speed per response<br>(median tok/s)</th><th></th></tr>`
       + `<tr><th>Model</th><th>1 h</th><th>24 h</th><th data-tip="Responses in the last 24 h">Resp. 24 h</th></tr></thead><tbody>${rows}</tbody></table>`
     : ''
-  return `${head}${stats}${internet}${tokChart}${netChart}${table}`
+  return `${head}${stats}${internet}${usage}${note}${tokChart}${netChart}${table}`
 }

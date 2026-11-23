@@ -4,6 +4,8 @@
 # `.orca/`, so any `.orca/` present when Orca hot-reloads the folder fails "content hash mismatch"
 # and Orca drops local.flow to pending (no sidebar). So `.orca/` never goes into this folder:
 # `check` type-checks and tests a copy in a temporary folder. Never run `orca plugin types .` here.
+# The Usage tab (src/usage-open.ts) writes `.orca/orca-flow/` into whatever workspace is focused, this
+# one included: both copies below exclude every `.orca` (at any depth) and then fail if one got in.
 #
 # Orca (1.4.268) also ties a development plugin's approval to its exact files: any edit drops it to
 # pending until it is approved again. So Orca never loads this worktree: `load` copies it to
@@ -25,6 +27,8 @@ INSTALLED=cyucelen.flow
 SHOTS=${SHOTS:-/tmp/orca-sidebar-shots}
 DEV_DIR=${DEV_DIR:-$HOME/.orca-flow/dev/flow}
 HERE=$(pwd)
+# Fails when a `.orca` folder is anywhere in the copy $1 (see the hash bug above).
+no_dot_orca() { if [ -n "$(find "$1" -name .orca -prune -print -quit)" ]; then echo "a .orca folder is in the copy $1: not loading it (Orca's content hash would not match)"; return 1; fi; }
 status() { orca plugin list --json | python3 -c "import json,sys; print(next((p.get('status') for p in json.load(sys.stdin)['result']['plugins'] if p['pluginKey']=='$1'), 'absent'))"; }
 # Enables a plugin; Orca can answer with an approval fingerprint (or a newer one), so retry with it.
 enable() {
@@ -46,6 +50,7 @@ case "${1:-}" in
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/orca-flow-check.XXXXXX")
     trap 'rm -rf "$tmp"' EXIT
     rsync -a --exclude .git --exclude .orca --exclude node_modules ./ "$tmp/"
+    no_dot_orca "$tmp"
     cd "$tmp"
     orca plugin types . --json >/dev/null
     npx -y -p typescript tsc -p . --noEmit
@@ -61,6 +66,8 @@ case "${1:-}" in
     orca plugin dev unload "$HERE" --json >/dev/null 2>&1 || true
     mkdir -p "$DEV_DIR"
     rsync -a --delete --exclude .git --exclude .orca --exclude node_modules ./ "$DEV_DIR/"
+    rm -rf "$DEV_DIR/.orca" # rsync leaves an excluded folder in the destination alone
+    no_dot_orca "$DEV_DIR"
     fp=$(orca plugin dev load "$DEV_DIR" --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error',{}).get('data',{}).get('approvalFingerprint',''))")
     # `dev load` writes .orca/ typings into the folder: remove them before the worker starts.
     rm -rf "$DEV_DIR/.orca"

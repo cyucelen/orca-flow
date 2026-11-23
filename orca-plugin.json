@@ -20,6 +20,17 @@
         "ui": "html"
       }
     ],
+    "customEditors": [
+      {
+        "id": "usage",
+        "title": "Usage",
+        "extensions": [
+          ".orcaflow-usage"
+        ],
+        "entry": "src/editor/index.html",
+        "frame": "isolated"
+      }
+    ],
     "events": [
       {
         "on": "agent.status.changed"
