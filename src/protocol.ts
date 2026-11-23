@@ -292,7 +292,9 @@ export type Snapshot = {
    * in its hooks.json and trusted by the user (src/codex-hooks.ts). Not ready: the reason, with the
    * one action to take. Absent: unknown, read as not ready.
    */
-  codexReload?: { ready: boolean; reason: string }
+  codexReload?: { ready: boolean; reason: string; /** The user's approval in Codex is what is missing. */ approval?: boolean }
+  /** The same for Antigravity sessions: Orca Flow's hooks in ~/.gemini/config/hooks.json (src/antigravity-hooks.ts). */
+  antigravityReload?: { ready: boolean; reason: string; approval?: boolean }
 }
 
 /**

@@ -44,6 +44,7 @@ import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
 import { reloadPlan, type ReloadScope } from './skill-reload.ts'
 import { codexReloadReadiness, ensureOwnCodexHooks, managedCodexHomes } from './codex-hooks.ts'
+import { antigravityReloadReadiness, ensureOwnAntigravityHooks } from './antigravity-hooks.ts'
 import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 
@@ -1017,6 +1018,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!repairOnly) for (const line of ensureOwnStopHook(stopHookFor(), installed)) orca.log(line)
     // Codex: our reload hooks next to Orca's in each Orca-managed Codex account's hooks.json; never its trust or auth.
     if (!repairOnly) for (const line of ensureOwnCodexHooks(managedCodexHomes(), installed)) orca.log(line)
+    // Antigravity: our "orca-flow-reload" definition next to Orca's "orca-status" in ~/.gemini/config/hooks.json.
+    if (!repairOnly) for (const line of ensureOwnAntigravityHooks(installed)) orca.log(line)
   }
   if (!dir) orca.log(`plugin folder not found from ${import.meta.url}; skill and coordinator CLAUDE.md not set up`)
   else {
@@ -1050,12 +1053,17 @@ export default function activate(orca: OrcaWorkerApi): void {
       codexHomeAt = Date.now()
       void run(['account', 'list', '--agent', 'codex'], { timeoutMs: 10_000 }).then((result) => {
         codexHome = codexHomeFromAccounts({ ok: true, result })
-        if (installed) for (const line of ensureOwnCodexHooks(managedCodexHomes(), true)) if (!line.startsWith('left ')) orca.log(line)
+        if (installed) for (const line of [...ensureOwnCodexHooks(managedCodexHomes(), true), ...ensureOwnAntigravityHooks(true)]) if (!line.startsWith('left ')) orca.log(line)
       }).catch(() => { codexHome = null })
     }
     if (!codexHome) return undefined
     const r = codexReloadReadiness(codexHome)
-    return { ready: r.state === 'ready', reason: r.reason }
+    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'needs-approval' || r.state === 'disabled' ? { approval: true } : {}) }
+  }
+  /** Antigravity: read from ~/.gemini/config/hooks.json on every snapshot (a few hundred bytes). */
+  const antigravityReady = (): Snapshot['antigravityReload'] => {
+    const r = antigravityReloadReadiness()
+    return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'disabled' ? { approval: true } : {}) }
   }
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
@@ -1065,6 +1073,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     snap.features = { linear: features.linear, tokenSpeed: features.tokenSpeed }
     snap.skillReload = readSkillReload()
     snap.codexReload = codexReady()
+    snap.antigravityReload = antigravityReady()
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
@@ -1874,7 +1883,7 @@ export function skillFolder(dir: string | null, link = linksFor(dir ?? '')[0]?.f
  * but for the files (`write`, `hashOf` and `sessionOf` are replaceable for tests).
  */
 export function requestReload(
-  snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'codexReload'>,
+  snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'codexReload' | 'antigravityReload'>,
   scope: ReloadScope,
   skill: string,
   io: { data?: string; hashOf?: (skill: string) => string; write?: typeof writeRequest; sessionOf?: (pane: string, a: AgentInfo | undefined) => string | null; now?: number } = {}

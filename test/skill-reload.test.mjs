@@ -252,3 +252,34 @@ test('Codex panes: the hooks find the pane by ORCA_PANE_KEY, and an unsupported 
     assert.equal(run('prompt-check.mjs', { session_id: 'x', cwd: w.worktree, prompt: 'hi' }, { ORCA_PANE_KEY: 'tab:codex2' }), null, 'nothing for a target that cannot take it')
   } finally { rmSync(w.home, { recursive: true }) }
 })
+
+test('Antigravity: agy-hook.mjs gives the note on PreInvocation once (documented injectSteps), records the confirmation on PostToolUse, and answers {} otherwise', () => {
+  const w = world()
+  try {
+    const t0 = Date.now()
+    writeRequest(w.data, [{ pane: 'tab:agy', session: 'conv-7', role: 'worker', provider: 'antigravity', supported: true, title: 'Antigravity worker' }], { hash: skillHash(w.skill), scope: 'all', now: t0, id: 'r1' })
+    const agy = (event, input, env = {}) => {
+      const r = spawnSync(process.execPath, [join(w.skill, 'scripts', 'agy-hook.mjs'), event], { input: typeof input === 'string' ? input : JSON.stringify(input), env: { PATH: process.env.PATH, HOME: w.home, ...env }, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      return JSON.parse(r.stdout)
+    }
+    // The documented common input: conversationId, workspacePaths, transcriptPath, lastUserInput, invocationNum.
+    const base = { conversationId: 'conv-other', workspacePaths: [w.worktree], transcriptPath: join(w.home, 'brain', 'x', 'transcript.jsonl'), modelName: 'm', lastUserInput: 'hi', invocationNum: 0 }
+    assert.deepEqual(agy('PreInvocation', base, { ORCA_PANE_KEY: 'tab:someone-else' }), {}, 'not targeted')
+    assert.deepEqual(agy('PreInvocation', 'not json'), {}, 'bad input')
+    // Orca's pane env, as Orca's own Antigravity hook reads it.
+    const first = agy('PreInvocation', base, { ORCA_PANE_KEY: 'tab:agy' })
+    assert.equal(first.injectSteps.length, 1)
+    assert.match(first.injectSteps[0].ephemeralMessage, /request r1[^]*roles\/worker\.md \(your role: worker\)[^]*answer the user's message/)
+    assert.deepEqual(agy('PreInvocation', { ...base, invocationNum: 3 }, { ORCA_PANE_KEY: 'tab:agy' }), {}, 'once per request')
+    // After a run_command that ran the confirm command (argument names are not documented: any string argument).
+    const ran = { ...base, conversationId: 'conv-7', stepIdx: 4, toolCall: { name: 'run_command', args: { CommandLine: `node ${w.skill}/scripts/orca-flow.mjs skills-reloaded --request r1`, Cwd: w.worktree } } }
+    assert.deepEqual(agy('PostToolUse', ran, { ORCA_PANE_KEY: 'tab:agy' }), {})
+    assert.equal(reloadStatus(w.data).find((s) => s.pane === 'tab:agy').state, 'reloaded')
+    // Without Orca's env (if agy did not pass it on), only the request's own conversation id matches, mid-turn wording.
+    writeRequest(w.data, [{ pane: 'tab:agy', session: 'conv-7', role: 'worker', provider: 'antigravity', supported: true, title: '' }], { hash: skillHash(w.skill), scope: 'all', now: Date.now() + 5, id: 'r2' })
+    assert.deepEqual(agy('PreInvocation', { ...base, invocationNum: 2 }), {}, 'another conversation, no pane')
+    const bySession = agy('PreInvocation', { ...base, conversationId: 'conv-7', invocationNum: 2 })
+    assert.match(bySession.injectSteps[0].ephemeralMessage, /request r2[^]*continue the task you were doing/)
+  } finally { rmSync(w.home, { recursive: true }) }
+})

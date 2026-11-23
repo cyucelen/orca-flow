@@ -59,17 +59,20 @@ test('a sleeping coordinator\'s reload reaches only its live team; all reaches e
   assert.deepEqual(reloadPlan(snap, { coordinator: 'nobody' }), { targets: [], unsupported: [], skipped: { finished: 0, asleep: 0 } })
 })
 
-test('the confirmation names the exact count by role, the unsupported provider and what is skipped', () => {
+test('the confirmation is short: the counts, then one line per problem; the details stay on the rows', () => {
   const { title, text, ok } = confirmText(reloadPlan(snap, 'all'), 'across all coordinators and your chats')
   assert.ok(ok)
   assert.equal(title, 'Reload skills in 5 agents across all coordinators and your chats?')
-  assert.match(text, /^1 coordinator, 2 leads, 1 worker, 1 chat re-read their skill files at their next turn/)
-  assert.match(text, /Nothing is typed into their terminals; their tasks, open asks and runs stay as they are\./)
-  assert.match(text, /1 Codex session cannot reload: Orca Flow could not check its hooks in this Codex account; restart to reload\./, 'readiness unknown: not counted, said so')
-  assert.match(text, /Skipped: 1 finished, 1 asleep or closed\./)
-  const none = confirmText({ targets: [], unsupported: [{ pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c', reason: 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)' }, { pane: 'y', session: null, role: 'worker', provider: 'antigravity', supported: false, title: '', coordinator: 'c' }], skipped: { finished: 0, asleep: 0 } }, 'for c')
+  assert.equal(text, '1 coordinator, 2 leads, 1 worker, 1 chat re-read their skills at their next turn.\nCannot reload: 1 Codex (see the row).\nSkipped: 1 finished, 1 asleep.')
+  const approve = "Codex: approve Orca Flow's hooks once; start Codex, choose Trust all and continue (or /hooks)"
+  const none = confirmText({ targets: [], unsupported: [
+    { pane: 'x', session: null, role: 'worker', provider: 'codex', supported: false, title: '', coordinator: 'c', reason: approve, approval: true },
+    { pane: 'y', session: null, role: 'worker', provider: 'antigravity', supported: false, title: '', coordinator: 'c', reason: 'Antigravity: …' },
+    { pane: 'z', session: null, role: 'worker', provider: 'opencode', supported: false, title: '', coordinator: 'c' }
+  ], skipped: { finished: 0, asleep: 0 } }, 'for c')
   assert.deepEqual([none.ok, none.title], [false, 'Nothing to reload for c'])
-  assert.equal(none.text, 'No running session here can take a reload. 1 Codex session cannot reload: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks). 1 Antigravity session cannot reload: it has no live reload; restart to reload.')
+  assert.equal(none.text, 'No running session here can take a reload.\nNeeds approval: 1 Codex (see the row).\nCannot reload: 1 Antigravity, 1 OpenCode (see the row).')
+  assert.ok(none.text.split('\n').every((l) => l.length <= 80), 'each line short')
   assert.equal(rolesText([{ role: 'worker' }, { role: 'lead' }, { role: 'worker' }]), '1 lead, 2 workers')
 })
 
@@ -77,19 +80,34 @@ const entry = (pane: string, state: SkillReloadEntry['state'], over: Partial<Ski
 
 test('Codex sessions take the note only once its hooks are installed and trusted; until then they are unsupported with the reason, never requested', () => {
   const approve = 'Codex: approve Orca Flow\'s hooks once; start Codex, choose Trust all and continue (or /hooks)'
-  const waiting = reloadPlan({ ...snap, codexReload: { ready: false, reason: approve } }, { coordinator: 'alpha' })
-  assert.deepEqual(waiting.unsupported.map((t) => [t.pane, t.reason]), [['p-codex', approve]])
+  const waiting = reloadPlan({ ...snap, codexReload: { ready: false, reason: approve, approval: true } }, { coordinator: 'alpha' })
+  assert.deepEqual(waiting.unsupported.map((t) => [t.pane, t.reason, t.approval]), [['p-codex', approve, true]])
+  assert.match(confirmText(waiting, 'for alpha').text, /\nNeeds approval: 1 Codex \(see the row\)\./)
   assert.ok(!waiting.targets.some((t) => t.pane === 'p-codex'))
   const ready = reloadPlan({ ...snap, codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
   assert.deepEqual(ready.targets.map((t) => [t.pane, t.role]), [['p-alpha', 'coordinator'], ['p-lead', 'lead'], ['p-w1', 'worker'], ['p-codex', 'worker']])
   assert.deepEqual(ready.unsupported, [])
-  assert.match(confirmText(ready, 'for alpha').text, /^1 coordinator, 1 lead, 2 workers re-read[^]* A Codex session started before you approved Orca Flow's hooks reloads only after a restart\./)
-  assert.ok(!confirmText(reloadPlan(snap, { coordinator: 'beta' }), 'for beta').text.includes('Codex'), 'no Codex caveat without a Codex session')
+  assert.equal(confirmText(ready, 'for alpha').text, '1 coordinator, 1 lead, 2 workers re-read their skills at their next turn.\nSkipped: 1 finished, 1 asleep.', 'the restart caveat lives on the row')
   assert.match(reloadMark({ reloads: new Map([['p-codex', entry('p-codex', 'waiting', { provider: 'codex' })]]) }, 'p-codex'), /a Codex session started before you approved the hooks needs a restart/)
   // Its Codex thread id goes with it when the summary bound one.
   const bound = { ...codex, summary: summary({ role: 'worker', providerSession: { provider: 'codex', id: 'thread-1' } }) }
   const withThread = reloadPlan({ ...snap, rows: [row('lead', [lead, worker, finished, bound])], codexReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
   assert.equal(withThread.targets.find((t) => t.pane === 'p-codex')?.session, 'thread-1')
+})
+
+test('Antigravity sessions take the note once Orca Flow\'s hooks are in agy\'s hooks.json; until then unsupported with the reason', () => {
+  const agy = agent('p-agy', { coordinator: 'alpha', leadPane: 'p-lead', agentType: 'antigravity', summary: summary({ role: 'worker', providerSession: { provider: 'antigravity', id: 'conv-1' } }) })
+  const base = { ...snap, rows: [row('lead', [lead, worker, agy])], codexReload: { ready: true, reason: '' } }
+  const notYet = "Antigravity: Orca Flow's hooks are not installed yet; update Orca Flow (it adds them once Orca has set up Antigravity)"
+  const off = reloadPlan({ ...base, antigravityReload: { ready: false, reason: notYet } }, { coordinator: 'alpha' })
+  assert.deepEqual(off.unsupported.map((t) => [t.pane, t.provider, t.reason, t.approval]), [['p-agy', 'antigravity', notYet, undefined]])
+  assert.match(confirmText(off, 'for alpha').text, /\nCannot reload: 1 Antigravity \(see the row\)\./)
+  const unknown = reloadPlan(base, { coordinator: 'alpha' })
+  assert.match(unknown.unsupported[0].reason!, /^Antigravity: Orca Flow could not check its hooks/)
+  const ready = reloadPlan({ ...base, antigravityReload: { ready: true, reason: '' } }, { coordinator: 'alpha' })
+  assert.deepEqual(ready.targets.find((t) => t.pane === 'p-agy'), { pane: 'p-agy', session: 'conv-1', role: 'worker', provider: 'antigravity', supported: true, title: 'p-agy', coordinator: 'alpha' }, 'its conversation id goes with it')
+  assert.match(reloadMark({ reloads: new Map([['p-agy', entry('p-agy', 'waiting', { provider: 'antigravity' })]]) }, 'p-agy'), /an Antigravity session started before Orca Flow&#39;s hooks were added may need a restart/)
+  assert.match(reloadMark({ reloads: new Map([['p-agy', entry('p-agy', 'unsupported', { provider: 'antigravity', reason: notYet })]]) }, 'p-agy'), /data-tip="Antigravity: Orca Flow&#39;s hooks are not installed yet/)
 })
 
 test('the summary counts reloaded, reading, waiting and unsupported apart; requested is never counted as reloaded', () => {
