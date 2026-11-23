@@ -39,9 +39,10 @@ import { coordinatorProviders, firstProvider, readInstalledProviders } from './c
 import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type InstalledPlugin, type UpdateCheck, type UpdateState } from './update.ts'
 import { readFootprint, readProcs, startedGroups } from './started.ts'
 import { backgroundReader } from './background.ts'
-import { conversationOpener, ORCA_PROMPT, type Opener } from './transcripts.ts'
+import { conversationOpener, ORCA_PROMPT, seenModel, type Opener, type SeenModel } from './transcripts.ts'
+import { agentName, modelLabel, UNKNOWN } from './panel/models.ts'
 import { buildBots, isBotRow, readBotFolders, type BotAutomation, type ListedBot } from './bots.ts'
-import { addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
+import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -133,14 +134,18 @@ function readFolder<T>(dir: string): Record<string, T> {
  * row shows: dispatch id -> the logged reason ("normal task → Claude Sonnet · medium"), or for older lines "Claude Sonnet · medium — normal task" (or "— images task" for a typed one). Older lines name the kind `class`. The last line of a dispatch
  * wins (a retry or an escalation); a garbled line is skipped.
  */
-export function routeLabels(text: string): Map<string, string> {
-  const out = new Map<string, string>()
+export function routeLabels(text: string): Map<string, string> { return parseRoutes(text).labels }
+
+/** routeLabels plus each dispatch's structured choice (the model it asked for), same last-line-wins rule. */
+export function parseRoutes(text: string): { labels: Map<string, string>; choices: Map<string, ModelChoice> } {
+  const out = new Map<string, string>(), choices = new Map<string, ModelChoice>()
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     let r: any
     try { r = JSON.parse(line) } catch { continue }
     const c = r?.choice as ModelChoice | undefined
     if (typeof r?.dispatchId !== 'string' || !r.dispatchId || typeof c?.agent !== 'string' || !c.agent) continue
+    choices.set(r.dispatchId, c)
     const kind = taskKind(r.kind ?? r.class)
     // The logged reason, as written, on one line; older lines without one are rebuilt.
     const logged = typeof r.reason === 'string' ? r.reason.replace(/\s+/g, ' ').trim() : ''
@@ -149,20 +154,22 @@ export function routeLabels(text: string): Map<string, string> {
       : kind ? `${kind} task${r.risk === 'high' ? ', high risk' : ''}${r.attempt > 0 ? ', escalated' : ''}` : ''
     out.set(r.dispatchId, `${choiceLabel(c)}${why ? ` — ${why}` : ''}`)
   }
-  return out
+  return { labels: out, choices }
 }
 
-let routesSeen: { key: string; labels: Map<string, string> } = { key: '', labels: new Map() }
+let routesSeen: { key: string; labels: Map<string, string>; choices: Map<string, ModelChoice> } = { key: '', labels: new Map(), choices: new Map() }
 /** routeLabels of the file, read again only when its size or time changes; missing reads as empty. */
 export function readRoutes(dir = DATA_DIR): Map<string, string> {
   const file = join(dir, 'routes.jsonl')
   let key = ''
   try { const st = statSync(file); key = `${st.size}:${st.mtimeMs}` } catch { return new Map() }
   if (key !== routesSeen.key) {
-    try { routesSeen = { key, labels: routeLabels(readFileSync(file, 'utf8')) } } catch { return routesSeen.labels }
+    try { routesSeen = { key, ...parseRoutes(readFileSync(file, 'utf8')) } } catch { return routesSeen.labels }
   }
   return routesSeen.labels
 }
+/** The structured choices of the file readRoutes last read (call it first); the same dispatch ids. */
+export const readRouteChoices = (): Map<string, ModelChoice> => routesSeen.choices
 
 /** Rows with each dispatched agent's routed model, by its dispatch id. */
 export function withRoutes(rows: WorkspaceRow[], dispatchIdOf: Map<string, string> | undefined, labels: Map<string, string>): WorkspaceRow[] {
@@ -170,6 +177,38 @@ export function withRoutes(rows: WorkspaceRow[], dispatchIdOf: Map<string, strin
   return rows.map((row) => row.agents.some((a) => labels.has(dispatchIdOf.get(a.paneKey) ?? ''))
     ? { ...row, agents: row.agents.map((a) => { const r = labels.get(dispatchIdOf.get(a.paneKey) ?? ''); return r ? { ...a, route: r } : a }) }
     : row)
+}
+
+/** The model catalog Settings → Models last discovered, so a row names a model as Settings does. */
+let catalog: Availability | undefined
+const PROVIDERS = ['claude', 'codex']
+const sameModel = (c: ModelChoice, id: string) => Boolean(c.model) && (c.model === id || (c.agent === 'claude' && id.includes(c.model!)))
+/** A model id as Settings names it ("GPT-6 Luna", "Sonnet"), else as the sidebar does ("Opus 5.5", "GPT-5.6 Sol"). */
+export function modelName(agent: string, id: string, avail: Availability | undefined = catalog): string {
+  const named = modelLabel(agent, id, avail ?? UNKNOWN)
+  return named !== id ? named : tsModelLabel(id)
+}
+
+/**
+ * Each agent's row model, never the Settings default: the model of its latest reply (`seen`), else the
+ * model its dispatch asked for (`asked`), else "default" when the route named no model, else nothing.
+ * Claude logs no effort, so it comes from the route, and only when the route's model is the one seen.
+ */
+export function withModels(rows: WorkspaceRow[], dispatchIdOf: Map<string, string> | undefined, choices: Map<string, ModelChoice>, seenOf: (a: AgentInfo) => SeenModel | null, nameOf = modelName): WorkspaceRow[] {
+  const modelOf = (a: AgentInfo): AgentInfo['model'] => {
+    const provider = a.agentType
+    const asked = choices.get(dispatchIdOf?.get(a.paneKey) ?? '')
+    const seen = provider && PROVIDERS.includes(provider) ? seenOf(a) : null
+    if (seen) {
+      const effort = seen.effort ?? (asked && sameModel(asked, seen.model) ? asked.effort : undefined)
+      return { name: nameOf(provider!, seen.model), ...(effort ? { effort } : {}), source: 'seen' }
+    }
+    if (!asked || (provider && asked.agent !== provider)) return undefined
+    return asked.model
+      ? { name: nameOf(asked.agent, asked.model), ...(asked.effort ? { effort: asked.effort } : {}), source: 'asked' }
+      : { name: 'default', source: 'default', provider: agentName(asked.agent) }
+  }
+  return rows.map((row) => row.agents.length ? { ...row, agents: row.agents.map((a) => { const model = modelOf(a); return model ? { ...a, model } : a }) } : row)
 }
 
 export function readStore(dir = DATA_DIR): Store {
@@ -745,7 +784,8 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const all = withRoutes(assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
+    const routed = withRoutes(assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
+    const all = withModels(routed, lineage.dispatchIdOf, readRouteChoices(), (a) => a.paneKey ? seenModel(findTranscript(a.paneKey, undefined, { orcaSession: a.orcaSession, provider: a.agentType })) : null)
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
     const remembered = rememberOwners(all, owners)
     if (remembered) try { writeOwners(remembered) } catch (e) { orca.log(`saving owners failed: ${(e as Error).message}`) }
@@ -1103,7 +1143,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // What this machine can run, for Settings → Models and coordinator models. Settings never waits
   // for it: the dialog gets what is cached, and a fresh lookup is pushed as sidebar.settingsChanged.
-  const models = availabilityCache(() => discovery.run(run), () => {
+  const models = availabilityCache(() => discovery.run(run), (fresh) => {
+    catalog = fresh
     void settingsState().then((s) => orca.panels.post('sidebar.settingsChanged', s)).catch((e: Error) => orca.log(`settings refresh failed: ${e.message}`))
   })
   const availability = (maxAgeMs = AVAIL_MAX_MS) => models.get(maxAgeMs)

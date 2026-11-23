@@ -633,10 +633,12 @@ export type TokenSpeedWire = {
   series: Record<SpeedRange, SpeedSeries>
 }
 
-/** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5"; other ids as they are. */
+/** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5", "gpt-5.6-sol" → "GPT-5.6 Sol"; other ids as they are. */
 export function modelLabel(id: string): string {
   const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id)
   if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}`
+  const g = /^gpt-(\d+(?:\.\d+)*)((?:-[a-z][a-z0-9]*)*)$/.exec(id)
+  if (g) return `GPT-${g[1]}${g[2].split('-').filter(Boolean).map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).map((w) => ` ${w}`).join('')}`
   return id
 }
 

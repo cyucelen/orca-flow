@@ -1,6 +1,7 @@
 // Runs src/worker.ts's activate(orca) with the orca object Orca passes, over a mock host.
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker.ts'
+import type { ModelChoice } from './routing.ts'
 import { canRemove, monitoring, nextTarget, waitingQueue } from './rank.ts'
 import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLinearTeams, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
@@ -1697,4 +1698,32 @@ test('opening Settings answers at once while model discovery is slow, then pushe
     main.discovery.run = before
     await worker.deactivate()
   }
+})
+
+test('a row’s model: seen in the latest reply, else asked for, else default, else nothing; the Settings default is never used', () => {
+  const rows = main.fromPs([{ identity: { key: 'env' }, displayName: 'env', repo: 'isola', path: '/w/env', liveTerminalCount: 5, agents: [
+    { paneKey: 'p-seen', state: 'working', agentType: 'claude' }, { paneKey: 'p-asked', state: 'working', agentType: 'claude' },
+    { paneKey: 'p-default', state: 'working', agentType: 'codex' }, { paneKey: 'p-none', state: 'working', agentType: 'claude' }, { paneKey: 'p-ag', state: 'working', agentType: 'antigravity' }
+  ] }])
+  const ids = new Map([['p-seen', 'd1'], ['p-asked', 'd2'], ['p-default', 'd3'], ['p-ag', 'd4']])
+  const choices = new Map<string, ModelChoice>([['d1', { agent: 'claude', model: 'opus', effort: 'high' }], ['d2', { agent: 'claude', model: 'sonnet', effort: 'medium' }], ['d3', { agent: 'codex' }], ['d4', { agent: 'antigravity', model: 'gemini' }]])
+  const seen = new Map<string, { model: string; effort?: string }>([['p-seen', { model: 'claude-opus-5-5' }], ['p-ag', { model: 'ignored' }]])
+  // Settings → Models would default these agents to something else; it is not even an input.
+  const out = main.withModels(rows, ids, choices, (a) => seen.get(a.paneKey) ?? null)[0].agents
+  assert.deepEqual(out.map((a) => a.model ?? null), [
+    { name: 'Opus 5.5', effort: 'high', source: 'seen' },
+    { name: 'Sonnet', effort: 'medium', source: 'asked' },
+    { name: 'default', source: 'default', provider: 'Codex' },
+    null,
+    { name: 'gemini', source: 'asked' }
+  ])
+  const swapped = main.withModels(rows, ids, new Map<string, ModelChoice>([['d1', { agent: 'claude', model: 'sonnet', effort: 'low' }]]), (a) => seen.get(a.paneKey) ?? null)[0].agents[0]
+  assert.deepEqual(swapped.model, { name: 'Opus 5.5', source: 'seen' }, 'the route’s effort only counts when its model is the one seen')
+  const codex = main.withModels(rows, ids, choices, () => ({ model: 'gpt-5.6-sol', effort: 'high' }))[0].agents[2]
+  assert.deepEqual(codex.model, { name: 'GPT-5.6 Sol', effort: 'high', source: 'seen' })
+  const wrongAgent = main.withModels(rows, new Map([['p-none', 'd3']]), choices, () => null)[0].agents[3]
+  assert.equal(wrongAgent.model, undefined, 'a route for another provider says nothing about this agent')
+  assert.equal(main.modelName('codex', 'gpt-6-luna', { agents: null, models: { codex: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna' }] } }), 'GPT-6 Luna', 'the Settings name wins')
+  assert.equal(main.modelName('claude', 'claude-sonnet-5-5'), 'Sonnet 5.5')
+  assert.equal(main.parseRoutes(JSON.stringify({ dispatchId: 'x', choice: { agent: 'codex', model: 'm' } })).choices.get('x')?.model, 'm')
 })

@@ -312,7 +312,9 @@ test('model labels', () => {
   assert.equal(modelLabel('claude-opus-5-5'), 'Opus 5.5')
   assert.equal(modelLabel('claude-sonnet-4-5-20250929'), 'Sonnet 4.5')
   assert.equal(modelLabel('claude-haiku-5'), 'Haiku 5')
-  assert.equal(modelLabel('gpt-6.2-astra'), 'gpt-6.2-astra')
+  assert.equal(modelLabel('gpt-6.2-astra'), 'GPT-6.2 Astra')
+  assert.equal(modelLabel('gpt-5.6-sol'), 'GPT-5.6 Sol')
+  assert.equal(modelLabel('o4-mini'), 'o4-mini')
 })
 
 test('formatting helpers', () => {

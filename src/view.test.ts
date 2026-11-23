@@ -1536,10 +1536,25 @@ test('a coordinator Orca lists twice (stale pane beside its live pane) sorts wit
   noMatch(flowRow, /Sleeping|Not started/, 'its row shows its live status')
 })
 
-test('a routed worker shows its model quietly in its existing status tooltip, nothing new on the row', () => {
-  const routed = { ...snap, rows: [row('w', 'shop', [agent('p-w', 'Rename flag', 'working', { route: 'Claude Sonnet · medium — standard task' })])] }
-  const html = page(routed, emptyUi())
-  assert.match(html, /data-tip="Working\nClaude Sonnet · medium — standard task"/)
-  const plain = page({ ...snap, rows: [row('w', 'shop', [agent('p-w', 'Rename flag', 'working')])] }, emptyUi())
-  assert.match(plain, /data-tip="Working"/)
+test('a session’s model is the first thing on the right of its row, in the state its source says; the route is in that tooltip, not the status', () => {
+  const route = 'Claude Sonnet · medium — standard task'
+  const html = (model: any, extra: object = {}) => page({ ...snap, rows: [row('w', 'shop', [agent('p-w', 'Rename flag', 'working', { route, ...(model ? { model } : {}), ...extra })])] }, emptyUi())
+  const seen = html({ name: 'Sonnet 5.5', effort: 'medium', source: 'seen' })
+  assert.match(seen, /<span class="r"><span class="ml" data-tip="Sonnet 5\.5 · medium\nSeen in its latest reply\.\nAsked for: Claude Sonnet · medium — standard task">Sonnet 5\.5<\/span>/)
+  assert.match(seen, /data-tip="Working"/, 'the status tooltip no longer carries the route')
+  const asked = html({ name: 'Sonnet', source: 'asked' })
+  assert.match(asked, /<span class="ml pending" data-tip="Sonnet\nAsked for: Claude Sonnet · medium — standard task\nNo reply yet\.">Sonnet<\/span>/)
+  assert.match(html({ name: 'default', source: 'default', provider: 'Claude' }, { route: null }), /<span class="ml pending" data-tip="Claude’s default model\nNo reply yet, so the model is not known\.\nThe name shows after its first reply\.">default<\/span>/)
+  noMatch(html(null, { route: null }), /class="ml/, 'nothing known: the row looks as before')
+  assert.match(html(null), /data-tip="Working"/)
+})
+
+test('lead, worker and coordinator rows show their model; the name goes before the Linear chip, PR and repo', () => {
+  const m = (name: string) => ({ name, source: 'seen' as const })
+  const lead = agent('p-l', 'Lead title', 'working', { model: m('Opus 5.5') })
+  const worker = agent('p-k', 'Worker title', 'working', { leadPane: 'p-l', model: m('GPT-5.6 Sol') })
+  const out = page({ ...snap, coordinators: [{ ...snap.coordinators[0], session: agent('p-c', 'Coordinator', 'done', { model: m('Opus 5.5') }) }], rows: [row('feat', 'shop', [lead, worker], { pr: { number: 7, url: 'u', state: 'open', checks: null } })] }, emptyUi())
+  assert.match(out, /<span class="r"><span class="ml"[^>]*>Opus 5\.5<\/span><span class="pr[^>]*>#7<\/span><span class="soft">/, 'the lead: model, then its PR, repo and age')
+  assert.match(out, /<span class="r"><span class="ml"[^>]*>GPT-5\.6 Sol<\/span><\/span>/, 'a worker row, whose right side was empty, gets just the name')
+  assert.match(out, /coord-label[\s\S]*?<span class="r"><span class="ml"[^>]*>Opus 5\.5<\/span><\/span>/, 'the coordinator row')
 })

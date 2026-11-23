@@ -1,8 +1,8 @@
 import { assert, test } from 'orca/testing'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { conversationOpener, discoverTranscript, normalizedRecords, openerIn, readTranscript, sourceCurrent } from './transcripts.ts'
+import { conversationOpener, discoverTranscript, normalizedRecords, openerIn, readTranscript, seenModel, seenModelIn, sourceCurrent } from './transcripts.ts'
 import { currentSummaryJobs, digest, lastTurnEnd, summarizePane, summaryMatches, summaryProviders, turnSummarizer } from './summarize.ts'
 import { createWriter, WriterError } from './writer.ts'
 import { foldCoordinatorFolders, fromPs, summaryAgents } from './worker.ts'
@@ -494,5 +494,40 @@ test('who opened a conversation comes from its first prompt: Orca\'s preamble or
     assert.equal(conversationOpener({ path: big }), 'orca')
     // Orchestration notices and dispatch echoes without a brief are not the first prompt.
     assert.equal(openerIn(normalizedRecords([message('user', 'You have 1 orchestration message. Run `orca orchestration check`.', 1), message('user', 'Fix checkout', 2)].map(line))), 'user')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the seen model is the latest Claude reply’s or Codex turn’s, skipping synthetic and sub-agent records', () => {
+  const claude = [
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5-5', content: [] } }),
+    JSON.stringify({ type: 'user', message: { content: 'x' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: true, message: { model: 'claude-haiku-5-5' } }),
+    JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } }), ''
+  ]
+  assert.deepEqual(seenModelIn(claude), { model: 'claude-opus-5-5' }, 'Claude logs no effort')
+  const codex = [
+    JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.5', effort: 'low' } }),
+    JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol', effort: 'high', collaboration_mode: { settings: { reasoning_effort: 'medium' } } } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'hi' } })
+  ]
+  assert.deepEqual(seenModelIn(codex), { model: 'gpt-5.6-sol', effort: 'high' })
+  assert.deepEqual(seenModelIn([JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol', collaboration_mode: { settings: { reasoning_effort: 'medium' } } } })]), { model: 'gpt-5.6-sol', effort: 'medium' })
+  assert.equal(seenModelIn(['{ not json', JSON.stringify({ type: 'user' })]), null)
+})
+
+test('seenModel reads only the file’s tail, caches by size and mtime, and keeps the last model when the tail has none', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orca-flow-seen-'))
+  try {
+    const path = join(dir, 's.jsonl')
+    writeFileSync(path, `${JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5-5' } })}\n`)
+    assert.deepEqual(seenModel({ path }), { model: 'claude-sonnet-5-5' })
+    writeFileSync(path, `${JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5-5' } })}\n${'x'.repeat(300)}\n`)
+    assert.deepEqual(seenModel({ path }, 100), { model: 'claude-sonnet-5-5' }, 'a tail with no reply keeps what was seen in this file')
+    assert.deepEqual(seenModel({ path }, 1000), { model: 'claude-sonnet-5-5' }, 'the same size and time is not reread')
+    appendFileSync(path, `${JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5-5' } })}\n`)
+    assert.deepEqual(seenModel({ path }, 1000), { model: 'claude-opus-5-5' }, 'a grown file is read again')
+    assert.equal(seenModel({ path: null, why: 'none' }), null)
+    assert.equal(seenModel({ path, source: { kind: 'jsonl', path, providerSession: { provider: 'antigravity', id: 'a' } } }), null, 'Antigravity logs no model')
+    assert.equal(seenModel({ path: join(dir, 'missing.jsonl') }), null)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

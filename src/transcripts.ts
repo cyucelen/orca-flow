@@ -341,6 +341,58 @@ function headLines(path: string, max: number): string[] {
   return size > max ? lines.slice(0, -1) : lines
 }
 
+/** The complete lines in a file's last `max` bytes. */
+function tailLines(path: string, max: number): string[] {
+  const size = statSync(path).size
+  const start = Math.max(0, size - max)
+  const bytes = new Uint8Array(size - start)
+  const fd = openSync(path, 'r')
+  try { readSync(fd, bytes, 0, bytes.length, start) } finally { closeSync(fd) }
+  const lines = new TextDecoder().decode(bytes).split('\n')
+  return start > 0 ? lines.slice(1) : lines
+}
+
+export type SeenModel = { model: string; effort?: string }
+
+/**
+ * The model of a session's latest reply: Claude's last assistant record (`message.model`; its
+ * "<synthetic>" placeholders and sub-agent records are not replies, and Claude logs no effort) or
+ * Codex's last `turn_context` (`model` and `effort`). Antigravity logs none. Null when not in the lines.
+ */
+export function seenModelIn(lines: string[]): SeenModel | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"model"')) continue
+    const r = parse(lines[i])
+    if (r?.type === 'assistant' && !r.isSidechain && typeof r.message?.model === 'string' && r.message.model && r.message.model !== '<synthetic>') return { model: r.message.model }
+    const p = r?.type === 'turn_context' ? r.payload : null
+    if (typeof p?.model === 'string' && p.model) {
+      const effort = [p.effort, p.collaboration_mode?.settings?.reasoning_effort, p.reasoning_effort].find((e) => typeof e === 'string' && e)
+      return { model: p.model, ...(effort ? { effort } : {}) }
+    }
+  }
+  return null
+}
+
+const seenModels = new Map<string, { key: string; seen: SeenModel | null }>()
+
+/**
+ * The model of the latest reply of the session behind a found transcript (an exact pane binding,
+ * never a guess), from the file's last megabyte only and cached by path + size + mtime, so a sidebar
+ * refresh does not reread it. A tail with no reply keeps the last model seen in that same file.
+ * Structured chats (the journal) and Antigravity have none to read.
+ */
+export function seenModel(found: FoundTranscript, max = 1024 * 1024): SeenModel | null {
+  if (!found.path || found.source?.kind === 'journal' || found.source?.providerSession?.provider === 'antigravity') return null
+  try {
+    const st = statSync(found.path), key = `${st.size}:${st.mtimeMs}`
+    const had = seenModels.get(found.path)
+    if (had?.key === key) return had.seen
+    const seen = seenModelIn(tailLines(found.path, max)) ?? had?.seen ?? null
+    seenModels.set(found.path, { key, seen })
+    return seen
+  } catch { return null }
+}
+
 const openers = new Map<string, Opener>()
 
 /**

@@ -197,9 +197,22 @@ function agentCharacter(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[], size 
   const face: Face = asleep(row) ? 'idle' : faceOf(a)
   const ask = askKindOf(a)
   const state = asleep(row) ? 'Asleep' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && inFlight(a, row, all) ? 'Available' : STATUS[face]
-  // The model its dispatch was routed to, quietly, under the status.
-  const tip = a.route ? `${state}\n${a.route}` : state
-  return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask, spinner), tip, face === 'asks' ? ASK_TONE[ask] : '')
+  return tipped(character(colorOf(row.repo), shapeOf(a, all), face, size, true, ask, spinner), state, face === 'asks' ? ASK_TONE[ask] : '')
+}
+
+/**
+ * The session's model, muted, first on the row's right (panel.css .ml): seen in its latest reply, or
+ * dimmed and italic while only asked for or the provider's default. Its tooltip says where the name
+ * came from, and holds the route dispatch chose (which used to sit under the status).
+ */
+export function modelTag(a: AgentInfo | null | undefined): string {
+  const m = a?.model
+  if (!a || !m) return ''
+  const effort = m.effort ? ` · ${m.effort}` : ''
+  const tip = m.source === 'default' ? `${m.provider ?? 'The provider'}’s default model\nNo reply yet, so the model is not known.\nThe name shows after its first reply.`
+    : m.source === 'asked' ? `${m.name}${effort}\nAsked for: ${a.route ?? m.name}\nNo reply yet.`
+    : `${m.name}${effort}\nSeen in its latest reply.${a.route ? `\nAsked for: ${a.route}` : ''}`
+  return `<span class="ml${m.source === 'seen' ? '' : ' pending'}" data-tip="${esc(tip)}">${esc(m.name)}</span>`
 }
 
 // ---------- reading the model ----------
@@ -1015,8 +1028,8 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
   const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : lead
-    ? (own ? `${chip}${prBadge(p.row.pr)}` : '')
-    : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
+    ? `${modelTag(p.a)}${own ? `${chip}${prBadge(p.row.pr)}` : ''}`
+    : `${modelTag(p.a)}${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`)
   const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}" data-depth="${depth}" style="--node-x:${nodeX(depth)}px"`
@@ -1135,7 +1148,7 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
   const row = c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? '' : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? (c.session ? modelTag(c.session) : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`)}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 

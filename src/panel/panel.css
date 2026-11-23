@@ -196,6 +196,12 @@ html.light .pr-merged { color: rgb(147 51 234 / .7); }
    monospace, and centering line boxes of different fonts leaves their text at different heights. */
 .r > :is(.idchip, .pr, .soft, .age) { align-self: baseline; }
 .soft { color: var(--faint); font-size: 11px; }
+/* A session's model, muted like the repo name; dimmed with the finished row's PR; italic while it is only asked for. */
+.r > .ml { align-self: baseline; flex: none; color: var(--faint); font-size: 11px; }
+.r > .ml.pending { font-style: italic; color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.item.finished .ml { opacity: .7; }
+/* Narrow: the repo name goes (as the Linear chip does above); the model stays. */
+@media (max-width: 300px) { .r:has(> .ml) > .soft { display: none; } }
 .grow { flex: 1; min-width: 0; display: grid; }
 .indent { padding-left: 30px; }
 .hair { height: 1px; background: var(--line); margin-inline: -12px; }

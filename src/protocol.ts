@@ -76,6 +76,12 @@ export type AgentInfo = {
   live?: boolean
   /** The model its dispatch was routed to, from ~/.orca-flow/routes.jsonl: "Claude Sonnet · medium — standard task". */
   route?: string | null
+  /**
+   * The model shown on its row, never the Settings default: `seen` is its latest reply's model read
+   * from its own transcript; `asked` is what dispatch routed it to (no reply yet); `default` is a
+   * route with no model (the provider's own default, so the name is unknown). Absent: nothing known.
+   */
+  model?: { name: string; effort?: string; source: 'seen' | 'asked' | 'default'; /** Provider's display name, for "default". */ provider?: string }
   summary: AgentSummary | null
 }
 
