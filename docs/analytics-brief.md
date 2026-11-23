@@ -18,16 +18,16 @@ Token Speed cannot answer any of the three. It keeps only output tokens, only pe
 
 - Keeps the glanceable throughput: output tok/s of all agents over the last minute and the per-model rate glance (today's headline and chart, `token-speed-view.ts:162-165`, `:191-194`).
 - Keeps network access as it is: agent traffic (nettop) as a headline stat and the internet line with its Test button (`token-speed-view.ts:162-173`). The traffic chart (`:196-211`) stays one click away behind "Agent traffic chart", so the section is shorter by default.
-- Adds **at most one usage line**: "Today 4.2M tokens · top: <workstream>", plus an "Open usage" link. No breakdowns, costs, comparisons or partial-data warnings in the sidebar; they live in the Usage view.
-- Settings → Features keeps one switch, renamed from Token Speed (`src/settings.ts:14`, `:80-83`; `src/panel/app.ts:132-150`).
+- Adds **one usage line**: "Today 15.1M tokens · Usage ›" (no workstream name: it would wrap at sidebar width). No breakdowns, costs, comparisons or partial-data warnings in the sidebar; they live in the Usage view.
+- Settings → Features keeps one switch, renamed from Token Speed (`src/settings.ts:14`, `:80-83`; `src/panel/app.ts:132**(b) Three screens, one question each** (opened from the sidebar):
 
-**(b) Usage view** (a full panel, opened from the sidebar):
+- **Usage** — which completed workstreams used the most? One window toggle (7 days · 30 days · All); one big number, tokens recorded in the window, with "≈ $X at API prices · not your bill" under it; one list of **completed workstreams**: runs that finished inside the window, ranked by whole-run total tokens (never clipped), one line each: name · tokens · est. cost, plus a Partial or failed chip only when it applies. Under it one muted line: "N running · X so far · Unattributed Y". Running runs and Unattributed are never ranked.
+- **Workstream** — where did it go? One line of figures (whole-run tokens, est. cost, wall time, accepted/failed), then one row per lead session, worker and retry ("retry of <worker>") with model badge, tokens and est. cost. "Compare with baseline ›" when the run is a labelled arm.
+- **Comparison** — did the policy change help? Baseline vs variant (policy, n runs), four rows: tokens per accepted run, est. cost per accepted run, time per run, runs that passed; the change as "−46 %", green when better; one caveat line. An incomparable pair is one sentence saying why, no table (§8).
 
-- Time window picker: Today · 7 d · 30 d · All recorded. One control.
-- Activity in the window: total tokens with the four categories, estimated cost, coverage of the window, split into Orca workstreams and Unattributed (Unattributed is a row of the activity total, never a ranked workstream).
-- **Completed workstreams** (answers Q1): runs that finished inside the window, ranked by whole-run total tokens, never clipped to the window. Each row: whole-run tokens, estimated cost or "no estimate", wall time, workers + retries, accepted/failed, the partial-coverage chip when it applies, and a thin category bar. Running workstreams are not ranked; at most one line under the list: "N running · X tokens so far".
-- Drilldown: workstream → lead / workers / retries → model, each row with input, cache read, cache write, output.
-- Comparison: for a task the user labelled as a baseline/variant pair, the two arms side by side (§8).
+**What the UI shows vs what lives in Details.** Each screen shows only what its question needs. The four token categories per row, the handover and dedupe notes and the coverage explanation sit behind one closed "Details" toggle on the workstream screen; the per-run table and the metric definitions sit behind "Details" on the comparison screen; price-table version, assumed prices and what the window controls are tooltips. The rules in §3–§8 are unchanged: the screens apply them without displaying them.
+
+e (§8).
 
 ## 3. Current capability vs required instrumentation
 
@@ -88,7 +88,7 @@ What each source can and cannot give (checked on this machine):
 - **Window activity**: usage whose timestamp falls inside the window. A run that spans the window edge contributes only its in-window part (clipped). Used for the window totals.
 - **Whole-run total**: everything the workstream ever spent, regardless of window. Used in the workstream breakdown and comparisons.
 - The UI labels both every time: "In window" vs "Whole run".
-- **The window does two jobs, stated in one line in the view:** (a) activity, clipped: the "recorded in window" total, the per-day chart and the by-model table; (b) selection: which completed runs are listed, by finish date (the run's last recorded activity), each with its whole-run total. A ranking by in-window tokens is not offered: a window slice mixes running work, half-finished runs and partial coverage, so its order answers no decision.
+- **The window does two jobs, stated in the window toggle's tooltip:** (a) activity, clipped: the "recorded in window" total; (b) selection: which completed runs are listed, by finish date (the run's last recorded activity), each with its whole-run total. A ranking by in-window tokens is not offered: a window slice mixes running work, half-finished runs and partial coverage, so its order answers no decision.
 - A run that spans the window edge (e.g. a 9-day run finishing yesterday) appears in the 7-day list at its whole-run total; only its in-window part counts toward the activity total.
 - **Partial coverage**: a run that started before instrumentation, or whose logs were rotated, shows "Partial · 62 % covered" (covered = share of the run's active time for which logs were read). Its numbers are a floor, never extrapolated.
 

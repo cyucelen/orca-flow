@@ -116,127 +116,71 @@ button { all: unset; cursor: pointer; box-sizing: border-box; }
 .uline .go { color: var(--ask); font-weight: 600; white-space: nowrap; }
 .empty { color: var(--muted); }
 
-/* --- usage view --- */
+/* --- detail views: one question per screen --- */
 .vhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .vhead h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
-.back { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); padding: 3px 7px 3px 4px; border-radius: 6px; background: var(--card); }
-.back:hover { color: var(--ink); background: var(--card-hover); }
-.back svg { width: 9px; height: 9px; transform: rotate(180deg); }
-.crumbs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.vsub { color: var(--muted); font-size: 12px; margin-top: -10px; }
-.vsub code, .mono { font-family: var(--mono); font-size: 11.5px; }
 .grow { flex: 1; }
-.figs { display: flex; flex-wrap: wrap; gap: 12px 28px; }
-.fig { display: grid; gap: 1px; min-width: 0; }
-.fig .k { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
-.fig .v { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
-.fig .v.sm { font-size: 19px; }
-.fig .n { font-size: 11.5px; color: var(--muted); }
-.fig.win .k { color: var(--ask); }
-.fig.run .k { color: var(--good); }
-.est { font-size: 11px; color: var(--muted); }
-.cbar { display: flex; gap: 2px; height: 14px; border-radius: 4px; overflow: hidden; }
-.cbar i { display: block; height: 100%; min-width: 0; }
-.cbar.thin { height: 6px; border-radius: 3px; gap: 1px; }
-.k-in { background: var(--k-in); } .k-cr { background: var(--k-cr); } .k-cw { background: var(--k-cw); } .k-out { background: var(--k-out); }
-.clegend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); padding-top: 6px; font-variant-numeric: tabular-nums; }
-.clegend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.clegend b { color: var(--ink); font-weight: 600; }
-.sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.block { display: grid; gap: 8px; }
-.bhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.bhead .label { flex: 1; }
-.note { font-size: 11.5px; color: var(--muted); }
-.chip { display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--muted); background: var(--card); font-variant-numeric: tabular-nums; }
+.back { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); padding: 3px 7px 3px 4px; border-radius: 6px; background: var(--card); max-width: 100%; }
+.back:hover { color: var(--ink); background: var(--card-hover); }
+.back svg { width: 9px; height: 9px; flex: none; transform: rotate(180deg); }
+.back span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero { display: grid; gap: 2px; }
+.hero .v { font-size: 34px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.hero .v small { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.note { font-size: 12px; color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.block { display: grid; gap: 6px; }
+.figline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.figline b { color: var(--ink); font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+.ok { color: var(--good); font-weight: 600; } .ko { color: var(--danger); font-weight: 600; } .wn { color: var(--warn); font-weight: 600; }
+.chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; flex: none; }
 .chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.chip.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
 .chip.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
-.chip.ask { color: var(--ask); background: color-mix(in srgb, var(--ask) 13%, transparent); }
-.chip svg { width: 10px; height: 10px; }
-.mbadge { display: inline-flex; align-items: center; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px var(--mono); color: var(--muted); background: color-mix(in srgb, var(--ink) 9%, transparent); white-space: nowrap; gap: 5px; }
+.mbadge { display: inline-flex; align-items: center; flex: none; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px var(--mono); color: var(--muted); background: color-mix(in srgb, var(--ink) 9%, transparent); white-space: nowrap; gap: 5px; }
 .mbadge .dot { width: 6px; height: 6px; }
-/* daily columns */
-.days { position: relative; height: 70px; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line); }
-.days i { flex: 1; min-width: 0; display: flex; align-items: flex-end; height: 100%; cursor: default; }
-.days i b { display: block; width: 100%; max-width: 24px; margin: 0 auto; background: var(--k-in); border-radius: 3px 3px 0 0; }
-.days i:hover b { filter: brightness(1.15); }
-.days i.zero b { background: var(--line); }
-.daxis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); }
-.dtop { position: absolute; top: -2px; left: 0; font-size: 10px; color: var(--muted); background: var(--bg); padding-right: 4px; }
-/* workstream list */
-.wlist { display: grid; }
-.wrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 8px 9px; margin-inline: -8px; border-radius: 7px; align-items: center; }
-.wrow:hover { background: var(--hover); }
-.wrow.static { cursor: default; }
-.wrow .wt { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.wrow .wt .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.wrow .rank { color: var(--faint); font-size: 11px; width: 14px; flex: none; font-variant-numeric: tabular-nums; }
-.wrow .wv { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.wrow .wv b { font-weight: 650; }
-.wrow .wmeta { grid-column: 1; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); min-width: 0; padding-left: 20px; }
-.wrow .wsub { grid-column: 2; text-align: right; font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.wrow .cbar { grid-column: 1 / -1; margin-left: 20px; margin-top: 4px; }
-.sep { border-top: 1px solid var(--line); margin: 4px 0; }
-table.u.act { min-width: 0; max-width: 520px; }
-/* tables */
-.tw { overflow-x: auto; margin-inline: -4px; padding-inline: 4px; }
-table.u { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 620px; }
-table.u th { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 5px 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
-table.u th .sw { display: inline-block; width: 8px; height: 8px; margin-right: 4px; vertical-align: 0; }
+/* one-line rows: name · tokens · cost */
+.rows { display: grid; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 12px; align-items: center; padding: 8px; margin-inline: -8px; border-radius: 7px; font-variant-numeric: tabular-nums; }
+button.row:hover { background: var(--hover); }
+.row + .row { box-shadow: 0 -1px 0 color-mix(in srgb, var(--line) 70%, transparent); }
+.row .nm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row .nm .t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .nm .t.strong { font-weight: 600; }
+.row .tk { font-weight: 650; text-align: right; white-space: nowrap; }
+.row .cs { color: var(--muted); text-align: right; white-space: nowrap; }
+.ne { color: var(--faint); font-style: italic; }
+.tail { font-size: 12px; color: var(--muted); padding-top: 4px; }
+/* Details */
+.dtoggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 0; }
+.dtoggle:hover { color: var(--ink); }
+.dtoggle svg { width: 8px; height: 8px; transition: transform .15s; }
+.dtoggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.tw { overflow-x: auto; }
+table.u { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+table.u th { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 5px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); }
 table.u th:first-child, table.u td:first-child { text-align: left; padding-left: 0; }
-table.u td { text-align: right; padding: 5px 0 5px 8px; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
-table.u tr.grp td { font-weight: 650; padding-top: 9px; }
-table.u tr.child td:first-child { padding-left: 14px; }
-table.u tr.child td { color: color-mix(in srgb, var(--ink) 88%, var(--muted)); }
+table.u td { text-align: right; padding: 5px 0 5px 10px; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
 table.u tr.sum td { font-weight: 650; border-bottom: 0; border-top: 1px solid var(--line); }
-table.u tr:not(.grp):not(.sum):hover td { background: var(--hover); }
-table.u td .nm { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; vertical-align: middle; }
-table.u td .nm .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-table.u td .nm > :not(.tx) { flex: none; }
-table.u td.ne, .ne { color: var(--faint); font-style: italic; }
-.sub { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
-.cta { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 7px; font-weight: 600; font-size: 12.5px; color: var(--ask); background: color-mix(in srgb, var(--ask) 12%, transparent); }
-.cta:hover { background: color-mix(in srgb, var(--ask) 20%, transparent); }
-.cta svg { width: 9px; height: 9px; }
-.callout { border-radius: 8px; padding: 10px 12px; background: var(--card); font-size: 12px; display: grid; gap: 6px; }
-.callout.warn { background: color-mix(in srgb, var(--warn) 11%, transparent); }
-.callout b { font-weight: 650; }
+.details { display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--card); }
+.cta { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; color: var(--ask); padding: 2px 0; }
+.cta:hover { text-decoration: underline; }
 /* comparison */
-.arms { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.arm { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
-.arm .label { display: flex; gap: 6px; align-items: center; }
-.arm .pol { font-weight: 600; }
-.arm .runs { font-size: 11.5px; color: var(--muted); }
-.mrow { display: grid; grid-template-columns: minmax(110px, 1.1fr) minmax(0, 2fr) minmax(92px, auto); gap: 4px 12px; align-items: center; padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
-.mrow .mk { font-weight: 600; font-size: 12px; }
-.mrow .mk small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
-.bars { display: grid; gap: 4px; min-width: 0; }
-.bar { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
-.bar .tr { position: relative; height: 14px; }
-.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 2px; }
-.bar.b .fill { background: color-mix(in srgb, var(--ink) 30%, var(--bg)); }
-.bar.v .fill { background: var(--c0); }
-.bar .val { position: absolute; top: 50%; transform: translateY(-50%); font-size: 11.5px; color: var(--ink); font-weight: 600; white-space: nowrap; padding-left: 6px; font-variant-numeric: tabular-nums; }
-.delta { text-align: right; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; display: grid; justify-items: end; gap: 1px; }
-.delta small { font-weight: 500; font-size: 11px; }
-.delta.good { color: var(--good); } .delta.bad { color: var(--danger); } .delta.flat, .delta.na { color: var(--muted); }
-.flags { display: flex; gap: 6px; flex-wrap: wrap; }
-.rtable td.ok { color: var(--good); } .rtable td.ko { color: var(--danger); }
+table.cmp { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.cmp th { text-align: right; font-weight: 600; font-size: 12px; padding: 0 0 8px 12px; vertical-align: bottom; }
+table.cmp th small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+table.cmp th:first-child { text-align: left; padding-left: 0; }
+table.cmp td { text-align: right; padding: 9px 0 9px 12px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); white-space: nowrap; }
+table.cmp td:first-child { text-align: left; padding-left: 0; white-space: normal; color: var(--muted); }
+table.cmp td.d { font-weight: 650; }
+.d.good { color: var(--good); } .d.bad { color: var(--danger); } .d.flat { color: var(--muted); }
 .foot { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px 16px; flex-wrap: wrap; }
-.foot .ok { color: var(--good); font-weight: 600; }
-.foot .ko { color: var(--danger); font-weight: 600; }
-@media (max-width: 560px) {
-  .arms { grid-template-columns: 1fr; }
-  .mrow { grid-template-columns: minmax(0, 1fr) auto; }
-  .mrow .bars { grid-column: 1 / -1; grid-row: 2; }
-  .fig .v { font-size: 22px; }
-}
+@media (max-width: 420px) { .hero .v { font-size: 28px; } .row { grid-template-columns: minmax(0, 1fr) auto 56px; gap: 8px; } }
 #tip { position: fixed; z-index: 30; max-width: 260px; padding: 6px 8px; border-radius: 6px; background: var(--ink); color: var(--bg); font-size: 11.5px; line-height: 1.35; white-space: pre-line; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 
 <div class="wrap">
-  <div class="banner" role="note"><b>Sample data — not your usage.</b><span>A design draft of Analytics, the successor to Token Speed in the Orca Flow sidebar. Every total below is computed from one sample data object; costs are estimates at a stated sample price table.</span></div>
+  <div class="banner" role="note"><b>Sample data — not your usage.</b><span>Design draft of Analytics, the successor to Token Speed. All numbers come from one sample data object.</span></div>
   <div class="stage">
     <div class="pane-side">
       <div class="cap">Orca Flow sidebar · compact</div>
@@ -331,7 +275,7 @@ const S = [
 ]
 
 // ---------------- the arithmetic ----------------
-const WINDOWS = { today: { label: 'Today', max: 1 }, '7d': { label: '7 days', max: 7 }, '30d': { label: '30 days', max: 30 }, all: { label: 'All recorded', max: Infinity } }
+const WINDOWS = { '7d': { label: '7 days', say: 'in the last 7 days', max: 7 }, '30d': { label: '30 days', say: 'in the last 30 days', max: 30 }, all: { label: 'All', say: 'since recording began', max: Infinity } }
 const CATS = [['in', 'Input', 'k-in'], ['cr', 'Cache read', 'k-cr'], ['cw', 'Cache write', 'k-cw'], ['out', 'Output', 'k-out']]
 const zero = () => ({ in: 0, cr: 0, cw5: 0, cw1: 0, out: 0, cost: 0, unpriced: 0 })
 function priced(model, c) {
@@ -383,7 +327,7 @@ const costCell = (u) => {
 
 // ---------------- state and routing ----------------
 const store = { get(k) { try { return localStorage.getItem(k) } catch { return null } }, set(k, v) { try { localStorage.setItem(k, v) } catch {} } }
-const ui = { win: WINDOWS[store.get('an-win')] ? store.get('an-win') : '7d', folded: false, range: '1h', traffic: false, testing: false, testedAgo: '3h ago' }
+const ui = { win: WINDOWS[store.get('an-win')] ? store.get('an-win') : '7d', folded: false, range: '1h', traffic: false, details: false, testing: false, testedAgo: '3h ago' }
 function route() {
   const h = location.hash.slice(1)
   if (h === 'usage') return { view: 'usage' }
@@ -428,8 +372,6 @@ function sidebar() {
   const all = Array.from({ length: n }, (_, k) => Math.round(ids.reduce((a, id) => a + sp[id][k], 0) * 10) / 10)
   const now = Math.round(all[n - 1])
   const today = sum(S, 1)
-  const ranked = WS.map((w) => ({ w, t: total(sum(sessionsOf(w.id), 1)) })).filter((x) => x.t > 0).sort((a, b) => b.t - a.t)
-  const top = ranked[0]
   const head = `<div class="sechead"><button class="lfold label" data-act="fold" aria-expanded="${!ui.folded}">${CHEV}<span>Analytics</span></button>${ui.folded
     ? `<span class="foldsum">${now} tok/s<span class="sepd">${tok(total(today))} today</span></span>`
     : `<span class="seg" role="group" aria-label="Range">${['1h', '24h'].map((r) => `<button data-range="${r}" aria-pressed="${r === ui.range}">${r}</button>`).join('')}</span>`}</div>`
@@ -449,174 +391,92 @@ function sidebar() {
     + (ui.traffic ? lineChart({ title: 'Agent network traffic (kbit/s)', unit: 'kbit/s', n: 60, axis: ['1 h ago', '30 min ago', 'now'],
       lines: [{ cls: 'tdown', values: NET.down, end: true, mark: '↓' }, { cls: 'tup', values: NET.up, dashed: true, end: true, mark: '↑' }],
       tips: NET.down.map((v, k) => `${59 - k} min ago · ↓${Math.round(v)} ↑${Math.round(NET.up[k])} kbit/s`) }) + '<div class="tlegend"><span><i class="dash tdown"></i>down</span><span><i class="dash dashed tup"></i>up</span></div>' : '')
-  const usage = `<button class="uline" data-go="usage" data-tip="All recorded usage today, every category. Opens the Usage view."><span class="ut">Today <b>${tok(total(today))}</b> tokens · top: ${esc(top.w.title)}</span><span class="go">Usage ›</span></button>`
+  const usage = `<button class="uline" data-go="usage" data-tip="All recorded usage today, every category. Opens the Usage view."><span class="ut">Today <b>${tok(total(today))}</b> tokens</span><span class="go">Usage ›</span></button>`
   return `${linear}<div class="sec">${head}${stats}${net}${chart}${table}${traffic}${usage}</div>`
 }
 
-// ---------------- usage view ----------------
-function catBar(u, thin) {
-  const t = total(u) || 1
-  const parts = [['in', u.in], ['cr', u.cr], ['cw', cw(u)], ['out', u.out]].filter(([, v]) => v > 0)
-  const name = Object.fromEntries(CATS.map(([k, l]) => [k, l]))
-  return `<div class="cbar${thin ? ' thin' : ''}" role="img" aria-label="${esc(parts.map(([k, v]) => `${name[k]} ${tok(v)}`).join(', '))}">${parts.map(([k, v]) => `<i class="k-${k}" style="flex:${v / t}" data-tip="${esc(`${name[k]}: ${full(v)} tokens (${pct((v / t) * 100)})`)}"></i>`).join('')}</div>`
-}
-function catLegend(u) {
-  const t = total(u) || 1
-  return `<div class="clegend">${[['in', u.in], ['cr', u.cr], ['cw', cw(u)], ['out', u.out]].map(([k, v]) => `<span><i class="sw k-${k}"></i>${CATS.find((c) => c[0] === k)[1]} <b>${tok(v)}</b> ${pct((v / t) * 100)}</span>`).join('')}</div>`
-}
-const winSeg = () => `<span class="seg" role="group" aria-label="Time window">${Object.entries(WINDOWS).map(([k, w]) => `<button data-win="${k}" aria-pressed="${k === ui.win}">${w.label}</button>`).join('')}</span>`
-const backBtn = (h, label) => `<button class="back" data-go="${h}">${CHEV}${esc(label)}</button>`
-const mback = '<button class="back mback" data-go="">' + CHEV + 'Sidebar</button>'
+// ---------------- shared bits ----------------
+const winSeg = () => `<span class="seg" role="group" aria-label="Time window" data-tip="The window sets the total above (usage inside the window) and which completed runs are listed (by finish date, at their whole-run totals).">${Object.entries(WINDOWS).map(([k, w]) => `<button data-win="${k}" aria-pressed="${k === ui.win}">${w.label}</button>`).join('')}</span>`
+const backBtn = (h, label) => `<button class="back" data-go="${h}">${CHEV}<span>${esc(label)}</span></button>`
+const mback = '<button class="back mback" data-go="">' + CHEV + '<span>Sidebar</span></button>'
+const costTxt = (x) => (x.unpriced && !x.cost ? '<span class="ne" data-tip="No price for this model in the price table">no estimate</span>' : `<span${x.unpriced ? ` data-tip="${esc(tok(x.unpriced) + ' tokens have no price and are not in this estimate')}"` : ''}>${usd(x.cost)}${x.unpriced ? '+' : ''}</span>`)
+const detailsBtn = () => `<button class="dtoggle" data-act="details" aria-expanded="${ui.details}">${CHEV}Details</button>`
+const partialChip = (w) => (w.coverage < 1 ? `<span class="chip warn" data-tip="${esc(`${Math.round(w.coverage * 100)} % of this run was recorded: it ${w.partialWhy}. Its numbers are a floor.`)}">Partial ${Math.round(w.coverage * 100)} %</span>` : '')
+const catHead = `<th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total</th>`
+const catCells = (u) => `<td>${full(u.in)}</td><td>${full(u.cr)}</td><td>${full(cw(u))}</td><td>${full(u.out)}</td><td>${full(total(u))}</td>`
 
+// ---------------- usage: which completed workstreams used the most? ----------------
 function usageView() {
   const W = WINDOWS[ui.win]
   const u = sum(S, W.max)
-  const partial = WS.filter((w) => w.coverage < 1 && total(sum(sessionsOf(w.id), W.max)) > 0)
-  // daily columns
-  const span = ui.win === 'today' ? 0 : ui.win === 'all' ? Math.max(...S.flatMap((s) => s.chunks.map((c) => c[0]))) + 1 : W.max
-  let days = ''
-  if (span) {
-    const per = Array.from({ length: span }, (_, d) => total(sum(S.map((s) => ({ ...s, chunks: s.chunks.filter((c) => c[0] === d) })), Infinity)))
-    const top = niceMax(Math.max(...per))
-    const cols = per.map((v, d) => ({ v, d })).reverse()
-    days = `<div class="block"><div class="bhead"><span class="label">Tokens per day</span><span class="note">all categories, in window</span></div>`
-      + `<div class="days"><span class="dtop">${tok(top)}</span>${cols.map(({ v, d }) => `<i class="${v ? '' : 'zero'}" data-tip="${esc(`${dateOf(d)} · ${v ? full(v) + ' tokens' : 'no recorded usage'}`)}"><b style="height:${v ? Math.max(2, (v / top) * 100) : 2}%"></b></i>`).join('')}</div>`
-      + `<div class="daxis"><span>${dateOf(span - 1)}</span><span>today</span></div></div>`
-  }
-  // activity in the window, split into Orca workstreams and Unattributed (adds up to the headline)
   const un = sum(S.filter((s) => !s.ws), W.max)
-  const att = sum(S.filter((s) => s.ws), W.max)
-  const unN = S.filter((s) => !s.ws && total(sessionUse(s, W.max)) > 0).length
-  const costTxt = (x) => (x.unpriced && !x.cost ? '<span class="ne">no estimate</span>' : usd(x.cost) + (x.unpriced ? '<span class="ne"> +?</span>' : ''))
-  const split = `<div class="tw"><table class="u act"><tbody>
-    <tr><td>Orca workstreams <span class="sub">running and finished, clipped to the window</span></td><td>${full(total(att))}</td><td>${costTxt(att)}</td></tr>
-    <tr data-tip="Sessions with no Orca binding, such as a plain terminal. Counted in every activity total; never ranked as a workstream."><td>Unattributed <span class="sub">no Orca session · ${unN} session${unN === 1 ? '' : 's'}</span></td><td>${full(total(un))}</td><td>${costTxt(un)}</td></tr>
-    <tr class="sum"><td>Recorded in window</td><td>${full(total(u))}</td><td>${costTxt(u)}</td></tr></tbody></table></div>`
-  // completed workstreams: finished inside the window, ranked by whole-run total (never clipped)
   const done = WS.filter((w) => w.accepted != null).map((w) => ({ w, end: finishDay(w), whole: sum(sessionsOf(w.id)) }))
     .filter((r) => r.end < W.max).sort((a, b) => total(b.whole) - total(a.whole))
-  const running = WS.filter((w) => w.accepted == null).map((w) => sum(sessionsOf(w.id)))
-  const chips = (w) => [
-    w.accepted ? '<span class="chip good">accepted</span>' : '<span class="chip bad">failed</span>',
-    w.coverage < 1 ? `<span class="chip warn" data-tip="${esc(`${Math.round(w.coverage * 100)} % of this run was recorded: ${w.partialWhy}. Its numbers are a floor.`)}">Partial · ${Math.round(w.coverage * 100)} %</span>` : '',
-    w.pair ? `<span class="chip" data-tip="Labelled as the ${w.arm} arm of a comparison">${w.arm}</span>` : ''
-  ].join('')
-  const crew = (w) => { const ss = sessionsOf(w.id), n = ss.filter((s) => s.role === 'worker').length, r = ss.filter((s) => s.role === 'retry').length; return `${n} worker${n === 1 ? '' : 's'}${r ? ` + ${r} retr${r === 1 ? 'y' : 'ies'}` : ''}` }
-  const list = done.map((r, i) => `<button class="wrow" data-go="ws-${r.w.id}"><span class="wt"><span class="rank">${i + 1}</span><span class="t">${esc(r.w.title)}</span></span><span class="wv"><b>${tok(total(r.whole))}</b></span>`
-    + `<span class="wmeta"><span>finished ${ago(r.end)} · ${mins(r.w.wall)} · ${crew(r.w)}</span>${chips(r.w)}</span><span class="wsub">${costTxt(r.whole)}</span>${catBar(r.whole, true)}</button>`).join('')
-  const runLine = running.length ? `<div class="note">${running.length} running · ${tok(total(running.reduce(add, zero())))} tokens so far · not ranked until they finish</div>` : ''
-  // by model
-  const byModel = {}
-  for (const s of S) { const key = String(s.model); byModel[key] = add(byModel[key] ?? zero(), sessionUse(s, W.max)) }
-  const mrows = Object.entries(byModel).filter(([, v]) => total(v) > 0).sort((a, b) => total(b[1]) - total(a[1]))
-  const mtable = `<div class="tw"><table class="u"><thead><tr><th>Model</th>${CATS.map(([, l, c]) => `<th><i class="sw ${c}"></i>${l}</th>`).join('')}<th>Total</th><th>Est. cost</th></tr></thead><tbody>`
-    + mrows.map(([m, v]) => { const id = m === 'null' ? null : m; const note = PRICES.models[id]?.note; return `<tr><td>${badge(id)}${note ? ` <span class="ne" data-tip="${esc(note)}">assumed</span>` : ''}</td><td>${full(v.in)}</td><td>${full(v.cr)}</td><td>${full(cw(v))}</td><td>${full(v.out)}</td><td>${full(total(v))}</td>${costCell(v)}</tr>` }).join('')
-    + `<tr class="sum"><td>All models</td><td>${full(u.in)}</td><td>${full(u.cr)}</td><td>${full(cw(u))}</td><td>${full(u.out)}</td><td>${full(total(u))}</td>${costCell(u)}</tr></tbody></table></div>`
+  const running = WS.filter((w) => w.accepted == null)
+  const runTok = total(sum(running.flatMap((w) => sessionsOf(w.id))))
+  const list = done.map((r) => `<button class="row" data-go="ws-${r.w.id}"><span class="nm"><span class="t">${esc(r.w.title)}</span>${partialChip(r.w)}${r.w.accepted === false ? '<span class="chip bad">failed</span>' : ''}</span><span class="tk">${tok(total(r.whole))}</span><span class="cs">${costTxt(r.whole)}</span></button>`).join('')
+  const tail = [running.length ? `${running.length} running · ${tok(runTok)} so far` : '', total(un) ? `<span data-tip="Sessions with no Orca binding, such as a plain terminal. In the total above, never ranked.">Unattributed ${tok(total(un))}</span>` : ''].filter(Boolean).join(' · ')
   return `<div class="vhead">${mback}<h1>Usage</h1><span class="grow"></span>${winSeg()}</div>
-    <div class="block"><div class="figs">
-      <div class="fig win"><span class="k">Recorded in window · ${esc(W.label)}</span><span class="v">${tok(total(u))}</span><span class="n">${full(total(u))} tokens, all four categories</span></div>
-      <div class="fig"><span class="k">Estimated cost</span><span class="v sm">${usd(u.cost)}</span><span class="est" data-tip="${esc(`Price table ${PRICES.version}, dated ${PRICES.dated}. Claude Max and ChatGPT plans are flat subscriptions: this is not what you pay.`)}">Estimated at API list prices · not your bill</span>${u.unpriced ? `<span class="est">excludes ${tok(u.unpriced)} tokens with no price</span>` : ''}</div>
-    </div>${catBar(u)}${catLegend(u)}
-    ${split}
-    ${partial.length ? `<div class="note">Includes ${partial.length} partial workstream (${partial.map((w) => `${esc(w.title)}, ${Math.round(w.coverage * 100)} % recorded`).join('; ')}): window totals are a floor.</div>` : ''}
-    <div class="note">The window sets two things: the activity above, the per-day chart and the by-model table (usage inside the window, clipped), and which completed runs are listed below (by finish date, whole-run totals).</div></div>
-    ${days}
-    <div class="block"><div class="bhead"><span class="label">Completed workstreams</span><span class="note">finished in window · ranked by whole-run tokens · right: est. cost</span></div><div class="wlist">${list || '<div class="empty">No workstream finished in this window.</div>'}</div>${runLine}</div>
-    <div class="block"><div class="bhead"><span class="label">By model, in window</span></div>${mtable}</div>`
+    <div class="hero"><span class="v">${tok(total(u))}<small>tokens ${esc(W.say)}</small></span>
+      <span class="note" data-tip="${esc(`Price table ${PRICES.version}, dated ${PRICES.dated}.${u.unpriced ? ` Excludes ${tok(u.unpriced)} tokens with no price.` : ''} Claude Max and ChatGPT plans are flat subscriptions.`)}">≈ ${usd(u.cost)} at API prices · not your bill</span></div>
+    <div class="block"><div class="label">Completed workstreams</div><div class="rows">${list || '<div class="note">No workstream finished in this window.</div>'}</div>${tail ? `<div class="tail">${tail}</div>` : ''}</div>`
 }
 
-// ---------------- one workstream ----------------
+// ---------------- workstream: where did it go? ----------------
 function wsView(id) {
-  const w = wsById[id], W = WINDOWS[ui.win]
-  const ss = sessionsOf(id)
-  const whole = sum(ss), inWin = sum(ss, W.max)
-  const groups = [['lead', 'Lead'], ['worker', 'Workers'], ['retry', 'Retries']].map(([r, l]) => ({ r, l, ss: ss.filter((s) => s.role === r) })).filter((g) => g.ss.length)
-  const row = (cls, name, u, tip) => `<tr class="${cls}"${tip ? ` data-tip="${esc(tip)}"` : ''}><td>${name}</td><td>${full(u.in)}</td><td>${full(u.cr)}</td><td>${full(cw(u))}</td><td>${full(u.out)}</td><td>${full(total(u))}</td>${costCell(u)}</tr>`
-  let body = ''
-  for (const g of groups) {
-    const gu = sum(g.ss)
-    body += row('grp', `${g.l} <span class="sub">${g.ss.length} session${g.ss.length > 1 ? 's' : ''}</span>`, gu)
-    for (const s of g.ss) {
-      const u = sessionUse(s)
-      const extra = s.handoverTo ? ` · handed over to ${s.handoverTo}` : s.handoverFrom ? ` · continues ${s.handoverFrom}` : s.retryOf ? ` · retry of ${s.retryOf}` : s.failed ? ' · attempt failed, retried' : ''
-      const tip = `Session ${s.id}${extra}${s.handoverTo || s.handoverFrom ? '\nHandover: usage stays with the session that spent it.' : ''}${s.model ? '' : '\nThe log line had no model id: counted, no price.'}`
-      body += row('child', `<span class="nm">${badge(s.model)}<span class="tx">${esc(s.name)}</span>${s.handoverTo ? '<span class="chip" >handover →</span>' : ''}${s.retryOf ? '<span class="chip">retry 1</span>' : ''}${s.failed ? '<span class="chip bad">failed</span>' : ''}</span>`, u, tip)
-    }
-  }
-  body += row('sum', 'Workstream total', whole)
-  // by model inside this workstream
-  const bm = {}
-  for (const s of ss) bm[String(s.model)] = add(bm[String(s.model)] ?? zero(), sessionUse(s))
-  const bmRows = Object.entries(bm).sort((a, b) => total(b[1]) - total(a[1])).map(([m, u]) => row('', badge(m === 'null' ? null : m), u)).join('') + row('sum', 'All models', whole)
-  const head = `<tr><th>Who</th>${CATS.map(([, l, c]) => `<th><i class="sw ${c}"></i>${l}</th>`).join('')}<th>Total</th><th>Est. cost</th></tr>`
+  const w = wsById[id], ss = sessionsOf(id), whole = sum(ss)
+  const order = { lead: 0, worker: 1, retry: 2 }
+  const people = [...ss].sort((a, b) => order[a.role] - order[b.role])
+  const label = (s) => s.role === 'lead' ? (s.handoverFrom ? 'Lead, after handover' : 'Lead') : s.role === 'retry' ? `retry of ${ss.find((x) => x.id === s.retryOf)?.name ?? 'a worker'}` : s.name
+  const tip = (s) => `Session ${s.id}${s.handoverTo ? `\nHanded over to ${s.handoverTo}: each session keeps the usage it spent.` : ''}${s.failed ? '\nFailed its checks and was retried.' : ''}${s.model ? '' : '\nThe log had no model id: counted, no price.'}`
+  const rows = people.map((s) => { const u = sessionUse(s); return `<div class="row" data-tip="${esc(tip(s))}"><span class="nm">${badge(s.model)}<span class="t">${esc(label(s))}</span></span><span class="tk">${tok(total(u))}</span><span class="cs">${costTxt(u)}</span></div>` }).join('')
+  const result = w.accepted === true ? '<span class="ok">accepted</span>' : w.accepted === false ? '<span class="ko">failed</span>' : '<span>running</span>'
   const hand = ss.find((s) => s.handoverTo)
-  const pair = w.pair ? PAIRS[w.pair] : null
-  const status = w.accepted === true ? '<span class="chip good">accepted</span>' : w.accepted === false ? '<span class="chip bad">failed acceptance</span>' : '<span class="chip ask">running</span>'
-  return `<div class="vhead">${backBtn('usage', 'Usage')}<span class="grow"></span>${winSeg()}</div>
-    <div class="block"><div class="vhead"><h1>${esc(w.title)}</h1>${status}${w.coverage < 1 ? `<span class="chip warn">Partial · ${Math.round(w.coverage * 100)} % recorded</span>` : ''}</div>
-    <div class="vsub"><span class="mono">${esc(w.repo)} / ${esc(w.tree)}</span> · <span class="mono">${esc(w.run)}</span> · started ${ago(w.day)}${w.wall ? ` · wall time ${mins(w.wall)}` : ''}</div></div>
-    ${w.coverage < 1 ? `<div class="callout warn"><b>Partial: ${Math.round(w.coverage * 100)} % of this run was recorded.</b><span>This run ${esc(w.partialWhy)}. The numbers below are what was recorded, a floor. They are not scaled up.</span></div>` : ''}
-    <div class="block"><div class="figs">
-      <div class="fig run"><span class="k">Whole run</span><span class="v">${tok(total(whole))}</span><span class="n">${usd(whole.cost)} estimated${whole.unpriced ? ` + ${tok(whole.unpriced)} tokens with no price` : ''}</span></div>
-      <div class="fig win"><span class="k">In window · ${esc(W.label)}</span><span class="v sm">${tok(total(inWin))}</span><span class="n">${total(whole) === total(inWin) ? 'the whole run falls in this window' : `${pct((total(inWin) / total(whole)) * 100)} of the run`}</span></div>
-    </div>${catBar(whole)}${catLegend(whole)}<span class="est">Costs: estimated at API list prices (${PRICES.version}, ${PRICES.dated}), not your bill. The tables below are whole-run.</span></div>
-    <div class="block"><div class="bhead"><span class="label">Lead, workers, retries</span><span class="note">each session counted once; workers roll up here, not into the lead row</span></div>
-      <div class="tw"><table class="u"><thead>${head}</thead><tbody>${body}</tbody></table></div>
-      ${hand ? `<div class="note">The lead handed over from session <span class="mono">${hand.id}</span> to <span class="mono">${hand.handoverTo}</span>. Each keeps the usage it spent; nothing moved.</div>` : ''}</div>
-    <div class="block"><div class="bhead"><span class="label">By model</span></div><div class="tw"><table class="u"><thead>${head.replace('Who', 'Model')}</thead><tbody>${bmRows}</tbody></table></div></div>
-    <div class="block"><div class="bhead"><span class="label">Delegation comparison</span></div>${pair
-      ? `<div class="note">This run is the <b>${w.arm}</b> arm (${esc(pair[w.arm])}) of a pair you labelled for “${esc(pair.task)}”.</div><div><button class="cta" data-go="cmp-${w.pair}">Compare ${esc(pair.baseline.toLowerCase())} vs ${esc(pair.variant.toLowerCase())} ${CHEV}</button></div>`
-      : '<div class="note">Not labelled as a comparison arm. Analytics compares only runs you label as a baseline/variant pair; it never infers one.</div>'}</div>`
+  const details = ui.details ? `<div class="details"><div class="tw"><table class="u"><thead><tr><th>Who</th>${catHead}</tr></thead><tbody>${people.map((s) => `<tr><td>${esc(label(s))}</td>${catCells(sessionUse(s))}</tr>`).join('')}<tr class="sum"><td>Whole run</td>${catCells(whole)}</tr></tbody></table></div>
+    <div class="note">Each provider session is counted once (deduped by session + message id); worker usage rolls up here, never into the lead row.${hand ? ` The lead handed over from <span class="mono">${hand.id}</span> to <span class="mono">${hand.handoverTo}</span>; each keeps what it spent.` : ''}${w.coverage < 1 ? ` Only ${Math.round(w.coverage * 100)} % of this run was recorded (${esc(w.partialWhy)}).` : ''}</div></div>` : ''
+  const other = w.arm === 'baseline' ? 'variant' : 'baseline'
+  return `<div class="vhead">${backBtn('usage', 'Usage')}</div>
+    <div class="block"><div class="vhead"><h1>${esc(w.title)}</h1>${partialChip(w)}</div>
+    <div class="figline"><span><b>${tok(total(whole))}</b> tokens</span><span>≈ ${costTxt(whole)}</span>${w.wall ? `<span>${mins(w.wall)}</span>` : ''}${result}</div></div>
+    <div class="block"><div class="rows">${rows}</div>${detailsBtn()}${details}</div>
+    ${w.pair ? `<div><button class="cta" data-go="cmp-${w.pair}">Compare with ${other} ›</button></div>` : ''}`
 }
 
-// ---------------- comparison ----------------
+// ---------------- comparison: did the policy change help? ----------------
 function armStats(pairId, arm) {
   const runs = WS.filter((w) => w.pair === pairId && w.arm === arm).map((w) => ({ w, u: sum(sessionsOf(w.id)) }))
   const all = runs.reduce((a, r) => add(a, r.u), zero())
   const ok = runs.filter((r) => r.w.accepted)
   const walls = ok.map((r) => r.w.wall).sort((a, b) => a - b)
   const med = walls.length ? (walls.length % 2 ? walls[(walls.length - 1) / 2] : (walls[walls.length / 2 - 1] + walls[walls.length / 2]) / 2) : null
-  return { runs, all, n: runs.length, ok: ok.length, failed: runs.length - ok.length, tokPer: ok.length ? total(all) / ok.length : null, costPer: ok.length ? all.cost / ok.length : null, wall: med,
-    retries: runs.reduce((a, r) => a + sessionsOf(r.w.id).filter((s) => s.role === 'retry').length, 0), coverage: Math.min(...runs.map((r) => r.w.coverage)), routing: [...new Set(runs.map((r) => r.w.routing))] }
+  return { runs, all, n: runs.length, ok: ok.length, tokPer: ok.length ? total(all) / ok.length : null, costPer: ok.length ? all.cost / ok.length : null, wall: med,
+    coverage: Math.min(...runs.map((r) => r.w.coverage)), routing: [...new Set(runs.map((r) => r.w.routing))] }
 }
 function cmpView(id) {
   const p = PAIRS[id], b = armStats(id, 'baseline'), v = armStats(id, 'variant')
-  const flags = []
-  const sameRouting = b.routing.length === 1 && v.routing.length === 1 && b.routing[0] === v.routing[0]
-  if (!sameRouting) flags.push(['bad', 'Not comparable: model changed', `Baseline ran on “${b.routing.join('; ')}”, variant on “${v.routing.join('; ')}”. Only the delegation policy may differ.`])
-  if (Math.min(b.coverage, v.coverage) < 1) flags.push(['warn', `Missing data: ${b.coverage < 1 ? 'baseline' : 'variant'} arm ${Math.round(Math.min(b.coverage, v.coverage) * 100)} % recorded`, 'A partially recorded run makes its arm look cheaper than it was.'])
-  if (b.n < 3 || v.n < 3) flags.push(['warn', `n too small (${b.n} vs ${v.n})`, 'At least 3 runs per arm before a difference is shown.'])
-  const comparable = !flags.length
-  const metric = (label, sub, bv, vv, fmt, lowerIsBetter = true) => {
-    const max = Math.max(bv ?? 0, vv ?? 0) || 1
-    const bar = (cls, nm, val) => `<div class="bar ${cls}"><span>${nm}</span><span class="tr">${val == null ? '<span class="ne">no accepted run</span>' : `<span class="fill" style="width:${((val / max) * 78).toFixed(1)}%"></span><span class="val" style="left:${((val / max) * 78).toFixed(1)}%">${fmt(val)}</span>`}</span></div>`
-    let d
-    if (!comparable || bv == null || vv == null) d = `<div class="delta na">—<small>${comparable ? 'no value' : 'not shown'}</small></div>`
-    else {
-      const diff = vv - bv, rel = (diff / bv) * 100
-      const good = lowerIsBetter ? diff < 0 : diff > 0
-      const word = Math.abs(rel) < 1 ? 'no change' : lowerIsBetter ? (diff < 0 ? (label.startsWith('Median') ? 'faster' : 'cheaper') : (label.startsWith('Median') ? 'slower' : 'costlier')) : (diff > 0 ? 'better' : 'worse')
-      d = `<div class="delta ${Math.abs(rel) < 1 ? 'flat' : good ? 'good' : 'bad'}">${diff < 0 ? '−' : '+'}${fmt(Math.abs(diff))}<small>${Math.abs(rel) < 1 ? '' : (good ? '▼ ' : '▲ ')}${Math.round(Math.abs(rel))} % ${word}</small></div>`
-    }
-    return `<div class="mrow"><div class="mk">${label}<small>${sub}</small></div><div class="bars">${bar('b', 'Baseline', bv)}${bar('v', 'Variant', vv)}</div>${d}</div>`
-  }
-  const armCard = (k, a) => `<div class="arm"><span class="label">${k === 'baseline' ? 'Baseline' : 'Variant'}</span><span class="pol">${esc(p[k])}</span><span class="runs">n = ${a.n} runs · ${a.ok} accepted · ${a.failed} failed${a.retries ? ` · ${a.retries} retr${a.retries > 1 ? 'ies' : 'y'}` : ''}</span><span class="runs">${esc(a.routing.join('; '))}</span></div>`
-  const runRows = ['baseline', 'variant'].flatMap((k) => (k === 'baseline' ? b : v).runs.map((r) => `<tr><td><button class="linkish" style="padding:0" data-go="ws-${r.w.id}">${esc(k)} · ${esc(r.w.title.replace(/^.*· /, ''))}${r.w.id === 'perm' || r.w.id === 'billing' ? ' (this run)' : ''}</button></td><td>${dateOf(r.w.day)}</td><td>${full(total(r.u))}</td>${costCell(r.u)}<td>${mins(r.w.wall)}</td><td class="${r.w.accepted ? 'ok' : 'ko'}">${r.w.accepted ? '✓ passed' : '✗ failed'}</td><td>${r.w.coverage < 1 ? `<span class="chip warn">${Math.round(r.w.coverage * 100)} %</span>` : '100 %'}</td></tr>`)).join('')
+  const why = []
+  if (!(b.routing.length === 1 && v.routing.length === 1 && b.routing[0] === v.routing[0])) why.push('the models changed between the arms')
+  if (Math.min(b.coverage, v.coverage) < 1) why.push(`one run is only ${Math.round(Math.min(b.coverage, v.coverage) * 100)} % recorded`)
+  if (b.n < 3 || v.n < 3) why.push(`${b.n} vs ${v.n} runs is too few`)
+  const pctD = (bv, vv, fmt) => { const r = ((vv - bv) / bv) * 100; return `<td>${fmt(bv)}</td><td>${fmt(vv)}</td><td class="d ${Math.abs(r) < 1 ? 'flat' : r < 0 ? 'good' : 'bad'}">${Math.abs(r) < 1 ? 'same' : `${r < 0 ? '−' : '+'}${Math.round(Math.abs(r))} %`}</td>` }
+  const passD = v.ok - b.ok
+  const head = `<thead><tr><th></th><th>Baseline<small>${esc(p.baseline)} · ${b.n} run${b.n === 1 ? '' : 's'}</small></th><th>Variant<small>${esc(p.variant)} · ${v.n} run${v.n === 1 ? '' : 's'}</small></th>${why.length ? '' : '<th>Change</th>'}</tr></thead>`
+  const body = why.length
+    ? `<div class="note"><b class="wn">Not comparable:</b> ${esc(why.join(', '))}, so no change is shown.</div>`
+    : `<div class="tw"><table class="cmp">${head}<tbody>
+      <tr><td>Tokens per accepted run</td>${pctD(b.tokPer, v.tokPer, tok)}</tr>
+      <tr><td>Est. cost per accepted run</td>${pctD(b.costPer, v.costPer, usd)}</tr>
+      <tr><td>Time per run</td>${pctD(b.wall, v.wall, mins)}</tr>
+      <tr><td>Runs that passed</td><td>${b.ok} of ${b.n}</td><td>${v.ok} of ${v.n}</td><td class="d ${passD > 0 ? 'good' : passD < 0 ? 'bad' : 'flat'}">${passD === 0 ? 'same' : `${passD > 0 ? '+' : '−'}${Math.abs(passD)}`}</td></tr></tbody></table></div>
+      <div class="note">${b.n} vs ${v.n} runs, same task and checks, same models${b.n < 5 || v.n < 5 ? ': small sample' : ''}.</div>`
+  const runRows = ['baseline', 'variant'].flatMap((k) => (k === 'baseline' ? b : v).runs.map((r) => `<tr><td>${k} · ${dateOf(finishDay(r.w))}</td><td>${full(total(r.u))}</td><td>${costTxt(r.u)}</td><td>${mins(r.w.wall)}</td><td>${r.w.accepted ? 'passed' : 'failed'}</td><td>${Math.round(r.w.coverage * 100)} %</td></tr>`)).join('')
+  const details = ui.details ? `<div class="details"><div class="tw"><table class="u"><thead><tr><th>Run</th><th>Tokens</th><th>Est. cost</th><th>Time</th><th>Checks</th><th>Recorded</th></tr></thead><tbody>${runRows}</tbody></table></div>
+    <div class="note">Per accepted run = all tokens of the arm, failed runs and retries included, ÷ runs that passed. Time = median of runs that passed. Change = variant − baseline. Checks: <span class="mono">${esc(p.checks)}</span>.</div></div>` : ''
   const backTo = WS.find((w) => w.pair === id && (w.id === 'perm' || w.id === 'billing'))
-  return `<div class="vhead">${backBtn(`ws-${backTo.id}`, backTo.title)}${backBtn('usage', 'Usage')}</div>
-    <div class="block"><div class="vhead"><h1>Delegation comparison</h1>${comparable ? '<span class="chip good">comparable</span>' : '<span class="chip warn">no verdict</span>'}</div>
-    <div class="vsub">Task “${esc(p.task)}” · acceptance checks: <span class="mono">${esc(p.checks)}</span> · whole-run totals, every worker and retry included</div></div>
-    <div class="arms">${armCard('baseline', b)}${armCard('variant', v)}</div>
-    ${flags.length ? `<div class="callout warn"><div class="flags">${flags.map(([c, t]) => `<span class="chip ${c}">${esc(t)}</span>`).join('')}</div>${flags.map(([, , why]) => `<span>${esc(why)}</span>`).join('')}<span>Values are shown for reference; no difference is computed.</span></div>`
-      : `<div class="callout"><span><b>Same task, same checks, same routing table</b> (${esc(b.routing[0])}). Only the delegation policy differs.</span></div>`}
-    <div class="block"><div>
-      ${metric('Tokens per accepted run', 'all tokens of the arm, failed runs included ÷ accepted runs', b.tokPer, v.tokPer, tok)}
-      ${metric('Est. cost per accepted run', 'API list prices, not your bill', b.costPer, v.costPer, usd)}
-      ${metric('Median wall time', 'accepted runs, first dispatch → last worker_done', b.wall, v.wall, mins)}
-      ${metric('Acceptance', 'runs that passed the checks', b.n ? (b.ok / b.n) * 100 : null, v.n ? (v.ok / v.n) * 100 : null, (x) => Math.round(x) + ' %', false)}
-    </div><div class="note">Delta = variant − baseline. Negative means cheaper or faster; colour and the word say whether that is good. Failed runs stay in the token and cost totals and are listed below; they are not in the denominator.</div></div>
-    <div class="block"><div class="bhead"><span class="label">Runs in this pair</span></div><div class="tw"><table class="u rtable"><thead><tr><th>Run</th><th>Date</th><th>Tokens</th><th>Est. cost</th><th>Wall time</th><th>Checks</th><th>Recorded</th></tr></thead><tbody>${runRows}</tbody></table></div>
-    <div class="note">Analytics reads runs you label as a pair. It does not run experiments, and a trend over time is never shown as a saving.</div></div>`
+  return `<div class="vhead">${backBtn(`ws-${backTo.id}`, backTo.title)}</div>
+    <div class="block"><div class="label">Did the delegation change help?</div><h1 style="font-size:17px;margin:0">${esc(p.task)}</h1></div>
+    ${why.length ? `<div class="tw"><table class="cmp">${head}</table></div>` : ''}
+    <div class="block">${body}${detailsBtn()}${details}</div>`
 }
 
 // ---------------- consistency check: every level must add up ----------------
@@ -644,10 +504,10 @@ function render() {
   document.getElementById('side').innerHTML = sidebar()
   document.getElementById('detail').innerHTML = r.view === 'ws' ? wsView(r.id) : r.view === 'cmp' ? cmpView(r.id) : usageView()
   const errs = check()
-  document.getElementById('foot').innerHTML = `<span>Prices: ${PRICES.version}, dated ${PRICES.dated}. Anthropic list prices; OpenAI and Haiku cache-read prices assumed; gpt-6-astra and unknown models have no price.</span>`
-    + `<span class="${errs.length ? 'ko' : 'ok'}">${errs.length ? 'Totals check failed: ' + esc(errs.join(', ')) : 'Totals check: every level adds up'}</span>`
+  document.getElementById('foot').innerHTML = `<span data-tip="Anthropic list prices; OpenAI and Haiku cache-read prices assumed; gpt-6-astra and unknown models have no price.">Prices ${PRICES.version}, ${PRICES.dated}</span>`
+    + `<span class="${errs.length ? 'ko' : ''}">${errs.length ? 'Totals check failed: ' + esc(errs.join(', ')) : 'Totals check: every level adds up'}</span>`
 }
-window.addEventListener('hashchange', () => { render(); window.scrollTo({ top: 0 }) })
+window.addEventListener('hashchange', () => { ui.details = false; render(); window.scrollTo({ top: 0 }) })
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-go],[data-win],[data-range],[data-act]')
   if (!t) return
@@ -657,6 +517,7 @@ document.addEventListener('click', (e) => {
   const a = t.dataset.act
   if (a === 'fold' && t.closest('.sec')) { ui.folded = !ui.folded; return render() }
   if (a === 'traffic') { ui.traffic = !ui.traffic; return render() }
+  if (a === 'details') { ui.details = !ui.details; return render() }
   if (a === 'test') { ui.testing = true; render(); setTimeout(() => { ui.testing = false; ui.testedAgo = 'just now'; render() }, 2200) }
 })
 // tooltips
