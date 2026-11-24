@@ -1048,8 +1048,6 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .ghead .gc { margin-left: 2px; letter-spacing: 0; font-weight: 500; color: var(--faint); }
 .ghistory { flex: none; font-size: 11px; color: var(--muted); padding: 3px 5px; border-radius: 4px; }
 .ghistory:hover { background: var(--hover); color: var(--muted); }
-.gmore { justify-self: start; }
-#goal-history-search input:not(:focus) { border-color: var(--line); }
 .gplus { margin-left: auto; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 5px; color: var(--muted); font-size: 15px; line-height: 1; }
 .gplus:hover { background: var(--hover); color: var(--ink); }
 .goals { display: grid; }
@@ -1076,6 +1074,10 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .gline > .g:is(:hover, .menu-open) { background: transparent; }
 .gline > .gact { flex: none; margin-right: 6px; }
 .gline .gact.rstatus { height: 18px; font-size: 11px; }
+/* A goal reopened in the Completed goals tab: scrolled to and flashed once (the animation starts part-way when a redraw re-adds the class). */
+.g.flash { animation: gflash .9s ease-out var(--flash-delay, 0s); }
+@keyframes gflash { from { background: color-mix(in srgb, var(--action) 22%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .g.flash { animation: none; } }
 .gsec .add { margin: 2px 0 4px; }
 .gsec .add input { all: unset; box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--ask); user-select: text; -webkit-user-select: text; }
 .gsec .add input::placeholder { color: var(--faint); }

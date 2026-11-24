@@ -20,6 +20,10 @@ export type Goal = {
   createdAt: number
   updatedAt: number
   doneAt?: number
+  /** Who marked it done ("you" for the user in the panel). Absent on goals completed before this was recorded. */
+  doneBy?: string
+  /** The agent that proposed it done, when one did. Absent on older goals. */
+  proposedBy?: string
   lastChange: GoalChange
   assignment?: GoalAssignment
 }
@@ -41,7 +45,8 @@ export function link(id: string, link: { linear?: string; worktree?: WorktreeLin
 export function unlink(id: string, link: { linear?: string; worktree?: WorktreeLink }, by: string, options?: Opts): Goal
 export function forWorktree(worktree: string | WorktreeLink, options?: Opts & { all?: boolean }): Goal[]
 export function propose(id: string, by: string, options?: Opts): Goal
-export function done(id: string, by: string, options?: Opts): Goal
+/** doneAt and proposedBy are for Undo of a reopen: the goal keeps its original completion time and proposer. */
+export function done(id: string, by: string, options?: Opts & { doneAt?: number; proposedBy?: string }): Goal
 export function reopen(id: string, by: string, options?: Opts): Goal
 export const ASSIGN_PENDING_MS: number
 export const ASSIGN_STATES: AssignmentState[]

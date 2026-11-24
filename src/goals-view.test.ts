@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { add, done, get, propose, setStep } from '../skills/orca-flow/scripts/goals.mjs'
-import { goalCard, goalRow, goalViews, goalsHead, goalsRows, type GoalView } from './goals-view.ts'
+import { goalCard, goalRow, goalViews, goalsHead, goalsRows, goalsUiOf, type GoalView } from './goals-view.ts'
 import { applyGoalAction, readGoals } from './goals.ts'
 import { emptyUi, render } from './view.ts'
 import type { AgentInfo, Snapshot, WorkspaceRow } from './protocol.ts'
@@ -17,7 +17,7 @@ const view = (over: Partial<GoalView> = {}): GoalView => ({
   doneWhen: 'PR merged', note: 'A <b>note</b>', links: { linear: ['DES-340'], worktrees: [{ key: 'k', name: 'mono/des-340' }] }, status: 'open', createdAt: NOW - 1e9, updatedAt: NOW,
   lastChange: { by: 'the DES-340 lead', field: 'next', at: NOW - 2 * 3_600_000 }, livePanes: [], ...over
 })
-const state = (over = {}) => ({ folded: false, showDone: false, open: null, now: NOW, ...over })
+const state = (over = {}) => ({ folded: false, open: null, now: NOW, ...over })
 const agent = (state: AgentInfo['state'], i = 0): AgentInfo => ({ paneKey: i ? `p${i}` : 'p', title: 't', state, agentType: 'claude', summary: null, workingMode: null, coordinator: 'you', leadPane: null, parentPane: i ? 'p' : null, orcaSession: null, dispatch: null, terminal: `term-${i}`, question: null, live: true })
 const wrow = (id: string, path: string, states: AgentInfo['state'][]) => ({ id, path, agents: states.map((st, i) => agent(st, i)) })
 
@@ -85,14 +85,22 @@ test('an open goal offers Mark done; a done goal is struck through and offers Re
   assert.match(goalCard(g, NOW), /data-greopen="g_ship">Reopen/)
 })
 
-test('the header counts the goals still to do, offers the done ones, and + adds', () => {
+test('the header counts the goals still to do; Completed › opens the tab, with the total in its tooltip; + adds', () => {
   const goals = [view(), view({ id: 'b', status: 'proposed' }), view({ id: 'c', status: 'done' }), view({ id: 'd', status: 'done' })]
   const head = goalsHead(goals, state())
   assert.match(head, /<span>Goals<\/span><span class="gc">2<\/span>/)
-  assert.match(head, /data-gdone aria-label="View completed goals"/)
+  assert.match(head, /<button class="ghistory" data-gcompleted data-tip="2 completed goals · opens a tab"[^>]*>Completed ›<\/button>/)
+  assert.equal(head.match(/class="gc"/g)?.length, 1, 'only the active count: none on the button')
   assert.match(head, /data-gadd/)
-  assert.match(goalsHead(goals, state({ showDone: true })), /Completed <span class="gc">2/)
-  assert.match(goalsHead([view()], state()), /View completed goals/)
+  assert.match(goalsHead([view(), view({ id: 'c', status: 'done' })], state()), /data-tip="1 completed goal · opens a tab"/)
+})
+
+test('Completed › is hidden while no goal is completed', () => {
+  const head = goalsHead([view(), view({ id: 'b', status: 'proposed' })], state())
+  noMatch(head, /data-gcompleted|Completed/)
+  assert.match(head, /data-gfold/)
+  assert.match(head, /data-gadd/)
+  assert.match(goalsHead([], state()), /data-gadd/)
 })
 
 test('no goals: the header has no active count; searching hides the whole section', () => {
@@ -104,14 +112,23 @@ test('no goals: the header has no active count; searching hides the whole sectio
   assert.equal(goalsRows([view()], state(), true), '')
 })
 
-test('completed history is separate from the active list; folded active view shows no rows', () => {
-  const goals = [view({ id: 'a', title: 'Open one' }), view({ id: 'c', title: 'Finished', status: 'done' })]
-  noMatch(goalsRows(goals, state()), /Finished/)
-  const shown = goalsRows(goals, state({ showDone: true }))
-  noMatch(shown, /Open one/)
-  assert.match(shown, /Finished/)
+test('the sidebar lists only the goals still to do (done ones live in the Completed goals tab); folded shows no rows', () => {
+  const goals = [view({ id: 'a', title: 'Open one' }), view({ id: 'p', title: 'Proposed one', status: 'proposed' }), view({ id: 'c', title: 'Finished', status: 'done' })]
+  const shown = goalsRows(goals, state())
+  assert.match(shown, /Open one/)
+  assert.match(shown, /Proposed one/)
+  noMatch(shown, /Finished/)
   assert.equal(goalsRows(goals, state({ folded: true })), '')
   assert.match(goalsRows(goals, state({ open: 'a' })), /class="g menu-open" data-gopen="a"/)
+  // The old in-sidebar history is gone: no Show more, no way to list the done goals here.
+  const many = Array.from({ length: 60 }, (_, i) => view({ id: `d${i}`, status: 'done' }))
+  assert.equal(goalsRows(many, state()), '')
+  noMatch(goalsHead(many, state()), /data-gdone|View completed goals/)
+})
+
+test('an older stored showDone is ignored: only the fold is kept', () => {
+  assert.deepEqual(goalsUiOf({ folded: true, showDone: true }), { folded: true })
+  assert.deepEqual(goalsUiOf(null), { folded: false })
 })
 
 test('goal text is escaped, in the row and in the card', () => {
@@ -199,6 +216,8 @@ test('mark done, reopen, confirm a proposal, and "Not yet"', () => withData((dir
   r = applyGoalAction({ action: 'confirm', id: b.id }, [], dir)
   assert.equal(r.goals.find((g) => g.id === b.id)?.status, 'done')
   assert.ok(r.goals.find((g) => g.id === b.id)?.doneAt)
+  assert.deepEqual([get(b.id, { data: dir })?.doneBy, get(b.id, { data: dir })?.proposedBy], ['you', 'the lead'], 'who completed it, and who said it was done')
+  assert.equal(get(a.id, { data: dir })?.doneBy, undefined, 'reopened: no longer done, so no doneBy')
   r = applyGoalAction({ action: 'reject', id: c.id }, [], dir)
   const rejected = r.goals.find((g) => g.id === c.id)!
   assert.equal(rejected.status, 'open')
@@ -243,3 +262,15 @@ test('Goals off: the worker reads nothing, posts nothing and refuses the panel\'
   assert.match(r.error ?? '', /Goals is off/)
   await worker.deactivate()
 })
+
+test('Undo: restore marks a reopened goal done again with its original completion time and proposer', () => withData((dir) => {
+  const g = add('Ship', {}, { data: dir })
+  propose(g.id, 'the lead', { data: dir })
+  const first = done(g.id, 'you', { data: dir, doneAt: NOW - 6 * 86_400_000 })
+  assert.equal(applyGoalAction({ action: 'reopen', id: g.id }, [], dir).goals[0].status, 'open')
+  const r = applyGoalAction({ action: 'restore', id: g.id, doneAt: first.doneAt, proposedBy: first.proposedBy }, [], dir)
+  assert.equal(r.ok, true)
+  const back = get(g.id, { data: dir })!
+  assert.deepEqual([back.status, back.doneAt, back.doneBy, back.proposedBy], ['done', first.doneAt, 'you', 'the lead'])
+  assert.equal(applyGoalAction({ action: 'restore', id: 'g_nope' }, [], dir).ok, false)
+}))

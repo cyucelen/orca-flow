@@ -556,6 +556,7 @@ export function formatGoal(g) {
   if (g.note) out.push(`  note: ${g.note}`)
   const links = [...g.links.linear, ...g.links.worktrees.map((w) => w.name || w.path || w.key)]
   if (links.length) out.push(`  linked: ${links.join(', ')}`)
+  if (g.status === 'done' && g.doneBy) out.push(`  done by: ${g.doneBy}${g.proposedBy ? ` (proposed by ${g.proposedBy})` : ''}`)
   out.push(`  last change: ${g.lastChange.by}, ${g.lastChange.field}, ${WHEN(g.lastChange.at)}`)
   return out.join('\n')
 }

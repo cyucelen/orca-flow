@@ -19,6 +19,7 @@ import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, typi
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { applyGoalAction, assignNext, readGoals } from './goals.ts'
+import { readCompleted } from './completed-goals.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, currentRecipient, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
@@ -51,7 +52,7 @@ import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orc
 import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
 import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, readCoverage, readUsage, recordUsage, RETENTION_MS, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
 import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snapshotLinks, type DispatchInfo, type LinkRecord } from './usage-links.ts'
-import { ensureUsageStub, USAGE_PATH } from './usage-open.ts'
+import { ensureGoalsStub, ensureUsageStub, GOALS_PATH, USAGE_PATH } from './usage-open.ts'
 import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
 import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
 
@@ -1125,13 +1126,13 @@ export default function activate(orca: OrcaWorkerApi): void {
   disposers.push(() => goalsTimer && clearTimeout(goalsTimer))
   const goalsSoon = () => {
     if (goalsTimer) clearTimeout(goalsTimer)
-    goalsTimer = setTimeout(() => { goalsTimer = null; postGoals() }, 120)
+    goalsTimer = setTimeout(() => { goalsTimer = null; postGoals(); orca.panels.post('goals.changed', null) }, 120)
   }
   orca.panels.handle('sidebar.goals', () => (goalsOn() ? readGoals(goalRows(), DATA_DIR) : []))
   orca.panels.handle('sidebar.goalAction', (input) => {
     if (!goalsOn()) return { ok: false, error: 'Goals is off in Settings → Features', goals: [] }
     const result = applyGoalAction(input, goalRows(), DATA_DIR)
-    if (result.ok) postGoals()
+    if (result.ok) { postGoals(); orca.panels.post('goals.changed', null) }
     return result
   })
   // Assign to coordinator: the goal's exact Next step goes to the chosen coordinator's current live session, the way
@@ -1172,6 +1173,22 @@ export default function activate(orca: OrcaWorkerApi): void {
       changed: postGoals
     })
   })
+  // The Completed goals tab (src/editor/goals-main.ts): the completed goals, and its Reopen and Undo. A change reaches the sidebar
+  // (the goal appears, or leaves, in the active list) and the tab itself.
+  orca.panels.handle('goals.completed', () => (goalsOn() ? { on: true, goals: readCompleted(goalRows(), DATA_DIR) } : { on: false, goals: [] }))
+  const tabAction = (action: Parameters<typeof applyGoalAction>[0]) => {
+    if (!goalsOn()) return { ok: false, error: 'Goals is off in Settings → Features' }
+    const { ok, error } = applyGoalAction(action, goalRows(), DATA_DIR)
+    if (ok) {
+      postGoals()
+      if (action.action === 'reopen') orca.panels.post('sidebar.goalFlash', { id: action.id })
+      orca.panels.post('goals.changed', null)
+    }
+    return { ok, ...(error ? { error } : {}) }
+  }
+  orca.panels.handle('goals.reopen', (input) => tabAction({ action: 'reopen', id: String(input?.id ?? '') }))
+  orca.panels.handle('goals.restore', (input) => tabAction({ action: 'restore', id: String(input?.id ?? ''), ...(typeof input?.doneAt === 'number' ? { doneAt: input.doneAt } : {}), ...(typeof input?.proposedBy === 'string' ? { proposedBy: input.proposedBy } : {}) }))
+  orca.panels.handle('goals.openCompleted', () => openStubTab(orca, 'Completed goals', ensureGoalsStub, GOALS_PATH))
   const refreshSoon = () => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
@@ -2329,6 +2346,26 @@ const TITLE_RUNS = 6
 const TITLE_RETRY_MS = 10 * 60_000
 
 /**
+ * Opens one of the plugin's editor tabs (Usage, Completed goals) in the focused workspace: an editor tab needs a real file in it
+ * (see usage-open.ts). With no workspace focused, or one on another machine, nothing opens and `reason` says why.
+ */
+async function openStubTab(orca: OrcaWorkerApi, name: string, ensure: (root: string) => string, path: string): Promise<{ opened: boolean; reason?: string }> {
+  try {
+    const ctx = await orca.host.call('workspace.readContext')
+    if (!ctx?.workspaceId) return { opened: false, reason: `Focus a workspace first: the ${name} tab opens inside it.` }
+    const workspace = (await orca.host.call('workspace.list')).workspaces.find((w) => w.id === ctx.workspaceId)
+    if (!workspace) return { opened: false, reason: 'Orca did not list the focused workspace.' }
+    if (workspace.hostId && workspace.hostId !== 'local') return { opened: false, reason: 'The focused workspace is on another machine; focus one on this Mac.' }
+    ensure(workspace.path)
+    await orca.host.call('editor.open', { workspaceId: ctx.workspaceId, path })
+    return { opened: true }
+  } catch (e) {
+    orca.log(`opening the ${name} tab failed: ${(e as Error).message}`)
+    return { opened: false, reason: `Could not open the ${name} tab: ${(e as Error).message}` }
+  }
+}
+
+/**
  * The Usage view's data, on request from the panel or the Usage editor (src/analytics.ts): the
  * usage store's records (90 days), coverage, links, routes.jsonl and Settings → Models, built into
  * one model at most every 30 s.
@@ -2409,19 +2446,5 @@ function startAnalytics(orca: OrcaWorkerApi): void {
   orca.panels.handle('analytics.workstream', (input) => (typeof input?.id === 'string' ? workstreamView(model(), input.id) : null))
   // "Usage ›" in the sidebar: the Usage tab opens in the focused workspace (an editor tab needs a real
   // file in it: see usage-open.ts). With no workspace focused, or one on another machine, nothing opens.
-  orca.panels.handle('usage.open', async () => {
-    try {
-      const ctx = await orca.host.call('workspace.readContext')
-      if (!ctx?.workspaceId) return { opened: false, reason: 'Focus a workspace first: the Usage tab opens inside it.' }
-      const workspace = (await orca.host.call('workspace.list')).workspaces.find((w) => w.id === ctx.workspaceId)
-      if (!workspace) return { opened: false, reason: 'Orca did not list the focused workspace.' }
-      if (workspace.hostId && workspace.hostId !== 'local') return { opened: false, reason: 'The focused workspace is on another machine; focus one on this Mac.' }
-      ensureUsageStub(workspace.path)
-      await orca.host.call('editor.open', { workspaceId: ctx.workspaceId, path: USAGE_PATH })
-      return { opened: true }
-    } catch (e) {
-      orca.log(`usage.open failed: ${(e as Error).message}`)
-      return { opened: false, reason: `Could not open the Usage tab: ${(e as Error).message}` }
-    }
-  })
+  orca.panels.handle('usage.open', () => openStubTab(orca, 'Usage', ensureUsageStub, USAGE_PATH))
 }

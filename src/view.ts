@@ -13,7 +13,7 @@ import { mixedProviders, providerBadge, providerMark, providerOf } from './provi
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue, worktreeLead } from './rank.ts'
 import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
-import { COMPLETED_BATCH, goalsHead, goalsRows, nextButton, type GoalView } from './goals-view.ts'
+import { goalsHead, goalsRows, nextButton, type GoalView } from './goals-view.ts'
 import { ARROW } from './icons.ts'
 import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, issueLink, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
@@ -49,9 +49,6 @@ export type UiState = {
   botsFolded: boolean
   /** The Goals section: folded to its header, done goals shown, and the goal whose card is open (see goals-view.ts). */
   goalsFolded: boolean
-  goalsCompletedQuery: string
-  goalsCompletedLimit: number
-  goalsShowDone: boolean
   goalOpen: string | null
   /** Goals whose Next step this panel is sending to a coordinator (their button shows Assigning…). */
   goalAssigning?: Set<string>
@@ -64,7 +61,7 @@ export type UiState = {
 export const emptyUi = (): UiState => ({
   opened: new Set(), closed: new Set(), folded: new Set(), unfolded: new Set(), query: '', now: Date.now(),
   cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map(), colors: new Map(),
-  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set(), botsFolded: false, goalsFolded: false, goalsShowDone: false, goalsCompletedQuery: '', goalsCompletedLimit: COMPLETED_BATCH, goalOpen: null, goalAssigning: new Set(), goalGone: new Set()
+  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set(), botsFolded: false, goalsFolded: false, goalOpen: null, goalAssigning: new Set(), goalGone: new Set()
 })
 
 // ---------- small helpers ----------
@@ -1402,7 +1399,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
   // Goals, at the top above the tree; hidden while searching, like the other sections.
   const goalsData = goalsOn(given) ? goals : null
-  const gs = { folded: ui.goalsFolded, showDone: ui.goalsShowDone, completedQuery: ui.goalsCompletedQuery, completedLimit: ui.goalsCompletedLimit, open: ui.goalOpen, now: ui.now }
+  const gs = { folded: ui.goalsFolded, open: ui.goalOpen, now: ui.now }
   const placed = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
   const all = placed.map((p) => p.a)
   const byPane = new Map(placed.map((p) => [p.a.paneKey, p]))

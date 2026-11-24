@@ -690,6 +690,14 @@ declare module 'orca' {
     'sidebar.goalAction': { input: import('./goals.ts').GoalAction; output: { ok: boolean; error?: string; goals: import('./goals-view.ts').GoalView[] } }
     /** Assign to coordinator: delivers the goal's exact Next step to the coordinator's current live session and records it on the goal. */
     'sidebar.goalAssign': { input: import('./goals.ts').GoalAssign; output: { ok: boolean; error?: string; warning?: string; goals: import('./goals-view.ts').GoalView[] } }
+    /** The Completed goals tab's goals: every completed one, newest first, each worktree link with the workspace it still names; `on` false while Goals is off. */
+    'goals.completed': { output: import('./completed-goals-view.ts').CompletedWire }
+    /** Reopens a completed goal for the user (the tab's Reopen); the sidebar's list and the tab refresh. */
+    'goals.reopen': { input: { id: string }; output: { ok: boolean; error?: string } }
+    /** Undo of a reopen: the goal is done again with its original completion time and proposer. */
+    'goals.restore': { input: { id: string; doneAt?: number; proposedBy?: string }; output: { ok: boolean; error?: string } }
+    /** The sidebar's "Completed ›": opens the Completed goals tab in the focused workspace; `reason` says why nothing opened. */
+    'goals.openCompleted': { output: { opened: boolean; reason?: string } }
     /** The Linear section's data, read again when older than a minute; null when Linear is not connected. */
     'sidebar.linear': { input: { force?: boolean }; output: LinearWire | null }
     /**
@@ -720,6 +728,10 @@ declare module 'orca' {
     'sidebar.changed': Snapshot
     /** Posted when the goals changed (an agent's `orca-flow goal`, an edit) or an agent started or stopped working. */
     'sidebar.goalsChanged': import('./goals-view.ts').GoalView[]
+    /** Posted when a goal's file changed or the tab changed one: the Completed goals tab reads its goals again. */
+    'goals.changed': null
+    /** Posted after a goal was reopened from the Completed goals tab: the sidebar scrolls to it and flashes it once. */
+    'sidebar.goalFlash': { id: string }
     /** Posted when the Linear section's data changed (a new read, a send). */
     'sidebar.linearChanged': LinearWire | null
     /** Posted after each log and network sample, and when a speed test starts or ends. */

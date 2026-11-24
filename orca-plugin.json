@@ -29,6 +29,15 @@
         ],
         "entry": "src/editor/index.html",
         "frame": "isolated"
+      },
+      {
+        "id": "goals",
+        "title": "Completed goals",
+        "extensions": [
+          ".orcaflow-goals"
+        ],
+        "entry": "src/editor/goals.html",
+        "frame": "isolated"
       }
     ],
     "events": [

@@ -280,3 +280,95 @@ test('CLI: show and list name the coordinator the current next step was assigned
   cli(dir, bin, 'goal', 'set', id, '--next', 'Something else')
   assert.doesNotMatch(cli(dir, bin, 'goal', 'show', id).out, /assigned/, 'goal set --next: the new step is not assigned')
 })
+
+// ---------- completed goals: who completed it, and Undo keeping the date ----------
+
+test('done records who completed it; the agent that proposed it is kept; reopen clears all three', () => {
+  const data = tmp()
+  const plain = goals.add('Plain', {}, { data })
+  const d = goals.done(plain.id, 'you', { data })
+  assert.equal(d.doneBy, 'you')
+  assert.equal(d.proposedBy, undefined)
+  const g = goals.add('Proposed', {}, { data })
+  const p = goals.propose(g.id, 'lead alpha', { data })
+  assert.equal(p.proposedBy, 'lead alpha')
+  // The proposal survives edits made before it is confirmed.
+  goals.update(g.id, { next: 'x' }, 'you', { data })
+  const c = goals.done(g.id, 'you', { data })
+  assert.equal(c.doneBy, 'you')
+  assert.equal(c.proposedBy, 'lead alpha')
+  assert.equal(goals.get(g.id, { data }).proposedBy, 'lead alpha', 'what is on disk')
+  const r = goals.reopen(g.id, 'you', { data })
+  assert.deepEqual([r.doneAt, r.doneBy, r.proposedBy], [undefined, undefined, undefined])
+  assert.equal('proposedBy' in goals.get(g.id, { data }), false, 'not even a key is left in the file')
+  // "Not yet" on a proposal drops the proposer too.
+  goals.propose(g.id, 'lead beta', { data })
+  assert.equal(goals.reopen(g.id, 'you', { data }).proposedBy, undefined)
+})
+
+test('Undo of a reopen: done with the original doneAt and proposer; a bad or future doneAt completes now', () => {
+  const data = tmp()
+  const g = goals.add('Undo me', {}, { data })
+  goals.propose(g.id, 'lead alpha', { data })
+  const first = goals.done(g.id, 'you', { data })
+  goals.reopen(g.id, 'you', { data })
+  const back = goals.done(g.id, 'you', { data, doneAt: first.doneAt - 5 * 86_400_000, proposedBy: 'lead alpha' })
+  assert.equal(back.doneAt, first.doneAt - 5 * 86_400_000, 'the original date')
+  assert.equal(back.proposedBy, 'lead alpha')
+  assert.equal(back.lastChange.field, 'status')
+  assert.equal(goals.list({ data, status: 'done' })[0].doneAt, back.doneAt)
+  for (const bad of [NaN, -1, 0, '5', null, Date.now() + 86_400_000]) {
+    goals.reopen(g.id, 'you', { data })
+    const t = Date.now()
+    const out = goals.done(g.id, 'you', { data, doneAt: bad })
+    assert.ok(out.doneAt >= t && out.doneAt <= Date.now(), `doneAt ${String(bad)} is ignored`)
+  }
+})
+
+test('done keeps the order of the completed goals by doneAt, so an Undo returns a goal to its place', () => {
+  const data = tmp()
+  const [a, b, c] = ['A', 'B', 'C'].map((t) => goals.add(t, {}, { data }))
+  const done = (g, at) => goals.done(g.id, 'you', { data, doneAt: at })
+  const now = Date.now()
+  done(a, now - 3000); done(b, now - 2000); done(c, now - 1000)
+  assert.deepEqual(goals.list({ data, status: 'done' }).map((g) => g.title), ['C', 'B', 'A'])
+  goals.reopen(b.id, 'you', { data })
+  done(b, now - 2000)
+  assert.deepEqual(goals.list({ data, status: 'done' }).map((g) => g.title), ['C', 'B', 'A'])
+})
+
+test('a goal written before doneBy and proposedBy existed loads, lists and reopens unchanged, and reading never writes', () => {
+  const data = tmp()
+  mkdirSync(join(data, 'goals'), { recursive: true })
+  // Exactly what the previous version wrote: no doneBy, no proposedBy; a second one without even doneAt (the oldest files).
+  const old = {
+    id: 'g_old-1a2b', title: 'Old finished goal', note: 'n', steps: [{ text: 's', done: true }], links: { linear: ['DES-1'], worktrees: [{ key: 'k', name: 'wt' }] },
+    status: 'done', createdAt: 1_700_000_000_000, updatedAt: 1_700_100_000_000, doneAt: 1_700_100_000_000, lastChange: { by: 'you', field: 'status', at: 1_700_100_000_000 }
+  }
+  const older = { id: 'g_older-3c4d', title: 'Older', steps: [], links: { linear: [], worktrees: [] }, status: 'done', createdAt: 1_600_000_000_000, updatedAt: 1_600_000_500_000, lastChange: { by: 'you', field: 'next', at: 1_600_000_500_000 } }
+  const files = [old, older].map((g) => [join(data, 'goals', `${g.id}.json`), `${JSON.stringify(g, null, 2)}\n`])
+  for (const [f, text] of files) writeFileSync(f, text)
+  const listed = goals.list({ data, status: 'done' })
+  assert.deepEqual(listed.map((g) => g.id), ['g_old-1a2b', 'g_older-3c4d'], 'newest first, a missing doneAt falls back to updatedAt')
+  assert.equal(listed[0].doneBy, undefined)
+  assert.equal(goals.get('g_old-1', { data }).title, 'Old finished goal')
+  for (const [f, text] of files) assert.equal(readFileSync(f, 'utf8'), text, 'listing and reading change no file')
+  const r = goals.reopen('g_old-1a2b', 'you', { data })
+  assert.equal(r.status, 'open')
+  assert.equal(r.doneAt, undefined)
+  assert.equal(r.title, 'Old finished goal')
+  assert.deepEqual(r.links, old.links)
+  assert.equal(readFileSync(files[1][0], 'utf8'), files[1][1], 'the other goal is untouched')
+  // Undo with the date the tab read from the old goal.
+  const back = goals.done('g_old-1a2b', 'you', { data, doneAt: old.doneAt })
+  assert.equal(back.doneAt, old.doneAt)
+  assert.equal(back.doneBy, 'you')
+})
+
+test('CLI: goal show names who completed a goal', () => {
+  const dir = tmp()
+  const bin = fakeOrca()
+  const id = JSON.parse(cli(dir, bin, 'goal', 'add', 'Ship', '--json').out).id
+  cli(dir, bin, 'goal', 'propose-done', id, '--by', 'lead alpha')
+  assert.match(cli(dir, bin, 'goal', 'done', id, '--by', 'you').out, /done by: you \(proposed by lead alpha\)/)
+})

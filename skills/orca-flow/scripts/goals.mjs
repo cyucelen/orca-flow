@@ -6,9 +6,11 @@
 //
 // A goal: { id, title, note?, next?, doneWhen?, steps: [{ text, done }],
 //           links: { linear: ['DES-340'], worktrees: [{ key?, path?, name?, worktreeId? }] },
-//           status: 'open' | 'proposed' | 'done', createdAt, updatedAt, doneAt?,
+//           status: 'open' | 'proposed' | 'done', createdAt, updatedAt, doneAt?, doneBy?, proposedBy?,
 //           lastChange: { by, field, at },
 //           assignment?: { coordinator, name?, next, state, at, by, token, session?, deliveredAt? } }
+// doneAt/doneBy are set when the goal is marked done, proposedBy when an agent proposes it (and kept when the user
+// confirms). Goals written before doneBy and proposedBy existed lack them: readers must not assume them.
 // `by` is "you" for the user in the panel, else the agent's role or worktree name. Agents only
 // propose done; the user confirms (done). Step references are a 1-based number or a piece of text.
 // `assignment`: the Next step handed to one of the user's coordinators from the panel (beginAssign,
@@ -253,20 +255,34 @@ export function forWorktree(worktree, { data, all = false } = {}) {
   return list({ data }).filter((g) => (all || g.status !== 'done') && g.links.worktrees.some((x) => sameWorktree(x, w)))
 }
 
-function setStatus(id, status, by, data, { from, now = Date.now() } = {}) {
+function setStatus(id, status, by, data, { from, now = Date.now(), restoreDoneAt, restoreProposedBy } = {}) {
   const g = need(id, data)
   if (g.status === status) return g
   if (from && !from.includes(g.status)) throw new Error(`goal ${g.id} is ${g.status}; ${status === 'proposed' ? 'only an open goal can be proposed done' : 'it cannot move to ' + status}`)
-  const { doneAt, ...rest } = g
-  const out = stamp({ ...rest, status, ...(status === 'done' && { doneAt: now }) }, by, 'status', now)
-  writeGoal(data, out)
-  return out
+  const { doneAt, doneBy, proposedBy, ...rest } = g
+  const who = clean(by) || 'an agent'
+  const out = { ...rest, status }
+  if (status === 'proposed') out.proposedBy = who
+  if (status === 'done') {
+    // Undo of a reopen passes the original completion time (never in the future); anything else completes now.
+    out.doneAt = Number.isFinite(restoreDoneAt) && restoreDoneAt > 0 && restoreDoneAt <= now ? restoreDoneAt : now
+    out.doneBy = who
+    // The agent that proposed it: recorded when it proposed; a goal proposed before that was recorded falls back to who made the last status change.
+    const proposer = clean(restoreProposedBy) || clean(proposedBy) || (g.status === 'proposed' && g.lastChange?.field === 'status' ? clean(g.lastChange.by) : '')
+    if (proposer) out.proposedBy = proposer
+  }
+  const stamped = stamp(out, by, 'status', now)
+  writeGoal(data, stamped)
+  return stamped
 }
 
 /** An agent says the goal is done; the user confirms with done(), or sends it back with reopen(). */
 export const propose = (id, by, { data } = {}) => setStatus(id, 'proposed', by, data, { from: ['open'] })
-/** Only on the user's word. */
-export const done = (id, by, { data } = {}) => setStatus(id, 'done', by, data)
+/**
+ * Only on the user's word. Records who completed it (doneBy) and, when an agent had proposed it, that agent (proposedBy).
+ * options.doneAt / options.proposedBy: for Undo of a reopen only: the goal keeps its original completion time and proposer.
+ */
+export const done = (id, by, { data, doneAt, proposedBy } = {}) => setStatus(id, 'done', by, data, { restoreDoneAt: doneAt, restoreProposedBy: proposedBy })
 export const reopen = (id, by, { data } = {}) => setStatus(id, 'open', by, data)
 
 // ---------- handing the Next step to a coordinator ----------

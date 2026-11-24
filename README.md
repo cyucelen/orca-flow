@@ -54,7 +54,7 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   - **The Usage tab's file.** Orca opens an editor tab only for a file in a workspace, so Orca Flow
     keeps an empty note `usage.orcaflow-usage` in `<workspace>/.orca/orca-flow/`, beside a
     `.gitignore` containing `*` (so the folder never shows in `git status`). It is created when you
-    press Usage › and is safe to delete.
+    press Usage › and is safe to delete. The Completed goals tab keeps its own note, `goals.orcaflow-goals`, in the same folder.
   - **Comparing two ways of splitting work.** Label the arms when you start them:
     `orca-flow dispatch --arm baseline --pair <id> …` and `--arm variant --pair <id>` (the same
     `<id>`, same task and acceptance checks, same models; `--arm` needs `--pair`, and a `--retry-of`
@@ -209,7 +209,7 @@ for you, else the worktree's lead even when it is done and waiting for review, e
 session that is gone is never focused). With nobody on it, **Assign →** picks one of your coordinators with a live
 session and types the exact step (the row shows "Assigning…" until it lands), with the goal's title, id and `orca-flow goal` commands, into its current session; the goal
 records it (`orca-flow goal show` names the coordinator) until the next step changes. Click a row for its card: edit the next step, tick todos, edit the description and done criteria (edits
-save when you leave the field or press Enter), and see the Linear issues and worktrees it links. **Mark done** moves it to **Completed**. Search completed goals by title, newest completion first, and open any goal to **Reopen** it. **+** adds a goal from
+save when you leave the field or press Enter), and see the Linear issues and worktrees it links. **Mark done** moves it to the **Completed goals** tab: **Completed ›** in the Goals header (shown once a goal is completed; its tooltip has the total) opens that tab in the focused workspace. There you search across titles, descriptions, done criteria, next steps, todos, Linear ids and worktree names; filter by when it was completed (7, 30, 90 days, all time) and by what it links (a Linear issue, a worktree, nothing); sort newest or oldest first; and open a goal for its details (who completed it, todos, links: a Linear id opens the issue, a worktree goes to it while it exists). **Reopen** puts a goal back in the Goals list at its usual place (it scrolls into view and flashes once), with an **Undo** that restores its original completion date. The tab updates when a goal is completed or reopened in the sidebar or by an agent, and keeps the *Completed within* and *Sort* choices. **+** adds a goal from
 one line (Enter adds, Esc cancels). Agents keep goals current with `orca-flow goal` (a lead ticks todos
 and updates the next step), but only propose done: such a goal reads "lead says done", and its card
 asks **Confirm done** or **Not yet** (back to open). The section folds like Linear and hides while you
@@ -514,9 +514,12 @@ scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
 node scripts/settings-preview.mjs                       # the Settings dialog in a browser, with fixture data
 node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots-v2 --tips   # every page, dark and light, 360 px and wide, plus tooltips
 node scripts/skill-reload-preview.mjs --shots /tmp/orca-flow-reload-shots   # Reload skills: status, coordinator menu, both confirmations
-node scripts/goals-preview.mjs                          # the Goals section in a browser, with fixture goals (?open=<id>, ?add=1, ?showdone=1, ?theme=light)
-node scripts/goals-preview.mjs --shots /tmp/orca-goals-shots   # section, open card, add box and done goals, dark and light, 360 px
-node scripts/goals-preview.mjs --selftest               # clicks through add, tick, edit, mark done, reopen, confirm, Jump → and Assign → in headless Chrome
+node scripts/goals-preview.mjs                          # the Goals section in a browser, with fixture goals (?open=<id>, ?add=1, ?theme=light)
+node scripts/goals-preview.mjs --shots /tmp/orca-goals-shots   # section, open card, add box, dark and light, 360 px
+node scripts/goals-preview.mjs --selftest               # clicks through add, tick, edit, mark done, confirm, Jump → and Assign → in headless Chrome
+node scripts/goals-history-preview.mjs                  # the Completed goals tab and the sidebar over one fixture worker (/tab, /side, /both)
+node scripts/goals-history-preview.mjs --shots /tmp/orca-goals-history-shots   # the tab at 1000 and 600 px, light and dark, every state, and the sidebar header
+node scripts/goals-history-preview.mjs --selftest       # search, filters, no matches, empty, Reopen, Undo, live updates and the states in headless Chrome
 ```
 
 The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker

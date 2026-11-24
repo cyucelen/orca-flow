@@ -1,9 +1,9 @@
 // Browser-only fixture for the Goals section in the actual panel code. No plugin install, worker or goals files:
 // `orca` is a stub that keeps the goals in memory and answers sidebar.goalAction the way the worker does
 // (src/goals.ts: edits are "you"), and records every request in window.previewCalls.
-//   node scripts/goals-preview.mjs                   serve; open the printed URL (add ?theme=light, ?open=<goal id>, ?add=1, ?showdone=1, ?fold=1)
-//   node scripts/goals-preview.mjs --shots <dir>     capture the section, an open card, the add box and the done goals, dark and light, 360 px, then exit
-//   node scripts/goals-preview.mjs --selftest        click through add, tick, edit next, mark done, reopen, confirm, "Not yet", Jump → and
+//   node scripts/goals-preview.mjs                   serve; open the printed URL (add ?theme=light, ?open=<goal id>, ?add=1, ?fold=1)
+//   node scripts/goals-preview.mjs --shots <dir>     capture the section, an open card and the add box, dark and light, 360 px, then exit
+//   node scripts/goals-preview.mjs --selftest        click through add, tick, edit next, mark done, confirm, "Not yet", Jump → and
 //                                                    Assign → (hidden at rest, picker, Assigning…, delivery, then Jump →) in headless Chrome, then exit
 //   --shots also captures the Next step pill with a real pointer hover (Chrome DevTools protocol): rows at rest, a hovered
 //   row with Jump → and one with Assign →, the open picker and Assigning….
@@ -96,7 +96,6 @@ let goals = ${JSON.stringify(goals)};
 const listeners = {};
 const stored = {};
 if (q.get('fold')) stored['goals-ui'] = { folded: true };
-if (q.get('showdone')) stored['goals-ui'] = { folded: false, showDone: true };
 if (q.get('empty')) goals = [];
 // What the worker does for a panel edit (src/goals.ts over goals.mjs): changes the goal, stamps "you" and now.
 const stamp = (x, field) => Object.assign(x, { updatedAt: Date.now(), lastChange: { by: 'you', field, at: Date.now() } });
@@ -141,6 +140,7 @@ window.orca = {
     request: async (name, data) => {
       previewCalls.push({ name, data });
       if (name === 'sidebar.list') return snapshot;
+      if (name === 'goals.openCompleted') return { opened: true };
       if (name === 'sidebar.goals') return JSON.parse(JSON.stringify(goals));
       if (name === 'sidebar.open') return { opened: !previewGone.has(data.terminal) };
       if (name === 'sidebar.goalAssign') { const error = await assign(data); return { ok: !error, ...(error ? { error } : {}), goals: JSON.parse(JSON.stringify(goals)) }; }
@@ -169,7 +169,7 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
   try {
     await wait(300);
     ok(document.querySelector('#goals-head .lfold span').textContent === 'Goals' && $('#goals-head .gc').textContent === '6', 'header: Goals 6');
-    ok(!!$('[aria-label="View completed goals"]'), 'Completed is accessible from the Goals header');
+    ok(!!$('[data-gcompleted]') && $('[data-gcompleted]').dataset.tip === '1 completed goal · opens a tab', 'Completed › is in the Goals header, the total in its tooltip');
     const faces = (id) => row(id).querySelectorAll('.who .sav svg.ch').length;
     ok(faces('g_super-admin') === 1 && faces('g_lesson-splitting') === 1 && faces('g_onboarding-review') === 3 && faces('g_shift-scheduling') === 0, 'avatars for every live agent on a goal (working, asking or done), none without a linked worktree');
     ok(!document.querySelector('#goals-rows [data-tip]'), 'no tooltips on goal rows');
@@ -219,21 +219,13 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     // mark done
     row('g_planning-assistance').click(); await wait(); $('#goalpop [data-gfinish]').click(); await wait(300);
     ok($('#goalpop').hidden && !row('g_planning-assistance'), 'Mark done removes the goal from the active list');
-    $('[data-gdone]').click(); await wait();
-    const historyQuery = $('#goal-history-query');
-    ok(titles().length === 2 && row('g_planning-assistance') && !row('g_pdf-export'), 'Completed shows only confirmed goals');
-    historyQuery.value = 'LAWYER'; historyQuery.dispatchEvent(new Event('input')); await wait();
-    ok(titles().length === 1 && row('g_lawyer-intro') && document.activeElement === historyQuery, 'search finds completed titles and retains focus');
-    historyQuery.value = 'no such goal'; historyQuery.dispatchEvent(new Event('input')); await wait();
-    ok($('#goals-rows').textContent.includes('No matching goals'), 'empty search feedback');
-    historyQuery.value = ''; historyQuery.dispatchEvent(new Event('input')); await wait();
-    row('g_lawyer-intro').click(); await wait(); ok(!!$('#goalpop [data-greopen]') && !$('#goalpop [data-gfinish]'), 'a completed goal offers Reopen');
-    $('#goalpop [data-greopen]').click(); await wait(300);
-    ok(!row('g_lawyer-intro'), 'reopened goal leaves completed history');
-    $('[data-gdone]').click(); await wait();
-    ok(row('g_lawyer-intro').querySelector('.nx'), 'reopened goal is back in the active list');
+    ok(!!$('[data-gcompleted]') && $('[data-gcompleted]').dataset.tip === '2 completed goals · opens a tab', 'a goal marked done is counted in the Completed › tooltip');
+    $('[data-gcompleted]').click(); await wait(); ok(previewCalls.some((c) => c.name === 'goals.openCompleted'), 'Completed › opens the tab (no in-sidebar history)');
+    // Reopened elsewhere (the Completed goals tab, or the CLI): back in the active list, in its place.
+    { const g = goals.find((x) => x.id === 'g_lawyer-intro'); g.status = 'open'; delete g.doneAt; listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals)))); await wait(); }
+    ok(!!row('g_lawyer-intro').querySelector('.nx') && $('[data-gcompleted]').dataset.tip === '1 completed goal · opens a tab', 'a goal reopened elsewhere is back in the active list');
     row('g_pdf-export').click(); await wait(); ok(!!$('#goalpop [data-gconfirm]') && !!$('#goalpop [data-gnot]') && !$('#goalpop [data-gfinish]'), 'proposed card offers Confirm done / Not yet');
-    $('#goalpop [data-gconfirm]').click(); await wait(300); ok(!row('g_pdf-export'), 'Confirm done moves the goal out of active goals');
+    $('#goalpop [data-gconfirm]').click(); await wait(300); ok(!row('g_pdf-export') && $('[data-gcompleted]').dataset.tip === '2 completed goals · opens a tab', 'Confirm done moves the goal out of active goals');
     // not yet on a fresh proposal
     goals.find((x) => x.id === 'g_lesson-splitting').status = 'proposed'; listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals)))); await wait();
     row('g_lesson-splitting').click(); await wait(); $('#goalpop [data-gnot]').click(); await wait(300);
@@ -241,18 +233,8 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     // empty title is refused
     row('g_lesson-splitting').click(); await wait(); await edit('title', '   '); await wait(); ok($('#goalpop [data-gedit="title"]').textContent.startsWith('Finish lesson splitting'), 'an emptied title reverts');
     key(document.body, 'Escape'); await wait();
-    for (let i = 1; i <= 40; i++) goals.push({ ...goals[0], id: 'history-' + i, title: 'Past goal ' + i, status: 'done', doneAt: Date.now() - i * 3600000 });
-    listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals))));
-    $('[data-gdone]').click(); await wait();
-    ok(titles().length === 20 && !!$('[data-gmore]'), 'large history opens with 20 rows');
-    historyQuery.value = 'Past goal 40'; historyQuery.dispatchEvent(new Event('input')); await wait();
-    ok(titles().length === 1 && row('history-40'), 'search reaches past the first batch');
-    historyQuery.value = ''; historyQuery.dispatchEvent(new Event('input')); await wait();
-    $('[data-gmore]').click(); await wait();
-    ok(titles().length === 40, 'Show more reveals the next batch');
-
     // ---------- the Next step's button ----------
-    $('[data-gdone]').click(); await wait();
+    document.activeElement?.blur(); await wait(); // Esc above gave a row keyboard focus (which shows its button); start the checks at rest
     const act = (id) => $('[data-gopen="' + id + '"]')?.parentElement?.querySelector(':scope > .gact');
     const word = (id) => act(id)?.textContent.trim();
     const shown = (id) => !!act(id) && getComputedStyle(act(id)).display !== 'none';
@@ -389,7 +371,6 @@ server.listen(0, '127.0.0.1', () => {
     jobs.push({ theme, name: 'card', h: 760, click: '[data-gopen="g_super-admin"]' })
     jobs.push({ theme, name: 'card-proposed', h: 760, click: '[data-gopen="g_pdf-export"]' })
     jobs.push({ theme, name: 'add', h: 760, click: '[data-gadd]', type: 'Book the lawyer call for next week' })
-    jobs.push({ theme, name: 'done-shown', h: 760, showdone: true })
     jobs.push({ theme, name: 'empty', h: 360, empty: true })
   }
   // The Next step pill shows on :hover, which a plain --screenshot cannot reach: these drive Chrome over the DevTools
@@ -452,7 +433,7 @@ server.listen(0, '127.0.0.1', () => {
     for (const j of jobs) {
       const file = join(out, `goals-${j.name}-${j.theme}-${W}.png`)
       await new Promise((resolve, reject) => {
-        const query = `theme=${j.theme}${j.click ? `&click=${encodeURIComponent(j.click)}` : ''}${j.type ? `&type=${encodeURIComponent(j.type)}` : ''}${j.showdone ? '&showdone=1' : ''}${j.empty ? '&empty=1' : ''}${j.delay ? `&delay=${j.delay}` : ''}`
+        const query = `theme=${j.theme}${j.click ? `&click=${encodeURIComponent(j.click)}` : ''}${j.type ? `&type=${encodeURIComponent(j.type)}` : ''}${j.empty ? '&empty=1' : ''}${j.delay ? `&delay=${j.delay}` : ''}`
         const args = ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`, `--window-size=${W + 240},${j.h + 100}`, '--virtual-time-budget=4000', `--screenshot=${file}`, `${base}frame?${query}&w=${W}&h=${j.h}`]
         execFile(chrome, args, { timeout: 60_000 }, (e, _out, stderr) => {
           if (e && !/bytes written to file/.test(String(stderr))) return reject(e)

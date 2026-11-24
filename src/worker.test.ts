@@ -1817,6 +1817,52 @@ test('the worker answers the Goals section: the list, and edits it refuses witho
   await worker.deactivate()
 })
 
+test('goals.openCompleted: the stub of the Completed goals tab beside the Usage one, opened in the focused workspace; with none it says so', async () => {
+  const { mkdtempSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'goals-open-worker-'))
+  try {
+    const host = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': { workspaceId: 'ws1', branch: 'main', displayName: 'ws', terminals: [] }, 'workspace.list': { workspaces: [{ id: 'ws1', kind: 'worktree', name: 'ws', path: root, branch: 'main', hostId: 'local' }], truncated: false }, 'editor.open': { opened: true } } })
+    const worker = await mountWorker(main, { host })
+    assert.deepEqual(worker.refusals, [], 'goals.completed, goals.reopen, goals.restore and goals.openCompleted are declared')
+    assert.deepEqual(await worker.request('goals.openCompleted'), { opened: true })
+    assert.deepEqual(host.callsOf('editor.open'), [{ workspaceId: 'ws1', path: '.orca/orca-flow/goals.orcaflow-goals' }])
+    assert.equal(readFileSync(join(root, '.orca/orca-flow/.gitignore'), 'utf8'), '*\n')
+    assert.ok(existsSync(join(root, '.orca/orca-flow/goals.orcaflow-goals')))
+    assert.equal(existsSync(join(root, '.orca/orca-flow/usage.orcaflow-usage')), false, 'the Usage stub is not made for it')
+    await worker.deactivate()
+
+    const none = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': null, 'workspace.list': { workspaces: [], truncated: false } } })
+    const w2 = await mountWorker(main, { host: none })
+    const r = await w2.request('goals.openCompleted') as { opened: boolean; reason?: string }
+    assert.equal(r.opened, false)
+    assert.equal(r.reason, 'Focus a workspace first: the Completed goals tab opens inside it.')
+    assert.deepEqual(none.callsOf('editor.open'), [])
+    await w2.deactivate()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('goals.completed, goals.reopen and goals.restore: a goal that does not exist is refused without writing; Goals off answers nothing', async () => {
+  const worker = await mountWorker(main, { host: mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } }) })
+  const { readSettings } = await import('./config.ts')
+  const { homedir } = await import('node:os')
+  const { join } = await import('node:path')
+  const on = readSettings(join(homedir(), '.orca-flow')).settings.features.goals
+  const wire = (await worker.request('goals.completed')) as { on: boolean; goals: { status: string }[] }
+  assert.equal(wire.on, on)
+  assert.ok(wire.goals.every((g) => g.status === 'done'), 'only completed goals')
+  const reopen = (await worker.request('goals.reopen', { id: 'g_no-such-goal-0000' })) as { ok: boolean; error?: string }
+  const restore = (await worker.request('goals.restore', { id: 'g_no-such-goal-0000', doneAt: 1 })) as { ok: boolean; error?: string }
+  for (const r of [reopen, restore]) {
+    assert.equal(r.ok, false)
+    assert.ok(r.error, 'says why')
+  }
+  await worker.deactivate()
+})
+
 test('usage.open: with a workspace focused it writes the stub in its folder and opens the tab; with none it says so and opens nothing', async () => {
   const { mkdtempSync, readFileSync, rmSync, existsSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')

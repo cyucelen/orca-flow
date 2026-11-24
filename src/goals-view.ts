@@ -13,25 +13,22 @@ import { worktreeLead } from './rank.ts'
  */
 export type GoalView = Goal & { livePanes: string[]; assigned?: GoalAssignment | null }
 
-export const COMPLETED_BATCH = 20
-
-/** Persist the active list’s fold and the selected view across panel reloads. */
+/** Persist the active list’s fold across panel reloads. (An older `showDone` stored beside it is ignored: completed goals have their own tab.) */
 export const GOALS_UI_KEY = 'goals-ui'
-export type GoalsUi = { folded: boolean; showDone: boolean }
+export type GoalsUi = { folded: boolean }
 export const goalsUiOf = (stored: unknown): GoalsUi => {
   const s = (stored ?? {}) as Partial<GoalsUi>
-  return { folded: s.folded === true, showDone: s.showDone === true }
+  return { folded: s.folded === true }
 }
 
-/** Active list and completed history share a single goal details dialog. */
-export type GoalsState = { folded: boolean; showDone: boolean; open: string | null; now: number; completedQuery?: string; completedLimit?: number }
+export type GoalsState = { folded: boolean; open: string | null; now: number }
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 
 // ---------- which agents are on a goal ----------
 
 /** Does the goal's worktree link point at this row? By Orca identity key, Orca id or path. */
-const linkedTo = (w: Goal['links']['worktrees'][number], row: Pick<WorkspaceRow, 'id' | 'path'>) =>
+export const linkedTo = (w: Goal['links']['worktrees'][number], row: Pick<WorkspaceRow, 'id' | 'path'>) =>
   (!!w.key && row.id === `identity:${w.key}`) || (!!w.worktreeId && row.id === w.worktreeId) || (!!w.path && row.path === w.path)
 
 /** Waiting for the user: a question, or a permission prompt. */
@@ -171,15 +168,17 @@ const CHECK = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke
 
 // ---------- the section ----------
 
-/** Goals the section lists: open and proposed first, then (when shown) the done ones. */
+/** Goals the section lists: the open and proposed ones. */
 export const activeGoals = (goals: GoalView[]) => goals.filter((g) => g.status !== 'done')
 
-/** Navigate between the active list and completed history without mixing their rows. */
+/** The Goals header: fold, "Completed ›" (opens the Completed goals tab; hidden with none completed, its total in the tooltip) and +. */
 export function goalsHead(goals: GoalView[], s: GoalsState, searching = false): string {
   if (searching) return ''
   const active = activeGoals(goals).length
-  if (s.showDone) return `<div class="sechead ghead"><button class="ghistory" data-gdone aria-label="Back to active goals">‹ Goals</button><span class="label">Completed <span class="gc">${goals.length - active}</span></span></div>`
-  return `<div class="sechead ghead"><button class="label lfold" data-gfold aria-expanded="${!s.folded}">${CHEV}<span>Goals</span>${active ? `<span class="gc">${active}</span>` : ''}</button><button class="ghistory" data-gdone aria-label="View completed goals">Completed ›</button><button class="gplus" data-gadd aria-label="Add a goal" data-tip="Add a goal">+</button></div>`
+  const completed = goals.length - active
+  const tip = `${completed} completed ${completed === 1 ? 'goal' : 'goals'} · opens a tab`
+  const history = completed ? `<button class="ghistory" data-gcompleted data-tip="${tip}" aria-label="Open completed goals (${tip})">Completed ›</button>` : ''
+  return `<div class="sechead ghead"><button class="label lfold" data-gfold aria-expanded="${!s.folded}">${CHEV}<span>Goals</span>${active ? `<span class="gc">${active}</span>` : ''}</button>${history}<button class="gplus" data-gadd aria-label="Add a goal" data-tip="Add a goal">+</button></div>`
 }
 
 const completedDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -202,16 +201,10 @@ export function goalRow(g: GoalView, open: string | null, avatars = '', button: 
   return button && !done ? `<div class="gline">${row}${nextButtonHtml(g, button)}</div>` : row
 }
 
-/** The store supplies completed goals in reverse completion order. Search the whole history before limiting the rows. */
+/** The active list: open and proposed goals. Completed goals are in their own tab (completed-goals-view.ts). */
 export function goalsRows(goals: GoalView[], s: GoalsState, searching = false, avatars?: (g: GoalView) => string, button?: (g: GoalView) => NextButton | null): string {
-  if (searching) return ''
-  if (!s.showDone) return s.folded ? '' : activeGoals(goals).map((g) => goalRow(g, s.open, avatars?.(g), button?.(g))).join('')
-  const query = (s.completedQuery ?? '').trim().toLocaleLowerCase()
-  const matches = goals.filter((g) => g.status === 'done' && g.title.toLocaleLowerCase().includes(query))
-  if (!matches.length) return `<div class="empty">${query ? 'No matching goals' : 'No completed goals yet'}</div>`
-  const limit = s.completedLimit ?? COMPLETED_BATCH
-  const rows = matches.slice(0, limit).map((g) => goalRow(g, s.open)).join('')
-  return rows + (matches.length > limit ? '<button class="ghistory gmore" data-gmore>Show more</button>' : '')
+  if (searching || s.folded) return ''
+  return activeGoals(goals).map((g) => goalRow(g, s.open, avatars?.(g), button?.(g))).join('')
 }
 
 // ---------- the card ----------

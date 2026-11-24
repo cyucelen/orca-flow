@@ -13,6 +13,8 @@ export type GoalAction =
   | { action: 'step'; id: string; step: number; done: boolean }
   | { action: 'addStep'; id: string; text: string }
   | { action: 'done' | 'reopen' | 'confirm' | 'reject'; id: string }
+  /** Undo of a reopen (the Completed goals tab): done again with the original completion time and proposer. */
+  | { action: 'restore'; id: string; doneAt?: number; proposedBy?: string }
 
 export const BY_USER = 'you'
 
@@ -27,6 +29,7 @@ export function applyGoalAction(a: GoalAction, rows: Pick<WorkspaceRow, 'id' | '
     else if (a.action === 'addStep') addStep(a.id, a.text, BY_USER, { data })
     else if (a.action === 'done' || a.action === 'confirm') done(a.id, BY_USER, { data })
     else if (a.action === 'reopen') reopen(a.id, BY_USER, { data })
+    else if (a.action === 'restore') done(a.id, BY_USER, { data, doneAt: a.doneAt, proposedBy: a.proposedBy })
     else if (a.action === 'reject') {
       // "Not yet" answers a proposal; a goal that is no longer proposed (the user already acted elsewhere) stays as it is.
       if (get(a.id, { data })?.status === 'proposed') reopen(a.id, BY_USER, { data })
