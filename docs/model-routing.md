@@ -126,6 +126,8 @@ Then the model:
 A decision applies to **new launches only**. A running session keeps its model, and a resumed
 conversation keeps the one it had. Nothing is relaunched when you change Settings.
 
+A Settings dialog that was opened before another change (a second window, a hand edit of `config.json`) saves only what you changed in it: each coordinator, lead, worker row, task type and saved preset you left alone keeps the file's value, and one you both changed takes the dialog's.
+
 Plan tasks keep the route recorded when the plan started, so a settings change never switches
 pending work. If a recorded model has become unavailable, that task is routed again and the new
 route is printed.

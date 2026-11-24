@@ -67,8 +67,8 @@ let newFolder = ''
 let focusAfter: string | null = null
 let opener: HTMLElement | null = null
 
-const session = settingsSession(async (settings) => {
-  const r = await orca.plugin.request('sidebar.saveSettings', { settings }) as { ok: boolean; error?: string; state: SettingsState }
+const session = settingsSession(async (settings, base) => {
+  const r = await orca.plugin.request('sidebar.saveSettings', { settings, base }) as { ok: boolean; error?: string; state: SettingsState }
   state = r.state
   return { ok: r.ok, error: r.error, settings: r.state.settings }
 }, () => render())

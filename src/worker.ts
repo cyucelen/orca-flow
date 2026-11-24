@@ -26,7 +26,7 @@ import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, L
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
-import { normalizeSettings, WRITER_PROVIDERS, type WriterStatus } from './settings.ts'
+import { settingsToSave, WRITER_PROVIDERS, type WriterStatus } from './settings.ts'
 import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
@@ -1823,9 +1823,10 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { settings: read.settings, error: read.error, version, writers, ...(avail ? { availability: avail } : {}), update: updateState, updateCheck: upd.last() }
   }
   orca.panels.handle('sidebar.settings', () => settingsState(true))
-  orca.panels.handle('sidebar.saveSettings', async ({ settings }) => {
+  orca.panels.handle('sidebar.saveSettings', async ({ settings, base }) => {
     try {
-      writeSettings(normalizeSettings(settings), DATA_DIR)
+      // With the dialog's base, only what it changed goes over the file: another window's or a hand edit's change since stays.
+      writeSettings(settingsToSave(readSettings(DATA_DIR).settings, base, settings), DATA_DIR)
     } catch (e) {
       return { ok: false, error: (e as Error).message, state: await settingsState() }
     }

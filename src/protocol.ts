@@ -698,8 +698,8 @@ declare module 'orca' {
     'sidebar.linearSend': { input: { issue: string; coordinator: string }; output: { ok: boolean; error?: string; warnings?: string[]; recipient?: DeliveryRecipient } }
     /** The Settings dialog's data. Status comes from what the writer last saw and `orca agent installed`; no test calls. */
     'sidebar.settings': { output: SettingsState }
-    /** Saves the dialog's settings to ~/.orca-flow/config.json (changed keys only; unknown keys kept; a broken file is never overwritten). */
-    'sidebar.saveSettings': { input: { settings: import('./settings.ts').FlowSettings }; output: { ok: boolean; error?: string; state: SettingsState } }
+    /** Saves the dialog's settings to ~/.orca-flow/config.json (changed keys only; unknown keys kept; a broken file is never overwritten). `base`: what the dialog started from; given, only what differs from it is applied over the file, so a change made elsewhere since stays (older panels send none: `settings` is written as is). */
+    'sidebar.saveSettings': { input: { settings: import('./settings.ts').FlowSettings; base?: import('./settings.ts').FlowSettings }; output: { ok: boolean; error?: string; state: SettingsState } }
     /** Checks for a newer Orca Flow release now, as the 15-minute timer does; an offered update shows everywhere. */
     'sidebar.checkUpdates': { output: import('./update.ts').UpdateCheck }
     /** Shows ~/.orca-flow/config.json (or its folder, while there is no file) in Finder. */

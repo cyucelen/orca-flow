@@ -1,6 +1,6 @@
 import { assert, test } from 'orca/testing'
 import { addType, applyPreset, DEFAULT_ROUTING, deletePreset, normalizeRouting, removeType, route, savePreset, type Availability, type RoutingSettings } from './routing.ts'
-import { applySettings, normalizeFeatures, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
+import { applySettings, mergeSettings, normalizeFeatures, normalizeSettings, DEFAULT_DRAFT, DEFAULT_SETTINGS, fromDraft, normalizeWriters, settingsSession, settingsToSave, statusView, toDraft, WRITER_MODELS, type FlowSettings, type SaveReply } from './settings.ts'
 
 test('writers: order kept, each provider once, unknown models and providers dropped, missing ones off and last', () => {
   assert.deepEqual(normalizeWriters([
@@ -245,4 +245,91 @@ test('features: Goals is off unless exactly true, saves at once, writes only its
   assert.equal(session.isDefault(['goals']), false)
   await session.reset(['goals'])
   assert.equal(saved.at(-1)?.features.goals, false)
+})
+
+// ---------- a dialog opened before another change ----------
+
+const withRouting = (s: FlowSettings, change: (r: RoutingSettings) => void): FlowSettings => { const n = structuredClone(s); change(n.routing); return n }
+const HAIKU = { agent: 'claude', model: 'haiku' }
+const SONNET_MED = { agent: 'claude', model: 'sonnet', effort: 'medium' as const }
+const typeRow = (id: string, model: string) => ({ id, name: id, description: `${id} work`, route: { model: { agent: 'claude', model }, fallback: null } })
+
+test('stale dialog: it applies only what the user changed, and keeps a change made elsewhere', () => {
+  const base = DEFAULT_SETTINGS
+  const file = withRouting(base, (r) => { r.workers.normal.model = HAIKU })                       // another window: the normal row
+  const want = withRouting(base, (r) => { r.lead = SONNET_MED })                                  // this dialog: only the lead
+  const out = mergeSettings(file, base, want)
+  assert.deepEqual(out.routing.lead, SONNET_MED)
+  assert.deepEqual(out.routing.workers.normal.model, HAIKU)
+  assert.deepEqual(out.routing.workers.simple, base.routing.workers.simple)
+})
+
+test('stale dialog: a setting both changed is the dialog\'s value', () => {
+  const base = DEFAULT_SETTINGS
+  const file = withRouting(base, (r) => { r.workers.normal.model = HAIKU; r.lead = { agent: 'claude', model: 'opus' } })
+  const want = withRouting(base, (r) => { r.workers.normal.model = { agent: 'claude', model: 'opus', effort: 'high' } })
+  const out = mergeSettings(file, base, want)
+  assert.deepEqual(out.routing.workers.normal.model, { agent: 'claude', model: 'opus', effort: 'high' })
+  assert.deepEqual(out.routing.lead, { agent: 'claude', model: 'opus' })   // not touched here: the file's
+})
+
+test('stale dialog: other keys and features merge one by one', () => {
+  const base = DEFAULT_SETTINGS
+  const file = { ...base, marginGB: 4, features: { ...base.features, goals: true } }
+  const want = { ...base, linearDryRun: true, features: { ...base.features, bots: true } }
+  const out = mergeSettings(file, base, want)
+  assert.equal(out.marginGB, 4)
+  assert.equal(out.linearDryRun, true)
+  assert.deepEqual(out.features, { ...base.features, goals: true, bots: true })
+})
+
+test('stale dialog: task types and saved presets merge by id', () => {
+  const a = typeRow('a', 'haiku'), b = typeRow('b', 'sonnet')
+  const base = withRouting(DEFAULT_SETTINGS, (r) => { r.types = [a, b] })
+  // elsewhere: b edited and c added; here: a removed and d added
+  const file = withRouting(base, (r) => { r.types = [a, typeRow('b', 'opus'), typeRow('c', 'haiku')] })
+  const want = withRouting(base, (r) => { r.types = [b, typeRow('d', 'haiku')] })
+  assert.deepEqual(mergeSettings(file, base, want).routing.types.map((t) => [t.id, t.route.model.model]), [['b', 'opus'], ['c', 'haiku'], ['d', 'haiku']])
+  // an untouched list is the file's; the same type edited on both sides is the dialog's
+  assert.deepEqual(mergeSettings(file, base, base).routing.types, file.routing.types)
+  const both = withRouting(base, (r) => { r.types = [a, typeRow('b', 'fable')] })
+  assert.equal(mergeSettings(file, base, both).routing.types.find((t) => t.id === 'b')!.route.model.model, 'fable')
+  const preset = (id: string) => ({ ...savePreset(DEFAULT_ROUTING, 'x').presets[0], id, name: id })
+  const withPresets = (st: FlowSettings, ids: string[]) => withRouting(st, (r) => { r.presets = ids.map(preset) })
+  const pbase = withPresets(DEFAULT_SETTINGS, ['p1'])
+  // elsewhere: p2 saved; here: p1 removed and p3 saved
+  assert.deepEqual(mergeSettings(withPresets(pbase, ['p1', 'p2']), pbase, withPresets(pbase, ['p3'])).routing.presets.map((p) => p.name), ['p2', 'p3'])
+})
+
+test('save without a base keeps today\'s behaviour: the settings are written as they are', () => {
+  const file = withRouting(DEFAULT_SETTINGS, (r) => { r.workers.normal.model = HAIKU })
+  const want = withRouting(DEFAULT_SETTINGS, (r) => { r.lead = SONNET_MED })
+  assert.deepEqual(settingsToSave(file, undefined, want), normalizeSettings(want))
+  assert.deepEqual(settingsToSave(file, DEFAULT_SETTINGS, want).routing.workers.normal.model, HAIKU)
+})
+
+test('session: every save says what the dialog started from, and later edits ride on the merged file', async () => {
+  const sent: { settings: FlowSettings; base: FlowSettings }[] = []
+  const elsewhere = withRouting(DEFAULT_SETTINGS, (r) => { r.workers.normal.model = HAIKU })
+  let file = DEFAULT_SETTINGS
+  let release!: () => void
+  const gate = new Promise<void>((r) => { release = r })
+  const session = settingsSession(async (settings, base) => {
+    sent.push({ settings, base })
+    if (sent.length === 1) { file = elsewhere; await gate }       // the first save lands after another window saved
+    file = settingsToSave(file, base, settings)
+    return { ok: true, settings: file }
+  })
+  session.load(DEFAULT_SETTINGS)
+  const first = session.change((d) => { d.routing.lead = SONNET_MED })
+  const second = session.change((d) => { d.marginGB = 5 })          // queued behind the first save
+  release()
+  await Promise.all([first, second])
+  assert.deepEqual(sent[0].base, DEFAULT_SETTINGS)
+  assert.equal(sent.length, 2)
+  assert.deepEqual(file.routing.lead, SONNET_MED)
+  assert.deepEqual(file.routing.workers.normal.model, HAIKU)
+  assert.equal(file.marginGB, 5)
+  assert.deepEqual(session.shown.routing.workers.normal.model, HAIKU)
+  assert.equal(session.error, null)
 })

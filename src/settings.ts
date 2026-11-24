@@ -115,6 +115,65 @@ export function applySettings(raw: Record<string, unknown>, next: FlowSettings):
   return out
 }
 
+// ---------- saving from a dialog opened before another change ----------
+
+/** `want` where the dialog changed it (it differs from `base`), else what the file holds now. */
+const pick = <T>(current: T, base: T, want: T): T => (same(want, base) ? current : clone(want))
+
+/** Entries by id: only those the dialog added, edited or removed (against `base`) are applied over `current`. */
+function mergeById<T extends { id: string }>(current: T[], base: T[], want: T[]): T[] {
+  if (same(want, base)) return current
+  const was = new Map(base.map((x) => [x.id, x]))
+  const keep = new Set(want.map((x) => x.id))
+  const out = current.filter((x) => !(was.has(x.id) && !keep.has(x.id)))
+  for (const w of want) {
+    const b = was.get(w.id)
+    if (b && same(w, b)) continue
+    const at = out.findIndex((x) => x.id === w.id)
+    if (at >= 0) out[at] = clone(w)
+    else out.push(clone(w))
+  }
+  return out
+}
+
+/** Routing three ways: the coordinator, the lead, each worker row, each task type and each saved preset are separate. */
+function mergeRouting(current: RoutingSettings, base: RoutingSettings, want: RoutingSettings): RoutingSettings {
+  const workers = { ...current.workers }
+  for (const kind of Object.keys(workers) as (keyof RoutingSettings['workers'])[]) workers[kind] = pick(current.workers[kind], base.workers[kind], want.workers[kind])
+  return {
+    coordinator: pick(current.coordinator, base.coordinator, want.coordinator),
+    lead: pick(current.lead, base.lead, want.lead),
+    workers,
+    types: mergeById(current.types, base.types, want.types),
+    presets: mergeById(current.presets, base.presets, want.presets)
+  }
+}
+
+/**
+ * What a dialog's save should leave in the file when the dialog was opened (or last saved) with
+ * `base` and the file holds `current` now, because another window or a hand edit changed it since:
+ * only what the user changed in the dialog (`want` against `base`) is applied; every other setting
+ * keeps the file's value. A setting both changed is the dialog's (last writer wins).
+ */
+export function mergeSettings(current: FlowSettings, base: FlowSettings, want: FlowSettings): FlowSettings {
+  const [c, b, w] = [current, base, want].map(normalizeSettings)
+  const features = { ...c.features }
+  for (const k of Object.keys(features) as (keyof FeatureSettings)[]) features[k] = pick(c.features[k], b.features[k], w.features[k])
+  return normalizeSettings({
+    writers: pick(c.writers, b.writers, w.writers),
+    messageFormat: pick(c.messageFormat, b.messageFormat, w.messageFormat),
+    marginGB: pick(c.marginGB, b.marginGB, w.marginGB),
+    warnHeadroomGB: pick(c.warnHeadroomGB, b.warnHeadroomGB, w.warnHeadroomGB),
+    linearDryRun: pick(c.linearDryRun, b.linearDryRun, w.linearDryRun),
+    routing: mergeRouting(c.routing, b.routing, w.routing),
+    features
+  })
+}
+
+/** The settings to write for one save: merged over the file when the dialog says what it started from, else exactly `want`. */
+export const settingsToSave = (current: FlowSettings, base: FlowSettings | undefined, want: FlowSettings): FlowSettings =>
+  base ? mergeSettings(current, base, want) : normalizeSettings(want)
+
 // ---------- the dialog's draft ----------
 
 export type FormatChoice = 'off' | 'all' | 'folders'
@@ -227,9 +286,10 @@ export type SaveReply = { ok: boolean; error?: string; settings?: FlowSettings }
 /**
  * The dialog's state with changes applied at once, as System Settings does: each change shows
  * immediately and is saved; while a save is in flight, later changes wait and go in one more save.
- * A failed save puts every control back to what the file holds and keeps the error.
+ * A failed save puts every control back to what the file holds and keeps the error. Each save also
+ * says what the dialog started from (`base`), so the worker applies only what changed here.
  */
-export function settingsSession(save: (settings: FlowSettings) => Promise<SaveReply>, onUpdate: () => void = () => {}) {
+export function settingsSession(save: (settings: FlowSettings, base: FlowSettings) => Promise<SaveReply>, onUpdate: () => void = () => {}) {
   const s = { saved: clone(DEFAULT_DRAFT), shown: clone(DEFAULT_DRAFT), error: null as string | null }
   let saving: Promise<void> | null = null
   let again = false
@@ -239,13 +299,15 @@ export function settingsSession(save: (settings: FlowSettings) => Promise<SaveRe
     do {
       again = false
       const want = fromDraft(s.shown)
-      if (same(want, fromDraft(s.saved))) break
+      const base = fromDraft(s.saved)
+      if (same(want, base)) break
       let reply: SaveReply
-      try { reply = await save(want) } catch (e) { reply = { ok: false, error: (e as Error).message } }
+      try { reply = await save(want, base) } catch (e) { reply = { ok: false, error: (e as Error).message } }
       if (reply.ok && reply.settings) {
         s.saved = keepFolders(toDraft(reply.settings), s.shown)
         s.error = null
-        if (!again) s.shown = clone(s.saved)
+        // Changes made while this save ran go on top of what the file holds now, which may include another window's.
+        s.shown = again ? keepFolders(toDraft(mergeSettings(reply.settings, want, fromDraft(s.shown))), s.shown) : clone(s.saved)
       } else {
         s.shown = clone(s.saved)
         s.error = reply.error ?? 'The settings could not be saved.'

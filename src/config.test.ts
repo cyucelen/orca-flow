@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
 import { DEFAULT_CONFIG } from './capacity.ts'
-import { DEFAULT_SETTINGS, normalizeSettings, type FlowSettings } from './settings.ts'
+import { DEFAULT_SETTINGS, normalizeSettings, settingsToSave, type FlowSettings } from './settings.ts'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'orca-flow-config-'))
 const fileOf = (dir: string) => JSON.parse(readFileSync(configFile(dir), 'utf8'))
@@ -126,5 +126,33 @@ test('the Linear and Token Speed switches are saved under features; a 0.2.81 fil
     writeSettings(withSettings({ features: { bots: true, goals: false, linear: true, tokenSpeed: true } }), dir)
     assert.deepEqual(fileOf(dir).futureKey, 1)
     assert.equal(readSettings(dir).settings.features.linear, true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// The worker's sidebar.saveSettings: writeSettings(settingsToSave(file now, the dialog's base, the dialog's settings)).
+const saveFromDialog = (dir: string, want: FlowSettings, base?: FlowSettings) => writeSettings(settingsToSave(readSettings(dir).settings, base, want), dir)
+
+test('a dialog opened before another change: its save keeps that change and adds only what the user changed', () => {
+  const dir = temp()
+  try {
+    const opened = readSettings(dir).settings                       // the dialog opens: Models as they are
+    const elsewhere = structuredClone(opened)                       // a second window (or a hand edit) saves the normal row on Haiku
+    elsewhere.routing.workers.normal.model = { agent: 'claude', model: 'haiku' }
+    saveFromDialog(dir, elsewhere)
+    const draft = structuredClone(opened)                           // in the stale dialog the user changes only the lead
+    draft.routing.lead = { agent: 'claude', model: 'sonnet', effort: 'medium' }
+    saveFromDialog(dir, draft, opened)
+    const routing = readSettings(dir).settings.routing
+    assert.deepEqual(routing.lead, { agent: 'claude', model: 'sonnet', effort: 'medium' })
+    assert.deepEqual(routing.workers.normal.model, { agent: 'claude', model: 'haiku' })
+    // a conflict on one row is the dialog's value
+    const conflict = structuredClone(opened)
+    conflict.routing.workers.normal.model = { agent: 'claude', model: 'opus', effort: 'high' }
+    saveFromDialog(dir, conflict, opened)
+    assert.deepEqual(readSettings(dir).settings.routing.workers.normal.model, { agent: 'claude', model: 'opus', effort: 'high' })
+    assert.deepEqual(readSettings(dir).settings.routing.lead, { agent: 'claude', model: 'sonnet', effort: 'medium' })
+    // an older panel sends no base: written as it is, as before
+    saveFromDialog(dir, draft)
+    assert.deepEqual(readSettings(dir).settings.routing.workers.normal.model, DEFAULT_SETTINGS.routing.workers.normal.model)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
