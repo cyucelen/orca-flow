@@ -203,9 +203,13 @@ square. The face and the badge at the bottom right show what Orca reports:
 **Goals** (off until Settings → Features → Goals is on). The first section, above the workstreams, holds what you need to get done. A goal need
 not be a Linear issue: it can span several, or have no issue, worktree or agent at all (a document for
 a lawyer, product research). Each row is two lines: the title with its todo count (`2/4`) on the right,
-and under it the next step. Avatars show who is working on linked worktrees. Hover over them for the agent names. Click a row for its card: edit the next step, tick todos, edit the description and done criteria (edits
-save when you leave the field or press Enter), see the Linear issues and worktrees it links, and one
-line saying who changed it last ("Next updated by you · 2h ago"). **Mark done** moves it to **Completed**. Search completed goals by title, newest completion first, and open any goal to **Reopen** it. **+** adds a goal from
+and under it the next step. Avatars show the agents on its linked worktrees that are still live, in any state (each face shows working, asking or done), until they sleep or the worktree goes; with avatars the goal offers Jump →, without them Assign → (or Jump → to the coordinator the step was assigned to). Hovering (or
+keyboard-focusing) an open goal shows one pill after its avatars and progress, centered in the row, like a Linear row's **Send →**: **Jump →** focuses the session of an agent on a linked worktree that still has a live session (one working, else one waiting
+for you, else the worktree's lead even when it is done and waiting for review, else any other live agent there), or of the coordinator the step was assigned to (checked against a fresh snapshot first: a
+session that is gone is never focused). With nobody on it, **Assign →** picks one of your coordinators with a live
+session and types the exact step (the row shows "Assigning…" until it lands), with the goal's title, id and `orca-flow goal` commands, into its current session; the goal
+records it (`orca-flow goal show` names the coordinator) until the next step changes. Click a row for its card: edit the next step, tick todos, edit the description and done criteria (edits
+save when you leave the field or press Enter), and see the Linear issues and worktrees it links. **Mark done** moves it to **Completed**. Search completed goals by title, newest completion first, and open any goal to **Reopen** it. **+** adds a goal from
 one line (Enter adds, Esc cancels). Agents keep goals current with `orca-flow goal` (a lead ticks todos
 and updates the next step), but only propose done: such a goal reads "lead says done", and its card
 asks **Confirm done** or **Not yet** (back to open). The section folds like Linear and hides while you
@@ -512,7 +516,7 @@ node scripts/settings-preview.mjs --shots /tmp/orca-settings-shots-v2 --tips   #
 node scripts/skill-reload-preview.mjs --shots /tmp/orca-flow-reload-shots   # Reload skills: status, coordinator menu, both confirmations
 node scripts/goals-preview.mjs                          # the Goals section in a browser, with fixture goals (?open=<id>, ?add=1, ?showdone=1, ?theme=light)
 node scripts/goals-preview.mjs --shots /tmp/orca-goals-shots   # section, open card, add box and done goals, dark and light, 360 px
-node scripts/goals-preview.mjs --selftest               # clicks through add, tick, edit, mark done, reopen and confirm in headless Chrome
+node scripts/goals-preview.mjs --selftest               # clicks through add, tick, edit, mark done, reopen, confirm, Jump → and Assign → in headless Chrome
 ```
 
 The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker

@@ -56,6 +56,10 @@ export const workingIn = (row: WorkspaceRow): AgentInfo | undefined => row.agent
 export const canRemove = (row: WorkspaceRow): boolean => !row.main && !row.folderOf && !workingIn(row)
 
 /** The agent that speaks for the workspace: the one asking, else the most urgent state. */
+/** The agent no other agent in its worktree dispatched (the first, when several were started by hand). */
+export const worktreeLead = (row: Pick<WorkspaceRow, 'agents'>): AgentInfo | undefined =>
+  row.agents.find((a) => ![a.leadPane, a.parentPane].some((p) => p && row.agents.some((b) => b.paneKey === p)))
+
 export function leadAgent(row: WorkspaceRow): AgentInfo | undefined {
   return row.agents.find(asksYou) ??
     row.agents.find((a) => a.state === row.state)

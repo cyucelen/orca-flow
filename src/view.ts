@@ -11,9 +11,10 @@ import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, L
 import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
-import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
+import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue, worktreeLead } from './rank.ts'
 import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
-import { COMPLETED_BATCH, goalsHead, goalsRows, type GoalView } from './goals-view.ts'
+import { COMPLETED_BATCH, goalsHead, goalsRows, nextButton, type GoalView } from './goals-view.ts'
+import { ARROW } from './icons.ts'
 import { DEFAULT_DISPLAY, FILTER_NAME, FILTERS, isDefaultDisplay, issueLink, LINEAR_MARK, linkRows, priorityIcon, rowsByIssue, STATE_NAME, statusIcon, teamsOf, viewOf, type Display, type LinearFilter, type LinearGroup } from './linear.ts'
 
 export type UiState = {
@@ -52,6 +53,10 @@ export type UiState = {
   goalsCompletedLimit: number
   goalsShowDone: boolean
   goalOpen: string | null
+  /** Goals whose Next step this panel is sending to a coordinator (their button shows Assigning…). */
+  goalAssigning?: Set<string>
+  /** Terminals Jump to agent found dead; their goals offer Assign to coordinator instead. */
+  goalGone?: Set<string>
   /** Set by render from the snapshot: each pane's skill reload still worth a mark on its row. */
   reloads?: Map<string, SkillReloadEntry>
 }
@@ -59,7 +64,7 @@ export type UiState = {
 export const emptyUi = (): UiState => ({
   opened: new Set(), closed: new Set(), folded: new Set(), unfolded: new Set(), query: '', now: Date.now(),
   cockpitOpen: false, stats: null, statsLoading: false, confirming: null, pending: null, notice: null, status: new Map(), colors: new Map(),
-  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set(), botsFolded: false, goalsFolded: false, goalsShowDone: false, goalsCompletedQuery: '', goalsCompletedLimit: COMPLETED_BATCH, goalOpen: null
+  linearFolded: false, linearFilter: 'mine', linearDisplay: DEFAULT_DISPLAY, linearGroupFolds: new Set(), botsFolded: false, goalsFolded: false, goalsShowDone: false, goalsCompletedQuery: '', goalsCompletedLimit: COMPLETED_BATCH, goalOpen: null, goalAssigning: new Set(), goalGone: new Set()
 })
 
 // ---------- small helpers ----------
@@ -1009,9 +1014,8 @@ export function isCurrent(a: AgentInfo, row: WorkspaceRow, focused: string[] | n
   return worktreeLead(row)?.paneKey === a.paneKey
 }
 
-/** The agent no other agent in its worktree dispatched (the first, when several were started by hand). */
-export const worktreeLead = (row: WorkspaceRow): AgentInfo | undefined =>
-  row.agents.find((a) => ![a.leadPane, a.parentPane].some((p) => p && row.agents.some((b) => b.paneKey === p)))
+/** The agent no other agent in its worktree dispatched (rank.ts; goals-view.ts uses it too). */
+export { worktreeLead }
 
 /** A coordinator's row is current when its own session's tab is in front (or, focus known only by workspace, its folder is focused). */
 const coordinatorCurrent = (c: Coordinator, focused: string[] | null | undefined) =>
@@ -1402,14 +1406,16 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   const placed = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
   const all = placed.map((p) => p.a)
   const byPane = new Map(placed.map((p) => [p.a.paneKey, p]))
+  // The live agents on the goal (goalAgents, the rule Jump → uses), whatever their state: each face shows it.
   const avatars = (g: GoalView): string => {
-    const working = g.workingPanes.flatMap((key) => byPane.get(key) ?? [])
-    if (!working.length) return ''
-    const names = working.map(({ a, row }) => nameOf(a, row)).join(', ')
-    const label = esc(`Working: ${names}`)
-    return `<span class="who" role="img" aria-label="${label}" data-tip="${label}">${avatarStack(working, all, 3)}</span>`
+    const on = g.livePanes.flatMap((key) => byPane.get(key) ?? []).filter(({ a }) => !a.terminal || !ui.goalGone?.has(a.terminal))
+    if (!on.length) return ''
+    const names = on.map(({ a, row }) => nameOf(a, row)).join(', ')
+    const label = esc(`Agents on this goal: ${names}`)
+    return `<span class="who" role="img" aria-label="${label}">${avatarStack(on, all, 3)}</span>`
   }
-  const goalsOut = { goalsHead: goalsHead(goalsData ?? [], gs, !!ui.query || !goalsData), goalsRows: goalsRows(goalsData ?? [], gs, !!ui.query || !goalsData, avatars) }
+  const button = (g: GoalView) => nextButton(g, given, { assigning: ui.goalAssigning, gone: ui.goalGone })
+  const goalsOut = { goalsHead: goalsHead(goalsData ?? [], gs, !!ui.query || !goalsData), goalsRows: goalsRows(goalsData ?? [], gs, !!ui.query || !goalsData, avatars, button) }
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.
   const asking = upNextOrder(snap)
@@ -1520,7 +1526,6 @@ export const idChip = (id: string, link?: { url: string; title: string | null } 
     ? `<span class="idchip" role="link" data-url="${esc(link.url)}" data-tip="${esc(link.title ? `${id} · ${link.title}` : `Open ${id} in Linear`)}" aria-label="${esc(`Open ${id} in Linear`)}">${LINEAR_MARK}${esc(id)}</span>`
     : `<span class="idchip">${LINEAR_MARK}${esc(id)}</span>`
 
-const ARROW = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6h8M7 3l3 3-3 3"/></svg>'
 
 /** Rows a filter shows before "N more", so a big team list stays quick to draw. */
 export const LINEAR_ROWS = 50

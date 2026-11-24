@@ -3,7 +3,7 @@
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
-import { COMPLETED_BATCH, goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
+import { COMPLETED_BATCH, goalCard, GOALS_UI_KEY, goalsUiOf, jumpTarget, liveCoordinators, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { UsageMetric } from '../analytics-view.ts'
@@ -967,6 +967,12 @@ function markTarget(): void {
   document.querySelectorAll<HTMLElement>('[data-status]').forEach((el) => {
     el.setAttribute('aria-expanded', String(menuTarget === `status:${el.dataset.status}`))
   })
+  // A goal's Assign → stays shown while its picker is open, as a Linear row's Send → does.
+  document.querySelectorAll<HTMLElement>('[data-gassign]').forEach((el) => {
+    const open = menuTarget === `goalassign:${el.dataset.gassign}`
+    el.setAttribute('aria-expanded', String(open))
+    el.parentElement?.classList.toggle('menu-open', open)
+  })
 }
 
 function closeMenu(): void {
@@ -1067,8 +1073,9 @@ document.addEventListener('contextmenu', (e) => {
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-handover],[data-sessions],[data-status]') : null
+  const el = target instanceof Element ? target.closest<HTMLElement>('[data-ldisplay],[data-lsend],[data-handover],[data-sessions],[data-status],[data-gassign]') : null
   if (!el) return null
+  if (el.dataset.gassign) return `goalassign:${el.dataset.gassign}`
   if (el.dataset.status) return `status:${el.dataset.status}`
   if (el.dataset.handover) return `handover:${el.dataset.handover}`
   if (el.dataset.sessions) return `sessions:${el.dataset.sessions}`
@@ -1262,7 +1269,7 @@ function showHistoryList(key: string): void {
 // live outside every redrawn section, so a live repaint never takes the focus or the text out of them.
 // The card is redrawn part by part, leaving the one the person types in alone.
 
-const GOAL_CLICKS = '[data-gfold],[data-gdone],[data-gmore],[data-gadd],[data-gopen],[data-gstep],[data-gfinish],[data-greopen],[data-gconfirm],[data-gnot]'
+const GOAL_CLICKS = '[data-gfold],[data-gdone],[data-gmore],[data-gadd],[data-gopen],[data-gstep],[data-gfinish],[data-greopen],[data-gconfirm],[data-gnot],[data-gjump],[data-gassign]'
 const saveGoalsUi = () => void orca.storage.set(GOALS_UI_KEY, { folded: ui.goalsFolded, showDone: ui.goalsShowDone }).catch(() => null)
 orca.storage.get(GOALS_UI_KEY).then((stored) => {
   const saved = goalsUiOf(stored)
@@ -1274,18 +1281,21 @@ const readGoals = () => !goalsIsOn() ? Promise.resolve() : orca.plugin.request('
 orca.plugin.on('sidebar.goalsChanged', (g) => { if (!goalsIsOn()) return; goals = g as GoalView[]; draw() })
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void readGoals() })
 
+/** A short line in the toast: a refused goal edit, a session that is gone. */
+function goalToast(text: string): void {
+  clearTimeout(toastTimer)
+  toastEl.innerHTML = `<span class="t">${esc(text)}</span>`
+  toastEl.hidden = false
+  toastTimer = setTimeout(hideToast, 6000)
+}
+
 /** Runs one of the user's edits; the answer is the goals after it. A refusal is said in the toast. */
 async function goalAct(a: GoalAction): Promise<boolean> {
   if (!goalsIsOn()) return false
   try {
     const r = await orca.plugin.request('sidebar.goalAction', a)
     goals = r.goals
-    if (!r.ok) {
-      clearTimeout(toastTimer)
-      toastEl.innerHTML = `<span class="t">${esc(r.error ?? 'Could not change the goal')}</span>`
-      toastEl.hidden = false
-      toastTimer = setTimeout(hideToast, 6000)
-    }
+    if (!r.ok) goalToast(r.error ?? 'Could not change the goal')
     draw()
     return r.ok
   } catch (e) {
@@ -1295,6 +1305,59 @@ async function goalAct(a: GoalAction): Promise<boolean> {
 }
 
 const goalById = (id: string | undefined) => goals?.find((g) => g.id === id)
+
+// ---------- the Next step's button ----------
+
+/**
+ * Jump to agent: reads the snapshot again (the worker's refresh), checks that the session is still live and still
+ * the current one (a coordinator's current session after a handover), and only then focuses its tab and pane
+ * through sidebar.open, the path a row click takes. A session that is gone is never focused: the toast says so and
+ * the button offers Assign to coordinator.
+ */
+async function goalJump(id: string): Promise<void> {
+  try { snap = (await orca.plugin.request('sidebar.list')) as Snapshot } catch {}
+  const g = goalById(id)
+  const target = g && snap ? jumpTarget(g, snap, ui.goalGone) : null
+  if (!target) { goalToast('The agent on this step is gone. Assign it to a coordinator instead.'); draw(); return }
+  let opened = false
+  try { opened = (await orca.plugin.request('sidebar.open', { workspaceId: target.workspaceId, terminal: target.terminal })).opened } catch {}
+  if (!opened) {
+    ui.goalGone?.add(target.terminal)
+    goalToast(`${target.name}'s session is gone. Assign this step to a coordinator instead.`)
+  }
+  draw()
+}
+
+/** Assign to coordinator: a small picker of the coordinators with a live current session; none: says so. */
+function goalAssignMenu(id: string): MenuItem[] {
+  const g = goalById(id)
+  if (!g || !snap) return []
+  const live = liveCoordinators({ rows: snap.rows, coordinators: coordinatorOrder(snap) })
+  if (!live.length) return [{ header: 'No coordinator has a live session' }]
+  return [{ header: 'Assign next step to' }, ...live.map((c): MenuItem => {
+    const mark = providerOf(c.session?.agentType ?? null)
+    return { label: c.name, iconHtml: mark ? `<span class="provider" aria-hidden="true">${PROVIDER_LOGOS[mark]}</span>` : coordinatorCharacter(c, 16), run: () => goalAssign(g, c.key) }
+  })]
+}
+
+/** Sends the exact Next text the button was drawn for; Assigning… until the worker answers, then Jump to agent. */
+async function goalAssign(g: GoalView, coordinator: string): Promise<void> {
+  if (!goalsIsOn() || !g.next || ui.goalAssigning?.has(g.id)) return
+  ui.goalAssigning?.add(g.id)
+  draw()
+  try {
+    const r = await orca.plugin.request('sidebar.goalAssign', { id: g.id, coordinator, next: g.next }, { timeoutMs: 120_000 })
+    goals = r.goals
+    if (!r.ok) goalToast(r.error ?? 'Could not assign the step')
+    else if (r.warning) goalToast(r.warning)
+  } catch (e) {
+    goalToast((e as Error).message)
+    void readGoals()
+  } finally {
+    ui.goalAssigning?.delete(g.id)
+    draw()
+  }
+}
 const goalRowEl = (id: string) => goalsRowsEl.querySelector<HTMLElement>(`[data-gopen="${CSS.escape(id)}"]`)
 
 function setGoalAdding(on: boolean): void {
@@ -1423,6 +1486,14 @@ document.addEventListener('click', (event) => {
     const was = ui.goalOpen
     if (was) closeGoalCard()
     if (was !== d.gopen) { setGoalAdding(false); ui.goalOpen = d.gopen; el.scrollIntoView({ block: 'nearest' }); draw(); paintGoalCard() }
+    return
+  }
+  if (d.gjump) { void goalJump(d.gjump); return }
+  if (d.gassign) {
+    const target = `goalassign:${d.gassign}`
+    if (menuTarget === target) closeMenu()
+    // Under the goal's row, as a Linear row's send menu opens under its row (the pill itself may be hidden: keyboard).
+    else if (opener.shouldOpen(target)) openMenu(goalAssignMenu(d.gassign), 12, 12, target, (el.parentElement ?? el).getBoundingClientRect())
     return
   }
   if (d.gstep) {

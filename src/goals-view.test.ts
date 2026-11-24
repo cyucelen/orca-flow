@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { add, done, get, propose, setStep } from '../skills/orca-flow/scripts/goals.mjs'
-import { goalCard, goalRow, goalViews, goalsHead, goalsRows, lastChangeText, type GoalView } from './goals-view.ts'
+import { goalCard, goalRow, goalViews, goalsHead, goalsRows, type GoalView } from './goals-view.ts'
 import { applyGoalAction, readGoals } from './goals.ts'
 import { emptyUi, render } from './view.ts'
 import type { AgentInfo, Snapshot, WorkspaceRow } from './protocol.ts'
@@ -15,11 +15,11 @@ const NOW = 1_800_000_000_000
 const view = (over: Partial<GoalView> = {}): GoalView => ({
   id: 'g_ship', title: 'Ship super admin', steps: [{ text: 'Visibility fix', done: true }, { text: 'Moderation', done: false }], next: 'Finish chat oversight',
   doneWhen: 'PR merged', note: 'A <b>note</b>', links: { linear: ['DES-340'], worktrees: [{ key: 'k', name: 'mono/des-340' }] }, status: 'open', createdAt: NOW - 1e9, updatedAt: NOW,
-  lastChange: { by: 'the DES-340 lead', field: 'next', at: NOW - 2 * 3_600_000 }, workingPanes: [], ...over
+  lastChange: { by: 'the DES-340 lead', field: 'next', at: NOW - 2 * 3_600_000 }, livePanes: [], ...over
 })
 const state = (over = {}) => ({ folded: false, showDone: false, open: null, now: NOW, ...over })
-const agent = (state: AgentInfo['state']): AgentInfo => ({ paneKey: 'p', title: 't', state, agentType: 'claude', summary: null, workingMode: null, coordinator: 'you', leadPane: null, parentPane: null, orcaSession: null, dispatch: null, terminal: null, question: null })
-const wrow = (id: string, path: string, states: AgentInfo['state'][]) => ({ id, path, agents: states.map(agent) })
+const agent = (state: AgentInfo['state'], i = 0): AgentInfo => ({ paneKey: i ? `p${i}` : 'p', title: 't', state, agentType: 'claude', summary: null, workingMode: null, coordinator: 'you', leadPane: null, parentPane: i ? 'p' : null, orcaSession: null, dispatch: null, terminal: `term-${i}`, question: null, live: true })
+const wrow = (id: string, path: string, states: AgentInfo['state'][]) => ({ id, path, agents: states.map((st, i) => agent(st, i)) })
 
 function withData<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), 'orca-flow-goals-view-'))
@@ -42,19 +42,30 @@ test('a goal with only a title is a valid row: no count, no avatars, a quiet lin
   assert.match(html, /class="nx none">No next step yet/)
 })
 
-test('identify only agents working on linked worktrees', () => {
+test('a goal lists the live agents on its linked worktrees, in any state, until they sleep or are removed', () => {
   const g = view({ links: { linear: [], worktrees: [{ key: 'wt:1' }] } })
-  const panes = (rows: ReturnType<typeof wrow>[], goal = g) => goalViews([goal], rows)[0].workingPanes
+  const panes = (rows: (ReturnType<typeof wrow> & { historical?: boolean })[], goal = g) => goalViews([goal], rows)[0].livePanes
   assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['working'])]), ['p'])
-  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['waiting', 'done'])]), [], 'linked, but nobody works')
-  assert.deepEqual(panes([wrow('identity:other', '/b', ['working'])]), [], 'an agent working elsewhere')
-  assert.deepEqual(panes([wrow('x', '/a', ['working'])], view({ links: { linear: [], worktrees: [{ path: '/a' }] } })), ['p'], 'a path link matches too')
-  assert.deepEqual(panes([wrow('wt-id', '/a', ['working'])], view({ links: { linear: [], worktrees: [{ worktreeId: 'wt-id' }] } })), ['p'], 'so does the Orca id')
-  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['working'])], view({ status: 'done', links: g.links })), [], 'a done goal is never lit')
-  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['working'])], view({ links: { linear: ['DES-1'], worktrees: [] } })), [], 'a Linear link alone does not light it')
-  const row = wrow('identity:wt:1', '/a', ['working'])
-  row.agents.push({ ...agent('working'), paneKey: 'second' }, agent('waiting'))
-  assert.deepEqual(panes([row, row]), ['p', 'second'])
+  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['done'])]), ['p'], 'a done agent that is still live stays')
+  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['done', 'waiting', 'working'])]), ['p2', 'p1', 'p'], 'working, then asking, then the lead')
+  const closed = wrow('identity:wt:1', '/a', ['done', 'working'])
+  closed.agents[0].live = false
+  closed.agents[1].live = false
+  assert.deepEqual(panes([closed]), [], 'asleep: their sessions closed')
+  const unknown = wrow('identity:wt:1', '/a', ['done'])
+  delete unknown.agents[0].live
+  assert.deepEqual(panes([unknown]), [], 'a done agent with no evidence its session is live')
+  const noTerminal = wrow('identity:wt:1', '/a', ['working'])
+  noTerminal.agents[0].terminal = null
+  assert.deepEqual(panes([noTerminal]), [], 'no terminal left')
+  assert.deepEqual(panes([{ ...wrow('identity:wt:1', '/a', ['working']), historical: true }]), [], 'a historical row')
+  assert.deepEqual(panes([wrow('identity:other', '/b', ['working'])]), [], 'removed: the linked worktree is gone, an agent elsewhere does not count')
+  assert.deepEqual(panes([wrow('x', '/a', ['done'])], view({ links: { linear: [], worktrees: [{ path: '/a' }] } })), ['p'], 'a path link matches too')
+  assert.deepEqual(panes([wrow('wt-id', '/a', ['done'])], view({ links: { linear: [], worktrees: [{ worktreeId: 'wt-id' }] } })), ['p'], 'so does the Orca id')
+  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['working'])], view({ status: 'done', links: g.links })), [], 'a done goal has none')
+  assert.deepEqual(panes([wrow('identity:wt:1', '/a', ['working'])], view({ links: { linear: ['DES-1'], worktrees: [] } })), [], 'a Linear link alone does not count')
+  const row = wrow('identity:wt:1', '/a', ['working', 'working'])
+  assert.deepEqual(panes([row, row]), ['p', 'p1'], 'each agent once')
 })
 
 test('a proposed goal says "lead says done" on the row, and its card asks to confirm', () => {
@@ -108,25 +119,15 @@ test('goal text is escaped, in the row and in the card', () => {
   for (const html of [goalRow(g, null), goalCard(g, NOW)]) noMatch(html, /<img|<script|<b>/)
 })
 
-test('the card has editable next, note, done-when and title, tickable steps, links and one muted last-change line', () => {
+test('the card has editable next, note, done-when and title, tickable steps, links, and no last-change line', () => {
   const card = goalCard(view(), NOW)
   for (const f of ['title', 'next', 'note', 'doneWhen', 'newStep']) assert.match(card, new RegExp(`data-gedit="${f}" data-g="g_ship"`))
   assert.match(card, /data-gstep="1" data-g="g_ship" role="checkbox" aria-checked="true"/)
   assert.match(card, /data-gstep="2"[^>]*aria-checked="false"/)
   assert.match(card, /DES-340/)
   assert.match(card, /mono\/des-340/)
-  assert.equal(card.match(/class="meta"/g)?.length, 1)
-  assert.match(card, /Next updated by the DES-340 lead · 2h ago/)
+  assert.ok(!/class="meta"|updated by/.test(card), "no last-change line")
   assert.match(goalCard(view({ links: { linear: [], worktrees: [] } }), NOW), /No ticket or worktree/)
-})
-
-test('who changed it last reads in one line', () => {
-  const at = NOW - 5 * 60_000
-  assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'next', at } }, NOW), 'Next updated by you · 5m ago')
-  assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'doneWhen', at } }, NOW), 'Done criteria updated by you · 5m ago')
-  assert.equal(lastChangeText({ lastChange: { by: 'a lead', field: 'next,steps', at: NOW } }, NOW), 'Next and Todos updated by a lead · just now')
-  assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'created', at } }, NOW), 'Added by you · 5m ago')
-  assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'status', at: NOW - 3 * 86_400_000 } }, NOW), 'Status changed by you · 3d ago')
 })
 
 test('render() puts the section above the tree and drops it while searching or before the goals are read', () => {
@@ -151,7 +152,7 @@ test('the panel adds a goal from one line, as "you"', () => withData((dir) => {
   assert.equal(r.goals.length, 1)
   assert.equal(r.goals[0].title, 'Hire a designer')
   assert.equal(r.goals[0].lastChange.by, 'you')
-  assert.deepEqual(r.goals[0].workingPanes, [])
+  assert.deepEqual(r.goals[0].livePanes, [])
   assert.equal(readdirSync(join(dir, 'goals')).length, 1, 'one file per goal')
 }))
 
@@ -210,12 +211,12 @@ test('"Not yet" leaves a goal that is no longer proposed alone', () => withData(
   assert.equal(applyGoalAction({ action: 'reject', id: g.id }, [], dir).goals[0].status, 'done', 'a done goal is not reopened by a stale Not yet')
 }))
 
-test('what an agent writes with `orca-flow goal` is what the panel reads, with working agents from the rows', () => withData((dir) => {
+test('what an agent writes with `orca-flow goal` is what the panel reads, with live agents from the rows', () => withData((dir) => {
   const g = add('Ship', { steps: ['one'], worktrees: [{ key: 'wt:1', name: 'des-340' }] }, { data: dir, by: 'the DES-340 lead' })
   setStep(g.id, 1, true, 'the DES-340 lead', { data: dir })
-  assert.deepEqual(readGoals([], dir)[0].workingPanes, [])
+  assert.deepEqual(readGoals([], dir)[0].livePanes, [])
   const lit = readGoals([wrow('identity:wt:1', '/x', ['working'])], dir)
-  assert.deepEqual(lit[0].workingPanes, ['p'])
+  assert.deepEqual(lit[0].livePanes, ['p'])
   assert.equal(lit[0].lastChange.by, 'the DES-340 lead')
   assert.match(readFileSync(join(dir, 'goals', `${g.id}.json`), 'utf8'), /"title": "Ship"/)
 }))

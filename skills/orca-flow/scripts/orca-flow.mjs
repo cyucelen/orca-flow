@@ -537,11 +537,20 @@ const WHEN = (at) => {
   return mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`
 }
 
+const ASSIGNED_STATE = { pending: 'sending', delivered: 'sent', unconfirmed: 'delivery unconfirmed' }
+/** "next assigned to coordinator bounti (sent, 5 min ago)" while the assignment is for the current next step. */
+function assignedText(g) {
+  const a = goals.currentAssignment(g)
+  return a ? `next assigned to coordinator ${a.name || a.coordinator} (${ASSIGNED_STATE[a.state]}, ${WHEN(a.deliveredAt ?? a.at)})` : ''
+}
+
 /** One goal as plain text. */
 export function formatGoal(g) {
   const done = g.steps.filter((s) => s.done).length
   const out = [`${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}`]
   if (g.next) out.push(`  next: ${g.next}`)
+  const assigned = assignedText(g)
+  if (assigned) out.push(`  ${assigned}`)
   if (g.doneWhen) out.push(`  done when: ${g.doneWhen}`)
   g.steps.forEach((s, i) => out.push(`  ${i + 1}. [${s.done ? 'x' : ' '}] ${s.text}`))
   if (g.note) out.push(`  note: ${g.note}`)
@@ -557,7 +566,7 @@ export function formatGoals(list) {
   return list
     .map((g) => {
       const done = g.steps.filter((s) => s.done).length
-      return `${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}${g.next ? `\n    next: ${g.next}` : ''}`
+      return `${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}${g.next ? `\n    next: ${g.next}` : ''}${assignedText(g) ? `\n    ${assignedText(g)}` : ''}`
     })
     .join('\n')
 }

@@ -18,9 +18,9 @@ import type { OrcaWorkerApi } from 'orca/worker'
 import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, typicalEnv, updateEnvCosts, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
-import { applyGoalAction, readGoals } from './goals.ts'
+import { applyGoalAction, assignNext, readGoals } from './goals.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
-import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
+import { associateSession, chooseSession, conversationRows, currentRecipient, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
 import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions, AnalyticsView, AnalyticsWindow } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
@@ -1106,14 +1106,14 @@ export default function activate(orca: OrcaWorkerApi): void {
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
     orca.panels.post('sidebar.changed', shared(latest))
-    postGoals() // refresh each goal’s working agents
+    postGoals() // refresh the live agents on each goal
     void orca.host.call('statusBar.update', statusOf(latest)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     // Members bound without a resume id (a migrated one, a picked one) get it from their exact terminal.
     if (latest.source === 'cli') void captureResumeIds()
     return shared(latest)
   }
   // Goals: one file each under DATA_DIR/goals. An agent's `orca-flow goal` and the panel's edits change them; the
-  // panel gets the list (with each goal's working agents) on open, after its own edit, and whenever a file changes.
+  // panel gets the list (with the live agents on each goal) on open, after its own edit, and whenever a file changes.
   const goalRows = () => latest?.rows ?? allRows
   // Settings → Features → Goals, read from the file each time so a save applies at once. Off: no goal is read or posted, and the panel's edits are refused. The files are never touched by the switch.
   const goalsOn = () => readSettings(DATA_DIR).settings.features.goals
@@ -1133,6 +1133,44 @@ export default function activate(orca: OrcaWorkerApi): void {
     const result = applyGoalAction(input, goalRows(), DATA_DIR)
     if (result.ok) postGoals()
     return result
+  })
+  // Assign to coordinator: the goal's exact Next step goes to the chosen coordinator's current live session, the way
+  // a Linear send does (deliverCurrent re-checks the exact terminal and conversation before it types). The store
+  // (goals.mjs beginAssign / finishAssign) refuses a second send of the same step and drops a late answer for a
+  // step that changed meanwhile.
+  const liveSession = (key: string) => {
+    const c = readCoordinators().find((x) => x.key === key)
+    if (!c) throw new Error(`No coordinator ${key}`)
+    const { agent, recipient } = currentRecipient(c, allRows)
+    return { c, session: { workspaceId: recipient.workspaceId, terminal: recipient.terminal, paneKey: agent.paneKey, orcaSession: recipient.orcaSession, agentType: recipient.agentType, member: recipient.member } }
+  }
+  const sessionOf = (r: import('./protocol.ts').DeliveryRecipient) => ({ workspaceId: r.workspaceId, terminal: r.terminal, orcaSession: r.orcaSession, agentType: r.agentType, member: r.member })
+  orca.panels.handle('sidebar.goalAssign', async (input) => {
+    if (!goalsOn()) return { ok: false, error: 'Goals is off in Settings → Features', goals: [] }
+    try { await refresh() } catch (e) { orca.log(`goal assign: refresh failed: ${(e as Error).message}`) }
+    return assignNext(input, {
+      rows: goalRows,
+      data: DATA_DIR,
+      target: (key) => { const { c, session } = liveSession(key); return { name: c.name, session } },
+      stillOn: (a) => { try { liveSession(a.coordinator); return true } catch { return false } },
+      deliver: async (key, message) => {
+        const current = readCoordinators().find((x) => x.key === key)
+        if (!current) throw new Error('Coordinator no longer exists.')
+        const before = current.sessions?.members.find((m) => m.id === current.sessions?.current)
+        try {
+          const recipient = await deliverCurrent(current, allRows, message, run, () => {
+            const now = readCoordinators().find((x) => x.key === key)?.sessions
+            const after = now?.members.find((m) => m.id === now.current)
+            return Boolean(before && after && before.id === after.id && before.orcaSession === after.orcaSession && before.paneKey === after.paneKey)
+          })
+          return { session: sessionOf(recipient) }
+        } catch (e) {
+          if (e instanceof DeliveryUncertainError) return { session: sessionOf(e.recipient), uncertain: true }
+          throw e
+        }
+      },
+      changed: postGoals
+    })
   })
   const refreshSoon = () => {
     if (timer) clearTimeout(timer)

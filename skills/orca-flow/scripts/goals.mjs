@@ -7,9 +7,13 @@
 // A goal: { id, title, note?, next?, doneWhen?, steps: [{ text, done }],
 //           links: { linear: ['DES-340'], worktrees: [{ key?, path?, name?, worktreeId? }] },
 //           status: 'open' | 'proposed' | 'done', createdAt, updatedAt, doneAt?,
-//           lastChange: { by, field, at } }
+//           lastChange: { by, field, at },
+//           assignment?: { coordinator, name?, next, state, at, by, token, session?, deliveredAt? } }
 // `by` is "you" for the user in the panel, else the agent's role or worktree name. Agents only
 // propose done; the user confirms (done). Step references are a 1-based number or a piece of text.
+// `assignment`: the Next step handed to one of the user's coordinators from the panel (beginAssign,
+// finishAssign). It is for the exact `next` text it was sent for: changing Next drops it, and a goal
+// without one (every goal written before) reads and edits as before.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -169,6 +173,8 @@ export function update(id, patch, by, { data } = {}) {
     changed.push(f)
   }
   if (!changed.length) return g
+  // An assignment is for the exact step it was sent for: a new Next is not assigned.
+  if (changed.includes('next')) delete next.assignment
   const out = stamp(next, by, changed.join(','))
   writeGoal(data, out)
   return out
@@ -262,3 +268,67 @@ export const propose = (id, by, { data } = {}) => setStatus(id, 'proposed', by, 
 /** Only on the user's word. */
 export const done = (id, by, { data } = {}) => setStatus(id, 'done', by, data)
 export const reopen = (id, by, { data } = {}) => setStatus(id, 'open', by, data)
+
+// ---------- handing the Next step to a coordinator ----------
+
+/** A pending assignment older than this counts as failed (the worker stopped mid-delivery); the step can be assigned again. */
+export const ASSIGN_PENDING_MS = 3 * 60_000
+export const ASSIGN_STATES = ['pending', 'delivered', 'unconfirmed']
+
+/**
+ * The goal's assignment when it is for the goal's current Next text; null when there is none, it was
+ * for another Next text, or it is a pending one that never finished.
+ */
+export function currentAssignment(g, now = Date.now()) {
+  const a = g?.assignment
+  if (!isObject(a) || typeof a.coordinator !== 'string' || typeof a.next !== 'string' || !ASSIGN_STATES.includes(a.state)) return null
+  if (!g.next || a.next !== g.next) return null
+  if (a.state === 'pending' && !(now - (Number(a.at) || 0) <= ASSIGN_PENDING_MS)) return null
+  return a
+}
+
+/**
+ * Starts handing the exact Next step `next` to a coordinator: records a pending assignment and answers
+ * it with the token finishAssign needs. Refused when the goal is not open, its Next text is no longer
+ * `next`, or this step is already assigned: pending, or delivered to a coordinator `stillOn` says is
+ * still there (one whose session is gone can be replaced). Not stamped as a change of the goal.
+ */
+export function beginAssign(id, { coordinator, name, next, session }, by, { data, now = Date.now(), stillOn = () => true } = {}) {
+  const g = need(id, data)
+  if (g.status !== 'open') throw new Error(`goal ${g.id} is ${g.status}; only an open goal's next step can be assigned`)
+  const want = clean(next)
+  if (!g.next) throw new Error(`goal ${g.id} has no next step`)
+  if (g.next !== want) throw new Error('The next step changed; nothing was sent. Look at the new step and assign it again.')
+  const key = clean(coordinator)
+  if (!key) throw new Error('assign needs a coordinator')
+  const cur = currentAssignment(g, now)
+  if (cur && (cur.state === 'pending' || stillOn(cur))) {
+    const who = cur.name || cur.coordinator
+    throw new Error(cur.state === 'pending' ? `This step is already being sent to ${who}.` : `This step is already assigned to ${who}.`)
+  }
+  const token = randomBytes(6).toString('hex')
+  const assignment = { coordinator: key, ...(clean(name) && { name: clean(name) }), next: g.next, state: 'pending', at: now, by: clean(by) || 'you', token, ...(isObject(session) && { session }) }
+  const out = { ...g, assignment }
+  writeGoal(data, out)
+  return { goal: out, token }
+}
+
+/**
+ * The delivery's answer for the assignment `token` started. It applies only while the goal still has
+ * that assignment for the same Next text: a late answer for an old step changes nothing (applied:
+ * false). ok: the step is assigned (state delivered, or unconfirmed when Orca did not confirm the turn);
+ * not ok: the assignment goes, so the step can be assigned again.
+ */
+export function finishAssign(id, token, { ok, state = 'delivered', session } = {}, { data, now = Date.now() } = {}) {
+  const g = get(id, { data })
+  const a = g?.assignment
+  if (!g || !isObject(a) || !token || a.token !== token || a.state !== 'pending' || !g.next || a.next !== g.next) return { goal: g, applied: false }
+  let out
+  if (ok) out = { ...g, assignment: { ...a, state: state === 'unconfirmed' ? 'unconfirmed' : 'delivered', deliveredAt: now, ...(isObject(session) && { session }) } }
+  else {
+    const { assignment: _, ...rest } = g
+    out = rest
+  }
+  writeGoal(data, out)
+  return { goal: out, applied: true }
+}

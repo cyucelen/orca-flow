@@ -566,9 +566,11 @@ button.item.coord { padding: 5px 6px; }
 .lrow > :is(.lid, .t) { align-self: baseline; }
 .lrow .r { max-width: 45%; height: 18px; }
 .lrow .r > span:not(.who):not(.act) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.lrow .send { display: none; height: 18px; padding: 0 8px; margin-left: 0; font-size: 11px; }
-.lrow .send svg { width: 10px; height: 10px; }
-.lrow:hover .send, .lrow:focus-visible .send, .lrow.menu-open .send { display: inline-flex; }
+/* The hover pill ("Send →"), shared with a goal's Next step ("Jump →", "Assign →", see .gline below): hidden until the
+   row is hovered or keyboard-focused, or while its menu is open. */
+:is(.lrow, .gline) .send { display: none; height: 18px; padding: 0 8px; margin-left: 0; font-size: 11px; }
+:is(.lrow, .gline) .send svg { width: 10px; height: 10px; }
+.lrow:hover .send, .lrow:focus-visible .send, .lrow.menu-open .send, .gline:is(:hover, :has(:focus-visible), .menu-open) .send { display: inline-flex; }
 .lrow:hover .rest, .lrow:focus-visible .rest, .lrow.menu-open .rest { display: none; }
 .lrow.menu-open { background: var(--hover); }
 /* A worktree's Linear issue, before its row's title in the tree. */
@@ -1063,6 +1065,17 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .gprogress svg { fill: none; stroke: var(--action); stroke-width: 2; }
 .gprogress .track { stroke: var(--faint); }
 .g.fin .ti { color: var(--ink); }
+/* A goal's Next step pill (the Linear row's "Send →" pill above) ends the row's right-hand cluster: avatars, progress
+   ring, then the pill, side by side and centered across the row's two lines, as main's row centers its ring. The pill
+   is a sibling of the row's button (a button cannot hold another), in normal flow: while it shows (hover, keyboard
+   focus, an open picker, Assigning…) the row's button gives up its width, so the title and Next ellipsize. The row's
+   hover background moves to the wrapper, so it covers the pill too. */
+.gline { display: flex; align-items: center; gap: 2px; margin-inline: -6px; border-radius: 6px; min-width: 0; }
+.gline > .g { flex: 1; width: auto; margin-inline: 0; }
+.gline:is(:hover, .menu-open, :has(> .g.menu-open)) { background: var(--hover); }
+.gline > .g:is(:hover, .menu-open) { background: transparent; }
+.gline > .gact { flex: none; margin-right: 6px; }
+.gline .gact.rstatus { height: 18px; font-size: 11px; }
 .gsec .add { margin: 2px 0 4px; }
 .gsec .add input { all: unset; box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--ask); user-select: text; -webkit-user-select: text; }
 .gsec .add input::placeholder { color: var(--faint); }
@@ -1096,12 +1109,15 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .gpop .link .mono { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); }
 .gpop .nolinks { color: var(--faint); font-style: italic; font-size: 12px; }
 .gpop .gsays { font-size: 12px; color: var(--review); }
+.gpop .gassigned { font-size: 11px; color: var(--faint); }
 .gpop .pfoot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; margin: 0 -12px; padding: 8px 12px; border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); background: var(--goal-surface); }
-.gpop .pfoot .meta { flex: 1; min-width: 0; font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gpop .pfoot { justify-content: flex-end; }
 .gbtn { display: inline-flex; align-items: center; flex: none; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: var(--action); background: color-mix(in srgb, var(--action) 14%, transparent); white-space: nowrap; }
 .gbtn:hover { background: color-mix(in srgb, var(--action) 24%, transparent); }
 .gbtn.quiet { color: var(--muted); background: var(--card); }
 .gbtn.quiet:hover { color: var(--ink); background: var(--card-hover); }
+/* Mark done: the Up next "Jump to session" button's look (.jump). */
+.gbtn.calm { height: auto; padding: 5px 10px; border-radius: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink); background: color-mix(in srgb, var(--ink) 9%, transparent); }
+.gbtn.calm:hover { background: color-mix(in srgb, var(--ink) 14%, transparent); }
 .gpop .pfoot.wrap { flex-wrap: wrap; }
-.gpop .pfoot.wrap .meta { flex: 1 0 100%; }
 .gpop .pfoot.wrap .gbtn:first-of-type { margin-left: auto; }
