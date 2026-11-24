@@ -31,7 +31,7 @@ const snapshot = {
   ]
 }
 const g = (id, title, over = {}) => ({
-  id, title, steps: [], links: { linear: [], worktrees: [] }, status: 'open', createdAt: now - 5 * 24 * H, updatedAt: now - 2 * H, lastChange: { by: 'you', field: 'created', at: now - 5 * 24 * H }, working: false, ...over
+  id, title, steps: [], links: { linear: [], worktrees: [] }, status: 'open', createdAt: now - 5 * 24 * H, updatedAt: now - 2 * H, lastChange: { by: 'you', field: 'created', at: now - 5 * 24 * H }, workingPanes: [], ...over
 })
 const goals = [
   g('g_super-admin', 'Ship super admin', {
@@ -39,7 +39,7 @@ const goals = [
     steps: [['Visibility fix in News and Documents', 1], ['Moderation rights (edit, delete, block)', 1], ['Group chat oversight without notifications', 0], ['Admin presence shown in chats', 0]].map(([text, d]) => ({ text, done: !!d })),
     next: 'Finish chat oversight without notifications', doneWhen: 'Super Admins see everything, can moderate, and the PR is merged',
     links: { linear: ['DES-340'], worktrees: [{ key: 'des-340', path: '/fixture/des-340-super-admin-permissions', name: 'mono/des-340-super-admin-permissions' }] },
-    lastChange: { by: 'the DES-340 lead', field: 'next', at: now - 2 * H }, working: true }),
+    lastChange: { by: 'the DES-340 lead', field: 'next', at: now - 2 * H }, workingPanes: [snapshot.rows[0].agents[0].paneKey] }),
   g('g_lesson-splitting', 'Finish lesson splitting for AI course creation', {
     note: 'Short documents with several topics should become several short lessons. The Kaimug onboarding doc gave one lesson instead of five.',
     steps: [['Plan lessons by topic (PR #6277)', 1], ['Review feedback worked in', 0], ['Re-run the Kaimug document', 0]].map(([text, d]) => ({ text, done: !!d })),
@@ -75,12 +75,12 @@ if (q.get('empty')) goals = [];
 const stamp = (x, field) => Object.assign(x, { updatedAt: Date.now(), lastChange: { by: 'you', field, at: Date.now() } });
 const apply = (a) => {
   const x = goals.find((y) => y.id === a.id);
-  if (a.action === 'add') { if (!a.title.trim()) return 'a goal needs a title'; const n = { id: 'g_' + Math.random().toString(36).slice(2, 8), title: a.title.trim(), steps: [], links: { linear: [], worktrees: [] }, status: 'open', createdAt: Date.now(), working: false }; stamp(n, 'created'); goals.push(n); return null; }
+  if (a.action === 'add') { if (!a.title.trim()) return 'a goal needs a title'; const n = { id: 'g_' + Math.random().toString(36).slice(2, 8), title: a.title.trim(), steps: [], links: { linear: [], worktrees: [] }, status: 'open', createdAt: Date.now(), workingPanes: [] }; stamp(n, 'created'); goals.push(n); return null; }
   if (!x) return 'no goal ' + a.id;
   if (a.action === 'update') { const f = []; for (const [k, v] of Object.entries(a.patch)) { if (k === 'title' && !v.trim()) return 'a goal needs a title'; if (v.trim() !== (x[k] ?? '')) { v.trim() ? (x[k] = v.trim()) : delete x[k]; f.push(k); } } if (f.length) stamp(x, f.join(',')); }
   else if (a.action === 'step') { x.steps[a.step - 1].done = a.done; stamp(x, 'steps'); }
   else if (a.action === 'addStep') { x.steps.push({ text: a.text, done: false }); stamp(x, 'steps'); }
-  else if (a.action === 'done' || a.action === 'confirm') { x.status = 'done'; x.doneAt = Date.now(); x.working = false; stamp(x, 'status'); }
+  else if (a.action === 'done' || a.action === 'confirm') { x.status = 'done'; x.doneAt = Date.now(); x.workingPanes = []; stamp(x, 'status'); }
   else if (a.action === 'reopen' || (a.action === 'reject' && x.status === 'proposed')) { x.status = 'open'; delete x.doneAt; stamp(x, 'status'); }
   return null;
 };
@@ -119,7 +119,7 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     await wait(300);
     ok(document.querySelector('#goals-head .lfold span').textContent === 'Goals' && $('#goals-head .gc').textContent === '5', 'header: Goals 5');
     ok($('#goals-head .gdn').textContent === '· 1 done', 'header: · 1 done');
-    ok(!!row('g_super-admin').querySelector('.wd') && !row('g_lesson-splitting').querySelector('.wd'), 'green dot only on the goal with a working agent');
+    ok(!!row('g_super-admin').querySelector('.sav svg.ch') && !row('g_lesson-splitting').querySelector('.sav svg.ch'), 'agent avatar only on the goal with a working agent');
     ok(row('g_super-admin').querySelector('.cnt').textContent === '2/4' && row('g_super-admin').querySelector('.nx').textContent.startsWith('Finish chat'), 'row: count 2/4 and next');
     ok(row('g_pdf-export').querySelector('.nx').textContent === 'lead says done', 'proposed row says "lead says done"');
     ok(!titles().includes('Intro call with the Germany lawyer'), 'done goal hidden');

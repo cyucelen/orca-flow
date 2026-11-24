@@ -1,11 +1,11 @@
-// The Goals section's HTML and rules, shared by the worker (which attaches "an agent works on it") and the
+// The Goals section's HTML and rules, shared by the worker (which attaches the working agents) and the
 // panel (which draws it). Goals are read by skills/orca-flow/scripts/goals.mjs (worker side only); this
 // file has no Node imports, so the panel bundles it. Every goal text is untrusted: escaped when drawn.
 import type { Goal } from '../skills/orca-flow/scripts/goals.d.mts'
 import type { AgentInfo, WorkspaceRow } from './protocol.ts'
 
-/** A goal as the panel gets it: the stored goal, and whether an agent on a worktree it links is working now. */
-export type GoalView = Goal & { working: boolean }
+/** A goal as the panel gets it: the stored goal, and the agents working on its linked worktrees. */
+export type GoalView = Goal & { workingPanes: string[] }
 
 /** Where the panel keeps the section's fold and the done toggle (plugin storage). */
 export const GOALS_UI_KEY = 'goals-ui'
@@ -28,11 +28,13 @@ const linkedTo = (w: Goal['links']['worktrees'][number], row: Pick<WorkspaceRow,
 
 const isWorking = (a: Pick<AgentInfo, 'state'>) => a.state === 'working'
 
-/** Goals with their dot: lit when an agent on a linked worktree is working. A finished goal never is. */
+/** Identify each working pane once, even when a goal has multiple links to its worktree. */
 export function goalViews(goals: Goal[], rows: Pick<WorkspaceRow, 'id' | 'path' | 'agents'>[]): GoalView[] {
   return goals.map((g) => ({
     ...g,
-    working: g.status !== 'done' && g.links.worktrees.some((w) => rows.some((r) => linkedTo(w, r) && r.agents.some(isWorking)))
+    workingPanes: g.status === 'done' ? [] : [...new Set(rows
+      .filter((row) => g.links.worktrees.some((w) => linkedTo(w, row)))
+      .flatMap((row) => row.agents.filter(isWorking).map((a) => a.paneKey)))]
   }))
 }
 
@@ -86,7 +88,7 @@ export function goalsHead(goals: GoalView[], s: GoalsState, searching = false): 
 }
 
 /** One goal: its title and step count, and under it the next step (or "lead says done" while an agent proposes it). */
-export function goalRow(g: GoalView, open: string | null): string {
+export function goalRow(g: GoalView, open: string | null, avatars = ''): string {
   const done = g.status === 'done'
   const second = done
     ? ''
@@ -95,16 +97,15 @@ export function goalRow(g: GoalView, open: string | null): string {
       : g.next
         ? `<span class="nx">${esc(g.next)}</span>`
         : '<span class="nx none">No next step yet</span>'
-  const dot = g.working ? '<span class="wd" data-tip="An agent is working"></span>' : ''
-  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${dot}${stepProgress(g)}</button>`
+  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${avatars}${stepProgress(g)}</button>`
 }
 
 /** The rows under the header: nothing while folded or empty; done goals only when the toggle shows them. */
-export function goalsRows(goals: GoalView[], s: GoalsState, searching = false): string {
+export function goalsRows(goals: GoalView[], s: GoalsState, searching = false, avatars?: (g: GoalView) => string): string {
   if (searching || s.folded) return ''
   const done = goals.filter((g) => g.status === 'done')
   const shown = [...activeGoals(goals), ...(s.showDone ? done : [])]
-  return shown.map((g) => goalRow(g, s.open)).join('')
+  return shown.map((g) => goalRow(g, s.open, avatars?.(g))).join('')
 }
 
 // ---------- the card ----------

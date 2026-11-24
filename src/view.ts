@@ -1358,8 +1358,17 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   // Goals, at the top above the tree; hidden while searching, like the other sections.
   const goalsData = goalsOn(given) ? goals : null
   const gs = { folded: ui.goalsFolded, showDone: ui.goalsShowDone, open: ui.goalOpen, now: ui.now }
-  const goalsOut = { goalsHead: goalsHead(goalsData ?? [], gs, !!ui.query || !goalsData), goalsRows: goalsRows(goalsData ?? [], gs, !!ui.query || !goalsData) }
-  const all = snap.rows.flatMap((r) => r.agents)
+  const placed = snap.rows.flatMap((row) => row.agents.map((a) => ({ a, row })))
+  const all = placed.map((p) => p.a)
+  const byPane = new Map(placed.map((p) => [p.a.paneKey, p]))
+  const avatars = (g: GoalView): string => {
+    const working = g.workingPanes.flatMap((key) => byPane.get(key) ?? [])
+    if (!working.length) return ''
+    const names = working.map(({ a, row }) => nameOf(a, row)).join(', ')
+    const label = esc(`Working: ${names}`)
+    return `<span class="who" role="img" aria-label="${label}" data-tip="${label}">${avatarStack(working, all, 3)}</span>`
+  }
+  const goalsOut = { goalsHead: goalsHead(goalsData ?? [], gs, !!ui.query || !goalsData), goalsRows: goalsRows(goalsData ?? [], gs, !!ui.query || !goalsData, avatars) }
   // One briefing per asking agent, workspaces in urgency order; several agents in one workspace each
   // get one; a coordinator asking itself gets one too.
   const asking = upNextOrder(snap)

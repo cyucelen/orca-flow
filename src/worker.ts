@@ -1083,14 +1083,14 @@ export default function activate(orca: OrcaWorkerApi): void {
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
     orca.panels.post('sidebar.changed', shared(latest))
-    postGoals() // an agent starting or stopping lights or clears a goal's dot
+    postGoals() // refresh each goal’s working agents
     void orca.host.call('statusBar.update', statusOf(latest)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     // Members bound without a resume id (a migrated one, a picked one) get it from their exact terminal.
     if (latest.source === 'cli') void captureResumeIds()
     return shared(latest)
   }
   // Goals: one file each under DATA_DIR/goals. An agent's `orca-flow goal` and the panel's edits change them; the
-  // panel gets the list (with each goal's working dot) on open, after its own edit, and whenever a file changes.
+  // panel gets the list (with each goal's working agents) on open, after its own edit, and whenever a file changes.
   const goalRows = () => latest?.rows ?? allRows
   // Settings → Features → Goals, read from the file each time so a save applies at once. Off: no goal is read or posted, and the panel's edits are refused. The files are never touched by the switch.
   const goalsOn = () => readSettings(DATA_DIR).settings.features.goals
