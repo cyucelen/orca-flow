@@ -134,6 +134,7 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     // open card, tick, edit next
     row('g_shift-scheduling').click(); await wait();
     ok(!$('#goalpop').hidden && $('#goalpop .meta').textContent.startsWith('Next updated by you'), 'click opens the card with who changed it last');
+    ok(document.activeElement === $('#goalpop'), 'opening a goal focuses the dialog, leaving the title out of edit mode');
     $('#goalpop [data-gstep="1"]').click(); await wait(300);
     ok($('#goalpop [data-gstep="1"]').getAttribute('aria-checked') === 'true' && row('g_shift-scheduling').querySelector('.cnt').textContent === '1/4' && $('#goalpop .meta').textContent.startsWith('Steps updated by you · just now'), 'tick a step: card, row count and meta follow');
     await edit('next', 'Draft the Austria template', 'enter'); await wait(250);

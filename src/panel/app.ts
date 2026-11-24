@@ -1310,6 +1310,7 @@ function paintGoalCard(): void {
     goalPop.innerHTML = html
     goalPop.hidden = false
     goalPop.showModal()
+    goalPop.focus({ preventScroll: true })
   } else {
     const fresh = document.createElement('div')
     fresh.innerHTML = html
