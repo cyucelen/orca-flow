@@ -123,7 +123,7 @@ test('who changed it last reads in one line', () => {
   const at = NOW - 5 * 60_000
   assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'next', at } }, NOW), 'Next updated by you · 5m ago')
   assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'doneWhen', at } }, NOW), 'Done criteria updated by you · 5m ago')
-  assert.equal(lastChangeText({ lastChange: { by: 'a lead', field: 'next,steps', at: NOW } }, NOW), 'Next and Steps updated by a lead · just now')
+  assert.equal(lastChangeText({ lastChange: { by: 'a lead', field: 'next,steps', at: NOW } }, NOW), 'Next and Todos updated by a lead · just now')
   assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'created', at } }, NOW), 'Added by you · 5m ago')
   assert.equal(lastChangeText({ lastChange: { by: 'you', field: 'status', at: NOW - 3 * 86_400_000 } }, NOW), 'Status changed by you · 3d ago')
 })

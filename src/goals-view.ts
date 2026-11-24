@@ -45,7 +45,7 @@ export function agoText(at: number, now: number): string {
   return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`
 }
 
-const FIELD = { title: 'Title', note: 'Description', next: 'Next', doneWhen: 'Done criteria', steps: 'Steps', links: 'Links' } as const
+const FIELD = { title: 'Title', note: 'Description', next: 'Next', doneWhen: 'Done criteria', steps: 'Todos', links: 'Links' } as const
 /** The one muted line at the foot of a card: "Next updated by you · 2h ago". */
 export function lastChangeText(g: Pick<Goal, 'lastChange'>, now: number): string {
   const { by, field, at } = g.lastChange
@@ -63,7 +63,7 @@ function stepProgress(g: Goal): string {
   if (!total) return ''
   const done = completedSteps(g)
   const arc = done ? `<circle cx="7" cy="7" r="5.5" pathLength="${total}" stroke-dasharray="${done} ${total}" transform="rotate(-90 7 7)"/>` : ''
-  return `<span class="gprogress" data-tip="${done} of ${total} steps complete"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/>${arc}</svg><span class="cnt">${done}/${total}</span></span>`
+  return `<span class="gprogress" data-tip="${done} of ${total} ${total === 1 ? 'todo' : 'todos'} complete"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/>${arc}</svg><span class="cnt">${done}/${total}</span></span>`
 }
 
 const CHEV = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>'
@@ -136,7 +136,7 @@ export function goalCard(g: GoalView, now: number): string {
     `<div class="gpart f" data-part="note"><span class="k">Description</span>${editable('note', g.id, g.note, 'Add a description', 'ed note')}</div>`,
     `<div class="gpart f" data-part="doneWhen"><span class="k">Done criteria</span>${editable('doneWhen', g.id, g.doneWhen, 'How will you know it is done?')}</div>`,
     `<div class="gpart f" data-part="next"><span class="k">Next</span>${editable('next', g.id, g.next, 'What is the next thing to do?')}</div>`,
-    `<div class="gpart f" data-part="steps"><span class="k">Steps${g.steps.length ? ` · ${completedSteps(g)}/${g.steps.length}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a step', 'ed addstep')}</div>`,
+    `<div class="gpart f" data-part="steps"><span class="k">Todos${g.steps.length ? ` · ${completedSteps(g)}/${g.steps.length}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a todo', 'ed addstep')}</div>`,
     `<div class="gpart f" data-part="links"><span class="k">Links</span><div class="links">${links || '<span class="nolinks">No ticket or worktree</span>'}</div></div>`,
     g.status === 'proposed' ? '<div class="gpart gsays" data-part="says">An agent says this is done. Is it?</div>' : '',
     `<div class="gpart pfoot${g.status === 'proposed' ? ' wrap' : ''}" data-part="foot"><span class="meta">${esc(lastChangeText(g, now))}</span>${buttons}</div>`

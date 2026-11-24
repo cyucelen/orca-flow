@@ -136,9 +136,9 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     ok(!$('#goalpop').hidden && $('#goalpop .meta').textContent.startsWith('Next updated by you'), 'click opens the card with who changed it last');
     ok(document.activeElement === $('#goalpop'), 'opening a goal focuses the dialog, leaving the title out of edit mode');
     const fields = [...document.querySelectorAll('#goalpop .k')].map((label) => label.textContent.split(' · ')[0]);
-    ok(fields.join(',') === 'Description,Done criteria,Next,Steps,Links', 'goal details follow reading order');
+    ok(fields.join(',') === 'Description,Done criteria,Next,Todos,Links', 'goal details follow reading order');
     $('#goalpop [data-gstep="1"]').click(); await wait(300);
-    ok($('#goalpop [data-gstep="1"]').getAttribute('aria-checked') === 'true' && row('g_shift-scheduling').querySelector('.cnt').textContent === '1/4' && $('#goalpop .meta').textContent.startsWith('Steps updated by you · just now'), 'tick a step: card, row count and meta follow');
+    ok($('#goalpop [data-gstep="1"]').getAttribute('aria-checked') === 'true' && row('g_shift-scheduling').querySelector('.cnt').textContent === '1/4' && $('#goalpop .meta').textContent.startsWith('Todos updated by you · just now'), 'tick a step: card, row count and meta follow');
     await edit('next', 'Draft the Austria template', 'enter'); await wait(250);
     ok(row('g_shift-scheduling').querySelector('.nx').textContent === 'Draft the Austria template' && $('#goalpop .meta').textContent.startsWith('Next updated by you'), 'edit next (Enter) saves; the row shows it');
     await edit('note', 'Sent to the lawyer by Friday'); await wait(250);
