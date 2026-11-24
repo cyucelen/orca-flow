@@ -1,5 +1,10 @@
 // node --test test/*.test.mjs
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { botDirectory, briefOf, decide, digest, formatBots, formatQueue, normalizePriority, roleOf, runsToResume } from '../skills/orca-flow/scripts/orca-flow.mjs'
 
@@ -99,6 +104,20 @@ test('resume takes back only runs whose closed terminal ran in this folder and s
     dirOf: (h) => dirs[h], activeWorkers: (id) => (id === 'done' ? 0 : 1)
   })
   assert.deepEqual(out.map((r) => r.id), ['mine'])
+})
+
+test('resume preserves an existing binding and refuses an unreadable binding before searching for another run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flow-resume-'))
+  try {
+    const cli = fileURLToPath(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url))
+    writeFileSync(join(dir, 'orca'), '#!/bin/sh\n[ "$*" = "orchestration run-current --json" ] || exit 2\necho "$FIXTURE_CURRENT"\n', { mode: 0o700 })
+    for (const result of [{ runId: 'run-held' }, {}]) {
+      const proc = spawnSync(process.execPath, [cli, 'resume'], { encoding: 'utf8',
+        env: { ...process.env, ORCA_CLI_BIN_DIR: dir, ORCA_TERMINAL_HANDLE: 'fixture', FIXTURE_CURRENT: JSON.stringify({ ok: true, result }) } })
+      assert.equal(proc.status, result.runId ? 0 : 1)
+      assert.match(proc.stdout + proc.stderr, result.runId ? /Already coordinating run-held/ : /could not verify/)
+    }
+  } finally { rmSync(dir, { recursive: true }) }
 })
 
 test('a lead is known from the role line its coordinator gives it', () => {

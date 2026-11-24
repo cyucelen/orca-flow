@@ -370,16 +370,18 @@ export type LiveRun = { id: string; objective?: string; why: string[] }
  * (no open dispatch, no unhandled coordinator mail, no pending gate) stay and never block. A number
  * is the older count-only wording, kept for messages recorded before runs were named.
  */
-export function ownershipRefusal(live: LiveRun[] | number, planned: string | null = null): string {
+export function ownershipRefusal(live: LiveRun[] | number, planned?: string | null): string {
   if (typeof live === 'number') return `${OWNERSHIP_REFUSAL} ${live === 1 ? 'an orchestration run' : `${live} orchestration runs`} with live work, and Orca can move only one live run to another conversation. Nothing was changed.\n` +
     'To keep working now, stay in the current conversation.\n' +
     'Choose Handover again to see which runs are live and what keeps each one live. Settled runs no longer block Handover.'
   const list = live.map((r) => `• ${r.id}${r.objective ? ` (${r.objective.replace(/\s+/g, ' ').slice(0, 80)})` : ''}: ${r.why.join('; ') || 'live'}`).join('\n')
-  const midflight = planned !== null || live.length === 1
-  return `${OWNERSHIP_REFUSAL} ${live.length === 1 ? 'a run' : `${live.length} runs`} with live work${midflight ? ` that this handover was not prepared to move${planned ? ` (it moves only ${planned})` : ''}` : ''}, and Orca can move only one live run to a new conversation (run-use binds one run per terminal). Nothing was changed.\n` +
+  const midflight = planned !== undefined
+  return `${OWNERSHIP_REFUSAL} ${live.length === 1 ? 'a run' : `${live.length} runs`} with live work${midflight ? ` that this handover was not prepared to move${planned ? ` (it moves only ${planned})` : ''}` : ''}, and Orca can move only one live run to a new conversation (run-use binds one run per terminal). ${midflight ? 'The handover stopped before moving any run.' : 'Nothing was changed.'}\n` +
     `${list}\n` +
-    'To keep working now, stay in the current conversation.\n' +
-    `To unblock Handover, settle ${midflight ? 'the runs listed' : 'all but one of these runs'} in the current conversation: let open dispatches finish (or stop them), handle the mail in each coordinator mailbox (orca orchestration check), and resolve pending gates. Settled runs stay with the current conversation and do not block. Then choose Handover again.`
+    (midflight
+      ? 'Keep working in the original conversation. Retry once the extra live work has settled.'
+      : 'To switch now, open a fresh coordinator terminal per run you want to move. In each, confirm orca orchestration run-current shows no run, then run orca orchestration run-use --id <its run ID>. Confirm with run-current and inspect mail with orca orchestration check --peek. Keep the source open for any run left there or refused by Orca.\n' +
+        'For a single replacement, stay in the current conversation until all but one run has settled, then choose Handover again.')
 }
 
 /** Shown, with Retry, when the target is current but its run-use for `run` was not seen in time. */

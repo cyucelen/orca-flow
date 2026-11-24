@@ -92,7 +92,9 @@ export async function classifyRun(route: RunRoute, run: Run): Promise<RunState> 
       for (const w of page.workers) {
         const state = w?.workerState ?? w?.state
         if (typeof state !== 'string') throw new Error('worker state unreadable')
-        if (!SETTLED_DISPATCH.has(state)) open.push(typeof w.dispatchId === 'string' ? w.dispatchId : 'unnamed')
+        // Context-only workers keep this label and a retained terminal even after worker_done.
+        const endedUnsupervised = state === 'unsupervised' && ['completed', 'failed'].includes(w.dispatchStatus)
+        if (!endedUnsupervised && !SETTLED_DISPATCH.has(state)) open.push(typeof w.dispatchId === 'string' ? w.dispatchId : 'unnamed')
       }
       cursor = page.page?.nextCursor || undefined
       if (page.page?.hasMore && !cursor) throw new Error('worker list incomplete')
@@ -186,7 +188,7 @@ export function runInstructions(plan: TransferPlan): string {
   const lines: string[] = []
   if (plan.adopt) lines.push(`RUN TO TAKE OVER: ${runLabel(plan.adopt)} has live work and moves to you through Orca's own transfer. Only after the barrier returns status ready, in this same first turn and before anything else, run exactly:
 orca orchestration run-use --id ${plan.adopt.id}
-then run \`orca orchestration run-current\` and confirm it names ${plan.adopt.id}. run-use moves that run's unread coordinator mail to you and routes its workers' reports and questions here; then read your mail with \`orca orchestration check\`. Never add --from or --takeover-legacy, never run run-use for another run in this turn, and do not run \`orca-flow resume\` in this first turn: it could take a different run and release this one. If run-use fails, report its exact error to the user and do not retry with other flags. The sidebar finishes the handover only after it sees ${plan.adopt.id} routed to this terminal.`)
+then run \`orca orchestration run-current\` and confirm it names ${plan.adopt.id}. run-use moves that run's unread coordinator mail to you and routes its workers' reports and questions here; then read your mail with \`orca orchestration check\`. Never add --from or --takeover-legacy, never run run-use for another run in this turn, and do not run \`orca-flow resume\` in this first turn. The handover already specifies your assigned run. If run-use fails, report its exact error to the user and do not retry with other flags. The sidebar finishes the handover only after it sees ${plan.adopt.id} routed to this terminal.`)
   if (plan.settled.length) lines.push(`SETTLED RUNS (no open dispatch, no unhandled coordinator mail, no pending gate) stay with the previous conversation: ${plan.settled.map(runLabel).join('; ')}. To coordinate one later, run \`orca orchestration run-use --id <id>\` from this terminal. Warning: run-use releases the run this terminal currently holds (one run per terminal), so switch only when you are done with that run.`)
   return lines.join('\n')
 }

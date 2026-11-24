@@ -26,14 +26,19 @@ On refusal or expiry, report that and end the turn without coordinating. The sid
 ownership before changing current; a new tab alone proves neither. After completion, use the
 transferred project scope, goals and workstreams. Orca moves only one run per terminal, so
 Handover is refused when two or more owned runs still have live work (an open dispatch, unhandled
-mail or a pending gate); leave those report routes and questions alone.
+mail or a pending gate). For a user-directed manual split, use one fresh independent coordinator
+terminal per run to move. In each receiving terminal check that `orca orchestration run-current`
+shows no binding, run `orca orchestration run-use --id <assigned-run>`, confirm with `run-current`,
+then `orca orchestration check --peek`. The source can continue serving any run left there. Supply
+the new conversation with that run's project, goal and open decisions. Stop on a host refusal.
 
 You are long-lived and may restart; your state lives in Orca and `~/.orca-flow`, never only in
 your context. On the first turn, and when you wake from sleep (the sidebar closes your session to
 free memory and continues it later in a new terminal):
 
-1. `orca-flow resume`: takes back the Runs your earlier terminal coordinated, so reports reach you
-   again. If it resumed any, `orca orchestration check` for mail you missed.
+1. On an ordinary wake, `orca-flow resume` keeps your current binding or takes back one earlier
+   run when this terminal is unbound. Read its mail with `orca orchestration check`. For an explicit
+   handover or manual split, follow the assigned run instructions first.
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
    queued). If there is room now, start the highest queued one with
    `orca-flow dispatch --role lead --task <id>` and its place flags.

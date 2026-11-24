@@ -339,6 +339,15 @@ export function runsToResume({ runs, me, here, live, dirOf, activeWorkers }) {
 function resume() {
   const me = process.env.ORCA_TERMINAL_HANDLE
   if (!me) throw new Error('run this from your coordinator session in Orca')
+  // run-use releases every other run held here, including a run just transferred by hand.
+  const alreadyBound = () => {
+    const current = orca(['orchestration', 'run-current'])
+    if (current?.runId === null) return false
+    if (typeof current?.runId !== 'string' || !current.runId) throw new Error('Orca could not verify this coordinator terminal has no bound run.')
+    console.log(`Already coordinating ${current.runId}.`)
+    return true
+  }
+  if (alreadyBound()) return
   const here = realpathSync(process.cwd())
   const tryOrca = (args) => {
     try {
@@ -362,10 +371,11 @@ function resume() {
   // the newest that still has workers. Any others are listed so you can switch to them.
   const [take, ...others] = runsToResume({ runs: orca(['orchestration', 'run-list', '--limit', '30', '--full']).runs ?? [], me, here, live, dirOf, activeWorkers })
   if (!take) return console.log('Nothing to resume.')
+  if (alreadyBound()) return
   orca(['orchestration', 'run-use', '--id', take.id])
   const line = (r) => `  ${r.id}  ${r.objective} (${activeWorkers(r.id)} worker${activeWorkers(r.id) > 1 ? 's' : ''})`
   console.log(`Resumed coordinating:\n${line(take)}`)
-  if (others.length) console.log(`Also from your earlier session (a terminal holds one Run; \`orca orchestration run-use --id <id>\` switches):\n${others.map(line).join('\n')}`)
+  if (others.length) console.log(`For each additional run, use a separate unbound coordinator terminal and run \`orca orchestration run-use --id <id>\` there:\n${others.map(line).join('\n')}`)
 }
 
 // ---------- summarizer ----------
