@@ -1,4 +1,4 @@
-// The Token speed section: how fast the agents write, what they send and receive over the network,
+// The Analytics section's speed glance (once Token speed): how fast the agents write, what they send and receive over the network,
 // and the internet speed the user last tested.
 //
 // Speed comes from the agents' own logs, read incrementally: each sample reads only the bytes a log
@@ -17,7 +17,15 @@
 //   comes after the tool ran, so it is no end).
 //
 // Network: a `nettop` snapshot of the agents' sockets each sample (the agents' processes found by
-// their executable name in `ps`), diffed against the last; loopback sockets are not network. Internet: `networkQuality -c`, only when the user presses Test.
+// their executable name in `ps`), diffed against the last; loopback sockets are not network. Internet: the last result kept in the history (no test runs any more).
+//
+// Usage: the same read also yields one usage observation per completed response (Usage below), for
+// the usage store (usage-store.ts). It takes every response, also those too long or with no start to
+// be a speed, normalised to four categories: input (uncached), cache read, cache write (5m / 1h) and
+// output. Claude's input_tokens excludes the cache; Codex's input_tokens includes cached_input_tokens
+// (and, by the brief's reading, cache_write_input_tokens), so those are taken out of it. Reasoning and
+// thinking tokens stay inside output. Codex counts a token_usage_record's `usage` or a token_count's
+// `last_token_usage`, never the cumulative `total_token_usage`.
 //
 // History is 1-minute buckets for 24 h (tokens per model, spread over each response's duration;
 // responses per model; agent bytes up and down), and response rate histograms (5 % bins) per minute
@@ -27,8 +35,8 @@ import { join } from 'node:path'
 
 export const SPEED_FILE = 'token-speed.json'
 export const CURSOR_FILE = 'token-speed-cursor.json'
-/** Files the worker writes here that must not wake the snapshot watcher (written every sample). */
-export const isSpeedFile = (name: string | null | undefined) => !!name && /(?:^|\/)\.?token-speed/.test(name)
+/** Files the worker writes here that must not wake the snapshot watcher (written every sample): the speed files and the usage store's folder. */
+export const isSpeedFile = (name: string | null | undefined) => !!name && (/(?:^|\/)\.?token-speed/.test(name) || /^usage(?:\/|$)/.test(name))
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -51,6 +59,29 @@ export type LogKind = 'claude' | 'codex'
 /** One model response: its output tokens and when it started and ended (ms). */
 export type Response = { model: string; out: number; start: number; end: number }
 
+/**
+ * One response's token usage, for the usage store. `session` is the provider session (Claude: the
+ * line's sessionId, else the file name; Codex: the record's thread_id, else the rollout id in the file
+ * name); `id` the response (Claude: message.id; Codex: response_id, else the line's ordinal or time).
+ * provider + session + id is its dedupe key. `start` is `end` when the reader saw no start.
+ */
+export type Usage = {
+  provider: LogKind
+  session: string
+  id: string
+  model: string
+  start: number
+  end: number
+  in: number
+  cacheRead: number
+  cacheWrite5m: number
+  cacheWrite1h: number
+  out: number
+}
+export type UsageSink = (u: Usage) => void
+/** The four usage numbers a Claude response holds while it is read: [in, cacheRead, cacheWrite5m, cacheWrite1h]. */
+type Tokens = [number, number, number, number]
+
 /** What a sample keeps of one log between reads: where it stopped and the parse state there. */
 export type Cursor = {
   kind: LogKind
@@ -58,7 +89,7 @@ export type Cursor = {
   mtime: number
   /** Claude: the last user line, the response being read, the last response done. */
   user?: number | null
-  pend?: { id: string; model: string; start: number | null; end: number; out: number } | null
+  pend?: { id: string; model: string; start: number | null; end: number; out: number; s?: string; u?: Tokens } | null
   done?: string | null
   /** Codex: the model in use, the last input, the open response's first and last output. */
   model?: string | null
@@ -69,6 +100,8 @@ export type Cursor = {
   rec?: boolean
   /** Codex without records: the response an input closed, waiting for its token_count ([start, end]). */
   wait?: [number | null, number] | null
+  /** Codex without records: the last token_count's total_tokens (a repeated count is no new response). */
+  tot?: number | null
 }
 
 export const newCursor = (kind: LogKind, offset = 0, mtime = 0): Cursor => ({ kind, offset, mtime })
@@ -81,17 +114,41 @@ const stamp = (v: unknown): number | null => {
 /** A response worth recording: a real start before its end, and not over MAX_RESPONSE_MS. */
 const valid = (r: { start: number | null; end: number }) => r.start != null && r.end > r.start && r.end - r.start <= MAX_RESPONSE_MS
 
-function flushClaude(c: Cursor, emit: (r: Response) => void): void {
+const n0 = (v: unknown) => {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** Anthropic usage: input_tokens excludes the cache; the cache write splits into 5m and 1h when the log says. */
+function claudeTokens(u: any): Tokens {
+  const cc = u?.cache_creation && typeof u.cache_creation === 'object' ? u.cache_creation : null
+  const e5 = n0(cc?.ephemeral_5m_input_tokens), e1 = n0(cc?.ephemeral_1h_input_tokens)
+  const write = n0(u?.cache_creation_input_tokens) || e5 + e1
+  const w1 = Math.min(e1, write)
+  return [n0(u?.input_tokens), n0(u?.cache_read_input_tokens), write - w1, w1]
+}
+
+/** OpenAI usage: input_tokens includes the cached (and cache-write) tokens; output includes reasoning. */
+function codexTokens(u: any): Omit<Usage, 'provider' | 'session' | 'id' | 'model' | 'start' | 'end'> {
+  const cached = n0(u?.cached_input_tokens), write = n0(u?.cache_write_input_tokens)
+  return { in: Math.max(0, n0(u?.input_tokens) - cached - write), cacheRead: cached, cacheWrite5m: write, cacheWrite1h: 0, out: n0(u?.output_tokens) }
+}
+
+function flushClaude(c: Cursor, emit: (r: Response) => void, usage?: UsageSink): void {
   const p = c.pend
   if (!p) return
   if (valid(p)) emit({ model: p.model, out: p.out, start: p.start!, end: p.end })
+  if (usage) {
+    const [inTok, cacheRead, cacheWrite5m, cacheWrite1h] = p.u ?? [0, 0, 0, 0]
+    usage({ provider: 'claude', session: p.s ?? '', id: p.id, model: p.model, start: p.start ?? p.end, end: p.end, in: inTok, cacheRead, cacheWrite5m, cacheWrite1h, out: p.out })
+  }
   c.done = p.id
   c.user = Math.max(c.user ?? 0, p.end)
   c.pend = null
 }
 
 /** One Claude Code log line. Only user and assistant lines matter; the rest are skipped unparsed. */
-export function claudeLine(c: Cursor, line: string, emit: (r: Response) => void): void {
+export function claudeLine(c: Cursor, line: string, emit: (r: Response) => void, usage?: UsageSink): void {
   const assistant = line.includes('"type":"assistant"')
   if (!assistant && !line.includes('"type":"user"')) return
   let r: any
@@ -109,26 +166,30 @@ export function claudeLine(c: Cursor, line: string, emit: (r: Response) => void)
   const model = m?.model, id = m?.id
   if (typeof model !== 'string' || model === '<synthetic>' || typeof id !== 'string') return
   const out = Number(m.usage?.output_tokens) || 0
+  // The last line of a response holds its whole usage: each line's numbers replace the last's.
+  const u = claudeTokens(m.usage)
   if (c.pend?.id === id) {
     c.pend.end = at
     c.pend.out = out
+    c.pend.u = u
     return
   }
   if (c.done === id) return // a late line of a response already recorded as stale
-  flushClaude(c, emit)
-  c.pend = { id, model, start: c.user ?? null, end: at, out }
+  flushClaude(c, emit, usage)
+  c.pend = { id, model, start: c.user ?? null, end: at, out, u }
+  if (typeof r.sessionId === 'string' && r.sessionId) c.pend.s = r.sessionId
 }
 
 /** A Claude response with nothing after it for STALE_MS is complete (the session waits on its user). */
-export function flushStale(c: Cursor, now: number, emit: (r: Response) => void): void {
-  if (c.kind === 'claude' && c.pend && now - c.pend.end > STALE_MS) flushClaude(c, emit)
+export function flushStale(c: Cursor, now: number, emit: (r: Response) => void, usage?: UsageSink): void {
+  if (c.kind === 'claude' && c.pend && now - c.pend.end > STALE_MS) flushClaude(c, emit, usage)
 }
 
 const CODEX_OUT = new Set(['reasoning', 'function_call', 'custom_tool_call', 'local_shell_call', 'web_search_call', 'tool_search_call', 'image_generation_call'])
 const CODEX_IN = new Set(['function_call_output', 'custom_tool_call_output', 'local_shell_call_output', 'tool_search_output'])
 
 /** One Codex rollout line. */
-export function codexLine(c: Cursor, line: string, emit: (r: Response) => void): void {
+export function codexLine(c: Cursor, line: string, emit: (r: Response) => void, usage?: UsageSink): void {
   if (line.includes('"item_completed"')) return // progress events: nothing to read
   let r: any
   try { r = JSON.parse(line) } catch { return }
@@ -162,6 +223,11 @@ export function codexLine(c: Cursor, line: string, emit: (r: Response) => void):
     const start = c.rStart ?? c.lastIn ?? null
     const out = Number(p.usage?.output_tokens) || 0
     if (valid({ start, end: at })) emit({ model: c.model ?? 'codex', out, start: start!, end: at })
+    if (usage && p.usage && typeof p.usage === 'object') {
+      const id = typeof p.response_id === 'string' && p.response_id ? p.response_id : typeof r.ordinal === 'number' ? `o${r.ordinal}` : `t${at}`
+      const session = typeof p.thread_id === 'string' && p.thread_id ? p.thread_id : typeof p.session_id === 'string' ? p.session_id : ''
+      usage({ provider: 'codex', session, id, model: c.model ?? 'codex', start: start ?? at, end: at, ...codexTokens(p.usage) })
+    }
     c.rStart = null
     c.rEnd = null
     c.lastIn = at
@@ -169,8 +235,13 @@ export function codexLine(c: Cursor, line: string, emit: (r: Response) => void):
   }
   if (type === 'event_msg' && pt === 'token_count' && !c.rec) {
     const [start, end] = c.wait ?? [c.rStart ?? null, c.rEnd ?? null]
-    const usage = p.info?.last_token_usage
-    if (end != null && usage && valid({ start, end })) emit({ model: c.model ?? 'codex', out: Number(usage.output_tokens) || 0, start: start!, end })
+    const last = p.info?.last_token_usage
+    if (end != null && last && valid({ start, end })) emit({ model: c.model ?? 'codex', out: Number(last.output_tokens) || 0, start: start!, end })
+    // A token_count repeats when nothing new ran (the total stays): only a changed total is a response.
+    const total = p.info?.total_token_usage?.total_tokens
+    const fresh = typeof total === 'number' ? total !== c.tot : end != null
+    if (typeof total === 'number') c.tot = total
+    if (usage && last && typeof last === 'object' && fresh) usage({ provider: 'codex', session: '', id: `t${at}`, model: c.model ?? 'codex', start: start ?? end ?? at, end: end ?? at, ...codexTokens(last) })
     if (end != null) c.lastIn = Math.max(c.lastIn ?? 0, end)
     c.wait = null
     if (c.rEnd === end) { c.rStart = null; c.rEnd = null }
@@ -181,14 +252,26 @@ export const lineReader = (kind: LogKind) => (kind === 'claude' ? claudeLine : c
 
 const decoder = new TextDecoder()
 
+/** The session a log's usage falls back to when its lines name none: a Codex rollout's id, else the file name. */
+export function logSession(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1).replace(/\.jsonl$/, '')
+  return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name)?.[1] ?? name
+}
+
+/** `usage` with the log's own session filled in where a line named none. */
+export const usageFor = (path: string, usage: UsageSink): UsageSink => {
+  let fallback: string | null = null
+  return (u) => usage(u.session ? u : { ...u, session: (fallback ??= logSession(path)) })
+}
+
 /**
  * Reads what `path` gained since the cursor, line by line, up to `size` (the size a stat just saw)
  * and until `deadline` (ms, Date.now()). Only whole lines are read: a line still being written waits
  * for the next sample. A file shorter than the cursor was replaced or truncated: it is read from 0.
  * Returns true when it reached `size`, false when the deadline stopped it (call again to go on).
  */
-export function readAppended(path: string, c: Cursor, size: number, emit: (r: Response) => void, deadline = Infinity): boolean {
-  if (size < c.offset) Object.assign(c, newCursor(c.kind, 0, c.mtime), { pend: null, user: null, done: null, model: null, lastIn: null, rStart: null, rEnd: null, rec: false, wait: null })
+export function readAppended(path: string, c: Cursor, size: number, emit: (r: Response) => void, deadline = Infinity, usage?: UsageSink): boolean {
+  if (size < c.offset) Object.assign(c, newCursor(c.kind, 0, c.mtime), { pend: null, user: null, done: null, model: null, lastIn: null, rStart: null, rEnd: null, rec: false, wait: null, tot: null })
   if (size === c.offset) return true
   const handle = lineReader(c.kind)
   let fd: number
@@ -215,7 +298,7 @@ export function readAppended(path: string, c: Cursor, size: number, emit: (r: Re
       while (from < text.length) {
         let to = text.indexOf('\n', from)
         if (to < 0) to = text.length
-        if (to > from) handle(c, text.slice(from, to), emit)
+        if (to > from) handle(c, text.slice(from, to), emit, usage)
         from = to + 1
       }
       c.offset += nl + 1
@@ -504,7 +587,7 @@ export function logsToRead(roots: LogRoot[], cursors: Cursors, now: number, full
  * is read from its start when it changed in the last 24 h (the first sample, or a new session), else
  * from its end. Stops at `deadline`; `next` is where to go on (paths.length when done).
  */
-export function readLogs(input: { paths: [string, LogKind][]; from?: number; cursors: Cursors; history: History; now: number; deadline?: number }): ScanStats {
+export function readLogs(input: { paths: [string, LogKind][]; from?: number; cursors: Cursors; history: History; now: number; deadline?: number; usage?: UsageSink }): ScanStats {
   const { paths, cursors, history, now } = input
   const deadline = input.deadline ?? Infinity
   const stats: ScanStats = { files: 0, readBytes: 0, responses: 0, next: paths.length }
@@ -522,9 +605,10 @@ export function readLogs(input: { paths: [string, LogKind][]; from?: number; cur
     }
     c.mtime = st.mtimeMs
     const before = c.offset
-    const finished = readAppended(path, c, st.size, emit, deadline)
+    const usage = input.usage && usageFor(path, input.usage)
+    const finished = readAppended(path, c, st.size, emit, deadline, usage)
     stats.readBytes += Math.max(0, c.offset - before)
-    if (finished) flushStale(c, now, emit)
+    if (finished) flushStale(c, now, emit, usage)
     if (Date.now() > deadline) { stats.next = finished ? k + 1 : k; break }
   }
   return stats
@@ -592,16 +676,6 @@ export function socketDelta(prev: SocketSnapshot, cur: SocketSnapshot): { up: nu
   return { up, down, procs: procs.size, secs: Math.max(0, (cur.at - prev.at) / 1000) }
 }
 
-/** `networkQuality -c` JSON: down and up in bit/s, base RTT in ms, responsiveness in RPM. */
-export function parseNetworkQuality(text: string, at: number): InternetResult | null {
-  let j: any
-  try { j = JSON.parse(text) } catch { return null }
-  const down = Number(j?.dl_throughput), up = Number(j?.ul_throughput)
-  if (!(down > 0) || !(up > 0)) return null
-  const rtt = Number(j.base_rtt), rpm = Number(j.responsiveness)
-  return { at, down, up, rtt: Number.isFinite(rtt) ? rtt : null, rpm: Number.isFinite(rpm) ? rpm : null }
-}
-
 // ---------- what the panel shows ----------
 
 export type SpeedSeries = {
@@ -627,20 +701,14 @@ export type TokenSpeedWire = {
   /** The agents' traffic in the last nettop sample, bit/s; null before the first. */
   net: { at: number; up: number; down: number; procs: number } | null
   internet: InternetResult | null
-  testing: boolean
-  testError: string | null
   models: SpeedModel[]
   series: Record<SpeedRange, SpeedSeries>
+  /** The sidebar's usage line (last 7 days, tokens and estimate); absent while the usage store is not open. */
+  usage?: import('./protocol.ts').UsageSummaryWire | null
 }
 
-/** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-4-5-20250929" → "Sonnet 4.5", "gpt-5.6-sol" → "GPT-5.6 Sol"; other ids as they are. */
-export function modelLabel(id: string): string {
-  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id)
-  if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}`
-  const g = /^gpt-(\d+(?:\.\d+)*)((?:-[a-z][a-z0-9]*)*)$/.exec(id)
-  if (g) return `GPT-${g[1]}${g[2].split('-').filter(Boolean).map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).map((w) => ` ${w}`).join('')}`
-  return id
-}
+import { modelLabel } from './model-label.ts'
+export { modelLabel }
 
 /** The median of binned rates (each bin's center), so within 2.5 % of the exact one. */
 export function histogramMedian(bins: Map<number, number>): number | null {
@@ -685,7 +753,7 @@ function series(h: History, now: number, span: number, step: number): SpeedSerie
 }
 
 /** The panel's view of the history at `now` (a few KB: 60 one-minute and 96 quarter-hour buckets). */
-export function speedView(h: History, now: number, state: { ready: boolean; testing: boolean; testError: string | null }): TokenSpeedWire {
+export function speedView(h: History, now: number, state: { ready: boolean }): TokenSpeedWire {
   const cur = Math.floor(now / MINUTE) * MINUTE
   const into = (now - cur) / MINUTE
   const tokIn = (t: number) => (h.minutes.get(t)?.tok ?? []).reduce((s, v) => s + (v ?? 0), 0)
@@ -709,8 +777,6 @@ export function speedView(h: History, now: number, state: { ready: boolean; test
     tokPerSec: Math.round(tokPerSec * 10) / 10,
     net,
     internet: h.internet,
-    testing: state.testing,
-    testError: state.testError,
     models,
     series: { '1h': series(h, now, HOUR, MINUTE), '24h': series(h, now, DAY, 15 * MINUTE) }
   }

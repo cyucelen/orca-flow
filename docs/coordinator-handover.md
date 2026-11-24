@@ -4,9 +4,59 @@ Handover moves a coordinator to a new Claude or Codex conversation in the same w
 supports the subset the host can move safely. A coordinator member (current or historical) may own
 **settled runs plus at most one run with live work**. That one run moves through Orca's own
 `orchestration run-use`, which the new conversation runs itself. Two or more live runs are still
-refused, and the refusal names each one. The installed Orca 1.4.263 host, and upstream through
-1.4.269, have no multi-run coordinator transfer. Leads' and unrelated runs remain unchanged; no
-pending question is consumed, answered, deleted or readdressed by the plugin.
+refused, and the refusal names each one. On the installed Orca 1.4.272, you can move both live
+runs **to separate coordinator terminals**, or move one and keep serving the other at the source.
+
+## Switching while two runs are active
+
+1. Keep the source open. Record the run IDs and give each receiving conversation its run's
+   project, objective and pending decisions. For each run, check the current owner with
+   `orca orchestration run-show --id <run> --full --json` (`result.run.coordinator_handle`).
+   `orca orchestration inbox --terminal run:<run>` inspects its coordinator mail without
+   consuming it. Use `orca orchestration gate-list --run <run> --status pending` for decisions.
+2. Open a fresh independent coordinator terminal in the same workspace for each run you want to
+   move. One new terminal suffices if the original conversation can keep working the other run.
+   For example, from the coordinator workspace, `orca agent launch --agent codex --surface terminal`
+   opens a new terminal conversation. Give it the specific assignment before ordinary resume or
+   dispatch. In that terminal, `orca orchestration run-current` must show no bound run.
+3. In the receiving terminal itself, run `orca orchestration run-use --id <assigned-run>`, then
+   `orca orchestration run-current`. Confirm the assigned ID, its new owner with `run-show`, and
+   each other run's expected owner. Use `orca orchestration check --peek --run <assigned-run>` to
+   see unread mail, then `check --run <assigned-run>` when ready to handle it. Workers keep
+   reporting on their existing dispatches. Pending gates keep their IDs and decisions.
+4. To move the second run as well, repeat in its own empty terminal. If a transfer is refused or
+   its reply is lost, inspect both owners and the receiver's `run-current` before proceeding.
+   On a fencing, legacy or peer-ownership refusal, use the authorized owner for that run. A
+   partially completed split can keep working with one terminal per owner.
+
+This is a manual split of responsibility. The sidebar's **Handover** still launches one replacement
+and copies conversation context for that replacement. Manual receivers need their own briefing.
+The host guide (`orca skills get orchestration --reference references/coordinator-loop.md`)
+specifies that `run-create` can retain several bindings and `run-use` releases all other bindings
+at the receiving terminal. Running it twice in one replacement would drop the first route.
+The installed CLI's `agent launch` creates a new conversation surface. Its public options provide
+no in-place provider switch with a guarantee that run consumers and session identity survive.
+Reusing a pane for a different provider remains unverified.
+
+### How the sidebar shows a manual split
+
+The selected main conversation and each verified auxiliary get separate headers in the coordinator
+tree, with their run objectives beneath their names. Open a header to reach that conversation.
+Direct reports appear beneath the owner of their run, and a lead's workers stay beneath that lead.
+Option+1–9 follows the same visible order and skips folded children.
+
+The projection joins a local coordinator folder's live `worktree ps` session, pane and terminal
+address with the run's coordinator handle. It requires a complete all-runs worker inventory to
+exclude dispatched leads, including leads that hold a run themselves. Multiple live bindings,
+missing evidence, a scoped inventory or a historical member leave the ordinary tree in place.
+Ownership reflects the latest background refresh. Session selection, dispatch records and saved
+parentage are independent of this display.
+
+Run `node scripts/coordinator-preview.mjs` and open the printed URL with
+`?split=1&linear=off&speed=off` to inspect the production panel with synthetic data and a mock
+navigation bridge. The regression fixture covers stale original parent panes after transfer, nested
+workers, a same-title independent chat, a dispatched task that holds a run and exact click and
+keyboard targets. [Rendered split at 400 px](coordinator-split.png)
 
 ## Supported behavior
 
@@ -41,7 +91,9 @@ pending question is consumed, answered, deleted or readdressed by the plugin.
   has a dispatch whose `worker-list --full` `workerState` is not succeeded/failed/stopped/abandoned/
   cancelled, an unhandled message in its coordinator mailbox (`inbox --terminal run:<id>`,
   `handled` not true), or a pending gate (`gate-list --run <id> --status pending`). Otherwise it is
-  **settled**. Any read error, a worker page with `hasMore` but no cursor, a repeated cursor, or a
+  **settled**. For a context-only dispatch, `workerState` stays `unsupervised` even after the worker
+  reports. Its durable `dispatchStatus` of `completed` or `failed` ends that assignment. Mail and
+  gates are still checked. Any read error, a worker page with `hasMore` but no cursor, a repeated cursor, or a
   full inbox page (`inbox` has no cursor; 1000 rows counts as incomplete) counts as live. The run
   inventory itself is read page by page; an incomplete inventory refuses outright.
 - **Settled runs** never block Handover and nothing moves: they stay bound to the old handle (nothing
@@ -52,11 +104,11 @@ pending question is consumed, answered, deleted or readdressed by the plugin.
   turn to run `orca orchestration run-use --id <run>` itself, after `await-handover.mjs` returns
   ready, then `run-current` to confirm and `orchestration check` for the moved mail. The prompt also
   tells it never to add `--from`/`--takeover-legacy` and to skip `orca-flow resume` in that first
-  turn, because resume could take a different run and release this one.
+  turn. An ordinary wake's `orca-flow resume` now preserves an existing binding.
 - **Two or more live runs** are refused before launch (`OWNERSHIP_REFUSAL` prefix, shown as
   "Handover blocked"). The refusal lists each run's id and objective, and what keeps it live: open
-  dispatch ids, the unhandled-mail count, pending gate ids. It says how to recover: settle all but
-  one, then choose Handover again.
+  dispatch ids, the unhandled-mail count, pending gate ids. It offers the manual split above or a
+  single replacement when all but one run has settled.
 
 ### Completion ordering with one live run
 
@@ -99,7 +151,8 @@ It does not load another plugin worker, install links, alter account settings or
 Evidence (installed `/Applications/Orca.app/Contents/Resources/app.asar.unpacked/out`,
 `main/chunks/orcad-retained-source-*.js`; upstream `src/main/runtime/orchestration/db/runs/run-binding.ts`
 in github.com/stablyai/orca). First read on 2026-11-20 with 1.4.265, then rechecked on 2026-11-21
-against the installed 1.4.263 host and upstream through 1.4.269:
+against the installed 1.4.263 host and upstream through 1.4.269. The local 1.4.272 build on
+2026-11-24 still calls `unbindOtherRunsForCoordinator` inside `bindRun`:
 
 - `orchestration run-use --id R`, run BY the terminal that will coordinate, is the host's
   transfer. In one `BEGIN IMMEDIATE` transaction it moves the old handle's unread direct mail into
@@ -154,6 +207,29 @@ Codex uses the canonical skill root; `codex-home-paths-HIjrJCtV.js` separately h
 No Codex hook enforcement or account-credential migration is claimed.
 
 ## Validation and preview
+
+From this worktree in Orca, run `node scripts/handover-fixture.mjs` to reproduce the **installed-host
+test**. It creates five disposable shell terminals and two new local runs. A source dispatches one
+context-only worker per run using the public `orchestration dispatch` command. Each worker reports
+from its own assigned shell. All mailbox, gate and worker reads specify fixture IDs. The script
+prints its temporary evidence directory and closes its terminals.
+
+On Orca 1.4.272 (2026-11-24), the source owned both runs, each with one open dispatch and a pending
+gate. Only A had unread mail before the first transfer. After A moved, the original source still
+received B's new status. After B moved, both workers reported. Each receiver's own `check --peek`
+returned its two messages, including its matching task, dispatch, successful outcome and readable
+report file. The fixture verified both gate IDs were still pending before consuming mail, resolving
+the fixture gates and checking both runs classified as settled.
+
+| Disposable run | Open dispatch | Status message | Report after both transfers | Gate preserved |
+| --- | --- | --- | --- | --- |
+| A · `run_29fe7245a932` | `ctx_b70866c66056` | `msg_c3a083869b1a` (preexisting) | `msg_111e0e507020` → `report-A.txt` | `gate_3500dbe8d6a4` |
+| B · `run_df4b622faed1` | `ctx_35829a2a98fa` | `msg_a4f8165df335` (source after A moved) | `msg_831a4f2fecef` → `report-B.txt` | `gate_4b17269e416f` |
+
+These receipts exercise installed-host CLI routing and explicit mailbox reads. The two workers were
+scripted shell assignments. Provider turns, automatic wake delivery and sidebar transitions for
+this two-run case were outside that test. The sidebar refusal, no-launch behavior and race handling
+are covered by the mocked plugin suite.
 
 Run `scripts/dev.sh check`: generated API types, TypeScript, plugin tests and script tests. The
 handover tests exercise both provider directions, quota-exhausted stored context, verified delivery,

@@ -22,7 +22,7 @@ import { applyGoalAction, readGoals } from './goals.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
 import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions } from './protocol.ts'
+import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions, AnalyticsView, AnalyticsWindow } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
@@ -35,6 +35,7 @@ import { choiceLabel, taskKind, type Availability, type ModelChoice } from './ro
 import { discover, type Exec } from './model-discovery.ts'
 import { codexHomeFromAccounts, resolveCli } from './writer.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
+import { splitRoots, projectSplit, readSplitEvidence, type SplitEvidence } from './split-coordinators.ts'
 import { readHandoverProviders } from './handover-providers.ts'
 import { coordinatorProviders, firstProvider, readInstalledProviders } from './coordinator-providers.ts'
 import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type InstalledPlugin, type UpdateCheck, type UpdateState } from './update.ts'
@@ -47,7 +48,12 @@ import { reloadPlan, type ReloadScope } from './skill-reload.ts'
 import { codexReloadReadiness, ensureOwnCodexHooks } from './codex-hooks.ts'
 import { antigravityReloadReadiness, ensureOwnAntigravityHooks } from './antigravity-hooks.ts'
 import { reloadStatus, skillHash, syncActive, writeRequest } from '../skills/orca-flow/scripts/skill-reload.mjs'
-import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, parseNetworkQuality, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
+import { modelLabel as tsModelLabel, addNet, agentPids, isSpeedFile, logRoots, logsToRead, parseNettop, prune, readLogs, readSpeedStore, socketDelta, speedView, writeSpeedStore, type LogKind, type LogRoot, type SocketSnapshot, type TokenSpeedWire } from './token-speed.ts'
+import { backfillSlice, flushUsage, openUsageStore, pruneUsage, readBackfill, readCoverage, readUsage, recordUsage, RETENTION_MS, startBackfill, writeBackfill, type BackfillRun, type Usage, type UsageStore } from './usage-store.ts'
+import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snapshotLinks, type DispatchInfo, type LinkRecord } from './usage-links.ts'
+import { ensureUsageStub, USAGE_PATH } from './usage-open.ts'
+import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
+import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -64,6 +70,7 @@ const DATA_DIR = join(homedir(), '.orca-flow')
 const URGENCY: AgentState[] = ['blocked', 'waiting', 'working', 'done']
 
 export type PsAgent = {
+  address?: string | null
   paneKey?: string
   /** The pane that started this agent (a lead's or coordinator's), when Orca knows it. */
   parentPaneKey?: string | null
@@ -86,6 +93,7 @@ export type PsAgent = {
 }
 
 export type PsWorktree = {
+  hostId?: string | null
   path?: string
   isMainWorktree?: boolean
   worktreeId?: string
@@ -560,13 +568,15 @@ export function foldCoordinatorFolders(all: WorkspaceRow[], coordinators: Coordi
     if (i === undefined) return [row]
     const c = coordinators[i]
     const members = c.sessions?.members.map((m) => { const a = memberAgent(m, all); return { ...m, agent: a?.live === false ? null : a } })
-    const session = members ? members.find((m) => m.id === c.sessions?.current)?.agent ?? null : sessionIn(row)
+    const current = members?.find((m) => m.id === c.sessions?.current)
+    const session = members ? current?.agent ?? null : sessionIn(row)
     c.members = members
     if (!session && !c.sessions) c.sessionNotice = 'No unambiguous coordinator session. Use Sessions to explicitly associate a member and make it current.'
     c.workspaceId = row.id
     c.active = row.active
-    // Its session counts only while a terminal is open with an agent in it.
-    c.session = row.liveTerminals > 0 ? session : null
+    c.session = session && (session.live ?? row.liveTerminals > 0) ? session : null
+    // A conversation can be awake without a unique pane to open or message.
+    c.sessionPanes = current && !session ? memberRows(current, [row]).filter((a) => a.live === true) : []
     // Every row of a member's conversation, so a pane left from before a restart is no duplicate row.
     const memberPanes = new Set((c.sessions ? c.sessions.members.flatMap((m) => memberRows(m, [row])) : session ? conversationRows(row.agents, session) : []).map((a) => a.paneKey))
     return folderRows({ ...row, agents: row.agents.filter((a) => !memberPanes.has(a.paneKey)) }, null, c.key)
@@ -701,25 +711,31 @@ export function isLive(dir: string, rows = allRows): boolean {
 
 /** The last lineage loaded; refreshed in the background so a snapshot never waits on it. */
 let lineage: Lineage = { dispatcherOf: new Map(), paneOf: new Map() }
+let splitEvidence: SplitEvidence | undefined
 let lineageAt = 0
 let lineageLoading = false
 
 /** Agent panes that existed when the lineage last loaded: a new one may be a freshly started worker. */
 let lineagePanes = new Set<string>()
 
-function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[] = []): void {
+function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[], roots: ReturnType<typeof splitRoots>): void {
   const unseen = panes.some((p) => !lineagePanes.has(p))
   if (lineageLoading || Date.now() - lineageAt < (unseen ? 10_000 : 60_000)) return
   lineageLoading = true
   const seen = new Set(panes)
-  loadLineage(orcaRunner(ORCA_BIN))
-    .then((next) => {
+  const run = orcaRunner(ORCA_BIN)
+  Promise.all([loadLineage(run), readSplitEvidence(run, roots).catch(() => undefined)])
+    .then(([next, split]) => {
+      splitEvidence = split
       lineagePanes = seen
       lineage = next
       lineageAt = Date.now()
       onLoaded()
     })
-    .catch((e: Error) => orca.log(`coordinator lineage failed: ${e.message}`))
+    .catch((e: Error) => {
+      if (splitEvidence) { splitEvidence = undefined; onLoaded() }
+      orca.log(`coordinator lineage failed: ${e.message}`)
+    })
     .finally(() => (lineageLoading = false))
 }
 
@@ -773,7 +789,6 @@ export async function snapshot(
   const onDisk = readCoordinators()
   const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
   try {
-    refreshLineage(orca, onLineage, allRows.flatMap((r) => r.agents.map((a) => a.paneKey)))
     refreshMemory(allRows, onLineage)
     // Switching Bots on reads at once, not at the next minute; the cached read may be old by then.
     if (botsOn) {
@@ -782,6 +797,8 @@ export async function snapshot(
     }
     botsWereOn = botsOn
     const worktrees = await ps()
+    const roots = splitRoots(worktrees, onDisk.map(c => c.dir))
+    refreshLineage(orca, onLineage, allRows.flatMap(r => r.agents.map(a => a.paneKey)), roots)
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
     const idByPath = new Map<string, string>()
     if (worktrees.some((w) => !w.identity?.key)) {
@@ -834,6 +851,10 @@ export async function snapshot(
     // A bot's workspaces show in the Bots section only: not in the tree, Idle or search.
     const botRows = all.filter((r) => isBotRow(r))
     const rows = foldCoordinatorFolders(all.filter((r) => !isBotRow(r)), coordinators, onDisk.map((c) => c.dir))
+    for (const c of coordinators) {
+      c.split = projectSplit(c, all, roots, splitEvidence)
+      if (c.split) c.routing = 'Main and auxiliary conversations receive reports for the runs shown under their names.'
+    }
     // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
     const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
     return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}) }
@@ -955,7 +976,7 @@ function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: Updat
       changed(state)
       void orca.host.call('statusBar.update', updateItem(state)).catch((e: Error) => orca.log(`statusBar.update failed: ${e.message}`))
     },
-    start: (version) => startUpdate(ORCA_BIN, key!, version, UPDATE_DIR),
+    start: (version, approve) => startUpdate(ORCA_BIN, key!, version, UPDATE_DIR, approve),
     later: (fn, ms) => void timers.push(setTimeout(fn, ms)),
     log: (m) => orca.log(m)
   })
@@ -963,6 +984,8 @@ function updates(orca: OrcaWorkerApi, dir: string | null, changed: (state: Updat
 
   orca.commands.register('flow.update', () => update.click())
   orca.panels.handle('sidebar.update', async () => update.now())
+  // The only caller of --approve: the panel's explicit Approve and update click, with the fingerprint its dialog showed.
+  orca.panels.handle('sidebar.approveUpdate', async (data) => update.approve(String((data as { fingerprint?: string } | undefined)?.fingerprint ?? '')))
 
   // One check for the timer and Settings' Check for Updates. Where Orca installed this copy from
   // (`orca plugin list`) decides whether it can update to a release at all (cannotUpdate).
@@ -1044,7 +1067,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Agent ids `orca agent installed` listed at the last refresh; the Settings dialog shows a never-used writer's CLI by it. */
   let installedAgents: string[] | null = null
   let firstProviders: Snapshot['coordinatorProviders'] = null
-  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
+  const shared = (snap: Snapshot): Snapshot => ({ ...snap, update: updateState, summaryFailure: writer.lastFailure(), focusedPanes: focus, handoverProviders, coordinatorProviders: firstProviders })
   const run = orcaRunner(ORCA_BIN)
   // The selected Codex account's home, looked up every 5 minutes (the installed copy then puts back
   // our hooks in ~/.codex/hooks.json if they went missing); readiness is read from files on every snapshot.
@@ -1375,7 +1398,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     return []
   }
   const listDir = (dir: string) => { try { return readdirSync(dir) } catch { return null } }
-  startTokenSpeed(orca, () => logRoots(providerHomes('claude'), providerHomes('codex')), () => readSettings(DATA_DIR).settings.features.tokenSpeed)
+  const tokenSpeedOn = () => readSettings(DATA_DIR).settings.features.tokenSpeed
+  startTokenSpeed(orca, () => logRoots(providerHomes('claude'), providerHomes('codex')), tokenSpeedOn, linkSnapshots(orca))
+  startAnalytics(orca)
 
   /** Resumes by provider id and finds the exact terminal the resume returned, or that the provider exited. */
   const resumeIo: ResumeIo = {
@@ -1780,7 +1805,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { orcaSession: a?.orcaSession, provider: a?.agentType }
   }
   // The writers and their order come from config.json, read again for every card, so Save applies at once.
-  const writer = createWriter({ ...summaryProviders(), writers: () => configuredWriters(DATA_DIR), log: (message) => orca.log(message) })
+  const writer = createWriter({ ...summaryProviders(), writers: () => configuredWriters(DATA_DIR), log: (message) => orca.log(message), onFailureChange: () => refreshSoon() })
 
   // ---------- Settings dialog ----------
   let version: string | null = null
@@ -1985,6 +2010,17 @@ const SPEED_SAMPLE_MS = 30_000
 const SPEED_FULL_EVERY = 4
 /** One slice of log reading; the slices of a long read (the first 24 h) yield to the event loop between them. */
 const SPEED_SLICE_MS = 40
+/** The usage backfill's pause between its slices (it is no hurry), and how often it saves its progress. */
+const BACKFILL_GAP_MS = 40
+const BACKFILL_SAVE_MS = 5000
+const USAGE_PRUNE_MS = 86_400_000
+/** Where the one-time backfill is, for the Usage view's empty state (analytics.view reads it). */
+/**
+ * What startTokenSpeed tells the Usage view's model: a record or a link was added since it was built
+ * (`dirty`), and each new record (`sink`), so the 90 days are read from disk once and kept, not per request.
+ */
+const analyticsFeed: { dirty: boolean; sink: ((u: Usage) => void) | null } = { dirty: false, sink: null }
+let backfillInfo: { state: 'pending' | 'running' | 'done'; read: number; total: number } = { state: 'pending', read: 0, total: 0 }
 
 type Child = { kill?: (signal?: string) => void }
 const exec = (file: string, args: string[], timeout: number, keep?: (child: Child) => void) =>
@@ -1999,8 +2035,11 @@ const exec = (file: string, args: string[], timeout: number, keep?: (child: Chil
  * a nettop snapshot of their sockets every 30 s for their traffic. The internet test runs only on the panel's Test.
  * Settings → Features → Token Speed off: none of that runs (the timers idle) and the history file stays as it is.
  * History and cursors live in ~/.orca-flow/token-speed*.json; the panel gets speedView (a few KB).
+ * The same reads record each response's token usage in the usage store (~/.orca-flow/usage/, see
+ * usage-store.ts), flushed when a read is through. Once, after the first read, a backfill reads the
+ * logs still on disk from the last 90 days into it, in slices between the samples.
  */
-function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => boolean = () => true): void {
+function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => boolean = () => true, snapshotLinksNow: () => void = () => {}): void {
   let stopped = false
   const timers: ReturnType<typeof setTimeout>[] = []
   let nettop: Child | null = null
@@ -2014,12 +2053,43 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   const cursors = store.cursors ?? new Map()
   // No cursors yet: the first sample reads the last 24 h of logs, and the section says so until then.
   let ready = store.cursors != null
-  let testing = false
-  let testError: string | null = null
   let samples = 0
   let reading: { paths: [string, LogKind][]; next: number; now: number } | null = null
+  // Usage: a store failing to open leaves Token speed as it was.
+  let usage: UsageStore | null = null
+  try { usage = openUsageStore(DATA_DIR, Date.now()) } catch (e) { orca.log(`usage store not opened: ${(e as Error).message}`) }
+  // The sidebar's usage line: the last 7 days of records, read once after the first sample, then
+  // kept up to date by every record the reads accept.
+  let week: Usage[] | null = null
+  const weekFrom = () => Date.now() - SUMMARY_DAYS * 86_400_000
+  const record = (u: Usage) => {
+    if (!usage || !recordUsage(usage, u, Date.now())) return
+    analyticsFeed.dirty = true
+    analyticsFeed.sink?.(u)
+    if (week && u.end >= weekFrom()) week.push(u)
+  }
+  const summary = () => {
+    if (!usage || !week) return null
+    const from = weekFrom()
+    if (week.some((u) => u.end < from)) week = week.filter((u) => u.end >= from)
+    return usageSummary(week, Date.now())
+  }
+  let lastPrune = 0
+  const saveUsage = () => {
+    if (!usage) return
+    try {
+      const now = Date.now()
+      if (now - lastPrune > USAGE_PRUNE_MS) { lastPrune = now; pruneUsage(usage, now) }
+      flushUsage(usage, now)
+    } catch (e) {
+      orca.log(`saving usage failed: ${(e as Error).message}`)
+    }
+  }
+  let backfill: BackfillRun | null = null
+  let backfillChecked = false
+  let backfillSaved = 0
 
-  const view = (): TokenSpeedWire => speedView(history, Date.now(), { ready, testing, testError })
+  const view = (): TokenSpeedWire => ({ ...speedView(history, Date.now(), { ready }), usage: summary() })
   const post = () => orca.panels.post('sidebar.tokenSpeedChanged', view())
   const save = () => {
     try { writeSpeedStore(DATA_DIR, { history, cursors }, Date.now()) } catch (e) { orca.log(`saving token speed failed: ${(e as Error).message}`) }
@@ -2028,7 +2098,7 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
   const slice = () => {
     if (stopped || !reading) return
     try {
-      const r = readLogs({ paths: reading.paths, from: reading.next, cursors, history, now: reading.now, deadline: Date.now() + SPEED_SLICE_MS })
+      const r = readLogs({ paths: reading.paths, from: reading.next, cursors, history, now: reading.now, deadline: Date.now() + SPEED_SLICE_MS, usage: usage ? record : undefined })
       reading.next = r.next
     } catch (e) {
       orca.log(`token speed read failed: ${(e as Error).message}`)
@@ -2038,11 +2108,57 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
     reading = null
     ready = true
     prune(history, Date.now())
+    // The usage first: a crash before the cursors are saved reads the lines again, and dedupe drops them.
+    saveUsage()
+    if (usage && !week) {
+      try { week = readUsage(DATA_DIR, weekFrom(), Infinity) } catch (e) { orca.log(`reading this week's usage failed: ${(e as Error).message}`); week = [] }
+    }
     save()
     post()
+    startUsageBackfill()
+  }
+
+  // The one-time usage backfill, after the first read: slices between the samples, paused while a
+  // sample reads or the feature is off, its progress saved so a restart goes on where it was.
+  const startUsageBackfill = () => {
+    if (backfillChecked || !usage || stopped) return
+    backfillChecked = true
+    try {
+      backfill = startBackfill(roots(), readBackfill(DATA_DIR), Date.now())
+      if (backfill) writeBackfill(DATA_DIR, backfill.state)
+    } catch (e) {
+      orca.log(`usage backfill not started: ${(e as Error).message}`)
+      backfill = null
+    }
+    backfillInfo = backfill ? { state: 'running', read: backfill.state.read.length, total: backfill.state.read.length + backfill.paths.length } : { state: 'done', read: 0, total: 0 }
+    if (backfill) timers.push(setTimeout(backfillStep, BACKFILL_GAP_MS))
+  }
+  const backfillStep = () => {
+    if (stopped || !backfill) return
+    if (reading || !on()) { timers.push(setTimeout(backfillStep, reading ? BACKFILL_GAP_MS : SPEED_SAMPLE_MS)); return }
+    let finished: boolean
+    try {
+      finished = backfillSlice(backfill, record, Date.now(), Date.now() + SPEED_SLICE_MS)
+    } catch (e) {
+      orca.log(`usage backfill failed: ${(e as Error).message}`)
+      finished = false
+      backfill.cursor = null
+      backfill.next++ // the log it failed on is left out
+    }
+    const now = Date.now()
+    backfillInfo = finished ? { state: 'done', read: backfillInfo.total, total: backfillInfo.total } : { ...backfillInfo, read: Math.min(backfillInfo.total, backfillInfo.total - (backfill.paths.length - backfill.next)) }
+    if (finished || now - backfillSaved > BACKFILL_SAVE_MS) {
+      backfillSaved = now
+      saveUsage()
+      // A log is marked read only after its records are on disk.
+      try { writeBackfill(DATA_DIR, backfill.state) } catch (e) { orca.log(`saving usage backfill failed: ${(e as Error).message}`) }
+    }
+    if (finished) { orca.log(`usage backfill done: ${backfill.paths.length} logs`); backfill = null; return }
+    timers.push(setTimeout(backfillStep, BACKFILL_GAP_MS))
   }
   const sampleLogs = () => {
     if (stopped || reading || !on()) return
+    snapshotLinksNow()
     const now = Date.now()
     try {
       reading = { paths: logsToRead(roots(), cursors, now, !ready || samples++ % SPEED_FULL_EVERY === 0), next: 0, now }
@@ -2096,28 +2212,177 @@ function startTokenSpeed(orca: OrcaWorkerApi, roots: () => LogRoot[], on: () => 
     wasOn = now
     return view()
   })
-  // One test at a time, only on the user's Test; its result is kept with the history.
-  orca.panels.handle('sidebar.tokenSpeedTest', () => {
-    if (testing || !on()) return { started: false }
-    testing = true
-    testError = null
-    post()
-    exec('/usr/bin/networkQuality', ['-c'], 120_000)
-      .then((out) => {
-        const result = parseNetworkQuality(out, Date.now())
-        if (result) {
-          history.internet = result
-          save()
-        } else testError = 'The speed test gave no result.'
-      })
-      .catch((e: Error) => {
-        testError = `The speed test failed: ${e.message.split('\n')[0]}`
-        orca.log(`networkQuality failed: ${e.message}`)
-      })
-      .finally(() => {
-        testing = false
-        if (!stopped) post()
-      })
-    return { started: true }
+}
+
+// ---------- Analytics ----------
+
+/** At most this many `worker-show` calls per sample (each is a process). */
+const LINK_FETCHES = 8
+/** A dispatch whose worker-show failed is asked again after this long. */
+const LINK_RETRY_MS = 5 * 60_000
+
+/**
+ * Analytics attribution while dispatches run (usage-links.ts): on each log sample, every dispatch the
+ * lineage lists (and each one live at the last sample) has its pane's provider session copied into
+ * ~/.orca-flow/usage/links.jsonl, one line per change. Orca is asked about a dispatch (`worker-show
+ * --full`) when it is first seen and once more when it settles or leaves the lineage, for its
+ * completion and outcome; a live one only has its pane binding re-read (transcripts, local files).
+ * Ids, times and routing fields only; never a message.
+ */
+function linkSnapshots(orca: OrcaWorkerApi): () => void {
+  const run = orcaRunner(ORCA_BIN)
+  const infos = new Map<string, DispatchInfo>()
+  const failedAt = new Map<string, number>()
+  let known: LinkRecord[] | null = null
+  let tracked = new Set<string>()
+  let busy = false
+  const live = (i: DispatchInfo) => !i.completedAt && !i.outcome
+  return () => {
+    if (busy) return
+    const stateOf = new Map<string, 'open' | 'settled'>()
+    for (const [pane, id] of lineage.dispatchIdOf ?? []) stateOf.set(id, lineage.dispatchOf?.get(pane) ?? 'open')
+    const ids = new Set([...stateOf.keys(), ...tracked])
+    if (!ids.size) return
+    busy = true
+    void (async () => {
+      try {
+        const now = Date.now()
+        const need = [...ids].filter((id) => {
+          if (now - (failedAt.get(id) ?? -Infinity) < LINK_RETRY_MS) return false
+          const i = infos.get(id)
+          return !i || (live(i) && stateOf.get(id) !== 'open')
+        }).slice(0, LINK_FETCHES)
+        for (const id of need) {
+          try {
+            const info = dispatchInfo(await run(['orchestration', 'worker-show', '--dispatch', id, '--full'], { timeoutMs: 10_000 }))
+            if (info) infos.set(id, info)
+            failedAt.delete(id)
+          } catch (e) {
+            failedAt.set(id, now)
+            orca.log(`usage links: worker-show ${id} failed: ${(e as Error).message}`)
+          }
+        }
+        const current = [...ids].map((id) => infos.get(id)).filter((i): i is DispatchInfo => !!i)
+        const bindings: Record<string, ReturnType<typeof paneBinding>> = {}
+        for (const i of current) if (live(i) && i.paneKey) bindings[i.paneKey] = paneBinding(i.paneKey)
+        known ??= readLinks()
+        const added = snapshotLinks({ at: new Date(now).toISOString(), dispatches: current, bindings, routes: readRouteLines(), previous: known })
+        appendLinks(added)
+        if (added.length) analyticsFeed.dirty = true
+        known.push(...added)
+        tracked = new Set(current.filter(live).map((i) => i.dispatchId))
+        for (const id of [...infos.keys()]) if (!ids.has(id)) infos.delete(id)
+      } catch (e) {
+        orca.log(`usage links failed: ${(e as Error).message}`)
+      } finally {
+        busy = false
+      }
+    })()
+  }
+}
+
+/** One built model serves the requests of a view being opened and clicked through. */
+const ANALYTICS_CACHE_MS = 30_000
+/** With nothing new recorded, the model is rebuilt anyway after this (its "now" and Settings → Models move on). */
+const ANALYTICS_IDLE_MS = 5 * 60_000
+/** Task titles: runs asked per request, and how long before a run that gave none is asked again. */
+const TITLE_RUNS = 6
+const TITLE_RETRY_MS = 10 * 60_000
+
+/**
+ * The Usage view's data, on request from the panel or the Usage editor (src/analytics.ts): the
+ * usage store's records (90 days), coverage, links, routes.jsonl and Settings → Models, built into
+ * one model at most every 30 s.
+ */
+function startAnalytics(orca: OrcaWorkerApi): void {
+  let cache: { at: number; model: AnalyticsModel } | null = null
+  let titles: Titles | null = null
+  const asked = new Map<string, number>()
+  let fetching = false
+  const run = orcaRunner(ORCA_BIN)
+  // Task titles come from Orca's task records, a run at a time, in the background: a request answers
+  // with the titles known so far (worktree names meanwhile) and the next one has the new ones.
+  const fetchTitles = (links: LinkRecord[]) => {
+    if (fetching || !titles) return
+    const now = Date.now()
+    const runs = runsMissingTitles(links.filter((l): l is Extract<LinkRecord, { type: 'dispatch' }> => l?.type === 'dispatch'), titles)
+      .filter((id) => now - (asked.get(id) ?? -Infinity) > TITLE_RETRY_MS).slice(0, TITLE_RUNS)
+    if (!runs.length) return
+    fetching = true
+    void (async () => {
+      let added = false
+      for (const id of runs) {
+        asked.set(id, Date.now())
+        try {
+          const found = parseTaskTitles(await run(['orchestration', 'task-list', '--run', id], { timeoutMs: 10_000 }))
+          for (const [task, title] of Object.entries(found)) if (titles![task] !== title) { titles![task] = title; added = true }
+        } catch (e) {
+          orca.log(`task titles of ${id} not read: ${(e as Error).message}`)
+        }
+      }
+      if (added) {
+        cache = null
+        try { writeTitles(DATA_DIR, titles!) } catch (e) { orca.log(`saving task titles failed: ${(e as Error).message}`) }
+      }
+    })().finally(() => { fetching = false })
+  }
+  // The 90 days are read from disk once and kept (the recorder feeds new responses in); the model is
+  // rebuilt only when something was added and the last build is 30 s old, or after 5 minutes, and each
+  // window's view is computed once per model. On a store of ~123k records (this Mac's 90 days) a build
+  // is ~0.35 s and a view under 0.1 s, so no precomputed rollup is kept (see the README's Analytics section).
+  let memory: Usage[] | null = null
+  let trimmedAt = Date.now()
+  const views = new Map<string, AnalyticsView>()
+  const model = (): AnalyticsModel => {
+    const now = Date.now()
+    if (cache && (now - cache.at < ANALYTICS_CACHE_MS || (!analyticsFeed.dirty && now - cache.at < ANALYTICS_IDLE_MS))) return cache.model
+    titles ??= readTitles(DATA_DIR)
+    if (!memory) {
+      memory = readUsage(DATA_DIR, now - RETENTION_MS, Infinity)
+      analyticsFeed.sink = (u) => { memory?.push(u) }
+    }
+    // Records older than the retention leave the kept copy once a day (the store prunes its files on its own).
+    if (now - trimmedAt > 86_400_000) { trimmedAt = now; memory = memory.filter((u) => u.end >= now - RETENTION_MS) }
+    analyticsFeed.dirty = false
+    const links = readLinks()
+    const built = buildModel({
+      now,
+      usage: memory,
+      coverage: readCoverage(DATA_DIR),
+      links,
+      routes: readRouteLines(),
+      routing: readSettings(DATA_DIR).settings.routing,
+      titles
+    })
+    cache = { at: now, model: built }
+    views.clear()
+    fetchTitles(links)
+    return built
+  }
+  const viewOf = (window: AnalyticsWindow): AnalyticsView => {
+    const m = model()
+    const key = `${window}@${backfillInfo.state}:${backfillInfo.read}`
+    let v = views.get(key)
+    if (!v) { v = analyticsView(m, window, backfillInfo); if (views.size > 12) views.clear(); views.set(key, v) }
+    return v
+  }
+  orca.panels.handle('analytics.view', (input) => viewOf(analyticsWindow(input?.window)))
+  orca.panels.handle('analytics.workstream', (input) => (typeof input?.id === 'string' ? workstreamView(model(), input.id) : null))
+  // "Usage ›" in the sidebar: the Usage tab opens in the focused workspace (an editor tab needs a real
+  // file in it: see usage-open.ts). With no workspace focused, or one on another machine, nothing opens.
+  orca.panels.handle('usage.open', async () => {
+    try {
+      const ctx = await orca.host.call('workspace.readContext')
+      if (!ctx?.workspaceId) return { opened: false, reason: 'Focus a workspace first: the Usage tab opens inside it.' }
+      const workspace = (await orca.host.call('workspace.list')).workspaces.find((w) => w.id === ctx.workspaceId)
+      if (!workspace) return { opened: false, reason: 'Orca did not list the focused workspace.' }
+      if (workspace.hostId && workspace.hostId !== 'local') return { opened: false, reason: 'The focused workspace is on another machine; focus one on this Mac.' }
+      ensureUsageStub(workspace.path)
+      await orca.host.call('editor.open', { workspaceId: ctx.workspaceId, path: USAGE_PATH })
+      return { opened: true }
+    } catch (e) {
+      orca.log(`usage.open failed: ${(e as Error).message}`)
+      return { opened: false, reason: `Could not open the Usage tab: ${(e as Error).message}` }
+    }
   })
 }

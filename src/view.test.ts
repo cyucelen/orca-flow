@@ -429,10 +429,12 @@ test('raw host and provider errors read as plain words with a recovery; unknown 
   assert.equal(blocked.detail, named)
   assert.match(named, /^Handover is blocked: this coordinator still owns 2 runs with live work, and Orca can move only one live run/)
   assert.match(named, /\n• run_a \(Prepare checkouts\): open dispatch ctx_1\n• run_b: 3 unhandled messages in its coordinator mailbox; pending gate g_1\n/)
-  assert.match(named, /settle all but one of these runs/)
+  assert.match(named, /confirm orca orchestration run-current shows no run/)
+  assert.match(named, /until all but one run has settled/)
   const midflight = ownershipRefusal([live[1]], 'run_a')
   assert.match(midflight, /owns a run with live work that this handover was not prepared to move \(it moves only run_a\)/)
   assert.equal(explainError(midflight).short, 'Handover blocked')
+  assert.match(ownershipRefusal(live, null), /Retry once the extra live work has settled/)
   const legacy = explainError('Handover is unavailable while this coordinator owns 2 runs. This Orca host has no atomic coordinator transfer; report routing and pending asks were preserved. A host update is required.')
   assert.equal(legacy.detail, ownershipRefusal(2), 'the older wording is replaced by the one with a recovery')
   assert.match(legacy.detail, /Choose Handover again to see which runs are live/)
@@ -1126,7 +1128,8 @@ test('update button: hidden with nothing to update, then what the update needs o
   assert.match(updateButton({ kind: 'updated', version: '0.2.16' }), /class="icon update updated"[^>]*data-tip="Orca Flow updated to 0\.2\.16"/)
 
   const approval = updateButton({ kind: 'approval', version: '0.2.16', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz' })
-  assert.match(approval, /data-tip="Orca Flow 0\.2\.16 needs your approval: It asks for a new command\.\nTo approve and update, run:\norca plugin update cyucelen\.flow --approve ap1-xyz" data-tone="warn"/)
+  assert.match(approval, /data-tip="Orca Flow 0\.2\.16 needs your approval\. Click for details\." data-tone="warn"/)
+  assert.ok(!/--approve|new command/.test(approval), 'the tooltip never carries the host text or the command')
 
   const failed = updateButton({ kind: 'failed', version: '0.2.16', reason: 'Could not read <github.com>' })
   assert.match(failed, /data-tip="Update to 0\.2\.16 failed: Could not read &lt;github\.com&gt;\nClick to try again" data-tone="danger"/, 'the reason, escaped, and a retry')
@@ -1566,4 +1569,27 @@ test('lead, worker and coordinator rows: the badge carries the provider mark eve
   noMatch(out.slice(out.indexOf('class="mbadge model-only"') - 40, out.indexOf('class="mbadge model-only"') + 80), /<svg/, 'the coordinator chip has no mark')
   assert.match(out, /<button class="session-trigger" data-handover="alpha"/, 'the coordinator’s handover picker still renders')
   noMatch(out, /<span class="mbadge[^"]*"[^>]*data-tip=/, 'no badge has a tooltip, on any row')
+})
+
+test('the sidebar warns "Summaries failing" while the writer fails, and not otherwise', () => {
+  const base: Snapshot = { rows: [], source: 'cli', capacity: null, coordinators: [] }
+  assert.ok(!/Summaries failing/.test(render(base, emptyUi()).main))
+  assert.ok(!/Summaries failing/.test(render({ ...base, summaryFailure: null }, emptyUi()).main))
+  const html = render({ ...base, summaryFailure: { provider: 'haiku', reason: 'AWS credentials expired — run aws sso login' } }, emptyUi()).main
+  assert.ok(html.includes('Summaries failing: AWS credentials expired — run aws sso login'))
+  assert.ok(/class="sumfail" role="status"/.test(html))
+  const escaped = render({ ...base, summaryFailure: { provider: 'haiku', reason: '<b>x</b>' } }, emptyUi()).main
+  assert.ok(escaped.includes('&lt;b&gt;x&lt;/b&gt;') && !escaped.includes('<b>x</b>'))
+})
+
+test('the summaries notice shows the full reason, wrapping instead of truncating, with the detail as its tooltip', () => {
+  const base: Snapshot = { rows: [], source: 'cli', capacity: null, coordinators: [] }
+  const reason = 'Claude (Haiku) not logged in; fallback Codex Luna unavailable'
+  const html = render({ ...base, summaryFailure: { provider: 'haiku', reason, detail: 'haiku: auth; check the provider login in Orca' } }, emptyUi()).main
+  assert.ok(html.includes(`<span class="sumtext">Summaries failing: ${reason}</span>`))
+  assert.ok(!/class="t"/.test(html.slice(0, html.indexOf('</div>'))), 'not the ellipsis-truncated .t text')
+  assert.ok(/data-tip="haiku: auth; check the provider login in Orca/.test(html))
+  const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
+  const rule = css.match(/\.sumfail \.sumtext \{[^}]*\}/)?.[0] ?? ''
+  assert.ok(/white-space: normal/.test(rule) && !/text-overflow: ellipsis/.test(rule), 'the notice wraps')
 })

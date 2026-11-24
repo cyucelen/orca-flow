@@ -22,14 +22,36 @@ export type Provider = 'haiku' | 'sonnet' | 'luna' | 'flash'
 type WriterCli = 'claude' | 'codex' | 'antigravity'
 type Failure = 'quota' | 'auth' | 'unavailable' | 'timeout' | 'transient' | 'invalid-output' | 'unexpected' | 'disabled'
 
+/** Why an auth failure happened, when the writer can tell: AWS (Bedrock) credentials, or no Claude settings env found. */
+export type FailureHint = 'aws' | 'no-settings'
+
 export class WriterError extends Error {
   readonly provider: Provider | 'writer'
   readonly kind: Failure
-  constructor(provider: Provider | 'writer', kind: Failure) {
+  readonly hint?: FailureHint
+  constructor(provider: Provider | 'writer', kind: Failure, hint?: FailureHint) {
     const action = kind === 'auth' ? 'check the provider login in Orca' : kind === 'quota' ? 'check provider usage limits' : kind === 'unavailable' ? 'check the CLI installation and selected account' : kind === 'invalid-output' ? 'the provider returned an invalid card' : kind === 'unexpected' ? 'check the writer integration' : kind === 'disabled' ? 'turn on a writer in Orca Flow Settings' : 'a later request will retry'
     super(`${provider}: ${kind}; ${action}`)
     this.provider = provider
     this.kind = kind
+    if (hint) this.hint = hint
+  }
+}
+
+/** The sidebar's plain reason for a failed writer; never contains command output, paths or settings values. */
+export function failureReason(error: WriterError): string {
+  const who = error.provider === 'writer' ? 'Writer' : NOTICE_LABEL[error.provider]
+  switch (error.kind) {
+    case 'auth':
+      return error.hint === 'aws' ? 'AWS credentials expired — run aws sso login'
+        : error.hint === 'no-settings' ? 'Claude not logged in (Bedrock settings not found)'
+        : `${who} not logged in`
+    case 'quota': return `${who} usage limit reached`
+    case 'unavailable': return `${who} unavailable`
+    case 'timeout': return `${who} timed out`
+    case 'transient': return `${who} is temporarily unavailable`
+    case 'disabled': return 'no writer is turned on in Settings'
+    default: return `${who} failed`
   }
 }
 
@@ -39,12 +61,13 @@ export function providerFailure(provider: Provider, error: { code?: unknown; kil
   const kind: Failure = error?.killed || code === 'ETIMEDOUT' || /\b(timeout_error|deadline[_ ]exceeded)\b|(?:request|connection) timed out/i.test(output) ? 'timeout'
     : ['ENOENT', 'EACCES', 'ENOEXEC'].includes(String(code)) ? 'unavailable'
     : /\b(429|rate[_ -]?limit(?:_error)?|quota|usage limits?|credit balance|insufficient[_ ]quota|resource[_ ]exhausted)\b|you(?:'|’)ve hit your limit|out of (?:extra )?usage/i.test(output) ? 'quota'
-    : /\b(401|403|unauthorized|unauthenticated|authentication[_ ]error|invalid[_ ]api[_ ]key|invalid[_ ]grant)\b|not (?:logged|signed) in|please (?:log|sign) in|sign in with google|google sign[- ]?in|login required|token (?:has )?expired|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
+    : /\b(401|403|unauthorized|unauthenticated|authentication[_ ]error|invalid[_ ]api[_ ]key|invalid[_ ]grant)\b|not (?:logged|signed) in|please (?:log|sign) in|sign in with google|google sign[- ]?in|login required|token (?:has )?expired|could not load aws credentials|unable to locate credentials|aws credentials?[^\n]{0,40}(?:expired|invalid|not found|missing)|credentials? (?:have |has )?expired|expiredtoken|security token included in the request is (?:invalid|expired)|sso (?:session|token)[^\n]{0,40}(?:expired|invalid)|credentialsprovidererror|unrecognizedclientexception|failed to refresh.*token|authentication (?:failed|required)|failed to authenticate|(?:oauth )?token (?:revoked|expired)/i.test(output) ? 'auth'
     : /(?:unknown|unsupported) model|model[^\n]{0,100}(?:not found|not available|not supported|not recognized|does not exist|invalid)|provider[^\n]{0,60}unavailable/i.test(output) ? 'unavailable'
     : ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH'].includes(String(code)) || /\b(500|502|503|504|529|overloaded_error)\b|service unavailable|connection (?:reset|refused)|error sending request|temporarily unavailable/i.test(output) ? 'transient'
     : 'unexpected'
-  return new WriterError(provider, kind)
+  return new WriterError(provider, kind, kind === 'auth' && AWS_CREDENTIALS_RE.test(output) ? 'aws' : undefined)
 }
+const AWS_CREDENTIALS_RE = /aws credentials|credentials? (?:have |has )?expired|expiredtoken|security token included|sso (?:session|token)|unable to locate credentials|credentialsprovidererror|unrecognizedclientexception/i
 
 export function writerDiagnostic(error: unknown): string {
   return error instanceof WriterError ? error.message : 'writer failed unexpectedly; check the writer integration (existing card preserved)'
@@ -56,6 +79,8 @@ export type Writer = (request: WriterRequest) => Promise<unknown>
 
 /** The CLI behind each writer name: Claude (Haiku, Sonnet), Codex (Luna), or Antigravity (Flash). */
 const CLI: Record<Provider, WriterCli> = { haiku: 'claude', sonnet: 'claude', luna: 'codex', flash: 'antigravity' }
+/** Names in the sidebar notice: which CLI, then which model. */
+const NOTICE_LABEL: Record<Provider, string> = { haiku: 'Claude (Haiku)', sonnet: 'Claude (Sonnet)', luna: 'Codex Luna', flash: 'Antigravity Flash' }
 const LABEL: Record<Provider, string> = { haiku: 'Haiku', sonnet: 'Sonnet', luna: 'Codex Luna', flash: 'Antigravity Flash' }
 type Slot = { cli: WriterCli; name: Provider; write: Writer }
 
@@ -79,19 +104,43 @@ export function writerChain(writers: readonly WriterSetting[], providers: Partia
 
 /** What the writer last saw of one CLI, for the Settings dialog. Kept in memory only. */
 export type WriterHealth = { provider: WriterCli; lastSuccessAt: number | null; failure: { kind: Failure; until: number } | null }
-export type ManagedWriter = Writer & { health(): WriterHealth[] }
+/** The last writer failure, until a summary succeeds again; the sidebar shows it as "Summaries failing: <reason>". */
+export type WriterFailure = {
+  /** The first writer in the chain that failed (the primary's reason, not the last fallback's). */
+  provider: Provider | 'writer'
+  /** Short and plain: the primary's reason, then "; fallback <reason>" for each fallback that also failed. */
+  reason: string
+  /** The full diagnostics in chain order, for the notice's tooltip; never raw provider output. */
+  detail: string
+}
+/** One request's failures, in chain order, as the sidebar notice reads them. */
+export function chainFailure(errors: readonly WriterError[]): WriterFailure {
+  const [first, ...rest] = errors
+  return {
+    provider: first.provider,
+    reason: [failureReason(first), ...rest.map((e) => `fallback ${failureReason(e)}`)].join('; '),
+    detail: errors.map(writerDiagnostic).join('\n')
+  }
+}
+export type ManagedWriter = Writer & { health(): WriterHealth[]; lastFailure(): WriterFailure | null }
 
 /**
  * Tries the enabled writers in order (`writers`, read again for every request; absent: Haiku, then
  * Luna). One probe of the first writer at a time; queued work skips a failed CLI until its bounded
  * cooldown ends. Invalid output and unexpected errors never fall through to the next writer.
  */
-export function createWriter(options: Partial<Record<Provider, Writer>> & { writers?: () => readonly WriterSetting[]; now?: () => number; log?: (message: string) => void }): ManagedWriter {
+export function createWriter(options: Partial<Record<Provider, Writer>> & { writers?: () => readonly WriterSetting[]; now?: () => number; log?: (message: string) => void; onFailureChange?: () => void }): ManagedWriter {
   const now = options.now ?? Date.now
   const providers: Partial<Record<Provider, Writer>> = { haiku: options.haiku, sonnet: options.sonnet, luna: options.luna, flash: options.flash }
   const slotState = () => ({ blocked: 0, failure: undefined as WriterError | undefined, lastSuccessAt: null as number | null })
   const state: Record<WriterCli, ReturnType<typeof slotState>> = { claude: slotState(), codex: slotState(), antigravity: slotState() }
   let primary: Promise<void> | undefined
+  let lastFailure: WriterFailure | null = null
+  const setFailure = (next: WriterFailure | null) => {
+    const changed = JSON.stringify(lastFailure) !== JSON.stringify(next)
+    lastFailure = next
+    if (changed) try { options.onFailureChange?.() } catch { /* the notice is best effort */ }
+  }
   const noticeAt = new Map<string, number>()
   const note = (message: string) => {
     if ((noticeAt.get(message) ?? -Infinity) + PRIMARY_COOLDOWN_MS > now()) return
@@ -116,15 +165,26 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
     s.blocked = 0
     s.failure = undefined
     s.lastSuccessAt = now()
+    setFailure(null)
   }
   const write = async (request: WriterRequest) => {
     while (primary) await primary
     const slots = chain()
-    if (!slots.length) throw new WriterError('writer', 'disabled')
+    if (!slots.length) {
+      setFailure(chainFailure([new WriterError('writer', 'disabled')]))
+      throw new WriterError('writer', 'disabled')
+    }
     let last: WriterError | undefined
+    // Every writer that failed this request, in chain order, a cooled-down one by its stored failure:
+    // the notice names the primary's reason first, not only the last fallback's.
+    const errors: WriterError[] = []
     for (const [i, slot] of slots.entries()) {
       const s = state[slot.cli]
-      if (now() < s.blocked) { last = s.failure ?? last; continue }
+      if (now() < s.blocked) {
+        last = s.failure ?? last
+        if (s.failure) errors.push(s.failure)
+        continue
+      }
       let release: (() => void) | undefined
       if (i === 0) primary = new Promise<void>((resolve) => { release = resolve })
       try {
@@ -134,13 +194,17 @@ export function createWriter(options: Partial<Record<Provider, Writer>> & { writ
       } catch (error) {
         failed(slot, slots[i + 1], error)
         last = error as WriterError
+        errors.push(last)
       } finally {
         if (release) { primary = undefined; release() }
       }
     }
-    throw last ?? new WriterError(slots[0].name, 'unavailable')
+    const error = last ?? new WriterError(slots[0].name, 'unavailable')
+    setFailure(chainFailure(errors.length ? errors : [error]))
+    throw error
   }
   return Object.assign(write, {
+    lastFailure: (): WriterFailure | null => lastFailure,
     health: (): WriterHealth[] => (['claude', 'codex', 'antigravity'] as const).map((provider) => {
       const s = state[provider]
       return { provider, lastSuccessAt: s.lastSuccessAt, failure: s.failure ? { kind: s.failure.kind, until: s.blocked } : null }
@@ -210,6 +274,23 @@ export function writerEnvironment(): Record<string, string> {
   env.ORCA_CARD_CHILD = '1'
   return env
 }
+
+/** The Claude settings file of the config dir in use: the selected profile, else CLAUDE_CONFIG_DIR, else ~/.claude. */
+export function claudeSettingsFile(configDir: string | null = claudeConfigDir()): string {
+  return join(configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json')
+}
+
+/** The `env` block of that settings file (string values only). Missing, unreadable or invalid files read as empty. */
+export function claudeSettingsEnv(configDir: string | null = claudeConfigDir()): Record<string, string> {
+  try {
+    const env = JSON.parse(readFileSync(claudeSettingsFile(configDir), 'utf8'))?.env
+    if (!env || typeof env !== 'object' || Array.isArray(env)) return {}
+    return Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string'))
+  } catch { return {} }
+}
+
+/** Orca's own switches and the keys the writer forces; a settings file must never change them. */
+const PROTECTED_ENV = new Set(['MAX_THINKING_TOKENS', 'CLAUDE_CONFIG_DIR', 'CLAUDECODE'])
 
 type Command = { bin: string; args: string[]; env: Record<string, string>; cwd: string; input: string }
 export type CommandRunner = (command: Command) => Promise<{ stdout: string; stderr: string; error: { code?: unknown; killed?: boolean } | null }>
@@ -300,9 +381,33 @@ export function cliProviders(run: CommandRunner = runWriterCommand): { haiku: Wr
   /** `claude -p --model <haiku|sonnet>` with no tools, MCP, slash commands, settings or saved session. */
   const claude = (model: 'haiku' | 'sonnet'): Writer => async ({ prompt, system, schema }) => {
     const env = writerEnvironment()
-    env.MAX_THINKING_TOKENS = '0'
     const config = claudeConfigDir()
+    // `--setting-sources ''` keeps hooks, plugins and permissions out, but also skips the settings
+    // file's `env` block, which is where a Bedrock (or proxy) login lives; without it a GUI-launched
+    // worker answers "Not logged in". So apply that block, and only that block. Precedence matches
+    // Claude Code itself: the settings env wins over the process env, so the writer runs against the
+    // same account the user's own `claude` does. Orca's forced keys and ORCA_* are never overridden.
+    const settingsEnv = claudeSettingsEnv(config)
+    for (const [key, value] of Object.entries(settingsEnv)) {
+      if (!PROTECTED_ENV.has(key) && !key.startsWith('ORCA_')) env[key] = value
+    }
+    env.MAX_THINKING_TOKENS = '0'
     if (config) env.CLAUDE_CONFIG_DIR = config
+    env.ORCA_CARD_CHILD = '1'
+    // awsAuthRefresh (e.g. `aws sso login`) is deliberately never run here: it opens a browser and
+    // waits for a person, which a background writer must not do (every failed summary would reopen
+    // it). An expired login is reported as an AWS auth failure and the sidebar tells the user to run it.
+    const bedrock = settingsEnv.CLAUDE_CODE_USE_BEDROCK !== undefined && !/^(0|false|)$/i.test(settingsEnv.CLAUDE_CODE_USE_BEDROCK)
+    const hinted = (error: unknown) => {
+      if (error instanceof WriterError && error.kind === 'auth' && !error.hint) {
+        if (bedrock) return new WriterError(model, 'auth', 'aws')
+        if (!Object.keys(settingsEnv).length) return new WriterError(model, 'auth', 'no-settings')
+      }
+      return error
+    }
+    try { return await claudeRun(model, env, system, schema, prompt) } catch (error) { throw hinted(error) }
+  }
+  const claudeRun = async (model: 'haiku' | 'sonnet', env: Record<string, string>, system: string, schema: object, prompt: string): Promise<unknown> => {
     const result = await run({ bin: await binary('claude'), args: ['-p', '--model', model, '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', '', '--system-prompt', system, '--output-format', 'json', '--json-schema', JSON.stringify(schema)], env, cwd: homedir(), input: prompt })
     let out: any
     try { out = JSON.parse(result.stdout) } catch {

@@ -6,7 +6,9 @@
 // Every start appends one line to ~/.orca-flow/routes.jsonl:
 //   {at, role, taskId, dispatchId, workspace, choice, source, reason, type, kind, class, risk,
 //    context, explicit, attempt}
-// `type` is the task type's id (null for a task routed by difficulty).
+// `type` is the task type's id (null for a task routed by difficulty). Only when given: `retryOf`
+// (the failed dispatch, from --retry-of) and `arm`/`pair` (--arm baseline|variant --pair <id>, a
+// comparison label for Analytics; a retry keeps its first attempt's arm).
 // `class` repeats `kind` in its old name (trivial, standard, complex) for older readers. `explicit`
 // is what the caller chose itself ({agent, model, effort}, or null). The sidebar reads it to show
 // the model on each row; `--retry-of` reads it to rebuild the request and escalate.
@@ -236,8 +238,27 @@ function routeEntry({ at, role, receipt, decision, req }) {
     risk: req.risk ?? null,
     context: req.context ?? null,
     explicit: explicitOf(req),
-    attempt: req.attempt ?? 0
+    attempt: req.attempt ?? 0,
+    // Only when given, so older lines and readers stay as they were.
+    ...(req.retryOf && { retryOf: req.retryOf }),
+    ...(req.arm && { arm: req.arm, pair: req.pair })
   }
+}
+
+const ARMS = ['baseline', 'variant']
+const PAIR_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
+
+/**
+ * `--arm baseline|variant --pair <id>`: labels the start as one arm of a comparison (Analytics,
+ * docs/analytics-brief.md §8). Both or neither; null when neither.
+ */
+export function armLabel(args) {
+  const { arm, pair } = args
+  if (arm === undefined && pair === undefined) return null
+  if (arm === undefined || arm === true || !ARMS.includes(arm)) throw new UsageError('--arm is baseline or variant')
+  if (pair === undefined || pair === true) throw new UsageError('--arm needs --pair <id>: the id both arms of the comparison share')
+  if (!PAIR_ID.test(String(pair))) throw new UsageError('--pair is an id of letters, digits and . _ : - (at most 64)')
+  return { arm, pair: String(pair) }
 }
 
 const ROLES = ['coordinator', 'lead', 'worker']
@@ -503,6 +524,9 @@ export async function dispatchCommand(args, deps) {
   if (flags['retry-of'] === true) throw new UsageError('--retry-of needs the failed dispatch id')
   if (flags['retry-request'] === true) throw new UsageError('--retry-request needs the request id Orca printed')
   // An escalation needs a recorded failure: --attempt only with --retry-of (route keeps it as a what-if).
+  if (flags.pair !== undefined && flags.arm === undefined) throw new UsageError('--pair goes with --arm baseline|variant')
+  const armed = armLabel(flags)
+  if (armed) Object.assign(req, armed)
   if (req.attempt !== undefined && !flags['retry-of']) throw new UsageError('dispatch --attempt goes with --retry-of <the failed dispatch id>: an escalation starts from a recorded failure. `orca-flow route --attempt n` shows what an attempt would use.')
   let prev = null
   let keepModel = false
@@ -513,8 +537,11 @@ export async function dispatchCommand(args, deps) {
       req.attempt = prev.attempt + 1
     }
     // The same task, the same request, unless this call says otherwise.
+    req.retryOf = String(flags['retry-of'])
     if (prev) {
       if (!flags.task && prev.taskId) flags.task = prev.taskId
+      // A retry stays in the comparison arm its first attempt ran in.
+      if (!armed && prev.arm && prev.pair) Object.assign(req, { arm: prev.arm, pair: prev.pair })
       if (req.type === undefined && req.role === 'worker' && typeof prev.type === 'string' && prev.type) req.type = prev.type
       const prevKind = routing.taskKind(prev.kind ?? prev.class)
       if (req.kind === undefined && prevKind) req.kind = prevKind

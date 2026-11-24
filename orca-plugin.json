@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "flow",
   "name": "Orca Flow",
-  "version": "0.2.88",
+  "version": "0.2.96",
   "description": "What needs you next, room to run more, and coordinators that delegate to workers.",
   "engines": {
     "orca": ">=1.4.254"
@@ -18,6 +18,17 @@
         "icon": "layers",
         "entry": "src/panel/index.html",
         "ui": "html"
+      }
+    ],
+    "customEditors": [
+      {
+        "id": "usage",
+        "title": "Usage",
+        "extensions": [
+          ".orcaflow-usage"
+        ],
+        "entry": "src/editor/index.html",
+        "frame": "isolated"
       }
     ],
     "events": [

@@ -10,6 +10,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { emptyHistory, speedView } from '../src/token-speed.ts'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const build = mkdtempSync(join(tmpdir(), 'orca-flow-goals-preview-'))
@@ -96,7 +97,8 @@ window.orca = {
       if (name === 'sidebar.goals') return JSON.parse(JSON.stringify(goals));
       if (name === 'sidebar.goalAction') { const error = apply(data); const out = JSON.parse(JSON.stringify(goals)); if (!error) setTimeout(() => (listeners['sidebar.goalsChanged'] || []).forEach((f) => f(out)), 0); return { ok: !error, ...(error ? { error } : {}), goals: out }; }
       if (name === 'sidebar.settings') return { settings: {}, error: null, version: null, writers: [] };
-      return name === 'sidebar.linear' ? null : { ok: true };
+      if (name === 'sidebar.tokenSpeed') return ${JSON.stringify(speedView(emptyHistory(), now, { ready: true }))};
+      return null;
     },
     on: (name, f) => { (listeners[name] ||= []).push(f); return () => {}; }
   },

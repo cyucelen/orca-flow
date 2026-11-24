@@ -247,8 +247,8 @@ for (const kind of ['normal', 'legacy', 'historical member']) test(`two live ${k
   assert.match(refused, /• other \(Fix billing\): 2 unhandled messages in its coordinator mailbox; pending gate gate-9\n/)
   assert.match(refused, /Nothing was changed/)
   assert.match(refused, /stay in the current conversation/, 'a recovery the person can do today')
-  assert.match(refused, /settle all but one of these runs/)
-  assert.match(refused, /Settled runs stay with the current conversation and do not block/)
+  assert.match(refused, /fresh coordinator terminal per run/)
+  assert.match(refused, /Keep the source open for any run left there/)
   assert.deepEqual([explainError(refused).short, explainError(refused).tone], ['Handover blocked', 'warn'])
   assert.ok(await error(() => continueHandover(f.state, f.io)))
   assert.equal(JSON.stringify({ routes: f.routes(), ask: f.pendingAsk, sessions: f.sessions() }), before)
@@ -513,6 +513,24 @@ test('the call stops waiting before the panel gives up, and says the run is stil
   targetRunsRunUse(f)
   await continueHandover(readBack(f), f.io)
   assert.equal(f.saves.at(-1)!.phase, 'complete')
+})
+
+test('a retained context-only dispatch stops blocking only after its assignment ends and its mail and gates settle', async () => {
+  const f = fixture('codex', true)
+  const other = { id: 'context-run', coordinator_handle: 'term-source' }
+  f.setRoutes([...f.routes(), other])
+  const worker = { dispatchId: 'ctx_fixture', workerState: 'unsupervised', terminalState: 'retained', dispatchStatus: 'completed' }
+  const classify = () => classifyRun(other, f.io.run)
+  for (const status of ['dispatched', 'pending', 'unknown', undefined]) {
+    f.runState[other.id] = { workers: [{ ...worker, dispatchStatus: status }] }
+    assert.deepEqual((await classify()).why, ['open dispatch ctx_fixture'])
+  }
+  for (const status of ['completed', 'failed']) {
+    f.runState[other.id] = { workers: [{ ...worker, dispatchStatus: status }] }
+    assert.deepEqual(transferPlan(await readOwnership(f.io.run, f.sessions())), { adopt: f.routes()[0], settled: [other] })
+  }
+  f.runState[other.id] = { workers: [worker], messages: [{ handled: false }], gates: [{ id: 'gate-fixture' }] }
+  assert.deepEqual((await classify()).why, ['1 unhandled message in its coordinator mailbox', 'pending gate gate-fixture'])
 })
 
 test('read errors and incomplete pages count as live: fail closed', async () => {

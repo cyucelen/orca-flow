@@ -90,13 +90,21 @@ test('coordinator sessions and folder agents participate globally without changi
   assert.equal(mixedProviders(s), false, 'sleeping coordinator has no provider presence')
 })
 
-test('different workspaces count globally and Up next uses the same provider gate', () => {
-  const s = snapshot([claude])
+test('mixed providers across workspaces show badges in the tree and search, and none in either Up next state', () => {
+  const s = snapshot([{ ...claude, state: 'waiting' }])
   s.rows.push(...snapshot([{ ...codex, state: 'waiting' }]).rows.map((r) => ({ ...r, id: 'other' })))
   const html = render(s, emptyUi())
   assert.deepEqual(badges(html.main), ['Claude', 'Codex'])
-  assert.deepEqual(badges(html.attention), ['Codex'])
+  assert.match(html.attention, /aria-expanded="true"/)
+  assert.match(html.attention, /aria-expanded="false"/)
+  assert.deepEqual(badges(html.attention), [])
   assert.deepEqual(badges(render(s, { ...emptyUi(), query: 'claude' }).main), ['Claude'])
+  s.rows[0].agents[0].model = { name: 'Opus 5.5', source: 'seen' }
+  s.rows[1].agents[0].model = { name: 'GPT-6.2 Astra', source: 'seen' }
+  const withModels = render(s, emptyUi())
+  assert.match(withModels.main, /Claude · Opus 5\.5/)
+  assert.match(withModels.main, /Codex · GPT-6\.2 Astra/)
+  assert.equal(withModels.attention, html.attention, 'model discovery leaves both briefings intact')
 })
 
 test('unknown or missing metadata never invents a provider, injects markup or triggers logos', () => {

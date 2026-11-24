@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLAUDE_ONLY, fakeDeps } from './fake-orca.mjs'
-import { accountDiscovery, cachedDiscover, dispatchCommand, MODELS_CACHE_MS, PENDING_MAX_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
+import { accountDiscovery, armLabel, cachedDiscover, dispatchCommand, MODELS_CACHE_MS, PENDING_MAX_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
 import { codexHomeFromAccounts } from '../src/writer.ts'
 
 const argsOf = (flags, ...positional) => ({ _: positional, ...flags })
@@ -148,6 +148,43 @@ test('--retry-of escalates from the logged attempt, reuses the task and its kind
 
   const none = fakeDeps()
   await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_nope', worktree: 'current' }, 'dispatch'), none), /no route recorded for ctx_nope.*pass --attempt/)
+})
+
+test('--retry-of is logged as retryOf; a first start has no retryOf, arm or pair (older readers see the old line)', async () => {
+  const deps = fakeDeps()
+  await dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', spec: 'do it' }, 'dispatch'), deps)
+  const first = readRoutes(deps.dir).at(-1)
+  assert.equal('retryOf' in first || 'arm' in first || 'pair' in first, false)
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
+  const retry = readRoutes(deps.dir).at(-1)
+  assert.deepEqual([retry.dispatchId, retry.retryOf, retry.attempt], ['ctx_2', 'ctx_1', 1])
+})
+
+test('--arm baseline|variant --pair <id> label the route line; a retry keeps its arm; bad labels start nothing', async () => {
+  const deps = fakeDeps()
+  await dispatchCommand(argsOf({ role: 'lead', kind: 'normal', arm: 'baseline', pair: 'split-2026-11', worktree: 'current', spec: 'do it' }, 'dispatch'), deps)
+  const base = readRoutes(deps.dir).at(-1)
+  assert.deepEqual([base.role, base.arm, base.pair], ['lead', 'baseline', 'split-2026-11'])
+  assert.equal(starts(deps)[0].args.includes('--arm') || starts(deps)[0].args.includes('--pair'), false, 'labels are not worker-start flags')
+  await dispatchCommand(argsOf({ role: 'lead', 'retry-of': 'ctx_1', worktree: 'current' }, 'dispatch'), deps)
+  const retry = readRoutes(deps.dir).at(-1)
+  assert.deepEqual([retry.retryOf, retry.arm, retry.pair], ['ctx_1', 'baseline', 'split-2026-11'])
+  // a label given with the retry wins
+  await dispatchCommand(argsOf({ role: 'lead', 'retry-of': 'ctx_2', arm: 'variant', pair: 'other', worktree: 'current' }, 'dispatch'), deps)
+  assert.deepEqual([readRoutes(deps.dir).at(-1).arm, readRoutes(deps.dir).at(-1).pair], ['variant', 'other'])
+
+  const bad = fakeDeps()
+  const refuse = (flags, re) => assert.rejects(dispatchCommand(argsOf({ role: 'worker', kind: 'simple', worktree: 'current', spec: 'x', ...flags }, 'dispatch'), bad), (e) => e instanceof UsageError && re.test(e.message))
+  await refuse({ arm: 'baseline' }, /--arm needs --pair/)
+  await refuse({ arm: 'baseline', pair: true }, /--arm needs --pair/)
+  await refuse({ arm: 'control', pair: 'p' }, /--arm is baseline or variant/)
+  await refuse({ arm: true, pair: 'p' }, /--arm is baseline or variant/)
+  await refuse({ pair: 'p' }, /--pair goes with --arm/)
+  await refuse({ arm: 'variant', pair: 'has space' }, /--pair is an id/)
+  assert.equal(bad.calls.length, 0)
+  assert.equal(existsSync(join(bad.dir, 'routes.jsonl')), false)
+  assert.equal(armLabel({}), null)
+  assert.deepEqual(armLabel({ arm: 'variant', pair: 'p.1' }), { arm: 'variant', pair: 'p.1' })
 })
 
 test('--dry-run runs the gate and the route, prints the exact command, and starts and logs nothing', async () => {

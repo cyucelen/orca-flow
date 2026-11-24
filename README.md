@@ -22,13 +22,45 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
 - **Coordinators:** your coordinators, each with its leads and workers nested under it, plus the
   chats you started yourself. Click a coordinator to open its session; right-click anything for
   actions.
-- **Token speed:** how fast your agents write (output tok/s over the last minute, summed over every
-  agent), their network traffic, and your internet speed. Charts for the last hour or 24 h show tok/s
-  per model and agent traffic as a share of your connection; each model gets its median response
-  speed over the last hour and 24 h. Read from Claude Code and Codex logs every 30 s (only token
-  counts, model names and times, never content) and from `nettop` (loopback traffic left out).
-  The internet test (`networkQuality`, about 25 s and 100+ MB) runs only when you press Test; the
-  last result is kept. History stays on this Mac in `~/.orca-flow/token-speed.json`.
+- **Analytics:** what your agents run at and what they spend. The sidebar section keeps Token
+  Speed's glance: output tok/s over the last minute (summed over every agent), the agents' network
+  traffic and the last internet speed result kept from earlier (there is no Test button any more),
+  two charts for the last hour or 24 h, and each model's median response speed.
+  One line under them, "This week 52.4M tokens · ≈ $48 · Usage ›", opens the **Usage tab**: a
+  full-width editor tab in the workspace you are in (with no workspace focused the sidebar says so
+  and opens nothing). It has one window toggle (7 days, 30 days, All) and answers, in order of the
+  goal, which kinds of task cost what: a headline strip (tokens and estimate, biggest workstream,
+  model share, input served from cache, most expensive task); **By task kind**, one row per
+  Settings → Models row (tasks finished, median tokens and cost, failed or retried, median time, and
+  when the fallback ran) that opens its tasks and each task its workstream; **Lead overhead** (how
+  much of a workstream's tokens its lead spends); a **Policy comparison** of two labelled arms; and
+  the **Biggest workstreams**. A workstream shows its lead sessions, workers and retries with model,
+  tokens and estimate; **Details** adds the four token categories (input, cache read, cache write,
+  output). Runs with logs missing say "Partial"; usage from sessions Orca did not dispatch is kept in
+  its own bucket ("Coordinators and plain terminals"); a model with no known price shows "no
+  estimate". Before anything is recorded the tab says "Analytics starts recording now; backfill
+  reading N of M logs".
+  - **The estimate is not your bill.** Costs are token counts times Anthropic's API list prices
+    (`src/prices.ts`, dated and versioned; Claude Max and ChatGPT plans are flat subscriptions).
+    Codex and other non-Anthropic models show "no estimate" until their prices are confirmed.
+  - **What it records, and where.** Per model response: provider, session id, response id, model,
+    start and end time, and the four token counts, read from the Claude Code and Codex logs every
+    30 s (never a message, only ids, times, model names and counts). Kept in
+    `~/.orca-flow/usage/` (one `YYYY-MM.jsonl` per month, plus the links from Orca's dispatches to
+    their sessions, the logs' coverage, the backfill's progress, and Orca's task titles) for
+    **90 days**; older records are dropped. The first time Analytics runs it reads the logs still on
+    disk from the last 90 days once (a backfill, in small slices; where logs were rotated that
+    period stays "not recorded"). The sidebar's speed history stays in `~/.orca-flow/token-speed.json`.
+  - **The Usage tab's file.** Orca opens an editor tab only for a file in a workspace, so Orca Flow
+    keeps an empty note `usage.orcaflow-usage` in `<workspace>/.orca/orca-flow/`, beside a
+    `.gitignore` containing `*` (so the folder never shows in `git status`). It is created when you
+    press Usage › and is safe to delete.
+  - **Comparing two ways of splitting work.** Label the arms when you start them:
+    `orca-flow dispatch --arm baseline --pair <id> …` and `--arm variant --pair <id>` (the same
+    `<id>`, same task and acceptance checks, same models; `--arm` needs `--pair`, and a `--retry-of`
+    keeps its first attempt's arm). Analytics then compares tokens and estimate per accepted run,
+    time and passed runs, failed runs and retries included, and says why when a pair cannot be
+    compared (models changed, an arm missing, fewer than 3 runs).
 - **End-of-turn summaries:** when an agent finishes a turn, Claude Haiku turns it into a short
   title, a one-line "about" and the ask, so you can switch back in seconds. If Haiku is
   unavailable, the writer uses GPT-6 Luna (`gpt-6-luna`) through the Codex CLI. Pick the
@@ -254,15 +286,15 @@ Changes apply at once; there is no Save button. Close it with the × or Escape.
 - **Capacity:** the memory always kept free and the extra room under memory pressure
   ([Capacity](#capacity)).
 - **Features:** Bots (off by default; shows the Bots section, bot chats in Up next and the waiting
-  count), Goals (off by default; shows the Goals section and lets agents keep goals with
-  `orca-flow goal`), Linear and Token Speed (on by default; each shows its sidebar section). Display only:
-  Orca's bots, schedules and chats, your Linear credentials and the Token speed history file are
-  untouched. While Goals is off nothing is read or shown, the panel's goal edits are refused and every
-  `orca-flow goal` command prints "Goals is off" and changes nothing; the goal files stay as they are.
+  count), Goals (off by default, enables the Goals section and the `orca-flow goal` commands),
+  Linear and Analytics (on by default; each shows its sidebar section). Display only:
+  Orca's bots, schedules and chats, your Linear credentials and the recorded usage and speed history
+  are untouched. Turning Goals off preserves saved goals and disables goal reads and edits.
   While Bots is off Orca Flow does not read `orca bot list`; while Linear is off it reads
-  nothing from Linear and sends no issue; while Token Speed is off it does not read the agents' logs,
-  sample their traffic or run the internet test. Turning one on shows its section at once with fresh
-  data. Saved as `features.bots`, `features.goals`, `features.linear` and `features.tokenSpeed` in the settings file.
+  nothing from Linear and sends no issue; while Analytics is off it does not read the agents' logs,
+  record usage, sample their traffic or run the internet test. Turning one on shows its section at
+  once with fresh data. Saved as `features.bots`, `features.goals`, `features.linear` and `features.tokenSpeed` (the
+  name Analytics had as Token Speed, kept so existing settings files keep working) in the settings file.
 - **Advanced:** Linear test mode (log the Linear comments and status changes Orca Flow would send,
   and send nothing) and Show in Finder for the settings file.
 - **About:** the running version, and Check for Updates (see
@@ -420,7 +452,9 @@ Update to the newest release with the same command:
 orca plugin install cyucelen/orca-flow
 ```
 
-Orca asks for approval again only when a release needs different access.
+Orca asks for approval again only when a release needs different access. The release that adds the
+Usage tab contributes a custom editor, so Orca asks you to approve Orca Flow again when you update
+to it.
 
 Orca Flow also looks for a newer release every 15 minutes, and at once from Settings > About >
 Check for Updates. A newer release shows there as "0.2.65 available" with an Update button, in the

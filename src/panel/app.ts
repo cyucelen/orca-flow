@@ -6,8 +6,11 @@ import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, c
 import { COMPLETED_BATCH, goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
+import type { UsageMetric } from '../analytics-view.ts'
+import type { AnalyticsView, AnalyticsWindow } from '../protocol.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
 import { decodeLinear, DEFAULT_DISPLAY, FILTERS, GROUP_NAME, GROUPS, HIDEABLE, LINEAR_MARK, LINEAR_UI_KEY, linearUiOf, sendTargets, SORT_NAME, SORTS, STATE_NAME, toggleProject, viewOf, type Display, type LinearFilter } from '../linear.ts'
+import { accessLine, approvalSummary, versionDelta } from '../approval.ts'
 import { pressGate } from './press.ts'
 import { openerToggle } from './opener.ts'
 import { externalLink } from './links.ts'
@@ -27,9 +30,11 @@ let snap: Snapshot | null = null
 let linear: LinearData | null = null
 /** The Goals section's goals; null hides the section (not read yet). */
 let goals: GoalView[] | null = null
-/** The Token speed section's data from the worker, and its fold and range (kept in storage). */
+/** The Analytics section's data from the worker, and its fold and range (kept in storage). */
 let speed: TokenSpeedWire | null = null
-const speedUi: { folded: boolean; range: SpeedRange } = { folded: false, range: '1h' }
+const speedUi: { folded: boolean; range: SpeedRange; metric: UsageMetric; window: AnalyticsWindow } = { folded: false, range: '1h', metric: 'tokens', window: '7d' }
+/** The section's usage block: the worker's analytics.view for the chosen window, and Details open or not (not kept). */
+const usage: { view: AnalyticsView | null; details: boolean; error: string | null; at: number } = { view: null, details: false, error: null, at: 0 }
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
@@ -122,8 +127,8 @@ function paintRows(): void {
   linearEl.innerHTML = linearHtml
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
-  // Token speed, under Linear; hidden while searching, like the other sections.
-  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, now: ui.now, speedOff: !speedIsOn() })
+  // Analytics, under Linear; hidden while searching, like the other sections.
+  const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, usage: { view: usage.view, window: speedUi.window, metric: speedUi.metric, details: usage.details, error: usage.error }, now: ui.now, speedOff: !speedIsOn() })
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
   speedEl.classList.toggle('folded', speedUi.folded)
@@ -150,7 +155,7 @@ setTimeout(draw, LINEAGE_WAIT_MS)
 orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
 orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw()))
 
-// Settings → Features: Linear and Token Speed. While one is off its data is dropped and not asked
+// Settings → Features: Linear and Analytics (stored as tokenSpeed). While one is off its data is dropped and not asked
 // for; switching it on asks at once, so the section shows fresh data, not what it had before.
 const linearIsOn = () => !snap || linearOn(snap)
 const goalsIsOn = () => !!snap && goalsOn(snap)
@@ -201,20 +206,34 @@ orca.storage.get(BOTS_UI_KEY).then((stored) => {
   draw()
 }).catch(() => null)
 document.addEventListener('visibilitychange', () => readLinear())
-// Token speed: the worker samples every 30 s and posts each sample; the panel asks once on open and
+// Analytics (Token speed's glance): the worker samples every 30 s and posts each sample; the panel asks once on open and
 // when it shows again. The fold and the 1 h / 24 h range come back from storage.
+/** Usage changes with each 30 s sample, but a minute is fresh enough; the worker rebuilds at most every 30 s. */
+const USAGE_REFRESH_MS = 60_000
+const readUsage = (force = false) => {
+  if (document.visibilityState !== 'visible' || !speedIsOn() || speedUi.folded) return
+  if (!force && Date.now() - usage.at < USAGE_REFRESH_MS) return
+  usage.at = Date.now()
+  const asked = speedUi.window
+  orca.plugin.request('analytics.view', { window: asked })
+    .then((v) => { if (asked === speedUi.window) { usage.view = v as AnalyticsView; usage.error = null; draw() } })
+    .catch((e: Error) => { usage.error = e.message; draw() })
+}
 const readSpeed = () => {
   if (document.visibilityState !== 'visible' || !speedIsOn()) return
   orca.plugin.request('sidebar.tokenSpeed').then((d) => { speed = d as TokenSpeedWire; draw() }).catch(() => null)
+  readUsage()
 }
-orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { if (speedIsOn()) { speed = d as TokenSpeedWire; draw() } })
+orca.plugin.on('sidebar.tokenSpeedChanged', (d) => { if (speedIsOn()) { speed = d as TokenSpeedWire; readUsage(); draw() } })
 orca.storage.get(SPEED_UI_KEY).then((stored) => {
+  const was = speedUi.window
   Object.assign(speedUi, speedUiOf(stored))
+  if (speedUi.window !== was) { usage.view = null; readUsage(true) }
   draw()
 }).catch(() => null)
 readSpeed()
 document.addEventListener('visibilitychange', readSpeed)
-const saveSpeedUi = () => void orca.storage.set(SPEED_UI_KEY, { folded: speedUi.folded, range: speedUi.range }).catch(() => null)
+const saveSpeedUi = () => void orca.storage.set(SPEED_UI_KEY, { folded: speedUi.folded, range: speedUi.range, metric: speedUi.metric, window: speedUi.window }).catch(() => null)
 const saveLinearUi = () =>
   void orca.storage.set(LINEAR_UI_KEY, { folded: ui.linearFolded, filter: ui.linearFilter, display: ui.linearDisplay, groupFolds: [...ui.linearGroupFolds] }).catch(() => null)
 // No Orca event reports a switch between tabs of one workspace. While the panel shows, the worker
@@ -249,16 +268,15 @@ document.addEventListener('click', (event) => {
     draw()
     return
   }
-  // The Token speed section: fold, range, and the internet test (one at a time; the worker posts its result).
-  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-ttest]')
+  // The Analytics section: fold, range, usage window, measure and Details.
+  const sp = (event.target as Element).closest<HTMLElement>('[data-tfold],[data-trange],[data-umetric],[data-uwin],[data-udetails]')
   if (sp) {
     const d = sp.dataset
-    if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi() }
+    if ('tfold' in d) { speedUi.folded = !speedUi.folded; saveSpeedUi(); readUsage() }
+    if ((d.uwin === '7d' || d.uwin === '30d' || d.uwin === 'all') && d.uwin !== speedUi.window) { speedUi.window = d.uwin; saveSpeedUi(); usage.view = null; readUsage(true) }
+    if ('udetails' in d) usage.details = !usage.details
     if (d.trange === '1h' || d.trange === '24h') { speedUi.range = d.trange; saveSpeedUi() }
-    if ('ttest' in d && speed && !speed.testing) {
-      speed = { ...speed, testing: true, testError: null }
-      void orca.plugin.request('sidebar.tokenSpeedTest').catch((e: Error) => { if (speed) speed = { ...speed, testing: false, testError: e.message }; draw() })
-    }
+    if (d.umetric === 'tokens' || d.umetric === 'cost') { speedUi.metric = d.umetric; saveSpeedUi() }
     draw()
     return
   }
@@ -389,7 +407,7 @@ async function runAction(key: string): Promise<void> {
 /**
  * The update button. A new release (or a failed try) asks first, then the worker starts the update
  * as the status bar's second click does; the button follows the state the worker posts. An update
- * that needs approval is never approved from here: the dialog shows the command to run.
+ * that needs approval is approved only by the dialog's own Approve and update click.
  */
 async function updateClick(given?: UpdateState): Promise<void> {
   const st = given ?? snap?.update
@@ -398,8 +416,10 @@ async function updateClick(given?: UpdateState): Promise<void> {
     if (!(await confirmAction('update', `Update Orca Flow to ${st.version}?`, 'Orca Flow restarts on the new version.', 'Update', 'download', 'warn', false))) return
     await orca.plugin.request('sidebar.update').catch(() => null)
   } else if (st.kind === 'approval') {
-    const copy = await confirmAction('update-approval', `Orca Flow ${st.version} needs your approval`, `${st.reason}\nTo approve and update, run:\n${st.command}`, 'Copy command', 'warning', 'warn', false)
-    if (copy) await navigator.clipboard?.writeText(st.command).catch(() => {})
+    const choice = await approvalDialog(st)
+    if (choice === 'copy') await navigator.clipboard?.writeText(st.command).catch(() => {})
+    // Only this click approves, once, for the fingerprint the dialog showed; a new fingerprint comes back as a new dialog to read.
+    else if (choice === 'approve' && st.fingerprint) await orca.plugin.request('sidebar.approveUpdate', { fingerprint: st.fingerprint }).catch(() => null)
   }
 }
 
@@ -638,6 +658,47 @@ const MI: Record<string, string> = {
 const svgIcon = (name?: string) => (name ? `<svg class="micon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${MI[name]}</svg>` : '<span class="micon"></span>')
 const iconOf = (it: { icon?: string; iconHtml?: string }) => (it.iconHtml ? `<span class="micon">${it.iconHtml}</span>` : svgIcon(it.icon))
 
+
+/**
+ * The update-approval dialog: the version and access change on top, Orca's whole text in a region
+ * that scrolls, the command, and a footer that stays put. Approve and update is the person's own
+ * click, for exactly the fingerprint shown here; Copy command is the same approval run by hand.
+ */
+function approvalDialog(st: { version: string; reason: string; command: string; fingerprint?: string }): Promise<'approve' | 'copy' | null> {
+  const a = approvalSummary(st)
+  const dialog = $('approval')
+  const form = $('approval-form') as HTMLFormElement
+  const ok = $('approval-ok') as HTMLButtonElement
+  const copy = $('approval-copy') as HTMLButtonElement
+  const cancel = $('approval-cancel') as HTMLButtonElement
+  $('approval-title').textContent = `Orca Flow ${versionDelta(a)} needs your approval`
+  $('approval-sum').textContent = accessLine(a)
+  $('approval-scroll').textContent = a.text || 'Orca gave no details.'
+  $('approval-cmd').textContent = a.command
+  // Without a fingerprint there is nothing to bind an approval to: the command is the way.
+  ok.hidden = !st.fingerprint
+  dialog.hidden = false
+  cancel.focus()
+  return new Promise((resolve) => {
+    const done = (r: 'approve' | 'copy' | null) => {
+      dialog.hidden = true
+      form.onsubmit = null; cancel.onclick = null; copy.onclick = null; dialog.onkeydown = null; dialog.onclick = null
+      resolve(r)
+    }
+    form.onsubmit = (e) => { e.preventDefault(); done('approve') }
+    copy.onclick = () => done('copy')
+    cancel.onclick = () => done(null)
+    dialog.onclick = (e) => { if (e.target === dialog) done(null) }
+    dialog.onkeydown = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); return }
+      if (e.key !== 'Tab') return
+      const stops = [$('approval-main'), $('approval-scroll'), cancel, copy, ...(ok.hidden ? [] : [ok])]
+      const i = stops.indexOf(document.activeElement as HTMLElement)
+      const next = stops[(i + (e.shiftKey ? -1 : 1) + stops.length) % stops.length]
+      e.preventDefault(); next.focus()
+    }
+  })
+}
 
 /** Confirms a destructive action unless the person said not to ask again for this kind. */
 async function confirmAction(kind: string, title: string, text: string, okLabel: string, icon = 'trash', tone: 'danger' | 'warn' = 'danger', rememberable = true): Promise<boolean> {

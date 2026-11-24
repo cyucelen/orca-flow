@@ -15,7 +15,7 @@ const T = Date.now(), MIN = 60_000
 const hist = emptyHistory()
 for (let m = 0; m < 50; m++) addResponse(hist, { model: m % 3 ? 'claude-opus-5-5' : 'claude-sonnet-5-5', out: 900 + (m * 137) % 700, start: T - (50 - m) * MIN, end: T - (50 - m) * MIN + 30_000 }, T)
 for (let m = 0; m < 40; m++) addNet(hist, { at: T - (40 - m) * MIN, up: 40_000 + (m * 911) % 9000, down: 120_000 + (m * 1733) % 30_000, secs: 30, procs: 3 })
-const speedWire = speedView(hist, T, { ready: true, testing: false, testError: null })
+const speedWire = speedView(hist, T, { ready: true })
 const linearWire = { wire: 1, urlBase: 'https://linear.app/acme/issue/', me: 'u1', teams: ['SHP'], cycles: [], sent: {}, lastSent: {}, at: T,
   states: [['In Progress', 'started', '#f2c94c'], ['Todo', 'unstarted', '#e2e2e2']], projects: [['Checkout', '#5e6ad2']], people: [['u1', 'You']], cycleIds: [],
   issues: [['SHP-12', 'Fix the cart total rounding', 2, 0, 0, 0, -1, Math.floor(T / 1000)], ['SHP-14', 'Validate coupon stacking', 3, 1, 0, 0, -1, Math.floor(T / 1000)], ['SHP-19', 'Empty-state copy for orders', 4, 1, -1, 0, -1, Math.floor(T / 1000)]] }
@@ -34,8 +34,37 @@ const fixture = { coordinatorProviders: [{id:'claude',name:'Claude'},{id:'codex'
   row('folder:shop', agent('candidate', 'codex', 'Fresh same-provider conversation'), { folderOf: 'shop', branch: null, main: true })
 ] }
 fixture.coordinators.push({ key: 'first', name: 'New coordinator', repos: [], workspaceId: null, session: null, sessions: { version: 1, current: null, members: [] }, members: [] })
+// ?split=1 is the manual split. All session, terminal and run identities are local to the fixture.
+const { projectSplit, splitRoots } = await import('../src/split-coordinators.ts')
+const splitMain = agent('bounti-main', 'codex', 'Bounti coordination')
+const splitAux = agent('bounti-aux', 'codex', 'Bounti coordination')
+const breitner = agent('breitner', 'codex', 'Breitner shift scheduling', { parentPane: splitMain.paneKey, dispatch: 'open' })
+const services = agent('services', 'claude', 'AIC lesson splitting', { parentPane: splitMain.paneKey, dispatch: 'open' })
+const verifier = agent('verify', 'codex', 'Verify the private service', { parentPane: services.paneKey, leadPane: services.paneKey, dispatch: 'open' })
+const des = agent('visibility', 'codex', 'Super admin visibility', { parentPane: splitAux.paneKey, leadPane: splitAux.paneKey, dispatch: 'open' })
+const homeRow = a => row('folder:bounti', a, { name: 'bounti', repo: 'bounti', lastActivityAt: T - 12 * MIN, path: '/fixture/bounti', folderOf: 'bounti', branch: null, main: true })
+const splitRows = [homeRow(splitAux), homeRow(breitner), row('mono:services', services), row('mono:services', verifier), row('mono:visibility', des)]
+for (const a of [splitMain, splitAux, breitner, services, verifier, des]) {
+  a.coordinator = 'bounti'
+  a.terminal = 'term_' + a.paneKey
+  a.model = { source: 'seen', name: a.agentType === 'claude' ? 'Opus 5.5' : 'GPT-6.2-Astra' }
+}
+for (const r of splitRows.filter(r => !r.folderOf)) { r.repo = 'mono'; r.lastActivityAt = T - 18 * 60 * MIN }
+const saved = { ...member(splitMain), workspaceId: 'folder:bounti' }
+const splitCoord = { key: 'bounti', name: 'bounti', repos: [], workspaceId: saved.workspaceId, session: splitMain,
+  sessions: { version: 1, current: saved.id, members: [saved] }, members: [saved] }
+const roots = splitRoots([{ path: '/fixture/bounti', agents: [splitMain, splitAux].map(a => ({
+  address: a.terminal, paneKey: a.paneKey, orcaSessionId: a.orcaSession, parentPaneKey: null, hasLivePty: true
+})) }], ['/fixture/bounti'])
+splitCoord.split = projectSplit(splitCoord, [homeRow(splitMain), ...splitRows], roots, { roots,
+  routes: [{ id: 'run-fixture-des', objective: 'DES-340 · Super admin visibility', coordinator_handle: splitMain.terminal },
+    { id: 'run-fixture-adopt', objective: 'Adopt isola on-demand services', coordinator_handle: splitAux.terminal }],
+  assignments: [breitner, services, verifier, des].map(a => ({ terminal: a.terminal, open: true, task: a.paneKey,
+    run: a === breitner || a === des ? 'run-fixture-des' : 'run-fixture-adopt', parent: a === verifier ? services.paneKey : null })) })
+if (!splitCoord.split) throw new Error('Split preview lacks verified fixture owners')
+const splitFixture = { ...fixture, coordinators: [splitCoord], rows: splitRows }
 const bridge = `<script>
-const fixture = ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
+const fixture = new URLSearchParams(location.search).has('split') ? ${JSON.stringify(splitFixture).replaceAll('<', '\\u003c')} : ${JSON.stringify(fixture).replaceAll('<', '\\u003c')};
 fixture.features = { linear: new URLSearchParams(location.search).get('linear') !== 'off', tokenSpeed: new URLSearchParams(location.search).get('speed') !== 'off' };
 const listeners = new Map();
 window.previewCalls = [];

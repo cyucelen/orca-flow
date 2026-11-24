@@ -223,6 +223,10 @@ export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' 
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 
+/** Presentation only. The parent map describes run reporting in the sidebar tree. */
+type SidebarRun = { id: string; objective: string }
+export type CoordinatorSplit = { mainRuns: SidebarRun[]; auxiliary: { pane: string; runs: SidebarRun[] }[]; parents: Record<string, string> }
+
 /** One of the user's coordinators: a coordinator with its own Orca folder workspace. */
 export type Coordinator = {
   key: string
@@ -231,12 +235,15 @@ export type Coordinator = {
   sessions?: CoordinatorSessions
   members?: CoordinatorMemberView[]
   sessionNotice?: string
+  split?: CoordinatorSplit
   routing?: string
   handover?: import('./handover.ts').HandoverStatus
   /** Its folder workspace in Orca, once added; clicking the coordinator opens it. */
   workspaceId: string | null
   /** The explicitly current member's live session, never inferred from focus or provider. */
   session?: AgentInfo | null
+  /** Multiple live panes of the selected conversation. They provide activity for display, but no unique action target. */
+  sessionPanes?: AgentInfo[]
   /** The character it was given at creation. */
   look?: Look | null
   /** Its workspace is the one focused in Orca (its row is marked only when its session's tab is, see Snapshot.focusedPanes). */
@@ -258,7 +265,7 @@ export type UpdateState =
   | { kind: 'confirm'; version: string }
   | { kind: 'updating'; version: string }
   | { kind: 'updated'; version: string }
-  | { kind: 'approval'; version: string; command: string; reason: string }
+  | { kind: 'approval'; version: string; command: string; reason: string; /** What the details are bound to; only an explicit Approve and update click passes it back. */ fingerprint?: string }
   | { kind: 'failed'; version: string; reason: string }
 
 export type Snapshot = {
@@ -274,6 +281,8 @@ export type Snapshot = {
   ready?: boolean
   /** The update the worker knows of; absent or 'none' hides the panel's update button. */
   update?: UpdateState
+  /** The summary writer's last failure, until a summary succeeds again; the panel warns "Summaries failing: <reason>". */
+  summaryFailure?: { provider: string; reason: string; detail?: string } | null
   /**
    * The panes Orca shows in the focused workspace (`<tabId>:<leafId>`, the front tab and pane of
    * each tab group), from `orca terminal list --include-visual-layouts`; only an agent here wears
@@ -283,7 +292,7 @@ export type Snapshot = {
   focusedPanes?: string[] | null
   /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
   bots?: Bot[] | null
-  /** Settings → Features: Linear and Token Speed. Absent reads as on; false hides the section and its entry points. */
+  /** Settings → Features: Goals (off by default), Linear and Analytics (stored as `tokenSpeed`). Linear and Analytics default to on; false hides the section and its entry points. */
   features?: { goals?: boolean; linear: boolean; tokenSpeed: boolean }
   /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
   skillReload?: SkillReloadEntry[]
@@ -407,8 +416,232 @@ export type SettingsState = {
   updateCheck?: import('./update.ts').UpdateCheck | null
 }
 
+// ---------- Analytics (src/analytics.ts computes these; docs/analytics-brief.md is the spec) ----------
+
+/** The Usage view's window: activity in it, and which finished tasks and workstreams it lists (brief §5). */
+export type AnalyticsWindow = '7d' | '30d' | 'all'
+
+/**
+ * Tokens in the four categories (cache write split by TTL) and their estimate. `total` is the sum of
+ * the five counts. `cost` is the estimate of the priced tokens only, in $ at API list prices;
+ * `unpriced` is the tokens with no price (left out of `cost`, shown as "no estimate").
+ */
+export type Spend = { in: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number; out: number; total: number; cost: number; unpriced: number }
+
+/** accepted / failed: the worker_done outcome; unknown: settled with no (or an unknown) outcome; running: not settled. */
+export type TaskResult = 'accepted' | 'failed' | 'unknown' | 'running'
+
+/** One dispatch: a worker attempt (a retry is its own), or a lead. Tokens are its whole-run total. */
+export type AnalyticsTask = {
+  dispatchId: string
+  taskId: string | null
+  /** The Orca task's title; else the worktree's name; else the short dispatch id. */
+  title: string
+  workstream: { id: string; title: string }
+  role: 'lead' | 'worker'
+  /** The Settings → Models row it ran on (kind id, type id, lead, other, unrouted). */
+  row: string
+  /** What it was dispatched as: "normal, high risk, retry 1", a type's name, "explicit model", "not routed". */
+  dispatchedAs: string
+  attempt: number
+  retryOf: string | null
+  /** A later dispatch retried it. */
+  retried: boolean
+  /** The row's fallback ran (routes.jsonl source "fallback"). */
+  fallback: boolean
+  /** The routed choice ("Claude Sonnet · medium"), null when not routed. */
+  routed: string | null
+  /** The logged model that spent most of its tokens; null when none or unknown. */
+  model: string | null
+  result: TaskResult
+  startedAt: number | null
+  finishedAt: number | null
+  durationMs: number | null
+  spend: Spend
+}
+
+/** One row of "By task kind": a Settings → Models row, Lead, or the visible leftovers (other, unrouted). */
+export type KindRow = {
+  id: string
+  name: string
+  kind: 'kind' | 'type' | 'lead' | 'other' | 'unrouted'
+  /** Settings → Models: the row's model and effort ("Claude Sonnet · medium"); Lead: its pick or "provider default". */
+  model: string | null
+  fallback: string | null
+  /** The logged model most of the row's finished tasks ran on. */
+  loggedModel: string | null
+  /** Tasks finished in the window (by finish date). */
+  n: number
+  running: number
+  /** n < 3: no medians are given. */
+  few: boolean
+  medianTokens: number | null
+  /** Over the row's fully priced tasks; null when none is. */
+  medianCost: number | null
+  /** Finished tasks with tokens that have no price. */
+  unpricedTasks: number
+  failed: number
+  retried: number
+  /** Share of finished tasks that failed or were retried, 0..1; null when n is 0. */
+  failedOrRetried: number | null
+  medianMs: number | null
+  /** Finished tasks on which the row's fallback ran. */
+  fallbackRan: number
+  /** Finished tasks that are retries (attempt > 0). */
+  retries: number
+  /** Its finished tasks, most tokens first. */
+  tasks: AnalyticsTask[]
+}
+
+/** A workstream as one line: whole-run tokens; partial when its logs cover less than all of its active time. */
+export type WorkstreamLine = {
+  id: string
+  title: string
+  result: TaskResult
+  finishedAt: number | null
+  /** Whole run. */
+  spend: Spend
+  /** The part of its tokens recorded inside the window (brief §5: "In window" vs "Whole run"). */
+  inWindow: number
+  /** Share of its dispatches' active time their logs cover, 0..1. */
+  coverage: number
+  partial: boolean
+}
+
+export type ArmStats = {
+  /** Finished runs of the arm (whole history), and how many passed or failed. */
+  runs: number
+  accepted: number
+  failed: number
+  running: number
+  /** All tokens of its finished runs, failed runs and retries included. */
+  spend: Spend
+  tokensPerAccepted: number | null
+  costPerAccepted: number | null
+  /** Median wall time (first dispatch → last completion) of accepted runs. */
+  medianWallMs: number | null
+  /** The lowest coverage of its runs. */
+  coverage: number
+  /** The routed models (per role and row) the arm ran on. */
+  models: string[]
+}
+
+export type Comparison = {
+  pair: string
+  baseline: ArmStats
+  variant: ArmStats
+  comparable: boolean
+  /** Why it is not comparable. */
+  why: ('models-differ' | 'arm-missing')[]
+  /** Caveats of a comparable pair. */
+  notes: ('small-sample' | 'partial')[]
+  /** One sentence for an incomparable pair ("Not comparable: model changed."), else null. */
+  sentence: string | null
+  /** variant − baseline; null when not comparable (or a side has nothing to compare). */
+  delta: { tokensPerAccepted: number | null; costPerAccepted: number | null; wallMs: number | null; passed: number } | null
+  runs: { workstream: string; title: string; arm: 'baseline' | 'variant'; result: TaskResult; finishedAt: number | null; wallMs: number | null; spend: Spend; coverage: number }[]
+}
+
+export type AnalyticsView = {
+  now: number
+  window: AnalyticsWindow
+  /** The window's start; null for all. */
+  from: number | null
+  prices: { version: string; dated: string; label: string; tip: string }
+  /** 0. The curiosity strip: activity in the window (clipped), plus two finished-in-window facts. */
+  strip: {
+    tokens: Spend
+    /** Part of `tokens`: sessions with no Orca binding. */
+    unattributed: Spend
+    /** Part of `tokens`: responses whose log named no model. */
+    unknownModel: number
+    biggest: { id: string; title: string; tokens: number } | null
+    /** Model share of the window's tokens, largest first; model null = unknown. */
+    models: { model: string | null; label: string; tokens: number; share: number }[]
+    /** Cache reads ÷ all input (uncached + cache read + cache write); null with no input. */
+    cacheShare: number | null
+    priciest: { dispatchId: string; name: string; workstream: { id: string; title: string }; cost: number } | null
+  }
+  /** 1. By task kind: the Settings → Models rows in their order, then Lead, then other and unrouted when they have tasks. */
+  rows: KindRow[]
+  /** 2. Lead overhead over finished workstreams with workers. */
+  leadOverhead: { median: number | null; n: number; heaviest: { id: string; title: string; share: number; leadTokens: number; tokens: number }[] }
+  /** 3. Labelled pairs with a run finished in the window or running; comparable first. */
+  comparisons: Comparison[]
+  /** The one-time backfill from the agents' logs still on disk: "pending" until it starts, then the logs read of all it found. */
+  backfill: { state: 'pending' | 'running' | 'done'; read: number; total: number }
+  /** 4. Biggest workstreams finished in the window (top 5, whole-run tokens), and what runs now. */
+  workstreams: { top: WorkstreamLine[]; finished: number; running: { count: number; spend: Spend } }
+  /**
+   * Usage per calendar day (local midnight to midnight), oldest first, today last and still filling:
+   * 7 or 30 days for those windows, every day since the first record for All. Every record of the day
+   * counts, attributed or not; the days add up to the store, not to the rolling window's total.
+   */
+  daily: UsageDay[]
+}
+
+/** One calendar day of usage: the four categories and their estimate, and the same per logged model. */
+export type UsageDay = {
+  /** Local midnight that starts the day (ms). */
+  start: number
+  spend: Spend
+  /** Per logged model (null = the log named none), most tokens first. */
+  models: { model: string | null; tokens: number; cost: number; unpriced: number }[]
+}
+
+export type WorkstreamRow = {
+  who: 'lead' | 'worker' | 'retry'
+  label: string
+  dispatchId: string
+  taskId: string | null
+  /** The Orca task's title; else the worktree's name; else the short dispatch id. */
+  title: string
+  /** "claude:<id>"; null for a dispatch whose session was never seen. */
+  session: string | null
+  /** The session that continued this one (a handover); nothing is moved to it. */
+  continuedIn: string | null
+  model: string | null
+  row: string | null
+  rowName: string | null
+  dispatchedAs: string | null
+  fallback: boolean
+  result: TaskResult
+  durationMs: number | null
+  spend: Spend
+}
+
+export type WorkstreamDetail = {
+  id: string
+  title: string
+  workspace: string | null
+  runId: string | null
+  result: TaskResult
+  startedAt: number | null
+  finishedAt: number | null
+  wallMs: number | null
+  coverage: number
+  partial: boolean
+  pair: { id: string; arm: 'baseline' | 'variant' } | null
+  /** Whole run. Equals the sum of `rows`, and of `byModel`. */
+  spend: Spend
+  /** Lead sessions first (one row per session), then workers and retries. */
+  rows: WorkstreamRow[]
+  byModel: { model: string | null; label: string; spend: Spend }[]
+}
+
+/** The sidebar's usage line: the last 7 days, "52.4M tokens · ≈ $48", and the last 7 calendar days one by one (today last). */
+export type UsageSummaryWire = { days: number; tokens: number; cost: number; unpriced: number; prices: string; tip: string; daily: UsageDayTotal[] }
+/** One calendar day's total, for the sidebar's small chart. */
+export type UsageDayTotal = { start: number; tokens: number; cost: number; unpriced: number }
+
 declare module 'orca' {
   interface PluginRequests {
+    /** The Usage view for a window (computed on request from the usage store, links and routes). */
+    'analytics.view': { input: { window?: AnalyticsWindow }; output: AnalyticsView }
+    /** One workstream's breakdown; null when it is not known. */
+    'analytics.workstream': { input: { id: string }; output: WorkstreamDetail | null }
+    /** The sidebar's "Usage ›": opens the Usage tab in the focused workspace; `reason` says why nothing opened. */
+    'usage.open': { output: { opened: boolean; reason?: string } }
     /** Every workspace with its live agent status. */
     'sidebar.list': { output: Snapshot }
     /** Memory, heaviest sessions, finished sessions and merged worktrees, for the opened cockpit. */
@@ -476,8 +709,6 @@ declare module 'orca' {
      * Types nothing into a terminal and sends no mail. Counts what it asked, what cannot reload, and what it skipped.
      */
     'sidebar.reloadSkills': { input: { scope: 'all' | { coordinator: string } }; output: { ok: boolean; error?: string; asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } }
-    /** Starts `networkQuality -c` unless one is running; its result (or failure) is posted as sidebar.tokenSpeedChanged. */
-    'sidebar.tokenSpeedTest': { output: { started: boolean } }
   }
   interface PluginPanelEvents {
     /** Posted to open panels when a workspace or agent status changes. */

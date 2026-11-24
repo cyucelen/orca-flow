@@ -845,6 +845,49 @@ test('a coordinator keeps its workers while it sleeps: its closed terminal ran i
   assert.equal(dirOfTerminalRecord(null), null)
 })
 
+test('a lead\'s workers nest under the lead even with no parent pane; the rest stay under the coordinator', async () => {
+  const { loadLineage } = await import('./coordinators.ts')
+  const coordinators = [{ key: 'alpha', name: 'alpha', repos: [], about: '', dir: '/c/alpha', workspaceId: null }]
+  const agent = (paneKey: string) => ({ paneKey, state: 'working' })
+  const rows = main.fromPs([
+    { identity: { key: 'home' }, displayName: 'alpha', repo: 'alpha', path: '/c/alpha', agents: [agent('p:coord')] },
+    { identity: { key: 'w' }, displayName: 'checkout', repo: 'shop', agents: [agent('p:lead'), agent('p:w1'), agent('p:w2'), agent('p:direct'), agent('p:orphan')] }
+  ])
+  const owned = [{ ...coordinators[0], sessions: { version: 1, current: 'c', members: [{ id: 'c', terminals: ['term-coord'], panes: ['p:coord'] }] } }] as any
+  const tab = (handle: string, leaf: string) => ({ handle, tabId: 'p', leafId: leaf })
+  // --full rows: agentTerminalHandle / workerState, with projection.parent naming the task that started each worker.
+  const full = (task: string, terminal: string, parent: string | null) => ({ taskId: task, agentTerminalHandle: terminal, workerState: 'running', terminalState: 'retained', dispatchId: `d-${task}`, projection: { parent: parent ? { taskId: parent } : null } })
+  const lineageOf = async (terminals: any[], workers: any[]) => {
+    const run = async (args: string[]) => {
+      if (args[0] === 'terminal' && args[1] === 'list') return { terminals }
+      if (args[1] === 'run-list') return { runs: [{ id: 'run-a', coordinator_handle: 'term-coord' }] }
+      if (args[1] === 'worker-list') { assert.ok(args.includes('--full')); return { workers } }
+      throw new Error(`unexpected ${args.join(' ')}`)
+    }
+    return loadLineage(run, 1_000_000, true)
+  }
+  const place = (lineage: any, pane: string) => {
+    const a = assignCoordinators(rows, owned, lineage).flatMap((r) => r.agents).find((x) => x.paneKey === pane)!
+    return [a.coordinator, a.leadPane]
+  }
+  const terminals = [tab('term-coord', 'coord'), tab('term-lead', 'lead'), tab('term-w1', 'w1'), tab('term-w2', 'w2'), tab('term-direct', 'direct')]
+  const workers = [full('lead', 'term-lead', null), full('t1', 'term-w1', 'lead'), full('t2', 'term-w2', 'lead'), full('d', 'term-direct', null)]
+  const lineage = await lineageOf(terminals, workers)
+  assert.deepEqual(place(lineage, 'p:w1'), ['alpha', 'p:lead'], 'one worker of a lead nests under the lead')
+  assert.deepEqual(place(lineage, 'p:w2'), ['alpha', 'p:lead'], 'so does a second')
+  assert.deepEqual(place(lineage, 'p:lead'), ['alpha', null], 'the lead stays directly under the coordinator')
+  assert.deepEqual(place(lineage, 'p:direct'), ['alpha', null], 'a worker the coordinator started stays a direct child')
+  // A retry on a closed terminal does not hide the lead's open one.
+  const retried = await lineageOf(terminals, [{ ...full('lead', 'term-old', null), terminalState: 'released' }, ...workers])
+  assert.deepEqual(place(retried, 'p:w1'), ['alpha', 'p:lead'])
+  // The lead's terminal is closed: its worker stays under the run's coordinator, not 'you'.
+  const closed = await lineageOf(terminals.filter((t) => t.handle !== 'term-lead'), workers)
+  assert.deepEqual(place(closed, 'p:w1'), ['alpha', null])
+  // The concise shape still works.
+  const concise = await lineageOf(terminals, [{ terminal: 'term-w1', state: 'running', terminalState: 'retained', taskId: 't1' }])
+  assert.deepEqual(place(concise, 'p:w1'), ['alpha', null])
+})
+
 test('processes an agent started outside its session are found by the tags they inherit', async () => {
   const { parsePs, parseTop, startedGroups } = await import('./started.ts')
   const tag = (pane: string) => `ORCA_WORKTREE_ID=repo1::/w/checkout ORCA_PANE_KEY=${pane} HOME=/h`
@@ -1261,11 +1304,11 @@ test('update item: hidden, available, confirm on the first click, update on the 
 
   assert.deepEqual(resultOf(0, JSON.stringify({ ok: true, result: { version: '0.2.12' } }), 'cyucelen.flow', '0.2.12'), { kind: 'updated', version: '0.2.12' })
   const approval = resultOf(3, JSON.stringify({ ok: false, error: { code: 'approval_required', message: 'It asks for a new command.', data: { approvalFingerprint: 'ap1-xyz' } } }), 'cyucelen.flow', '0.2.12')
-  assert.deepEqual(approval, { kind: 'approval', version: '0.2.12', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz' })
+  assert.deepEqual(approval, { kind: 'approval', version: '0.2.12', reason: 'It asks for a new command.', command: 'orca plugin update cyucelen.flow --approve ap1-xyz', fingerprint: 'ap1-xyz' })
   const click = onClick(approval)
   assert.deepEqual([click.next.kind, click.start], ['approval', false], 'approval is the person\'s to give')
   assert.match(click.message, /run: orca plugin update cyucelen\.flow --approve ap1-xyz/)
-  assert.match(updateItem(approval).tooltip!, /It asks for a new command\.\nTo approve and update, run:\norca plugin update/)
+  assert.equal(updateItem(approval).tooltip, 'Orca Flow 0.2.12 needs your approval. Click for details.')
   const failed = resultOf(1, JSON.stringify({ ok: false, error: { code: 'git_auth_failed', message: 'Could not read github.com' } }), 'cyucelen.flow', '0.2.12')
   assert.deepEqual(failed, { kind: 'failed', version: '0.2.12', reason: 'Could not read github.com' })
   assert.equal(onClick(failed).next.kind, 'confirm', 'a failed update can be tried again')
@@ -1341,11 +1384,45 @@ test('the update runs outside the worker and leaves its result for the next one'
   startUpdate(fake, 'cyucelen.flow', '0.2.12', dir)
   assert.equal(readUpdateResult(dir, '0.2.11'), 'pending')
   for (let i = 0; i < 200 && readUpdateResult(dir, '0.2.11') === 'pending'; i++) await new Promise((r) => setTimeout(r, 50))
-  assert.deepEqual(readUpdateResult(dir, '0.2.11'), { kind: 'approval', version: '0.2.12', reason: 'New access', command: 'orca plugin update cyucelen.flow --approve ap1-1' })
+  assert.deepEqual(readUpdateResult(dir, '0.2.11'), { kind: 'approval', version: '0.2.12', reason: 'New access', command: 'orca plugin update cyucelen.flow --approve ap1-1', fingerprint: 'ap1-1' })
   const { readFileSync } = await import('node:fs')
-  assert.equal(readFileSync(join(t, 'args'), 'utf8').trim(), 'plugin update cyucelen.flow --json', 'never --approve')
+  assert.equal(readFileSync(join(t, 'args'), 'utf8').trim(), 'plugin update cyucelen.flow --json', 'a start without a given approval never passes --approve')
   assert.deepEqual(readUpdateResult(dir, '0.2.12'), { kind: 'updated', version: '0.2.12' }, 'the new version running is the proof')
   assert.equal(readUpdateResult(join(t, 'none'), '0.2.11'), null)
+})
+
+test('routine update (exit 0) and the approval path, each against a fake orca binary', async () => {
+  const { readUpdateResult, startUpdate } = await import('./update.ts')
+  const { chmodSync, mkdtempSync, readFileSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const wait = async (dir: string, current: string) => {
+    for (let i = 0; i < 200 && readUpdateResult(dir, current) === 'pending'; i++) await new Promise((r) => setTimeout(r, 50))
+    return readUpdateResult(dir, current)
+  }
+  const t = mkdtempSync(join(tmpdir(), 'update-'))
+  const bin = (name: string, body: string) => { const f = join(t, name); writeFileSync(f, `#!/bin/sh\necho "$@" >> "${join(t, name + '.args')}"\n${body}\n`); chmodSync(f, 0o755); return f }
+  const args = (name: string) => readFileSync(join(t, name + '.args'), 'utf8').trim().split('\n')
+
+  // Routine: same repository, no new access. One start, exit 0, no --approve, the result is "updated".
+  const routine = bin('routine', `echo '{"ok":true,"result":{"version":"0.2.91"}}'\nexit 0`)
+  startUpdate(routine, 'cyucelen.flow', '0.2.91', join(t, 'u1'))
+  assert.deepEqual(await wait(join(t, 'u1'), '0.2.90'), { kind: 'updated', version: '0.2.91' })
+  assert.deepEqual(args('routine'), ['plugin update cyucelen.flow --json'])
+
+  // Approval: the host wants approval for the version it evaluated (0.2.91, not the 0.2.90 offered), then goes stale on --approve.
+  const msg = 'Updating 0.2.87 → 0.2.91 asks for more access: new customEditors.'
+  const host = bin('host', `case "$*" in *"--approve ap1-a1"*) echo '{"ok":false,"error":{"code":"approval_stale","message":"${msg} Changed again.","data":{"approvalFingerprint":"ap1-b2"}}}'; exit 3;; esac\necho '{"ok":false,"error":{"code":"approval_required","message":"${msg}","data":{"approvalFingerprint":"ap1-a1"}}}'\nexit 3`)
+  startUpdate(host, 'cyucelen.flow', '0.2.90', join(t, 'u2'))
+  const asked = await wait(join(t, 'u2'), '0.2.87')
+  assert.deepEqual(asked, { kind: 'approval', version: '0.2.91', reason: msg, command: 'orca plugin update cyucelen.flow --approve ap1-a1', fingerprint: 'ap1-a1' })
+  assert.deepEqual(args('host'), ['plugin update cyucelen.flow --json'], 'asking never approves')
+  // The explicit click: exactly the fingerprint shown, once.
+  startUpdate(host, 'cyucelen.flow', '0.2.91', join(t, 'u3'), 'ap1-a1')
+  const stale = await wait(join(t, 'u3'), '0.2.87') as { kind: string; fingerprint?: string; version: string }
+  assert.deepEqual([stale.kind, stale.fingerprint, stale.version], ['approval', 'ap1-b2', '0.2.91'], 'a new fingerprint comes back as a new approval to read')
+  assert.deepEqual(args('host'), ['plugin update cyucelen.flow --json', 'plugin update cyucelen.flow --approve ap1-a1 --json'], 'one --approve, no retry')
+  assert.throws(() => startUpdate(host, 'cyucelen.flow', '0.2.91', join(t, 'u4'), 'ap1-x; rm -rf /'), /fingerprint/)
 })
 
 test("a session in a coordinator's folder is a coordinator, even before it starts any worker", async () => {
@@ -1737,4 +1814,31 @@ test('the worker answers the Goals section: the list, and edits it refuses witho
   const empty = (await worker.request('sidebar.goalAction', { action: 'add', title: ' ' })) as { ok: boolean }
   assert.equal(empty.ok, false)
   await worker.deactivate()
+})
+
+test('usage.open: with a workspace focused it writes the stub in its folder and opens the tab; with none it says so and opens nothing', async () => {
+  const { mkdtempSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'usage-open-worker-'))
+  try {
+    const host = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': { workspaceId: 'ws1', branch: 'main', displayName: 'ws', terminals: [] }, 'workspace.list': { workspaces: [{ id: 'ws1', kind: 'worktree', name: 'ws', path: root, branch: 'main', hostId: 'local' }], truncated: false }, 'editor.open': { opened: true } } })
+    const worker = await mountWorker(main, { host })
+    const done = await worker.request('usage.open') as { opened: boolean }
+    assert.equal(done.opened, true)
+    assert.deepEqual(host.callsOf('editor.open'), [{ workspaceId: 'ws1', path: '.orca/orca-flow/usage.orcaflow-usage' }])
+    assert.equal(readFileSync(join(root, '.orca/orca-flow/.gitignore'), 'utf8'), '*\n')
+    assert.ok(existsSync(join(root, '.orca/orca-flow/usage.orcaflow-usage')))
+    await worker.deactivate()
+
+    const none = mockHost({ results: { 'statusBar.update': {}, 'workspace.readContext': null, 'workspace.list': { workspaces: [], truncated: false } } })
+    const w2 = await mountWorker(main, { host: none })
+    const r = await w2.request('usage.open') as { opened: boolean; reason?: string }
+    assert.equal(r.opened, false)
+    assert.match(r.reason ?? '', /Focus a workspace/)
+    assert.deepEqual(none.callsOf('editor.open'), [])
+    await w2.deactivate()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

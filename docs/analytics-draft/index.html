@@ -1,0 +1,692 @@
+<title>Orca Flow Analytics</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: the Orca Flow sidebar (340 px) beside the Usage view; at phone width one pane at a time, routed by #hash.
+   Type and density follow src/panel/panel.css: system UI 13px, 10.5px uppercase labels, flat rows, chips. */
+:root {
+  --page: #ececf0; --bg: #fbfbfc; --ink: #1f1f24; --muted: #6a6a74; --line: #e2e2e8; --hover: #f0f0f4;
+  --faint: color-mix(in srgb, var(--muted) 72%, transparent);
+  --card: color-mix(in srgb, var(--ink) 4.5%, transparent); --card-hover: color-mix(in srgb, var(--ink) 8%, transparent);
+  --ask: #2f55d4; --warn: #a8700b; --good: #0f857e; --danger: #c43d27;
+  --c0: #2a78d6; --c1: #eb6834; --c2: #1baf7a; --c3: #eda100; --c4: #e87ba4; --c5: #008300;
+  /* token categories: one violet ramp, a hue no model slot uses */
+  --k-in: #7a5be0; --k-cr: #d3c8f7; --k-cw: #a993ee; --k-out: #4a2fb0;
+  --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page: #0e0e10; --bg: #161618; --ink: #e9e9ec; --muted: #8d8d96; --line: #27272c; --hover: #1f1f23;
+  --card: color-mix(in srgb, var(--ink) 5%, transparent); --card-hover: color-mix(in srgb, var(--ink) 9%, transparent);
+  --ask: #8fb3ff; --warn: #e8b64c; --good: #4fc7c0; --danger: #ec6a52;
+  --c0: #3987e5; --c1: #d95926; --c2: #199e70; --c3: #c98500; --c4: #d55181; --c5: #0ca30c;
+  --k-in: #9d84f5; --k-cr: #4a3c86; --k-cw: #6f5bc4; --k-out: #c7b8ff; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --page: #0e0e10; --bg: #161618; --ink: #e9e9ec; --muted: #8d8d96; --line: #27272c; --hover: #1f1f23;
+  --card: color-mix(in srgb, var(--ink) 5%, transparent); --card-hover: color-mix(in srgb, var(--ink) 9%, transparent);
+  --ask: #8fb3ff; --warn: #e8b64c; --good: #4fc7c0; --danger: #ec6a52;
+  --c0: #3987e5; --c1: #d95926; --c2: #199e70; --c3: #c98500; --c4: #d55181; --c5: #0ca30c;
+  --k-in: #9d84f5; --k-cr: #4a3c86; --k-cw: #6f5bc4; --k-out: #c7b8ff; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 13px/1.45 var(--ui); -webkit-font-smoothing: antialiased; }
+button { all: unset; cursor: pointer; box-sizing: border-box; }
+:focus-visible { outline: 1px solid var(--ask); outline-offset: 2px; border-radius: 4px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 16px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 14px; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 14%, var(--bg)); color: var(--ink); font-size: 12.5px; }
+.banner b { color: var(--warn); font-weight: 650; }
+.banner span { color: var(--muted); }
+.stage { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; align-items: start; }
+.frame { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.cap { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; padding: 0 2px 6px; }
+.side { padding: 12px; display: grid; gap: 14px; }
+.detail { padding: 14px 18px 18px; display: grid; gap: 16px; min-height: 420px; }
+.pane-side, .pane-detail, .detail > *, .side > *, .block, .block > *, .bars, .mrow > * { min-width: 0; }
+@media (max-width: 760px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  body.r-home .pane-detail { display: none; }
+  body:not(.r-home) .pane-side { display: none; }
+  .detail { padding: 12px 12px 16px; }
+}
+@media (min-width: 761px) { .mback { display: none !important; } }
+
+/* --- sidebar parts, after panel.css --- */
+.label { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.sechead { display: flex; align-items: center; gap: 8px; container-type: inline-size; }
+.lfold { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; margin-left: -6px; padding: 2px 6px; border-radius: 5px; }
+.lfold:hover { color: var(--ink); background: var(--hover); }
+.lfold svg { width: 9px; height: 9px; flex: none; transition: transform .15s; }
+.lfold[aria-expanded="true"] svg { transform: rotate(90deg); }
+.foldsum { display: inline-flex; gap: 6px; font-size: 11.5px; color: var(--faint); white-space: nowrap; min-width: 0; overflow: hidden; }
+.foldsum .sepd::before { content: "·"; margin-right: 6px; }
+@container (max-width: 240px) { .foldsum .sepd { display: none; } }
+.seg { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 7px; background: var(--card); }
+.seg button { padding: 2px 8px; border-radius: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--bg); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+.sec { display: grid; gap: 0; }
+.tstats { display: flex; gap: 16px; padding: 6px 0 2px; }
+.tstat { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 4px; min-width: 0; }
+.tstat b { font-size: 17px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+.tstat span { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.tstat small { grid-column: 1 / -1; font-size: 11px; color: var(--faint); white-space: nowrap; }
+.tnet { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 26px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tago { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--ask); background: color-mix(in srgb, var(--ask) 14%, transparent); }
+.pill:hover { background: color-mix(in srgb, var(--ask) 24%, transparent); }
+.tnet .pill, .tnet .pending { margin-left: auto; }
+.pending { font-size: 11.5px; color: var(--muted); }
+.tchart { padding-top: 10px; }
+.thead { font-size: 11.5px; font-weight: 550; }
+.tplot { position: relative; height: 64px; margin-top: 12px; margin-right: 30px; }
+.tplot svg { display: block; width: 100%; height: 64px; overflow: visible; }
+.tgrid { stroke: color-mix(in srgb, var(--line) 80%, transparent); stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 2 3; fill: none; }
+.tbase { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; fill: none; }
+.tline { fill: none; stroke: var(--s, var(--ink)); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.tline.tall { stroke: var(--ink); stroke-width: 1.8; }
+.tline.dashed { stroke-dasharray: 4 3; }
+.ty { position: absolute; left: 0; transform: translateY(-50%); padding-right: 4px; font-size: 10px; line-height: 12px; color: var(--muted); background: var(--bg); white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.tend { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--s, var(--ink)); box-shadow: 0 0 0 2px var(--bg); transform: translate(-50%, -50%); pointer-events: none; }
+.tendv { position: absolute; left: calc(100% + 7px); transform: translateY(-50%); font-size: 11.5px; font-weight: 650; line-height: 13px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.tcols { position: absolute; inset: 0; display: flex; }
+.tcols i { flex: 1; min-width: 0; }
+.tcols i:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.taxis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); padding-top: 7px; margin-right: 30px; }
+.tlegend { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11px; color: var(--muted); padding-top: 3px; }
+.tlegend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--s); }
+.dash { display: inline-block; width: 12px; border-top: 2px solid var(--s, var(--ink)); }
+.dash.dashed { border-top-style: dashed; }
+.s0 { --s: var(--c0); } .s1 { --s: var(--c1); } .s2 { --s: var(--c2); } .s3 { --s: var(--c3); } .s4 { --s: var(--c4); } .s5 { --s: var(--c5); } .sx { --s: var(--muted); }
+.tdown { --s: color-mix(in srgb, var(--ink) 75%, var(--bg)); } .tup { --s: var(--muted); }
+.tmodels { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tmodels th { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 3px 8px; white-space: nowrap; }
+.tmodels th:first-child, .tmodels td:first-child { text-align: left; padding-left: 0; }
+.tmodels td { text-align: right; padding: 3px 0 3px 8px; white-space: nowrap; }
+.tmodels td .dot { margin-right: 6px; }
+.tmodels tbody tr:hover td { background: var(--hover); }
+.linkish { font-size: 11.5px; color: var(--muted); padding: 6px 0 0; display: inline-flex; gap: 5px; align-items: center; }
+.linkish:hover { color: var(--ink); }
+.linkish svg { width: 8px; height: 8px; transition: transform .15s; }
+.linkish[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* the one usage line */
+.uline { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 8px; border-radius: 7px; background: var(--card); font-size: 12px; min-width: 0; }
+.uline:hover { background: var(--card-hover); }
+.uline .ut { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.uline .ut b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.uline .go { color: var(--ask); font-weight: 600; white-space: nowrap; }
+.empty { color: var(--muted); }
+
+/* --- detail views: one question per screen --- */
+.vhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vhead h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+.grow { flex: 1; }
+.back { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); padding: 3px 7px 3px 4px; border-radius: 6px; background: var(--card); max-width: 100%; }
+.back:hover { color: var(--ink); background: var(--card-hover); }
+.back svg { width: 9px; height: 9px; flex: none; transform: rotate(180deg); }
+.back span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero { display: grid; gap: 2px; }
+.hero .v { font-size: 34px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.hero .v small { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.note { font-size: 12px; color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.block { display: grid; gap: 6px; }
+.figline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.figline b { color: var(--ink); font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+.ok { color: var(--good); font-weight: 600; } .ko { color: var(--danger); font-weight: 600; } .wn { color: var(--warn); font-weight: 600; }
+.chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; flex: none; }
+.chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.chip.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.mbadge { display: inline-flex; align-items: center; flex: none; height: 17px; padding: 0 5px; border-radius: 4px; font: 10.5px/17px var(--mono); color: var(--muted); background: color-mix(in srgb, var(--ink) 9%, transparent); white-space: nowrap; gap: 5px; }
+.mbadge .dot { width: 6px; height: 6px; }
+/* one-line rows: name · tokens · cost */
+.rows { display: grid; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 12px; align-items: center; padding: 8px; margin-inline: -8px; border-radius: 7px; font-variant-numeric: tabular-nums; }
+button.row:hover { background: var(--hover); }
+.row + .row { box-shadow: 0 -1px 0 color-mix(in srgb, var(--line) 70%, transparent); }
+.row .nm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row .nm .t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .nm .t.strong { font-weight: 600; }
+.row .tk { font-weight: 650; text-align: right; white-space: nowrap; }
+.row .cs { color: var(--muted); text-align: right; white-space: nowrap; }
+.ne { color: var(--faint); font-style: italic; }
+.tail { font-size: 12px; color: var(--muted); padding-top: 4px; }
+/* Details */
+.dtoggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 4px 0; }
+.dtoggle:hover { color: var(--ink); }
+.dtoggle svg { width: 8px; height: 8px; transition: transform .15s; }
+.dtoggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.tw { overflow-x: auto; }
+table.u { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+table.u th { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 5px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+table.u th:first-child, table.u td:first-child { text-align: left; padding-left: 0; }
+table.u td { text-align: right; padding: 5px 0 5px 10px; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+table.u tr.sum td { font-weight: 650; border-bottom: 0; border-top: 1px solid var(--line); }
+.details { display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--card); }
+.cta { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; color: var(--ask); padding: 2px 0; }
+.cta:hover { text-decoration: underline; }
+/* comparison */
+table.cmp { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { table.cmp { font-size: 12px; } table.cmp th small { display: none; } table.cmp td, table.cmp th { padding-left: 8px; } }
+table.cmp th { text-align: right; font-weight: 600; font-size: 12px; padding: 0 0 8px 12px; vertical-align: bottom; }
+table.cmp th small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+table.cmp th:first-child { text-align: left; padding-left: 0; }
+table.cmp td { text-align: right; padding: 9px 0 9px 12px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); white-space: nowrap; }
+table.cmp td:first-child { text-align: left; padding-left: 0; white-space: normal; color: var(--muted); }
+table.cmp td.d { font-weight: 650; }
+.d.good { color: var(--good); } .d.bad { color: var(--danger); } .d.flat { color: var(--muted); }
+.foot { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px 16px; flex-wrap: wrap; }
+@media (max-width: 420px) { .hero .v { font-size: 28px; } .row { grid-template-columns: minmax(0, 1fr) auto 56px; gap: 8px; } }
+#tip { position: fixed; z-index: 30; max-width: 260px; padding: 6px 8px; border-radius: 6px; background: var(--ink); color: var(--bg); font-size: 11.5px; line-height: 1.35; white-space: pre-line; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+/* Analytics v4: curiosity strip, by-kind table */
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(124px, 1fr)); gap: 12px 16px; padding: 12px 14px; border-radius: 9px; background: var(--card); }
+.strip .cell { display: grid; gap: 2px; min-width: 0; align-content: start; }
+.strip .k { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.strip .v { font-size: 24px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
+.strip .v.sm { font-size: 18px; }
+.strip .s { font-size: 11.5px; color: var(--muted); }
+.strip .ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mbar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; margin: 7px 0 4px; }
+.mbar i { display: block; background: var(--s); min-width: 2px; }
+.lab2 { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--faint); }
+table.kinds { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.nw { white-space: nowrap; }
+.rsub.narrow { display: none; }
+@media (max-width: 560px) { table.kinds th:nth-child(2), table.kinds td:nth-child(2), table.kinds th:nth-child(7), table.kinds td:nth-child(7) { display: none; } .rsub.narrow { display: block; } table.kinds td, table.kinds th { padding-left: 8px; } }
+table.kinds th { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 6px 12px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+table.kinds th:nth-child(-n+2), table.kinds td:nth-child(-n+2) { text-align: left; }
+table.kinds th:first-child, table.kinds td:first-child { padding-left: 0; }
+table.kinds td { text-align: right; padding: 8px 0 8px 12px; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); vertical-align: top; }
+table.kinds tr.go { cursor: pointer; }
+table.kinds tr.go:hover td { background: var(--hover); }
+table.kinds tr:last-child td { border-bottom: 0; }
+.rn { font-weight: 600; }
+.rsub { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+.eff { font-size: 11.5px; color: var(--muted); margin-left: 6px; }
+.kb { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.wsn { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.cta.quiet { color: var(--muted); font-weight: 500; }
+.detail { gap: 22px; }
+</style>
+
+<div class="wrap">
+  <div class="banner" role="note"><b>Sample data — not your usage.</b><span>Design draft of Analytics, the successor to Token Speed. All numbers come from one sample data object.</span></div>
+  <div class="stage">
+    <div class="pane-side">
+      <div class="cap">Orca Flow sidebar · compact</div>
+      <div class="frame side" id="side"></div>
+    </div>
+    <div class="pane-detail">
+      <div class="cap">Usage view · opens from the sidebar</div>
+      <div class="frame detail" id="detail"></div>
+    </div>
+  </div>
+  <div class="foot" id="foot"></div>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+// ---------------- sample data: the single source of every number on the page ----------------
+const TODAY = new Date('2026-11-23T15:40:00')
+const PRICES = {
+  version: 'sample-v1', dated: '2026-11-03',
+  // $ per million tokens. Anthropic values from the claude-api reference (cached 2026-11-03).
+  models: {
+    'claude-opus-5-5':   { in: 4,    cr: 0.20,  cw5: 5,     cw1: 8,    out: 20 },
+    'claude-sonnet-5-5': { in: 2,    cr: 0.10,  cw5: 2.5,   cw1: 4,    out: 10 },
+    'claude-haiku-5-5':  { in: 0.10, cr: 0.01,  cw5: 0.125, cw1: 0.20, out: 0.50, note: 'cache read price assumed' },
+    'gpt-6.2-astra':     { in: 1.25, cr: 0.125, cw5: 1.25,  cw1: 1.25, out: 10, note: 'assumed OpenAI price, to confirm' }
+  }
+}
+// Model ids in the order Token Speed first saw them (src/token-speed.ts keeps that order as the colour slot).
+const MODELS = {
+  'claude-opus-5-5': { label: 'Opus 5.5', slot: 0 },
+  'gpt-6-astra': { label: 'gpt-6-astra', slot: 1 },
+  'claude-sonnet-5-5': { label: 'Sonnet 5.5', slot: 2 },
+  'gpt-6.2-astra': { label: 'gpt-6.2-astra', slot: 3 },
+  'claude-haiku-5-5': { label: 'Haiku 5.5', slot: 4 },
+  null: { label: 'Unknown model', slot: -1 }
+}
+// Settings → Models as src/routing.ts stores it: the Balanced preset's three kind rows (each a model,
+// an effort and one fallback) plus one user task type. Leads keep the provider default (none set).
+const ROUTING = {
+  preset: 'Balanced',
+  lead: { label: 'provider default' },
+  rows: [
+    { id: 'simple', name: 'Simple', model: 'claude-haiku-5-5', effort: null, fallback: { model: 'claude-sonnet-5-5', effort: 'low' } },
+    { id: 'normal', name: 'Normal', model: 'claude-sonnet-5-5', effort: 'medium', fallback: { model: 'claude-opus-5-5', effort: 'medium' } },
+    { id: 'hard', name: 'Hard', model: 'claude-opus-5-5', effort: 'high', fallback: null },
+    { id: 'browser-checks', name: 'Browser checks', type: true, model: 'gpt-6.2-astra', effort: 'medium', fallback: { model: 'claude-sonnet-5-5', effort: 'medium' } }
+  ]
+}
+const KINDS = ['simple', 'normal', 'hard']
+/** The row a worker ran on, by src/routing.ts's rule: its type's row, else its kind, one up for high
+ *  risk, at least normal for large context, one more per retry (never past hard). routes.jsonl has every input. */
+function rowOf(s) {
+  if (s.role !== 'worker' && s.role !== 'retry') return null
+  if (s.type) return s.type
+  let n = KINDS.indexOf(s.kind)
+  if (s.risk === 'high') n += 1
+  if (s.context === 'large') n = Math.max(n, 1)
+  n += s.attempt ?? 0
+  return KINDS[Math.min(n, 2)]
+}
+const rowById = Object.fromEntries(ROUTING.rows.map((r) => [r.id, r]))
+const BALANCED = 'Balanced preset · lead provider default'
+// Workstreams: one Orca run in one worktree. wall = first dispatch → last worker_done (min).
+const WS = [
+  { id: 'perm', title: 'DES-340 super-admin permissions', repo: 'mono', tree: 'des-340-super-admin-permissions', run: 'run_7c1e04a2', day: 0, wall: 74, accepted: true, coverage: 1, pair: 'perm', arm: 'variant', routing: BALANCED },
+  { id: 'analytics', title: 'Analytics design draft', repo: 'orca-flow', tree: 'token-analytics-design', run: 'run_c6f68aa3', day: 0, wall: null, accepted: null, coverage: 1 },
+  { id: 'padding', title: 'Sidebar section padding', repo: 'orca-flow', tree: 'sidebar-padding', run: 'run_3b90d1f7', day: 0, wall: 22, accepted: true, coverage: 1 },
+  { id: 'billing', title: 'Billing export refactor', repo: 'mono', tree: 'billing-export', run: 'run_91aa2e05', day: 9, wall: 610, accepted: true, coverage: 0.62, pair: 'billing', arm: 'variant', routing: 'Balanced preset · lead set to Sonnet 5.5', partialWhy: 'started before Analytics recorded usage' },
+  { id: 'perm-v2', title: 'DES-340 permissions · variant run 2', repo: 'mono', tree: 'des-340-v2', run: 'run_55f0c912', day: 2, wall: 69, accepted: true, coverage: 1, pair: 'perm', arm: 'variant', routing: BALANCED },
+  { id: 'perm-v3', title: 'DES-340 permissions · variant run 3', repo: 'mono', tree: 'des-340-v3', run: 'run_0d3f7b18', day: 1, wall: 81, accepted: true, coverage: 1, pair: 'perm', arm: 'variant', routing: BALANCED },
+  { id: 'perm-b1', title: 'DES-340 permissions · baseline run 1', repo: 'mono', tree: 'des-340-b1', run: 'run_a1c2d3e4', day: 5, wall: 128, accepted: true, coverage: 1, pair: 'perm', arm: 'baseline', routing: BALANCED },
+  { id: 'perm-b2', title: 'DES-340 permissions · baseline run 2', repo: 'mono', tree: 'des-340-b2', run: 'run_b2c3d4e5', day: 4, wall: 141, accepted: false, coverage: 1, pair: 'perm', arm: 'baseline', routing: BALANCED },
+  { id: 'perm-b3', title: 'DES-340 permissions · baseline run 3', repo: 'mono', tree: 'des-340-b3', run: 'run_c3d4e5f6', day: 3, wall: 119, accepted: true, coverage: 1, pair: 'perm', arm: 'baseline', routing: BALANCED },
+  { id: 'billing-b1', title: 'Billing export · baseline run', repo: 'mono', tree: 'billing-export-b1', run: 'run_77e1b0c3', day: 34, wall: 545, accepted: true, coverage: 1, pair: 'billing', arm: 'baseline', routing: BALANCED }
+]
+const PAIRS = {
+  perm: { task: 'DES-340 super-admin permissions', checks: 'pnpm test:permissions + reviewer pass', baseline: 'Lead works alone', variant: 'Lead + up to 3 workers' },
+  billing: { task: 'Billing export refactor', checks: 'pnpm test:billing', baseline: 'Lead works alone', variant: 'Lead + 1 worker' }
+}
+// Sessions: one provider session each (one dispatch for a worker). chunks = [days ago, input, cache read,
+// cache write 5m, cache write 1h, output]. Workers carry what routes.jsonl records for their dispatch:
+// kind (or type), risk, context, attempt, whether the row's fallback ran; plus time (min) and result.
+const W_ = (o) => ({ role: 'worker', ...o })
+const S = [
+  // perm (variant run 1, today): lead with a handover, three workers, one escalated retry
+  { id: 'a1f3c2', ws: 'perm', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[0, 1800, 2950000, 0, 240000, 38000]], handoverTo: '7c9e41' },
+  { id: '7c9e41', ws: 'perm', role: 'lead', name: 'Lead, after handover', model: 'claude-opus-5-5', chunks: [[0, 600, 910000, 0, 120000, 11500]], handoverFrom: 'a1f3c2' },
+  W_({ id: 'w1b8d0', ws: 'perm', name: 'API permission checks', kind: 'normal', risk: 'high', model: 'claude-opus-5-5', min: 31, result: 'passed', chunks: [[0, 2100, 1640000, 0, 150000, 29000]] }),
+  W_({ id: 'w2e5a7', ws: 'perm', name: 'Admin UI toggles', kind: 'normal', model: 'claude-sonnet-5-5', min: 18, result: 'failed', chunks: [[0, 1500, 1210000, 0, 98000, 24000]] }),
+  { id: 'w2r9f1', ws: 'perm', role: 'retry', name: 'Admin UI toggles', kind: 'normal', attempt: 1, retryOf: 'w2e5a7', model: 'claude-opus-5-5', min: 14, result: 'passed', chunks: [[0, 900, 640000, 0, 61000, 13800]] },
+  W_({ id: 'w3c0p1', ws: 'perm', name: 'Copy fixes', kind: 'simple', fallback: true, model: 'claude-sonnet-5-5', min: 4, result: 'passed', chunks: [[0, 400, 180000, 0, 21000, 2600]] }),
+  // analytics (today, still running)
+  { id: 'c6l0a1', ws: 'analytics', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[0, 900, 1420000, 0, 140000, 17000]] },
+  W_({ id: 'c6w1d2', ws: 'analytics', name: 'Brief and prototype', kind: 'hard', model: 'claude-opus-5-5', min: null, result: 'running', chunks: [[0, 1400, 2100000, 0, 190000, 46000]] }),
+  W_({ id: 'c6w2h5', ws: 'analytics', name: 'Price lookup', kind: 'simple', model: 'claude-haiku-5-5', min: 3, result: 'passed', chunks: [[0, 3000, 180000, 22000, 0, 3200]] }),
+  W_({ id: 'c6w3x8', ws: 'analytics', name: 'Check sidebar renders', type: 'browser-checks', model: 'gpt-6.2-astra', min: 9, result: 'passed', chunks: [[0, 182000, 1020000, 0, 0, 21000]] }),
+  W_({ id: 'c6w4u0', ws: 'analytics', name: 'Fixture audit', kind: 'normal', model: null, min: 7, result: 'passed', chunks: [[0, 1200, 220000, 0, 30000, 4100]] }),
+  // padding (today, lead only)
+  { id: 'p3l0s1', ws: 'padding', role: 'lead', name: 'Lead', model: 'claude-sonnet-5-5', chunks: [[0, 300, 260000, 0, 24000, 4500]] },
+  // billing (partial, spans 9 days; lead set to Sonnet by hand)
+  { id: 'b9l0s1', ws: 'billing', role: 'lead', name: 'Lead', model: 'claude-sonnet-5-5', chunks: [[6, 700, 880000, 0, 70000, 12000], [3, 500, 610000, 0, 52000, 9000], [1, 400, 420000, 0, 38000, 7000]] },
+  W_({ id: 'b9w1o2', ws: 'billing', name: 'CSV writer', kind: 'normal', context: 'large', model: 'claude-sonnet-5-5', min: 95, result: 'passed', chunks: [[3, 1000, 1300000, 0, 120000, 22000], [1, 300, 300000, 0, 25000, 6000]] }),
+  // perm variant runs 2 and 3
+  { id: 'v2l0a1', ws: 'perm-v2', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[2, 1100, 1700000, 0, 160000, 21000]] },
+  W_({ id: 'v2w1b2', ws: 'perm-v2', name: 'API permission checks', kind: 'normal', risk: 'high', model: 'claude-opus-5-5', min: 28, result: 'passed', chunks: [[2, 1900, 1500000, 0, 140000, 27000]] }),
+  W_({ id: 'v2w2c3', ws: 'perm-v2', name: 'Admin UI toggles', kind: 'normal', model: 'claude-sonnet-5-5', min: 16, result: 'passed', chunks: [[2, 1400, 1100000, 0, 90000, 21000]] }),
+  { id: 'v3l0a1', ws: 'perm-v3', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[1, 1000, 1500000, 0, 150000, 19000]] },
+  W_({ id: 'v3w1b2', ws: 'perm-v3', name: 'API permission checks', kind: 'normal', risk: 'high', model: 'claude-opus-5-5', min: 33, result: 'passed', chunks: [[1, 2000, 1580000, 0, 150000, 28000]] }),
+  W_({ id: 'v3w2c3', ws: 'perm-v3', name: 'Admin UI toggles', kind: 'normal', model: 'claude-sonnet-5-5', min: 17, result: 'passed', chunks: [[1, 1300, 1050000, 0, 85000, 20000]] }),
+  W_({ id: 'v3w3d4', ws: 'perm-v3', name: 'Seed data', kind: 'simple', model: 'claude-haiku-5-5', min: 5, result: 'passed', chunks: [[1, 2400, 310000, 38000, 0, 6100]] }),
+  W_({ id: 'v3w4e5', ws: 'perm-v3', name: 'Check admin pages', type: 'browser-checks', model: 'gpt-6.2-astra', min: 11, result: 'passed', chunks: [[1, 140000, 760000, 0, 0, 15000]] }),
+  // perm baseline runs: the lead does everything
+  { id: 'b1l0a1', ws: 'perm-b1', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[5, 2600, 6900000, 0, 510000, 81000]] },
+  { id: 'b2l0a1', ws: 'perm-b2', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[4, 2300, 6100000, 0, 470000, 74000]] },
+  { id: 'b3l0a1', ws: 'perm-b3', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[3, 2500, 7400000, 0, 560000, 88000]] },
+  // billing baseline, a month ago
+  { id: 'bbl0a1', ws: 'billing-b1', role: 'lead', name: 'Lead', model: 'claude-opus-5-5', chunks: [[34, 2900, 7800000, 0, 600000, 96000]] },
+  // unattributed: sessions with no Orca binding (a plain terminal)
+  { id: 'u1t0p9', ws: null, role: 'none', name: 'Terminal session, ~/notes', model: 'claude-opus-5-5', chunks: [[0, 400, 520000, 0, 61000, 9000], [2, 300, 380000, 0, 40000, 6000]] },
+  { id: 'u2x4k3', ws: null, role: 'none', name: 'Terminal session, ~/scratch', model: 'gpt-6-astra', chunks: [[0, 88000, 410000, 0, 0, 7000]] },
+  { id: 'u3s8m2', ws: null, role: 'none', name: 'Terminal session, ~/mono', model: 'claude-sonnet-5-5', chunks: [[12, 500, 690000, 0, 52000, 8000]] }
+]
+
+// ---------------- the arithmetic ----------------
+const WINDOWS = { '7d': { label: '7 days', say: 'in the last 7 days', max: 7 }, '30d': { label: '30 days', say: 'in the last 30 days', max: 30 }, all: { label: 'All', say: 'since recording began', max: Infinity } }
+const CATS = [['in', 'Input', 'k-in'], ['cr', 'Cache read', 'k-cr'], ['cw', 'Cache write', 'k-cw'], ['out', 'Output', 'k-out']]
+const zero = () => ({ in: 0, cr: 0, cw5: 0, cw1: 0, out: 0, cost: 0, unpriced: 0 })
+function priced(model, c) {
+  const p = PRICES.models[model]
+  if (!p) return null
+  return (c.in * p.in + c.cr * p.cr + c.cw5 * p.cw5 + c.cw1 * p.cw1 + c.out * p.out) / 1e6
+}
+function add(a, b) { for (const k of ['in', 'cr', 'cw5', 'cw1', 'out', 'cost', 'unpriced']) a[k] += b[k]; return a }
+const total = (c) => c.in + c.cr + c.cw5 + c.cw1 + c.out
+const cw = (c) => c.cw5 + c.cw1
+/** A session's usage, clipped to the window (maxDays) or whole (Infinity). */
+function sessionUse(s, maxDays = Infinity) {
+  const u = zero()
+  for (const [d, i, r, w5, w1, o] of s.chunks) if (d < maxDays) { u.in += i; u.cr += r; u.cw5 += w5; u.cw1 += w1; u.out += o }
+  const cost = priced(s.model, u)
+  if (cost == null) u.unpriced = total(u); else u.cost = cost
+  return u
+}
+const sum = (list, maxDays) => list.reduce((a, s) => add(a, sessionUse(s, maxDays)), zero())
+const sessionsOf = (wsId) => S.filter((s) => s.ws === wsId)
+/** Days ago a finished run ended: its last recorded activity. */
+const finishDay = (w) => Math.min(...sessionsOf(w.id).flatMap((s) => s.chunks.map((c) => c[0])))
+const wsById = Object.fromEntries(WS.map((w) => [w.id, w]))
+
+// ---------------- formatting ----------------
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+function tok(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M'
+  if (n >= 1e4) return Math.round(n / 1e3) + 'K'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(Math.round(n))
+}
+const full = (n) => Math.round(n).toLocaleString('en-US')
+const usd = (n) => '$' + (n >= 100 ? Math.round(n).toLocaleString('en-US') : n.toFixed(2))
+const pct = (n) => (n < 0.1 && n > 0 ? '<0.1' : n < 10 ? n.toFixed(1) : Math.round(n)) + ' %'
+const mins = (m) => (m >= 60 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min` : `${Math.round(m)} min`)
+const dateOf = (d) => { const t = new Date(TODAY); t.setDate(t.getDate() - d); return t.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }
+const ago = (d) => (d === 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`)
+const slotCls = (m) => { const s = MODELS[m]?.slot; return s == null || s < 0 ? 'sx' : `s${s}` }
+const mlabel = (m) => MODELS[m]?.label ?? m
+const badge = (m) => `<span class="mbadge"><i class="dot ${slotCls(m)}"></i>${esc(mlabel(m))}</span>`
+const CHEV = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>'
+const costCell = (u) => {
+  if (total(u) === 0) return '<td class="ne">–</td>'
+  if (u.unpriced && !u.cost) return '<td class="ne" data-tip="No price for this model in the price table">no estimate</td>'
+  return `<td${u.unpriced ? ' data-tip="' + esc(tok(u.unpriced) + ' tokens have no price and are not in this estimate') + '"' : ''}>${usd(u.cost)}${u.unpriced ? '<span class="ne"> +?</span>' : ''}</td>`
+}
+
+// ---------------- state and routing ----------------
+const store = { get(k) { try { return localStorage.getItem(k) } catch { return null } }, set(k, v) { try { localStorage.setItem(k, v) } catch {} } }
+const ui = { win: WINDOWS[store.get('an-win')] ? store.get('an-win') : '7d', folded: false, range: '1h', traffic: false, details: false, testing: false, testedAgo: '3h ago' }
+function route() {
+  const h = location.hash.slice(1)
+  if (h === 'usage') return { view: 'usage' }
+  if (h.startsWith('ws-') && wsById[h.slice(3)]) return { view: 'ws', id: h.slice(3) }
+  if (h.startsWith('cmp-') && PAIRS[h.slice(4)]) return { view: 'cmp', id: h.slice(4) }
+  if (h.startsWith('kind-') && (rowById[h.slice(5)] || h.slice(5) === 'lead')) return { view: 'kind', id: h.slice(5) }
+  return { view: 'home' }
+}
+const go = (h) => { if (location.hash.slice(1) === h) render(); else location.hash = h }
+
+// ---------------- sidebar: throughput sample ----------------
+function series(n, base, amp, phase, gaps) {
+  return Array.from({ length: n }, (_, k) => {
+    if (gaps && gaps.some(([a, b]) => k >= a && k <= b)) return 0
+    return Math.max(0, Math.round((base + amp * Math.sin(k / 4.3 + phase) + amp * 0.45 * Math.sin(k / 1.7 + phase * 2)) * 10) / 10)
+  })
+}
+const SPEED = {
+  '1h': { 'claude-opus-5-5': series(60, 21, 9, 0.4, [[8, 12]]), 'claude-sonnet-5-5': series(60, 14, 7, 1.9, [[30, 37]]), 'gpt-6.2-astra': series(60, 6, 5, 3.1, [[0, 18]]) },
+  '24h': { 'claude-opus-5-5': series(96, 16, 10, 0.2, [[10, 30]]), 'claude-sonnet-5-5': series(96, 10, 7, 2.2, [[12, 34]]), 'gpt-6.2-astra': series(96, 4, 4, 1.1, [[0, 40]]) }
+}
+const MEDIANS = [['claude-opus-5-5', 62, 58, 1184], ['claude-sonnet-5-5', 91, 87, 902], ['gpt-6.2-astra', 118, 104, 311]]
+const NET = { up: series(60, 38, 18, 0.7), down: series(60, 210, 90, 2.4) }
+const niceMax = (v) => { const p = 10 ** Math.floor(Math.log10(v || 1)); return ([1, 2, 3, 4, 5, 6, 8, 10].find((m) => m * p >= v) ?? 10) * p }
+
+function lineChart({ title, unit, lines, n, axis, tips }) {
+  const W = 300, H = 64
+  const top = niceMax(Math.max(...lines.flatMap((l) => l.values)))
+  const pt = (k, v) => [((k / (n - 1)) * W), (H - (v / top) * H)]
+  const path = (vals) => 'M' + vals.map((v, k) => pt(k, v).map((x) => x.toFixed(1)).join(',')).join('L')
+  const svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path class="tgrid" d="M0 0.5H${W}M0 ${H / 2}H${W}"/><path class="tbase" d="M0 ${H - 0.5}H${W}"/>${lines.map((l) => `<path class="tline ${l.cls}${l.dashed ? ' dashed' : ''}" d="${path(l.values)}"/>`).join('')}</svg>`
+  const yl = [[0, `${top} ${unit}`], [50, top / 2], [100, 0]].map(([y, t]) => `<span class="ty" style="top:${y}%">${esc(t)}</span>`).join('')
+  const ends = lines.filter((l) => l.end).map((l) => { const v = l.values[n - 1]; return { l, v, y: 100 - (v / top) * 100 } }).sort((a, b) => a.y - b.y)
+  for (let k = 1; k < ends.length; k++) ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 20)
+  const dots = lines.map((l) => { const v = l.values[n - 1]; return `<i class="tend ${l.cls}" style="left:100%;top:${(100 - (v / top) * 100).toFixed(1)}%"></i>` }).join('')
+  const lab = ends.map((e) => `<span class="tendv" style="top:${Math.min(e.y, 100).toFixed(1)}%">${esc((e.l.mark ?? '') + Math.round(e.v))}</span>`).join('')
+  const cols = `<div class="tcols">${tips.map((t) => `<i data-tip="${esc(t)}"></i>`).join('')}</div>`
+  return `<div class="tchart"><div class="thead">${esc(title)}</div><div class="tplot">${svg}${yl}${dots}${lab}${cols}</div><div class="taxis">${axis.map((a) => `<span>${a}</span>`).join('')}</div></div>`
+}
+
+function sidebar() {
+  const sp = SPEED[ui.range], ids = Object.keys(sp), n = sp[ids[0]].length
+  const all = Array.from({ length: n }, (_, k) => Math.round(ids.reduce((a, id) => a + sp[id][k], 0) * 10) / 10)
+  const now = Math.round(all[n - 1])
+  const week = sum(S, 7)
+  const head = `<div class="sechead"><button class="lfold label" data-act="fold" aria-expanded="${!ui.folded}">${CHEV}<span>Analytics</span></button>${ui.folded
+    ? `<span class="foldsum">${now} tok/s<span class="sepd">${tok(total(week))} this week</span></span>`
+    : `<span class="seg" role="group" aria-label="Range">${['1h', '24h'].map((r) => `<button data-range="${r}" aria-pressed="${r === ui.range}">${r}</button>`).join('')}</span>`}</div>`
+  const linear = `<div class="sechead"><button class="lfold label" aria-expanded="false" data-tip="Another sidebar section, shown for context">${CHEV}<span>Linear</span></button><span class="foldsum">3 issues</span></div>`
+  if (ui.folded) return `${linear}<div class="sec">${head}</div>`
+  const stats = `<div class="tstats"><div class="tstat" data-tip="Output tokens per second over the last minute, summed over every agent"><b>${now}</b><span>tok/s</span><small>agents, last min</small></div>`
+    + `<div class="tstat" data-tip="Network traffic of 4 agent processes over the last 30 s sample (nettop)"><b>↑${Math.round(NET.up[59])} ↓${Math.round(NET.down[59])}</b><span>kbit/s</span><small>agent traffic</small></div></div>`
+  const net = `<div class="tnet"><span data-tip="Internet, tested by networkQuality · responsiveness 1,420 RPM">Internet ↓412 ↑48 Mbit/s · 18 ms</span><span class="tago">tested ${ui.testedAgo}</span>${ui.testing ? '<span class="pending">testing…</span>' : '<button class="pill" data-act="test" data-tip="Runs networkQuality (about 25 s and 100+ MB of traffic). Sample only here.">Test</button>'}</div>`
+  const lines = ids.map((id) => ({ cls: slotCls(id), values: sp[id] })).concat([{ cls: 'tall', values: all, end: true }])
+  const axis = ui.range === '1h' ? ['1 h ago', '30 min ago', 'now'] : ['24 h ago', '12 h ago', 'now']
+  const tips = all.map((v, k) => `${ui.range === '1h' ? `${n - 1 - k} min ago` : `${Math.round((n - 1 - k) / 4)} h ago`} · all agents ${Math.round(v)} tok/s\n${ids.map((id) => `${mlabel(id)} ${Math.round(sp[id][k])}`).join(' · ')}`)
+  const chart = lineChart({ title: 'Output tokens per second, all agents', unit: 'tok/s', lines, n, axis, tips })
+    + `<div class="tlegend"><span><i class="dash"></i>all agents</span>${ids.map((id) => `<span><i class="dot ${slotCls(id)}"></i>${esc(mlabel(id))}</span>`).join('')}</div>`
+  const rows = MEDIANS.map(([m, h1, h24, c]) => `<tr data-tip="${esc(`${m} · ${c} responses in 24 h`)}"><td><i class="dot ${slotCls(m)}"></i>${esc(mlabel(m))}</td><td>${h1}</td><td>${h24}</td></tr>`).join('')
+  const table = `<table class="tmodels"><thead><tr><th data-tip="Output tokens per second of one response; half the responses were faster">Speed per response</th><th>1 h</th><th>24 h</th></tr></thead><tbody>${rows}</tbody></table>`
+  const traffic = `<button class="linkish" data-act="traffic" aria-expanded="${ui.traffic}">${CHEV}Agent traffic chart</button>`
+    + (ui.traffic ? lineChart({ title: 'Agent network traffic (kbit/s)', unit: 'kbit/s', n: 60, axis: ['1 h ago', '30 min ago', 'now'],
+      lines: [{ cls: 'tdown', values: NET.down, end: true, mark: '↓' }, { cls: 'tup', values: NET.up, dashed: true, end: true, mark: '↑' }],
+      tips: NET.down.map((v, k) => `${59 - k} min ago · ↓${Math.round(v)} ↑${Math.round(NET.up[k])} kbit/s`) }) + '<div class="tlegend"><span><i class="dash tdown"></i>down</span><span><i class="dash dashed tup"></i>up</span></div>' : '')
+  const usage = `<button class="uline" data-go="usage" data-tip="Tokens recorded in the last 7 days, estimated at API list prices (not your bill). Opens the Usage view."><span class="ut">This week <b>${tok(total(week))}</b> tokens · ≈ ${usd(week.cost)}</span><span class="go">Usage ›</span></button>`
+  return `${linear}<div class="sec">${head}${stats}${net}${chart}${table}${traffic}${usage}</div>`
+}
+
+// ---------------- shared bits ----------------
+const winSeg = () => `<span class="seg" role="group" aria-label="Time window" data-tip="The window sets the totals (usage inside the window) and which finished tasks and workstreams are counted (by finish date, at their whole totals).">${Object.entries(WINDOWS).map(([k, w]) => `<button data-win="${k}" aria-pressed="${k === ui.win}">${w.label}</button>`).join('')}</span>`
+const backBtn = (h, label) => `<button class="back" data-go="${h}">${CHEV}<span>${esc(label)}</span></button>`
+const mback = '<button class="back mback" data-go="">' + CHEV + '<span>Sidebar</span></button>'
+const costTxt = (x) => (x.unpriced && !x.cost ? '<span class="ne" data-tip="No price for this model in the price table">no estimate</span>' : `<span${x.unpriced ? ` data-tip="${esc(tok(x.unpriced) + ' tokens have no price and are not in this estimate')}"` : ''}>${usd(x.cost)}${x.unpriced ? '+' : ''}</span>`)
+const detailsBtn = () => `<button class="dtoggle" data-act="details" aria-expanded="${ui.details}">${CHEV}Details</button>`
+const partialChip = (w) => (w.coverage < 1 ? `<span class="chip warn" data-tip="${esc(`${Math.round(w.coverage * 100)} % of this run was recorded: it ${w.partialWhy}. Its numbers are a floor.`)}">Partial ${Math.round(w.coverage * 100)} %</span>` : '')
+const catHead = `<th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total</th>`
+const catCells = (u) => `<td>${full(u.in)}</td><td>${full(u.cr)}</td><td>${full(cw(u))}</td><td>${full(u.out)}</td><td>${full(total(u))}</td>`
+const median = (xs) => { const a = xs.filter((x) => x != null).sort((p, q) => p - q); if (!a.length) return null; const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2 }
+const endDay = (s) => Math.min(...s.chunks.map((c) => c[0]))
+const finished = (s, W) => s.result !== 'running' && endDay(s) < W.max
+const doneWs = (W) => WS.filter((w) => w.accepted != null && finishDay(w) < W.max)
+const choiceTxt = (m, effort) => `${badge(m)}${effort ? `<span class="eff">${esc(effort)}</span>` : ''}`
+/** The model and effort a worker actually started on: its row's, or the row's fallback. */
+const ranOn = (s) => { const r = rowById[rowOf(s)]; return s.fallback ? r.fallback : { model: r.model, effort: r.effort } }
+function kindText(s) {
+  const r = rowOf(s)
+  if (!r) return ''
+  if (s.type) return rowById[r].name
+  const bumps = [s.risk === 'high' ? 'high risk' : '', s.context === 'large' && s.kind === 'simple' ? 'large context' : '', s.attempt ? 'retry' : ''].filter(Boolean)
+  return `${s.kind}${r !== s.kind ? ` → ${r}` : ''}${bumps.length ? ` · ${bumps.join(', ')}` : ''}${s.fallback ? ' · fallback' : ''}`
+}
+const kb = (s) => (rowOf(s) ? `<span class="kb" data-tip="${esc('Task kind as dispatched → the Settings → Models row it ran on (src/routing.ts: high risk is one row up, a retry one more)')}">${esc(kindText(s))}</span>` : '')
+
+// ---------------- one routing row's numbers ----------------
+function rowStats(id, W) {
+  if (id === 'lead') {
+    const ws = doneWs(W)
+    const per = ws.map((w) => ({ w, u: sum(sessionsOf(w.id).filter((s) => s.role === 'lead')) }))
+    const models = {}; for (const s of S) if (s.role === 'lead' && ws.some((w) => w.id === s.ws)) models[s.model] = (models[s.model] ?? 0) + 1
+    return { id, n: ws.length, tasks: per, tok: median(per.map((p) => total(p.u))), cost: median(per.filter((p) => !p.u.unpriced).map((p) => p.u.cost)), fail: null, time: median(ws.map((w) => w.wall)),
+      model: Object.entries(models).sort((a, b) => b[1] - a[1])[0]?.[0] }
+  }
+  const tasks = S.filter((s) => rowOf(s) === id && finished(s, W))
+  const running = S.filter((s) => rowOf(s) === id && s.result === 'running').length
+  const priced = tasks.filter((s) => s.model && PRICES.models[s.model])
+  return { id, n: tasks.length, tasks, running, tok: median(tasks.map((s) => total(sessionUse(s)))), cost: median(priced.map((s) => sessionUse(s).cost)), unpriced: tasks.length - priced.length,
+    fail: tasks.length ? tasks.filter((s) => s.result === 'failed').length / tasks.length : null, failN: tasks.filter((s) => s.result === 'failed').length,
+    time: median(tasks.map((s) => s.min)), fb: tasks.filter((s) => s.fallback).length, retries: tasks.filter((s) => s.role === 'retry').length }
+}
+
+// ---------------- comparison table (used on Usage and on its own screen) ----------------
+function armStats(pairId, arm) {
+  const runs = WS.filter((w) => w.pair === pairId && w.arm === arm).map((w) => ({ w, u: sum(sessionsOf(w.id)) }))
+  const all = runs.reduce((a, r) => add(a, r.u), zero())
+  const ok = runs.filter((r) => r.w.accepted)
+  return { runs, all, n: runs.length, ok: ok.length, tokPer: ok.length ? total(all) / ok.length : null, costPer: ok.length ? all.cost / ok.length : null, wall: median(ok.map((r) => r.w.wall)),
+    coverage: Math.min(...runs.map((r) => r.w.coverage)), routing: [...new Set(runs.map((r) => r.w.routing))] }
+}
+function cmpBlock(id) {
+  const p = PAIRS[id], b = armStats(id, 'baseline'), v = armStats(id, 'variant')
+  const why = []
+  if (!(b.routing.length === 1 && v.routing.length === 1 && b.routing[0] === v.routing[0])) why.push('the models changed between the arms')
+  if (Math.min(b.coverage, v.coverage) < 1) why.push(`one run is only ${Math.round(Math.min(b.coverage, v.coverage) * 100)} % recorded`)
+  if (b.n < 3 || v.n < 3) why.push(`${b.n} vs ${v.n} runs is too few`)
+  const pctD = (bv, vv, fmt) => { const r = ((vv - bv) / bv) * 100; return `<td>${fmt(bv)}</td><td>${fmt(vv)}</td><td class="d ${Math.abs(r) < 1 ? 'flat' : r < 0 ? 'good' : 'bad'}">${Math.abs(r) < 1 ? 'same' : `${r < 0 ? '−' : '+'}${Math.round(Math.abs(r))} %`}</td>` }
+  const passD = v.ok - b.ok
+  const head = `<thead><tr><th></th><th>Baseline<small>${esc(p.baseline)} · ${b.n} run${b.n === 1 ? '' : 's'}</small></th><th>Variant<small>${esc(p.variant)} · ${v.n} run${v.n === 1 ? '' : 's'}</small></th>${why.length ? '' : '<th>Change</th>'}</tr></thead>`
+  const html = why.length
+    ? `<div class="tw"><table class="cmp">${head}</table></div><div class="note"><b class="wn">Not comparable:</b> ${esc(why.join(', '))}, so no change is shown.</div>`
+    : `<div class="tw"><table class="cmp">${head}<tbody>
+      <tr><td>Tokens per accepted run</td>${pctD(b.tokPer, v.tokPer, tok)}</tr>
+      <tr><td>Est. cost per accepted run</td>${pctD(b.costPer, v.costPer, usd)}</tr>
+      <tr><td>Time per run</td>${pctD(b.wall, v.wall, mins)}</tr>
+      <tr><td>Runs that passed</td><td>${b.ok} of ${b.n}</td><td>${v.ok} of ${v.n}</td><td class="d ${passD > 0 ? 'good' : passD < 0 ? 'bad' : 'flat'}">${passD === 0 ? 'same' : `${passD > 0 ? '+' : '−'}${Math.abs(passD)}`}</td></tr></tbody></table></div>
+      <div class="note">${b.n} vs ${v.n} runs, same task and checks, same models${b.n < 5 || v.n < 5 ? ': small sample' : ''}.</div>`
+  return { p, b, v, why, html }
+}
+
+// ---------------- usage: routing and delegation first, curiosity on top ----------------
+function usageView() {
+  const W = WINDOWS[ui.win]
+  const u = sum(S, W.max), un = sum(S.filter((s) => !s.ws), W.max)
+  const done = doneWs(W).map((w) => ({ w, whole: sum(sessionsOf(w.id)) })).sort((a, b) => total(b.whole) - total(a.whole))
+  // 0. curiosity strip
+  const byModel = {}; for (const s of S) byModel[String(s.model)] = (byModel[String(s.model)] ?? 0) + total(sessionUse(s, W.max))
+  const shares = Object.entries(byModel).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
+  const top2 = shares.slice(0, 2), rest = shares.slice(2).reduce((a, [, v]) => a + v, 0)
+  const T = total(u) || 1
+  const mbar = `<div class="mbar">${top2.map(([m, v]) => `<i class="${slotCls(m === 'null' ? null : m)}" style="flex:${v / T}"></i>`).join('')}${rest ? `<i class="sx" style="flex:${rest / T}"></i>` : ''}</div>`
+  const mtxt = top2.map(([m, v]) => `<span class="nw">${esc(mlabel(m === 'null' ? null : m))} ${Math.round((v / T) * 100)} %</span>`).join(' · ') + (rest ? ` · <span class="nw">other ${Math.round((rest / T) * 100)} %</span>` : '')
+  const inputs = u.in + u.cr + cw(u)
+  const tasksDone = S.filter((s) => s.ws && finished(s, W) && doneOrWorker(s, W))
+  const priciest = tasksDone.map((s) => ({ s, c: sessionUse(s).cost })).sort((a, b) => b.c - a.c)[0]
+  const strip = `<div class="strip">
+    <div class="cell"><span class="k">Tokens · ${esc(W.label)}</span><span class="v" data-tip="${esc(`Includes Unattributed ${tok(total(un))} (sessions with no Orca binding).`)}">${tok(total(u))}</span><span class="s" data-tip="${esc(`Price table ${PRICES.version}, dated ${PRICES.dated}.${u.unpriced ? ` Excludes ${tok(u.unpriced)} tokens with no price.` : ''} Claude Max and ChatGPT plans are flat subscriptions.`)}">≈ ${usd(u.cost)} at API prices · not your bill</span></div>
+    <div class="cell"><span class="k">Biggest workstream</span><span class="v sm">${done[0] ? tok(total(done[0].whole)) : '–'}</span><span class="s ell">${done[0] ? esc(done[0].w.title) : 'none finished'}</span></div>
+    <div class="cell"><span class="k">Model share</span>${mbar}<span class="s">${mtxt}</span></div>
+    <div class="cell"><span class="k">Input from cache</span><span class="v sm">${Math.round((u.cr / (inputs || 1)) * 100)} %</span><span class="s">cache reads of all input tokens</span></div>
+    <div class="cell"><span class="k">Most expensive task</span><span class="v sm">${priciest ? usd(priciest.c) : '–'}</span><span class="s ell">${priciest ? `${esc(priciest.s.role === 'lead' ? 'Lead' : priciest.s.name)} · ${esc(wsById[priciest.s.ws].title)}` : ''}</span></div>
+  </div>`
+  // 1. by task kind
+  const rowsHtml = [...ROUTING.rows.map((r) => r.id), 'lead'].map((id) => {
+    const st = rowStats(id, W), r = rowById[id]
+    const name = id === 'lead' ? 'Lead' : r.name
+    const model = id === 'lead' ? `${badge(st.model)}<span class="eff">${esc(ROUTING.lead.label)}</span>` : choiceTxt(r.model, r.effort)
+    const fb = id !== 'lead' && st.fb ? `<span class="rsub">fallback ${esc(mlabel(r.fallback.model))}${r.fallback.effort ? ' · ' + r.fallback.effort : ''} ran for ${st.fb} of ${st.n}</span>` : ''
+    const few = st.n > 0 && st.n < 3
+    const cells = !st.n ? '<td colspan="5" class="ne">no finished tasks</td>'
+      : few ? `<td${st.running ? ` data-tip="${st.running} more running"` : ''}>${st.n}</td><td colspan="4" class="ne">few tasks</td>`
+      : `<td data-tip="${esc(`${st.n} finished${st.retries ? `, incl. ${st.retries} escalated retr${st.retries === 1 ? 'y' : 'ies'}` : ''}${st.running ? `; ${st.running} running` : ''}`)}">${st.n}</td><td>${tok(st.tok)}</td><td${st.unpriced ? ` data-tip="${st.unpriced} task with no price left out"` : ''}>${st.cost == null ? '<span class="ne">no estimate</span>' : usd(st.cost)}</td><td${st.failN ? ` data-tip="${st.failN} of ${st.n} failed its checks and was retried one row up"` : ''}>${st.fail == null ? '—' : Math.round(st.fail * 100) + ' %'}</td><td>${mins(st.time)}</td>`
+    return `<tr class="go" data-go="kind-${id}" tabindex="0"><td><span class="rn">${esc(name)}</span><span class="rsub narrow">${esc(mlabel(id === 'lead' ? st.model : r.model))}${id === 'lead' ? '' : r.effort ? ' · ' + esc(r.effort) : ''}</span>${id === 'lead' ? '<span class="rsub">per workstream</span>' : ''}${fb}</td><td>${model}</td>${cells}</tr>`
+  }).join('')
+  const kinds = `<div class="block"><div class="label">By task kind <span class="lab2">· Settings → Models, ${esc(ROUTING.preset)} · medians per finished task</span></div>
+    <div class="tw"><table class="kinds"><thead><tr><th>Row</th><th>Model</th><th>Tasks</th><th>Tokens</th><th>Cost</th><th>Failed</th><th>Time</th></tr></thead><tbody>${rowsHtml}</tbody></table></div></div>`
+  // 2. lead overhead
+  const oh = done.filter((d) => sessionsOf(d.w.id).some((s) => s.role !== 'lead')).map((d) => ({ ...d, lead: total(sum(sessionsOf(d.w.id).filter((s) => s.role === 'lead'))) })).map((d) => ({ ...d, share: d.lead / total(d.whole) }))
+  const ohTop = [...oh].sort((a, b) => b.share - a.share).slice(0, 3)
+  const lead = `<div class="block"><div class="label">Lead overhead</div>
+    ${oh.length ? `<div class="figline"><span><b>${Math.round(median(oh.map((o) => o.share)) * 100)} %</b> of a workstream's tokens go to its lead (median of ${oh.length} with workers)</span></div>
+    <div class="rows">${ohTop.map((o) => `<button class="row" data-go="ws-${o.w.id}"><span class="nm"><span class="t">${esc(o.w.title)}</span></span><span class="tk">${Math.round(o.share * 100)} %</span><span class="cs">${tok(o.lead)}</span></button>`).join('')}</div>
+    <div class="note" data-tip="Runs where the lead works alone are 100 % lead by definition and are left out.">High = coordination costs more than the work itself.</div>` : '<div class="note">No finished workstream with workers in this window.</div>'}</div>`
+  // 3. policy comparison
+  const pairIds = Object.keys(PAIRS).sort((a, c) => (cmpBlock(a).why.length - cmpBlock(c).why.length))
+  const main = cmpBlock(pairIds[0])
+  const policy = `<div class="block"><div class="label">Policy comparison <span class="lab2">· ${esc(main.p.task)}</span></div>${main.html}
+    <div class="links"><button class="cta" data-go="cmp-${pairIds[0]}">Open with runs ›</button>${pairIds.slice(1).map((id) => `<button class="cta quiet" data-go="cmp-${id}">${esc(PAIRS[id].task)} ›</button>`).join('')}</div></div>`
+  // 4. biggest workstreams, demoted
+  const running = WS.filter((w) => w.accepted == null)
+  const big = `<div class="block"><div class="label">Biggest workstreams</div><div class="rows">${done.slice(0, 5).map((r) => `<button class="row" data-go="ws-${r.w.id}"><span class="nm"><span class="t">${esc(r.w.title)}</span>${partialChip(r.w)}${r.w.accepted === false ? '<span class="chip bad">failed</span>' : ''}</span><span class="tk">${tok(total(r.whole))}</span><span class="cs">${costTxt(r.whole)}</span></button>`).join('') || '<div class="note">No workstream finished in this window.</div>'}</div>
+    ${running.length ? `<div class="tail">${running.length} running · ${tok(total(sum(running.flatMap((w) => sessionsOf(w.id)))))} so far</div>` : ''}</div>`
+  return `<div class="vhead">${mback}<h1>Usage</h1><span class="grow"></span>${winSeg()}</div>${strip}${kinds}${lead}${policy}${big}`
+}
+/** A task for "most expensive task": a worker dispatch, or a lead of a finished workstream. */
+const doneOrWorker = (s, W) => s.role !== 'lead' || doneWs(W).some((w) => w.id === s.ws)
+
+// ---------------- one routing row: its tasks ----------------
+function kindView(id) {
+  const W = WINDOWS[ui.win], st = rowStats(id, W), r = rowById[id]
+  const name = id === 'lead' ? 'Lead' : r.name
+  const model = id === 'lead' ? `${badge(st.model)}<span class="eff">${esc(ROUTING.lead.label)}</span>` : `${choiceTxt(r.model, r.effort)}${r.fallback ? `<span class="note">fallback ${esc(mlabel(r.fallback.model))}${r.fallback.effort ? ' · ' + r.fallback.effort : ''}</span>` : ''}`
+  const items = id === 'lead'
+    ? st.tasks.map((t) => ({ go: t.w.id, name: 'Lead', ws: t.w.title, u: t.u, res: t.w.accepted ? 'passed' : 'failed' }))
+    : st.tasks.map((s) => ({ go: s.ws, name: s.role === 'retry' ? `retry of ${s.name}` : s.name, ws: wsById[s.ws].title, u: sessionUse(s), res: s.result, s }))
+  items.sort((a, b) => total(b.u) - total(a.u))
+  const list = items.map((t) => `<button class="row" data-go="ws-${t.go}"><span class="nm"><span class="t">${esc(t.name)}</span><span class="wsn">${esc(t.ws)}</span>${t.res === 'failed' ? '<span class="chip bad">failed</span>' : ''}</span><span class="tk">${tok(total(t.u))}</span><span class="cs">${costTxt(t.u)}</span></button>`).join('')
+  const details = ui.details && id !== 'lead' ? `<div class="details"><div class="tw"><table class="u"><thead><tr><th>Task</th><th>Dispatched as</th><th>Ran on</th><th>Time</th></tr></thead><tbody>${items.map((t) => { const c = ranOn(t.s); return `<tr><td>${esc(t.name)}</td><td>${esc(t.s.type ? rowById[t.s.type].name : t.s.kind + (t.s.risk === 'high' ? ', high risk' : '') + (t.s.context === 'large' ? ', large context' : '') + (t.s.attempt ? `, retry ${t.s.attempt}` : ''))}</td><td>${esc(mlabel(t.s.model))}${c.effort ? ' · ' + esc(c.effort) : ''}${t.s.fallback ? ' (fallback)' : ''}</td><td>${mins(t.s.min)}</td></tr>` }).join('')}</tbody></table></div>
+    <div class="note">The row is the one src/routing.ts picked from what routes.jsonl records: kind or type, one row up for high risk, at least normal for large context, one more per retry.${st.unpriced ? ' A log line without a model id is counted with no price.' : ''}</div></div>` : ''
+  return `<div class="vhead">${backBtn('usage', 'Usage')}<span class="grow"></span>${winSeg()}</div>
+    <div class="block"><div class="vhead"><h1>${esc(name)}</h1>${model}</div>
+    <div class="figline">${st.n ? `<span><b>${st.n}</b> finished</span>${st.n >= 3 ? `<span>median ${tok(st.tok)} tokens</span><span>${st.cost == null ? 'no estimate' : '≈ ' + usd(st.cost)}</span>${st.fail != null ? `<span>${Math.round(st.fail * 100)} % failed</span>` : ''}` : '<span>few tasks: no medians yet</span>'}` : '<span>No finished tasks in this window.</span>'}</div></div>
+    <div class="block"><div class="rows">${list}</div>${st.running ? `<div class="tail">${st.running} running</div>` : ''}${id !== 'lead' ? detailsBtn() + details : ''}</div>`
+}
+
+// ---------------- workstream: where did it go? ----------------
+function wsView(id) {
+  const w = wsById[id], ss = sessionsOf(id), whole = sum(ss)
+  const order = { lead: 0, worker: 1, retry: 2 }
+  const people = [...ss].sort((a, b) => order[a.role] - order[b.role])
+  const label = (s) => s.role === 'retry' ? `retry of ${s.name}` : s.name
+  const tip = (s) => `Session ${s.id}${s.handoverTo ? `\nHanded over to ${s.handoverTo}: each session keeps the usage it spent.` : ''}${s.result === 'failed' ? '\nFailed its checks and was retried one row up.' : ''}${s.model ? '' : '\nThe log had no model id: counted, no price.'}`
+  const rows = people.map((s) => { const u = sessionUse(s); return `<div class="row" data-tip="${esc(tip(s))}"><span class="nm">${badge(s.model)}<span class="t">${esc(label(s))}</span>${kb(s)}</span><span class="tk">${tok(total(u))}</span><span class="cs">${costTxt(u)}</span></div>` }).join('')
+  const result = w.accepted === true ? '<span class="ok">accepted</span>' : w.accepted === false ? '<span class="ko">failed</span>' : '<span>running</span>'
+  const hand = ss.find((s) => s.handoverTo)
+  const details = ui.details ? `<div class="details"><div class="tw"><table class="u"><thead><tr><th>Who</th>${catHead}</tr></thead><tbody>${people.map((s) => `<tr><td>${esc(label(s))}</td>${catCells(sessionUse(s))}</tr>`).join('')}<tr class="sum"><td>Whole run</td>${catCells(whole)}</tr></tbody></table></div>
+    <div class="note">Each provider session is counted once (deduped by session + message id); worker usage rolls up here, never into the lead row.${hand ? ` The lead handed over from <span class="mono">${hand.id}</span> to <span class="mono">${hand.handoverTo}</span>; each keeps what it spent.` : ''}${w.coverage < 1 ? ` Only ${Math.round(w.coverage * 100)} % of this run was recorded (${esc(w.partialWhy)}).` : ''}</div></div>` : ''
+  const other = w.arm === 'baseline' ? 'variant' : 'baseline'
+  return `<div class="vhead">${backBtn('usage', 'Usage')}</div>
+    <div class="block"><div class="vhead"><h1>${esc(w.title)}</h1>${partialChip(w)}</div>
+    <div class="figline"><span><b>${tok(total(whole))}</b> tokens</span><span>≈ ${costTxt(whole)}</span>${w.wall ? `<span>${mins(w.wall)}</span>` : ''}${result}</div></div>
+    <div class="block"><div class="rows">${rows}</div>${detailsBtn()}${details}</div>
+    ${w.pair ? `<div><button class="cta" data-go="cmp-${w.pair}">Compare with ${other} ›</button></div>` : ''}`
+}
+
+// ---------------- comparison: did the policy change help? ----------------
+function cmpView(id) {
+  const { p, b, v, why, html } = cmpBlock(id)
+  const runRows = ['baseline', 'variant'].flatMap((k) => (k === 'baseline' ? b : v).runs.map((r) => `<tr><td>${k} · ${dateOf(finishDay(r.w))}</td><td>${full(total(r.u))}</td><td>${costTxt(r.u)}</td><td>${mins(r.w.wall)}</td><td>${r.w.accepted ? 'passed' : 'failed'}</td><td>${Math.round(r.w.coverage * 100)} %</td></tr>`)).join('')
+  const details = ui.details ? `<div class="details"><div class="tw"><table class="u"><thead><tr><th>Run</th><th>Tokens</th><th>Est. cost</th><th>Time</th><th>Checks</th><th>Recorded</th></tr></thead><tbody>${runRows}</tbody></table></div>
+    <div class="note">Per accepted run = all tokens of the arm, failed runs and retries included, ÷ runs that passed. Time = median of runs that passed. Change = variant − baseline. Checks: <span class="mono">${esc(p.checks)}</span>.</div></div>` : ''
+  const backTo = WS.find((w) => w.pair === id && (w.id === 'perm' || w.id === 'billing'))
+  return `<div class="vhead">${backBtn('usage', 'Usage')}${backBtn(`ws-${backTo.id}`, backTo.title)}</div>
+    <div class="block"><div class="label">Did the delegation change help?</div><h1 style="font-size:17px;margin:0">${esc(p.task)}</h1></div>
+    <div class="block">${html}${detailsBtn()}${details}</div>`
+}
+
+// ---------------- consistency check: every level must add up ----------------
+function check() {
+  const errs = []
+  const close = (a, b) => Math.abs(a - b) < 1e-6
+  for (const w of WS) {
+    const ss = sessionsOf(w.id), t = sum(ss)
+    const byRole = ['lead', 'worker', 'retry'].map((r) => sum(ss.filter((s) => s.role === r))).reduce(add, zero())
+    const bm = {}; for (const s of ss) bm[s.model] = add(bm[s.model] ?? zero(), sessionUse(s))
+    const byModel = Object.values(bm).reduce(add, zero())
+    for (const k of ['in', 'cr', 'cw5', 'cw1', 'out', 'cost', 'unpriced']) { if (!close(t[k], byRole[k])) errs.push(`${w.id} roles ${k}`); if (!close(t[k], byModel[k])) errs.push(`${w.id} models ${k}`) }
+  }
+  for (const [k, W] of Object.entries(WINDOWS)) {
+    const t = sum(S, W.max), parts = WS.map((w) => sum(sessionsOf(w.id), W.max)).concat([sum(S.filter((s) => !s.ws), W.max)]).reduce(add, zero())
+    if (!close(total(t), total(parts)) || !close(t.cost, parts.cost)) errs.push(`window ${k}`)
+    // every attributed session sits in exactly one routing row or the lead row
+    const byRow = [...ROUTING.rows.map((r) => sum(S.filter((s) => rowOf(s) === r.id), W.max)), sum(S.filter((s) => s.role === 'lead'), W.max)].reduce(add, zero())
+    if (!close(total(byRow), total(sum(S.filter((s) => s.ws), W.max)))) errs.push(`rows ${k}`)
+  }
+  // every worker ran the model its Settings row (or that row's fallback) names
+  for (const s of S) if (rowOf(s) && s.model && s.model !== ranOn(s).model) errs.push(`model ${s.id}`)
+  return errs
+}
+
+// ---------------- render ----------------
+function render() {
+  const r = route()
+  document.body.className = r.view === 'home' ? 'r-home' : ''
+  document.getElementById('side').innerHTML = sidebar()
+  document.getElementById('detail').innerHTML = r.view === 'ws' ? wsView(r.id) : r.view === 'cmp' ? cmpView(r.id) : r.view === 'kind' ? kindView(r.id) : usageView()
+  const errs = check()
+  document.getElementById('foot').innerHTML = `<span data-tip="Anthropic list prices; OpenAI and Haiku cache-read prices assumed; gpt-6-astra and unknown models have no price.">Prices ${PRICES.version}, ${PRICES.dated}</span>`
+    + `<span class="${errs.length ? 'ko' : ''}">${errs.length ? 'Totals check failed: ' + esc(errs.join(', ')) : 'Totals check: every level adds up, every worker on its Settings row'}</span>`
+}
+window.addEventListener('hashchange', () => { ui.details = false; render(); window.scrollTo({ top: 0 }) })
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-go],[data-win],[data-range],[data-act]')
+  if (!t) return
+  if (t.dataset.go != null) return go(t.dataset.go)
+  if (t.dataset.win) { ui.win = t.dataset.win; store.set('an-win', ui.win); return render() }
+  if (t.dataset.range) { ui.range = t.dataset.range; return render() }
+  const a = t.dataset.act
+  if (a === 'fold' && t.closest('.sec')) { ui.folded = !ui.folded; return render() }
+  if (a === 'traffic') { ui.traffic = !ui.traffic; return render() }
+  if (a === 'details') { ui.details = !ui.details; return render() }
+  if (a === 'test') { ui.testing = true; render(); setTimeout(() => { ui.testing = false; ui.testedAgo = 'just now'; render() }, 2200) }
+})
+document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches?.('tr[data-go]')) go(e.target.dataset.go) })
+// tooltips
+const tip = document.getElementById('tip')
+const showTip = (el, x, y) => { tip.textContent = el.dataset.tip; tip.hidden = false; const r = tip.getBoundingClientRect(); tip.style.left = Math.max(8, Math.min(x + 12, innerWidth - r.width - 8)) + 'px'; tip.style.top = (y + 16 + r.height > innerHeight ? y - r.height - 10 : y + 16) + 'px' }
+document.addEventListener('pointermove', (e) => { const el = e.target.closest?.('[data-tip]'); if (el) showTip(el, e.clientX, e.clientY); else tip.hidden = true })
+document.addEventListener('focusin', (e) => { const el = e.target.closest?.('[data-tip]'); if (el) { const r = el.getBoundingClientRect(); showTip(el, r.left, r.bottom) } })
+document.addEventListener('focusout', () => (tip.hidden = true))
+render()
+</script>
+

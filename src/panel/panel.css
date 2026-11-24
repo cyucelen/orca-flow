@@ -465,6 +465,31 @@ button.item.coord { padding: 5px 6px; }
 .btn.warn { background: color-mix(in srgb, var(--warn) 85%, #000); border-color: transparent; color: #1a1406; }
 .btn.warn:hover { background: var(--warn); }
 
+/* update approval: capped to the viewport; the details scroll, the footer never does */
+.dialog.approval { display: flex; flex-direction: column; max-width: min(360px, 100%); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
+.approval-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.approval-head { display: grid; grid-template-columns: 32px 1fr; gap: 12px; padding: 16px 16px 10px; }
+.approval-head p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.approval-scroll { max-height: 40vh; min-height: 48px; overflow: auto; margin: 0 16px; padding: 8px; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: color-mix(in srgb, var(--ink) 5%, transparent);
+  user-select: text; -webkit-user-select: text; }
+.approval-main:focus-visible { outline: 2px solid color-mix(in srgb, var(--ask) 70%, transparent); outline-offset: -2px; }
+.approval-scroll:focus-visible { outline: 2px solid color-mix(in srgb, var(--ask) 70%, transparent); outline-offset: 1px; }
+.approval-cmd { display: grid; gap: 4px; padding: 10px 16px 12px; }
+.approval-label { font-size: 11px; color: var(--faint); }
+.approval-cmd code { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
+/* Footer: Approve and update gets its own full-width row when narrow, the other two share one. */
+.dialog.approval .dialog-actions { flex: none; flex-wrap: wrap; }
+@media (max-width: 340px) {
+  .dialog.approval .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; }
+  .dialog.approval #approval-ok { grid-column: 1 / -1; grid-row: 1; }
+  .dialog.approval .btn { padding: 5px 8px; text-align: center; }
+}
+/* Short viewports: everything between the title and the footer scrolls as one region. */
+@media (max-height: 460px) {
+  .approval-scroll { max-height: none; overflow: visible; }
+}
+
 /* inline row status: running, done, failed; sits where the row's time or count normally is */
 .rstatus { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rstatus.pending { color: var(--muted); }
@@ -876,9 +901,11 @@ select.s-pop[disabled] { cursor: default; opacity: .5; }
    Series wear the categorical slots in a fixed order (slot = the order a model was first seen). */
 :root { --c3: #c98500; --c4: #d55181; --c5: #0ca30c; }
 html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
-.tsec { max-height: 36vh; }
+/* Analytics holds the usage chart now: as much room as Linear. */
+.tsec { max-height: 45vh; }
 .s0 { --s: var(--c0); } .s1 { --s: var(--c1); } .s2 { --s: var(--c2); } .s3 { --s: var(--c3); } .s4 { --s: var(--c4); } .s5 { --s: var(--c5); } .sx { --s: var(--muted); }
-.tstats { display: flex; gap: 16px; padding: 4px 0 2px; }
+/* The section's headline: today's tokens and estimate, tok/s and traffic; 2 × 2 at 340 px, one row when wide. */
+.tstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px 14px; padding: 4px 0 2px; }
 .tstat { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 4px; min-width: 0; }
 .tstat b { font-size: 17px; font-weight: 650; letter-spacing: -.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tstat span { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
@@ -886,10 +913,10 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .tnet { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 26px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .tnetv { white-space: nowrap; }
 .tago { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
-.tnet .ttest { margin-left: auto; height: 20px; padding: 0 9px; font-size: 11px; }
 .tnet .rstatus { margin-left: auto; }
 .terr { color: var(--warn); font-size: 11.5px; padding-bottom: 2px; }
 .tchart { padding-top: 10px; }
+/* The one usage line: "This week 52.4M tokens · ≈ $48" and the way to the Usage tab; the text gives way (ellipsis), never the link. */
 .thead { font-size: 11.5px; color: var(--ink); font-weight: 550; }
 /* The plot leaves room above for the top label and the peak, and on the right for the latest values. */
 .tframe { margin-right: 44px; }
@@ -951,6 +978,69 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .srl-unsupported { color: var(--warn); }
 @keyframes srl-turn { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .srl-reading svg { animation: none; } }
+
+.sumfail { display: flex; align-items: flex-start; gap: 6px; margin: 4px 0 6px; padding: 5px 8px; border-radius: 6px; font-size: 11.5px; line-height: 1.35; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.sumfail svg { flex: none; margin-top: 1px; }
+.sumfail .sumtext { flex: 1; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+/* Usage per day (analytics-view.ts dayColumns): columns <= 24 px on one baseline, 4 px rounded tops,
+   2 px gaps between stacked parts, value labels in a gutter left of the plot, a hover target per day. */
+.uchart { --gut: 44px; --h: 150px; }
+.uchart.compact { --gut: 34px; --h: 52px; }
+.ucplot { position: relative; height: var(--h); margin-top: 14px; }
+.ucg { position: absolute; left: var(--gut); right: 0; height: 0; border-top: 1px dashed color-mix(in srgb, var(--line) 85%, transparent); pointer-events: none; }
+.ucg.base { border-top: 1px solid var(--line); }
+.ucg b { position: absolute; right: calc(100% + 6px); transform: translateY(-50%); font-size: 10px; line-height: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uccols { position: absolute; top: 0; bottom: 0; left: var(--gut); right: var(--inset, 14px); display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); }
+.uccol { position: relative; display: flex; align-items: flex-end; justify-content: center; border-radius: 4px 4px 0 0; }
+.uccol:hover, .uccol:focus-visible { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.ucbar { display: flex; flex-direction: column-reverse; gap: 2px; width: min(24px, 64%); border-radius: 4px 4px 0 0; overflow: hidden; }
+.ucbar i { display: block; flex-basis: 0; min-height: 0; background: var(--s); }
+.uccap { position: absolute; left: 50%; transform: translate(-50%, -3px); font-size: 10.5px; line-height: 12px; font-weight: 650; color: var(--ink); white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.ucaxis { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); margin-left: var(--gut); margin-right: var(--inset, 14px); padding-top: 5px; font-size: 10.5px; color: var(--muted); }
+/* Every label centred under its column, overflowing evenly when wider; the inset on the right keeps
+   "Today" inside the plot at 30+ columns, the value gutter does the same for the first label. */
+.ucaxis span { display: flex; justify-content: center; white-space: nowrap; min-width: 0; }
+.uclegend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 11.5px; color: var(--muted); }
+.uclegend span { display: inline-flex; align-items: center; gap: 6px; }
+.seg.sm button { padding: 1px 7px; font-size: 11px; }
+/* The usage block (analytics-view.ts sidebarUsage): the Usage tab's strip and per-day chart, at 340 px. */
+.usb { display: grid; gap: 8px; padding-top: 10px; min-width: 0; }
+.usb .block { display: grid; gap: 4px; min-width: 0; }
+.usb .strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; padding: 9px 10px; border-radius: 8px; background: var(--card); }
+.usb .strip .cell { display: grid; gap: 1px; min-width: 0; align-content: start; }
+.usb .strip .cell:first-child { grid-column: 1 / -1; }
+.usb .strip .k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.usb .strip .v { font-size: 20px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.usb .strip .v.sm { font-size: 15px; }
+.usb .strip .s { font-size: 11px; color: var(--muted); }
+.usb .strip .ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usb .nw { white-space: nowrap; }
+.usb .mbar { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; margin: 6px 0 3px; }
+.usb .mbar i { display: block; background: var(--s); min-width: 2px; }
+.usb .figline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.usb .figline b { color: var(--ink); font-size: 15px; font-weight: 650; }
+.usb .uchart.side { --gut: 34px; --h: 96px; }
+.usb .ucaxis { font-size: 10px; }
+.usb .uclegend { font-size: 11px; gap: 2px 10px; }
+.usb .dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--s); }
+.usb .note { font-size: 11px; color: var(--muted); }
+.usb .ne { color: var(--faint); font-style: italic; }
+.usb .dtoggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); padding: 2px 0; justify-self: start; }
+.usb .dtoggle:hover { color: var(--ink); }
+.usb .dtoggle svg { width: 8px; height: 8px; transition: transform .15s; }
+.usb .dtoggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.usb .details { display: grid; gap: 6px; padding: 8px 9px; border-radius: 8px; background: var(--card); }
+.usb table.u { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.usb table.u th { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); text-align: right; padding: 0 0 4px 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.usb table.u td { text-align: right; padding: 4px 0 4px 8px; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.usb table.u th:first-child, .usb table.u td:first-child { text-align: left; padding-left: 0; }
+.usb table.u tr:last-child td { border-bottom: 0; }
+/* Analytics' two parts, Usage and Speed & traffic: each a header with its name and its own controls; a rule between them. */
+.tsub { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent); }
+.tsub.first { margin-top: 12px; }
+.tsub .thead { font-size: 12px; font-weight: 600; }
+.tctl { display: inline-flex; gap: 6px; flex: none; }
+.usb { padding-top: 0; }
 
 /* Goals: the first section, above the tree. A header (fold, Completed history, +), two-line rows, and a card under the row
    that is clicked. The card is Orca's popover colors, like the Linear Display popover. */
