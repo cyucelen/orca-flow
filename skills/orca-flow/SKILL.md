@@ -211,13 +211,17 @@ orca-flow capacity --repo <name> --json   # before creating a worktree for that 
 
 It compares free memory (what Orca reports as available, minus a 2 GB margin) with what starting
 costs on this machine: an agent, and per project the environment its worktrees run. A project's
-environment is measured: what its worktrees started (dev servers), remembered while they are
-stopped. A project whose agents work and start nothing (orca-flow) costs 0 GB; a project never
-seen at work here is priced at 1.5 GB.
+environment is measured: what its worktrees' agents started (dev servers, emulators), counted as
+what they keep hot in RAM (their footprint minus compressed pages, which an idle dev server has
+plenty of). Each checkout's last measurement is remembered for 30 days, the newest 10 per project,
+and a project is priced at the median of them, so one heavy checkout does not set the price. A
+project whose agents work and start nothing (orca-flow) costs 0 GB; a project never seen at work
+here is priced at 1.5 GB. With `--repo`, the output names the checkouts the price comes from.
 
 When macOS reports `warn` memory pressure, a new worktree also needs headroom: 2 GB, or half its
 environment when that is more. On this machine a new orca-flow worktree needs 0.5 + 0 + 2 = 2.5 GB
-free, a new mono worktree 0.5 + 6.6 + 3.3 = 10.4 GB.
+free, a new mono worktree about 0.5 + 4 + 2 = 6.5 GB (a project with a 10 GB environment
+0.5 + 10 + 5 = 15.5 GB).
 
 - `ok`: a new worktree with its environment fits; start anything.
 - `agents-only`: another agent fits in an existing worktree; queue anything that needs a new one.
@@ -233,7 +237,8 @@ because swap looks full. macOS keeps old pages in swap long after RAM is free ag
 does not mean memory is short.
 
 When the answer is no, `reclaimable` names what would free memory: `idleEnvironments` (a
-worktree's dev servers running while no agent there works, usually the biggest win) and
+worktree's dev servers running while no agent there works, usually the biggest win; `gb` is hot in
+RAM, `footprintGB` adds compressed pages, `parts` lists each pane's processes) and
 `finishedSessions`. Offer the largest as an `approval` ask; never stop anything without a yes.
 
 **Queue, don't squeeze.** When the gate says no, queue the task instead of starting it, and tell

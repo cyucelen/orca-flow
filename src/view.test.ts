@@ -178,8 +178,8 @@ test('the opened cockpit: RAM as a treemap with a legend, agents, and clean up t
   const stats: CockpitStats = {
     swap: { usedGB: 20.1, totalGB: 21 }, ram: { usedGB: 15.1, totalGB: 16 },
     started: [
-      { key: '/w/pricing|p-pricing', path: '/w/pricing', paneKey: 'p-pricing', workspaceId: 'pricing', worktreeName: 'pricing', repo: 'shop', name: 'next-server', count: 4, memMB: 1300 },
-      { key: '/w/old|p-gone', path: '/w/old', paneKey: 'p-gone', workspaceId: 'old', worktreeName: 'old-feature', repo: 'shop', name: 'vite', count: 1, memMB: 300 }
+      { key: '/w/pricing|p-pricing', path: '/w/pricing', paneKey: 'p-pricing', workspaceId: 'pricing', worktreeName: 'pricing', repo: 'shop', name: 'next-server', count: 4, memMB: 1300, hotMB: 1300 },
+      { key: '/w/old|p-gone', path: '/w/old', paneKey: 'p-gone', workspaceId: 'old', worktreeName: 'old-feature', repo: 'shop', name: 'vite', count: 1, memMB: 300, hotMB: 300 }
     ],
     heaviest: [{ paneKey: 'p-pricing', terminal: 'term-pricing', workspaceId: 'pricing', title: 'Pricing page', repo: 'shop', memMB: 1500 }],
     finished: [{ paneKey: 'p-cleanup', terminal: 'term-cleanup', workspaceId: 'cleanup', title: 'State cleanup', repo: 'shop', memMB: 430 }],
@@ -231,7 +231,7 @@ test('the treemap cockpit keeps every number, on its tiles, its pills or on hove
   const s: Snapshot = { ...snap, rows, capacity: { ...snap.capacity!, verdict: 'agents-only' } }
   const ref = (i: number, memMB: number) => ({ paneKey: `p${i}`, terminal: `term-${i}`, workspaceId: `ws${i}`, title: titles[i], repo: 'mono', memMB })
   const group = (paneKey: string, name: string, count: number, memMB: number, worktreeName: string) =>
-    ({ key: `/w/${worktreeName}|${paneKey}`, path: `/w/${worktreeName}`, paneKey, workspaceId: worktreeName, worktreeName, repo: 'mono', name, count, memMB })
+    ({ key: `/w/${worktreeName}|${paneKey}`, path: `/w/${worktreeName}`, paneKey, workspaceId: worktreeName, worktreeName, repo: 'mono', name, count, memMB, hotMB: memMB })
   const ui = emptyUi()
   ui.cockpitOpen = true
   ui.stats = {
@@ -273,7 +273,7 @@ test('chart colors stay with their consumer between refreshes', () => {
   assert.equal(later.get('z'), first.get('z'))
   assert.equal(colorSlots(['y', 'z', 'x'], memo).get('y'), first.get('y'), 'one that comes back gets its color back when it is free')
   // In the panel: the same consumers, heaviest first one time and last the next, keep their tiles' colors.
-  const orphan = (i: number, memMB: number) => ({ key: `/w/o${i}|`, path: `/w/o${i}`, paneKey: null, workspaceId: `o${i}`, worktreeName: `o${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB })
+  const orphan = (i: number, memMB: number) => ({ key: `/w/o${i}|`, path: `/w/o${i}`, paneKey: null, workspaceId: `o${i}`, worktreeName: `o${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB, hotMB: memMB })
   const ui = emptyUi()
   ui.cockpitOpen = true
   const colorsAt = (sizes: number[]) => {
@@ -286,7 +286,7 @@ test('chart colors stay with their consumer between refreshes', () => {
 })
 
 test('the treemap never draws more than is used, folds a seventh consumer into the sliver, and copes without figures', () => {
-  const g = (i: number, memMB: number) => ({ key: `/w/x${i}|`, path: `/w/x${i}`, paneKey: null, workspaceId: `x${i}`, worktreeName: `x${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB })
+  const g = (i: number, memMB: number) => ({ key: `/w/x${i}|`, path: `/w/x${i}`, paneKey: null, workspaceId: `x${i}`, worktreeName: `x${i}`, repo: 'shop', name: `proc${i}`, count: 1, memMB, hotMB: memMB })
   const ui = emptyUi()
   ui.cockpitOpen = true
   // Footprints can include swapped memory, so together they can exceed what RAM reports as used.
@@ -343,7 +343,7 @@ test('tile labels: the size is never cut; the name and the character give way fi
 
 test('in the treemap no label is wider than its tile, whatever the data', () => {
   const session = (i: number, title: string, mb: number) => ({ paneKey: `p${i}`, terminal: `t${i}`, workspaceId: `w${i}`, title, repo: 'mono', memMB: mb })
-  const left = (i: number, name: string, count: number, mb: number, worktreeName: string) => ({ key: `/o/${i}|`, path: `/o/${i}`, paneKey: null, workspaceId: `o${i}`, worktreeName, repo: 'mono', name, count, memMB: mb })
+  const left = (i: number, name: string, count: number, mb: number, worktreeName: string) => ({ key: `/o/${i}|`, path: `/o/${i}`, paneKey: null, workspaceId: `o${i}`, worktreeName, repo: 'mono', name, count, memMB: mb, hotMB: mb })
   const shapes: [string, CockpitStats][] = [
     ['one dominant, several small', { ram: { usedGB: 23.5, totalGB: 48 }, swap: { usedGB: 22.2, totalGB: 23 }, finished: [], merged: [],
       heaviest: [session(0, 'Clock terminal mock for e2e', 592), session(1, 'Shared store terminal state', 537), session(2, 'Orca-flow repository review', 461)],
