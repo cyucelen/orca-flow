@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { botDirectory, briefOf, decide, digest, formatBots, formatQueue, normalizePriority, roleOf, runsToResume } from '../skills/orca-flow/scripts/orca-flow.mjs'
+import { botDirectory, briefOf, decide, digest, formatBots, formatCapacity, formatQueue, normalizePriority, roleOf, runsToResume } from '../skills/orca-flow/scripts/orca-flow.mjs'
 
 test('priority accepts levels and words, refuses anything else', () => {
   assert.equal(normalizePriority('now'), 'P0')
@@ -23,6 +23,31 @@ test('capacity: the shared memory decision, critical pressure overrides, warn ad
   assert.equal(at(8, 'critical'), 'pressure')
   assert.equal(at(8, 'warn'), 'ok', 'warn: 6 GB free covers 0.5 + 2 + 2 GB headroom')
   assert.equal(at(6, 'warn'), 'agents-only', 'warn: 4 GB free does not')
+})
+
+test('capacity text: the price says which checkouts it is the median of, and an idle environment lists its parts', () => {
+  const c = {
+    verdict: 'ok', freeGB: 11.4, marginGB: 2, pressure: 'normal', info: { swap: null },
+    costs: { agentGB: 0.3, envGB: { mono: 3.5 }, priced: { repo: 'mono', envGB: 3.5, samples: [{ worktree: 'mono/des-340', gb: 4, at: 't' }, { worktree: 'mono/old', gb: 3, at: 't' }] } },
+    reclaimable: {
+      idleEnvironments: [{ worktree: 'mono/des-340', process: '3 process groups: node, qemu-system-aarch64, next-server', gb: 3.5, footprintGB: 20.1, parts: [{ process: 'node', gb: 2.4 }, { process: 'qemu-system-aarch64', gb: 0.7 }, { process: 'next-server', gb: 0.4 }] }],
+      finishedSessions: []
+    }
+  }
+  assert.equal(formatCapacity(c), [
+    'verdict: ok',
+    'free: 11.4 GB (after a 2 GB margin)  memory pressure: normal',
+    'costs here: an agent ~0.3 GB, a new mono worktree ~3.8 GB',
+    "  mono's environment: the median of 2 recent checkouts (hot in RAM): des-340 4 GB, old 3 GB",
+    'environments with no agent working:',
+    '  mono/des-340: 3.5 GB hot in RAM (20.1 GB footprint with compressed pages)',
+    '    node 2.4 GB',
+    '    qemu-system-aarch64 0.7 GB',
+    '    next-server 0.4 GB'
+  ].join('\n'))
+  // A result from an older orca-flow (no parts, no footprint) still prints.
+  const old = { ...c, costs: { ...c.costs, priced: { repo: 'mono', envGB: 3.5 } }, reclaimable: { idleEnvironments: [{ worktree: 'mono/x', process: 'next dev', gb: 3.1 }], finishedSessions: [] } }
+  assert.match(formatCapacity(old), /  mono\/x: 3\.1 GB hot in RAM\n    next dev 3\.1 GB$/)
 })
 
 const line = (type, content, extra = {}) => JSON.stringify({ type, message: { content }, timestamp: extra.at ?? 't', ...extra })

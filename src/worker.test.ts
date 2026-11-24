@@ -260,7 +260,7 @@ test('cockpit stats: heaviest by memory, finished sessions with their terminals'
     new Map([['p1', 'term-1'], ['p2', 'term-2']]),
     [],
     { usedGB: 20, totalGB: 21 },
-    [{ key: '/w/b|p2', path: '/w/b', paneKey: 'p2', workspaceId: 'b', worktreeName: 'b', repo: 'shop', name: 'next-server', count: 3, memMB: 1400 }]
+    [{ key: '/w/b|p2', path: '/w/b', paneKey: 'p2', workspaceId: 'b', worktreeName: 'b', repo: 'shop', name: 'next-server', count: 3, memMB: 1400, hotMB: 1400 }]
   )
   // The idle session started a 1.4 GB dev server, so in all it outweighs the busy one.
   assert.deepEqual(stats.heaviest.map((h) => [h.title, h.memMB]), [['Idle one', 400], ['Busy', 1536]])
@@ -905,11 +905,11 @@ test('processes an agent started outside its session are found by the tags they 
   const procs = parsePs(ps)
   assert.deepEqual(procs.find((p) => p.pid === 201), { pid: 201, ppid: 200, name: 'next', worktree: '/w/checkout', pane: 'p1' })
   const top = parseTop('PID    MEM\n202    972M+\n201    42M\n200    40M-\n102    300M\n')
-  assert.equal(top.get(202), 972 * 1024 ** 2)
+  assert.deepEqual(top.get(202), { bytes: 972 * 1024 ** 2, compressed: 0 }, 'without the cmprs column nothing counts as compressed')
   const rows = main.fromPs([{ identity: { key: 'w' }, displayName: 'checkout', repo: 'shop', path: '/w/checkout', agents: [{ paneKey: 'p1', state: 'working' }] }])
   // Orca counts the session (login -> zsh -> claude); the detached pnpm tree is what it misses.
   const groups = startedGroups(procs, top, [100], rows)
-  assert.deepEqual(groups.map((g) => [g.key, g.name, g.count, g.memMB]), [['/w/checkout|p1', 'next-server', 3, 1054]])
+  assert.deepEqual(groups.map((g) => [g.key, g.name, g.count, g.memMB, g.hotMB]), [['/w/checkout|p1', 'next-server', 3, 1054, 1054]])
 })
 
 test('capacity is one memory budget: free memory after the margin against what a start costs', async () => {
@@ -917,8 +917,8 @@ test('capacity is one memory budget: free memory after the margin against what a
   assert.equal(diskFreeOf('Filesystem   1024-blocks      Used Available Capacity  Mounted on\n/dev/disk3s5   482797652 409147004  32401648    93%    /System/Volumes/Data\n'), 30.9)
   assert.equal(diskFreeOf(''), null)
   // Agent sessions: shells with no agent (a few MB) do not count; a project's environment is what its worktrees started.
-  const costs = costsOf([0.012, 0.32, 0.39, 0.53, 1.9], [{ repo: 'shop', gb: 2.6 }, { repo: 'shop', gb: 1.8 }, { repo: 'shop', gb: 0 }])
-  assert.deepEqual(costs, { agentGB: 0.5, envGB: { 'shop': 2.2 } }, 'a shop checkout with its dev server stopped does not pull the price down')
+  const costs = costsOf([0.012, 0.32, 0.39, 0.53, 1.9], [{ path: '/w/a', repo: 'shop', gb: 2.6 }, { path: '/w/b', repo: 'shop', gb: 1.8 }, { path: '/w/c', repo: 'shop', gb: 0 }])
+  assert.deepEqual({ agentGB: costs.agentGB, envGB: costs.envGB }, { agentGB: 0.5, envGB: { 'shop': 2.2 } }, 'a shop checkout with its dev server stopped does not pull the price down')
   assert.equal(envCost(costs.envGB, 'docs'), 1.5, 'a project never seen at work here is priced at the fallback')
   const at = (availableGB: number | null, pressure: 'normal' | 'warn' | 'critical' = 'normal') =>
     decide({ availableGB, pressure, config: DEFAULT_CONFIG, agentGB: 0.5, envGB: 2.2 })
@@ -951,7 +951,7 @@ test('under warn pressure a new worktree starts when it fits with headroom (2 GB
 })
 
 test('a project seen at work that started nothing costs 0; a stopped project keeps its measured cost', async () => {
-  const { costsOf, envSamples, envCost, readEnvMemory, typicalEnv, writeEnvMemory } = await import('./capacity.ts')
+  const { costsOf, envSamples, envCost, readEnvMemory, typicalEnv, updateEnvCosts } = await import('./capacity.ts')
   const { mkdtempSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -960,22 +960,23 @@ test('a project seen at work that started nothing costs 0; a stopped project kee
     [{ path: '/w/shop-a', repo: 'shop', gb: 4 }, { path: '/w/shop-a', repo: 'shop', gb: 2.6 }],
     [{ path: '/w/shop-a', repo: 'shop' }, { path: '/w/shop-b', repo: 'shop' }, { path: '/w/flow', repo: 'orca-flow' }]
   )
-  assert.deepEqual(samples, [{ repo: 'shop', gb: 6.6 }, { repo: 'shop', gb: 0 }, { repo: 'orca-flow', gb: 0 }])
-  const now = costsOf([], samples).envGB
-  assert.deepEqual(now, { shop: 6.6, 'orca-flow': 0 })
-  assert.equal(envCost(now, 'orca-flow'), 0, 'measured, not the 1.5 GB fallback')
-  assert.equal(typicalEnv(now), 6.6, 'the typical environment counts only projects that run one')
+  assert.deepEqual(samples, [{ path: '/w/shop-a', repo: 'shop', gb: 6.6 }, { path: '/w/shop-b', repo: 'shop', gb: 0 }, { path: '/w/flow', repo: 'orca-flow', gb: 0 }])
+  const t = Date.parse('2026-11-01T00:00:00Z')
+  const now = costsOf([], samples, undefined, t)
+  assert.deepEqual(now.envGB, { shop: 6.6, 'orca-flow': 0 })
+  assert.equal(envCost(now.envGB, 'orca-flow'), 0, 'measured, not the 1.5 GB fallback')
+  assert.equal(typicalEnv(now.envGB), 6.6, 'the typical environment counts only projects that run one')
   assert.equal(typicalEnv({ 'orca-flow': 0 }), 1.5)
   // Later every shop dev server is stopped: shop keeps 6.6 instead of dropping to 0.
-  const later = costsOf([], [{ repo: 'shop', gb: 0 }, { repo: 'orca-flow', gb: 0 }], now).envGB
-  assert.deepEqual(later, { shop: 6.6, 'orca-flow': 0 })
-  // A new measurement replaces the remembered one; a project not seen now keeps its memory.
-  assert.deepEqual(costsOf([], [{ repo: 'shop', gb: 5 }], later).envGB, { shop: 5, 'orca-flow': 0 })
+  const later = costsOf([], [{ path: '/w/shop-a', repo: 'shop', gb: 0 }, { path: '/w/flow', repo: 'orca-flow', gb: 0 }], now.memory, t + 60_000)
+  assert.deepEqual(later.envGB, { shop: 6.6, 'orca-flow': 0 })
+  // A new measurement of that checkout replaces its sample; a project not seen now keeps its memory.
+  assert.deepEqual(costsOf([], [{ path: '/w/shop-a', repo: 'shop', gb: 5 }], later.memory, t + 120_000).envGB, { shop: 5, 'orca-flow': 0 })
   // The memory survives restarts, shared by the plugin and the CLI.
   const dir = mkdtempSync(join(tmpdir(), 'env-'))
-  assert.deepEqual(readEnvMemory(dir), {})
-  writeEnvMemory(dir, later)
-  assert.deepEqual(readEnvMemory(dir), later)
+  assert.deepEqual(readEnvMemory(dir), { samples: [], legacy: {} })
+  assert.deepEqual(updateEnvCosts(dir, samples, t), { shop: 6.6, 'orca-flow': 0 })
+  assert.deepEqual(updateEnvCosts(dir, [{ path: '/w/shop-a', repo: 'shop', gb: 0 }], t + 60_000), { shop: 6.6, 'orca-flow': 0 })
 })
 
 test('a worker keeps the title of what it is doing, not the last task it was handed', () => {

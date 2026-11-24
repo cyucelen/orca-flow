@@ -56,7 +56,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DIR = process.env.ORCA_FLOW_DIR || join(homedir(), '.orca-flow')
@@ -161,7 +161,7 @@ function swap() {
 }
 
 /** The decision lives in src/capacity.ts, shared with the plugin; Node strips its types. */
-const { costsOf, decide, envCost, envSamples, readEnvMemory, typicalEnv, writeEnvMemory, DEFAULT_CONFIG } = await import(new URL('../../../src/capacity.ts', import.meta.url).href)
+const { costsOf, decide, envCost, envSamples, readEnvMemory, typicalEnv, updateEnvCosts, DEFAULT_CONFIG } = await import(new URL('../../../src/capacity.ts', import.meta.url).href)
 /** Shared with the plugin: coordinator homes are no code checkouts. */
 const { isCoordinatorHome } = await import(new URL('../../../src/coordinators.ts', import.meta.url).href)
 /** Shared with the plugin: what agents started outside their sessions (dev servers). */
@@ -186,16 +186,22 @@ async function capacity(args = {}) {
   const groups = startedGroups(procs, footprint, sessions.map((x) => x.pid).filter(Number.isFinite), rows)
 
   const agentPanes = new Set(rows.flatMap((r) => r.agents.map((a) => a.paneKey)))
+  // Per checkout: what its panes started, priced by what they keep hot in RAM (footprint minus
+  // compressed pages), with each pane's group kept as a part so the total is not one process's.
   const perWorktree = new Map()
   for (const g of groups) {
-    const w = perWorktree.get(g.path) ?? { repo: g.repo, name: g.worktreeName, path: g.path, gb: 0, top: g.name }
-    w.gb += g.memMB / 1024
+    const w = perWorktree.get(g.path) ?? { repo: g.repo, name: g.worktreeName, path: g.path, gb: 0, footprintGB: 0, parts: [] }
+    w.gb += g.hotMB / 1024
+    w.footprintGB += g.memMB / 1024
+    w.parts.push({ process: g.name, gb: g.hotMB / 1024 })
     perWorktree.set(g.path, w)
   }
   // Every checkout where agents work is a sample, 0 when it started nothing; the plugin keeps the same memory.
   const atWork = rows.filter((r) => r.path && r.agents.length > 0 && !isCoordinatorHome(r.path)).map((r) => ({ path: r.path, repo: r.repo }))
-  const costs = costsOf(sessions.filter((x) => agentPanes.has(x.paneKey)).map((x) => x.memory / 1024 ** 3), envSamples([...perWorktree.values()], atWork), readEnvMemory(DIR))
-  writeEnvMemory(DIR, costs.envGB)
+  const costs = {
+    agentGB: costsOf(sessions.filter((x) => agentPanes.has(x.paneKey)).map((x) => x.memory / 1024 ** 3), []).agentGB,
+    envGB: updateEnvCosts(DIR, envSamples([...perWorktree.values()].map(({ path, repo, gb }) => ({ path, repo, gb })), atWork))
+  }
   const envGB = args.repo ? envCost(costs.envGB, args.repo) : typicalEnv(costs.envGB)
   const pressure = pressureLevel()
   const { verdict, freeGB } = decide({ availableGB: mem.host?.availableMemory ? mem.host.availableMemory / 1024 ** 3 : null, pressure, config, agentGB: costs.agentGB, envGB })
@@ -205,7 +211,14 @@ async function capacity(args = {}) {
   const idleEnvironments = [...perWorktree.values()]
     .filter((w) => !working.has(w.path) && w.gb >= 0.1)
     .sort((x, y) => y.gb - x.gb)
-    .map((w) => ({ worktree: `${w.repo}/${w.name}`, process: w.top, gb: gb(w.gb * 1024 ** 3) }))
+    .map((w) => {
+      // Parts under 0.05 GB are left out, unless all are (many small ones can add up to 0.1 GB).
+      const all = w.parts.map((p) => ({ process: p.process, gb: gb(p.gb * 1024 ** 3) })).sort((x, y) => y.gb - x.gb)
+      const parts = all.some((p) => p.gb > 0) ? all.filter((p) => p.gb > 0) : all
+      const process = parts.length === 1 ? parts[0].process : `${parts.length} process groups: ${parts.map((p) => p.process).join(', ')}`
+      // gb: hot in RAM (what the gate prices); footprintGB adds compressed pages (what the sidebar shows).
+      return { worktree: `${w.repo}/${w.name}`, process, gb: gb(w.gb * 1024 ** 3), footprintGB: gb(w.footprintGB * 1024 ** 3), parts }
+    })
   const memByPane = Object.fromEntries(sessions.map((x) => [x.paneKey, x.memory]))
   // The sessions the sidebar lists as finished: an open PR's owner, a lead with open workers or one
   // that has not reported worker_done, is still at work.
@@ -222,22 +235,39 @@ async function capacity(args = {}) {
     pressure,
     // Not part of the decision: an agent must not hold back work or warn the user because of it.
     info: { swap: swap(), note: 'Information only: the verdict ignores swap. macOS keeps old pages in swap long after RAM is free again.' },
-    costs: { agentGB: costs.agentGB, envGB: costs.envGB, priced: args.repo ? { repo: args.repo, envGB } : { typicalEnvGB: envGB } },
+    costs: { agentGB: costs.agentGB, envGB: costs.envGB, priced: args.repo ? { repo: args.repo, envGB, samples: pricedFrom(args.repo) } : { typicalEnvGB: envGB } },
     reclaimable: { idleEnvironments, finishedSessions }
   }
 }
 
-function printCapacity(c) {
+/** The remembered checkouts a project's price is the median of (see envPrices in src/capacity.ts), newest first. */
+function pricedFrom(repo) {
+  return readEnvMemory(DIR).samples.filter((s) => s.repo === repo && s.gb > 0).map((s) => ({ worktree: `${repo}/${basename(s.path)}`, gb: Math.round(s.gb * 10) / 10, at: s.at }))
+}
+
+export function formatCapacity(c) {
   const env = c.costs.priced.repo ? `a new ${c.costs.priced.repo} worktree ~${Math.round((c.costs.agentGB + c.costs.priced.envGB) * 10) / 10} GB` : `a new workstream ~${Math.round((c.costs.agentGB + c.costs.priced.typicalEnvGB) * 10) / 10} GB`
   const lines = [
     `verdict: ${c.verdict}`,
     `free: ${c.freeGB ?? '?'} GB (after a ${c.marginGB} GB margin)  memory pressure: ${c.pressure}${c.info?.swap?.usedGB ? `  swap: ${c.info.swap.usedGB} GB (information only)` : ''}`,
     `costs here: an agent ~${c.costs.agentGB} GB, ${env}`
   ]
+  const from = c.costs.priced.samples
+  if (from?.length) lines.push(`  ${c.costs.priced.repo}'s environment: the median of ${from.length} recent checkout${from.length === 1 ? '' : 's'} (hot in RAM): ${from.map((s) => `${s.worktree.split('/').pop()} ${s.gb} GB`).join(', ')}`)
   const { idleEnvironments, finishedSessions } = c.reclaimable
-  if (idleEnvironments.length) lines.push('environments with no agent working:', ...idleEnvironments.map((e) => `  ${e.worktree}: ${e.process} ${e.gb} GB`))
+  if (idleEnvironments.length) {
+    lines.push('environments with no agent working:')
+    for (const e of idleEnvironments) {
+      lines.push(`  ${e.worktree}: ${e.gb} GB hot in RAM${e.footprintGB !== undefined ? ` (${e.footprintGB} GB footprint with compressed pages)` : ''}`)
+      lines.push(...(e.parts ?? [{ process: e.process, gb: e.gb }]).map((p) => `    ${p.process} ${p.gb} GB`))
+    }
+  }
   if (finishedSessions.length) lines.push('finished but open:', ...finishedSessions.map((x) => `  ${x.worktree}: ${x.title} ${x.gb} GB`))
-  console.log(lines.join('\n'))
+  return lines.join('\n')
+}
+
+function printCapacity(c) {
+  console.log(formatCapacity(c))
 }
 
 // ---------- queue ----------

@@ -328,7 +328,10 @@ export type StartedGroup = {
   /** The heaviest process's name, like next-server. */
   name: string
   count: number
+  /** Their phys footprint, compressed pages included: what the sidebar shows. */
   memMB: number
+  /** The footprint minus its compressed pages: what they keep hot in RAM, what the capacity gate prices. */
+  hotMB: number
 }
 export type CockpitStats = {
   swap: { usedGB: number; totalGB: number } | null

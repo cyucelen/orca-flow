@@ -35,15 +35,31 @@ function nameOf(command: string): string {
   return /^(node|bun|deno|python3?|ruby)$/.test(first) && parts[1] && !parts[1].startsWith('-') ? base(parts[1]) : first
 }
 
-/** Pure: footprint per pid in bytes from `top -l 1 -stats pid,mem` ("64417  972M+"). */
-export function parseTop(out: string): Map<number, number> {
-  const unit: Record<string, number> = { B: 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3 }
-  const bytes = new Map<number, number>()
+/**
+ * A process's memory from top: its phys footprint (what Activity Monitor shows as Memory) and how
+ * much of that is compressed. The footprint counts compressed pages at their uncompressed size,
+ * so a dev server idle for hours can show 7 GB of which 6 GB are cold pages in the compressor or
+ * in swap. What it keeps hot in RAM is the rest.
+ */
+export type Mem = { bytes: number; compressed: number }
+
+/** Hot = footprint − compressed, never below 0 (top samples the two columns at slightly different moments). */
+export const hotBytes = (m: Mem | undefined): number => (m ? Math.max(0, m.bytes - m.compressed) : 0)
+
+/**
+ * Pure: memory per pid from `top -l 1 -stats pid,mem,cmprs` ("81265  3920M+ 3509M"): sizes in
+ * B/K/M/G, each optionally followed by + or - (grew or shrank since the last sample). A line
+ * without the compressed column (`-stats pid,mem`) counts nothing as compressed.
+ */
+export function parseTop(out: string): Map<number, Mem> {
+  const unit: Record<string, number> = { B: 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }
+  const size = (n: string, u: string) => Number(n) * unit[u]
+  const mem = new Map<number, Mem>()
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+([\d.]+)([BKMG])[+-]?\s*$/.exec(line)
-    if (m) bytes.set(Number(m[1]), Number(m[2]) * unit[m[3]])
+    const m = /^\s*(\d+)\s+([\d.]+)([BKMGT])[+-]?(?:\s+([\d.]+)([BKMGT])[+-]?)?\s*$/.exec(line)
+    if (m) mem.set(Number(m[1]), { bytes: size(m[2], m[3]), compressed: m[4] ? size(m[4], m[5]) : 0 })
   }
-  return bytes
+  return mem
 }
 
 type Owned = { proc: Proc; key: string; row: WorkspaceRow; pane: string | null }
@@ -77,18 +93,24 @@ function owned(procs: Proc[], sessionPids: number[], rows: WorkspaceRow[]): Owne
   return out
 }
 
-/** Pure: started processes grouped by worktree and pane, heaviest first, named by their heaviest process. */
-export function startedGroups(procs: Proc[], footprint: Map<number, number>, sessionPids: number[], rows: WorkspaceRow[]): StartedGroup[] {
+/**
+ * Pure: started processes grouped by worktree and pane, heaviest first, named by their heaviest
+ * process. memMB is the footprint (what the sidebar shows); hotMB leaves out compressed pages
+ * (what the capacity gate prices).
+ */
+export function startedGroups(procs: Proc[], footprint: Map<number, Mem>, sessionPids: number[], rows: WorkspaceRow[]): StartedGroup[] {
   const groups = new Map<string, StartedGroup & { top: number }>()
   for (const { proc, key, row, pane } of owned(procs, sessionPids, rows)) {
-    const bytes = footprint.get(proc.pid) ?? 0
-    const g = groups.get(key) ?? { key, path: row.path!, paneKey: pane, workspaceId: row.id, worktreeName: row.name, repo: row.repo, name: proc.name, count: 0, memMB: 0, top: -1 }
+    const m = footprint.get(proc.pid)
+    const bytes = m?.bytes ?? 0
+    const g = groups.get(key) ?? { key, path: row.path!, paneKey: pane, workspaceId: row.id, worktreeName: row.name, repo: row.repo, name: proc.name, count: 0, memMB: 0, hotMB: 0, top: -1 }
     g.count++
     g.memMB += bytes / 1024 ** 2
+    g.hotMB += hotBytes(m) / 1024 ** 2
     if (bytes > g.top) Object.assign(g, { top: bytes, name: proc.name })
     groups.set(key, g)
   }
-  return [...groups.values()].map(({ top, ...g }) => ({ ...g, memMB: Math.round(g.memMB) })).sort((a, b) => b.memMB - a.memMB)
+  return [...groups.values()].map(({ top, ...g }) => ({ ...g, memMB: Math.round(g.memMB), hotMB: Math.round(g.hotMB) })).sort((a, b) => b.memMB - a.memMB)
 }
 
 // ---------- reading the machine ----------
@@ -98,4 +120,4 @@ function out(cmd: string, args: string[]): Promise<string> {
 }
 
 export const readProcs = async (): Promise<Proc[]> => parsePs(await out('ps', ['-axE', '-ww', '-o', 'pid=,ppid=,command=']))
-export const readFootprint = async (): Promise<Map<number, number>> => parseTop(await out('top', ['-l', '1', '-stats', 'pid,mem', '-n', '5000']))
+export const readFootprint = async (): Promise<Map<number, Mem>> => parseTop(await out('top', ['-l', '1', '-stats', 'pid,mem,cmprs', '-n', '5000']))

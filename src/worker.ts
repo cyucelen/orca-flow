@@ -15,7 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
-import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, readEnvMemory, typicalEnv, writeEnvMemory, type Pressure } from './capacity.ts'
+import { costsOf, decide, DEFAULT_CONFIG, diskFreeOf, envSamples, FALLBACK, typicalEnv, updateEnvCosts, type Pressure } from './capacity.ts'
 import { closeSessions, loadCockpit, removeWorktree } from './cockpit.ts'
 import { assignCoordinators, coordinatorSession, COORDINATOR_HOME, deleteFolder, isCoordinatorHome, loadLineage, orcaRunner, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, updateCoordinatorSessions, writeLinearMemory, writeLook, writeOwners, writeCoordinatorSessions, type CoordinatorInfo, type Lineage } from './coordinators.ts'
 import { applyGoalAction, readGoals } from './goals.ts'
@@ -496,10 +496,10 @@ function refreshMemory(rows: WorkspaceRow[], onLoaded: () => void): void {
     if (now - envAt >= 5 * 60_000) {
       const [procs, footprint] = await Promise.all([readProcs(), readFootprint()])
       const pids = sessions.map((s) => s.pid).filter((p): p is number => typeof p === 'number')
-      const started = startedGroups(procs, footprint, pids, rows).map((g) => ({ path: g.path, repo: g.repo, gb: g.memMB / 1024 }))
+      // Priced by what the started processes keep hot in RAM, not their footprint (see started.ts Mem).
+      const started = startedGroups(procs, footprint, pids, rows).map((g) => ({ path: g.path, repo: g.repo, gb: g.hotMB / 1024 }))
       const checkouts = rows.filter((r) => r.path && r.agents.length > 0 && !isCoordinatorHome(r.path)).map((r) => ({ path: r.path!, repo: r.repo }))
-      envGB = costsOf([], envSamples(started, checkouts), readEnvMemory(DATA_DIR)).envGB
-      writeEnvMemory(DATA_DIR, envGB)
+      envGB = updateEnvCosts(DATA_DIR, envSamples(started, checkouts))
       envAt = now
     }
     const df = await new Promise<string>((resolve) => execFile('df', ['-k', '-P', homedir()], { timeout: 5000 }, (_e, out) => resolve(String(out ?? ''))))
