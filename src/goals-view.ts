@@ -7,7 +7,9 @@ import type { AgentInfo, WorkspaceRow } from './protocol.ts'
 /** A goal as the panel gets it: the stored goal, and the agents working on its linked worktrees. */
 export type GoalView = Goal & { workingPanes: string[] }
 
-/** Where the panel keeps the section's fold and the done toggle (plugin storage). */
+export const COMPLETED_BATCH = 20
+
+/** Persist the active list’s fold and the selected view across panel reloads. */
 export const GOALS_UI_KEY = 'goals-ui'
 export type GoalsUi = { folded: boolean; showDone: boolean }
 export const goalsUiOf = (stored: unknown): GoalsUi => {
@@ -15,8 +17,8 @@ export const goalsUiOf = (stored: unknown): GoalsUi => {
   return { folded: s.folded === true, showDone: s.showDone === true }
 }
 
-/** The part of the panel's state the section draws: its fold, the done toggle, the add box and the goal whose card is open. */
-export type GoalsState = { folded: boolean; showDone: boolean; open: string | null; now: number }
+/** Active list and completed history share a single goal details dialog. */
+export type GoalsState = { folded: boolean; showDone: boolean; open: string | null; now: number; completedQuery?: string; completedLimit?: number }
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 
@@ -76,16 +78,15 @@ const CHECK = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke
 /** Goals the section lists: open and proposed first, then (when shown) the done ones. */
 export const activeGoals = (goals: GoalView[]) => goals.filter((g) => g.status !== 'done')
 
-/**
- * The section's header: "GOALS n" (folds it), "· N done" (shows them), and "+" (adds one). With no
- * goals at all, just the title and "+". Empty while searching.
- */
+/** Navigate between the active list and completed history without mixing their rows. */
 export function goalsHead(goals: GoalView[], s: GoalsState, searching = false): string {
   if (searching) return ''
-  const active = activeGoals(goals)
-  const done = goals.length - active.length
-  return `<div class="sechead ghead"><button class="label lfold" data-gfold aria-expanded="${!s.folded}">${CHEV}<span>Goals</span>${active.length ? `<span class="gc">${active.length}</span>` : ''}</button>${done ? `<button class="gdn${s.showDone ? ' on' : ''}" data-gdone aria-pressed="${s.showDone}">· ${done} done</button>` : ''}<button class="gplus" data-gadd aria-label="Add a goal" data-tip="Add a goal">+</button></div>`
+  const active = activeGoals(goals).length
+  if (s.showDone) return `<div class="sechead ghead"><button class="ghistory" data-gdone aria-label="Back to active goals">‹ Goals</button><span class="label">Completed <span class="gc">${goals.length - active}</span></span></div>`
+  return `<div class="sechead ghead"><button class="label lfold" data-gfold aria-expanded="${!s.folded}">${CHEV}<span>Goals</span>${active ? `<span class="gc">${active}</span>` : ''}</button><button class="ghistory" data-gdone aria-label="View completed goals">Completed ›</button><button class="gplus" data-gadd aria-label="Add a goal" data-tip="Add a goal">+</button></div>`
 }
+
+const completedDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
 /** One goal: its title and step count, and under it the next step (or "lead says done" while an agent proposes it). */
 export function goalRow(g: GoalView, open: string | null, avatars = ''): string {
@@ -97,15 +98,20 @@ export function goalRow(g: GoalView, open: string | null, avatars = ''): string 
       : g.next
         ? `<span class="nx">${esc(g.next)}</span>`
         : '<span class="nx none">No next step yet</span>'
-  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${avatars}${stepProgress(g)}</button>`
+  const detail = done ? `<span class="cnt">${completedDate.format(g.doneAt ?? g.updatedAt)}</span>` : stepProgress(g)
+  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${avatars}${detail}</button>`
 }
 
-/** The rows under the header: nothing while folded or empty; done goals only when the toggle shows them. */
+/** The store supplies completed goals in reverse completion order. Search the whole history before limiting the rows. */
 export function goalsRows(goals: GoalView[], s: GoalsState, searching = false, avatars?: (g: GoalView) => string): string {
-  if (searching || s.folded) return ''
-  const done = goals.filter((g) => g.status === 'done')
-  const shown = [...activeGoals(goals), ...(s.showDone ? done : [])]
-  return shown.map((g) => goalRow(g, s.open, avatars?.(g))).join('')
+  if (searching) return ''
+  if (!s.showDone) return s.folded ? '' : activeGoals(goals).map((g) => goalRow(g, s.open, avatars?.(g))).join('')
+  const query = (s.completedQuery ?? '').trim().toLocaleLowerCase()
+  const matches = goals.filter((g) => g.status === 'done' && g.title.toLocaleLowerCase().includes(query))
+  if (!matches.length) return `<div class="empty">${query ? 'No matching goals' : 'No completed goals yet'}</div>`
+  const limit = s.completedLimit ?? COMPLETED_BATCH
+  const rows = matches.slice(0, limit).map((g) => goalRow(g, s.open)).join('')
+  return rows + (matches.length > limit ? '<button class="ghistory gmore" data-gmore>Show more</button>' : '')
 }
 
 // ---------- the card ----------

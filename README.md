@@ -174,8 +174,7 @@ not be a Linear issue: it can span several, or have no issue, worktree or agent 
 a lawyer, product research). Each row is two lines: the title with its todo count (`2/4`) on the right,
 and under it the next step. Avatars show who is working on linked worktrees. Hover over them for the agent names. Click a row for its card: edit the next step, tick todos, edit the description and done criteria (edits
 save when you leave the field or press Enter), see the Linear issues and worktrees it links, and one
-line saying who changed it last ("Next updated by you · 2h ago"). **Mark done** moves it out of the
-list; the header's "· N done" shows the done goals again, each with **Reopen**. **+** adds a goal from
+line saying who changed it last ("Next updated by you · 2h ago"). **Mark done** moves it to **Completed**. Search completed goals by title, newest completion first, and open any goal to **Reopen** it. **+** adds a goal from
 one line (Enter adds, Esc cancels). Agents keep goals current with `orca-flow goal` (a lead ticks todos
 and updates the next step), but only propose done: such a goal reads "lead says done", and its card
 asks **Confirm done** or **Not yet** (back to open). The section folds like Linear and hides while you

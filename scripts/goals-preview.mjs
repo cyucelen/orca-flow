@@ -118,7 +118,7 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
   try {
     await wait(300);
     ok(document.querySelector('#goals-head .lfold span').textContent === 'Goals' && $('#goals-head .gc').textContent === '5', 'header: Goals 5');
-    ok($('#goals-head .gdn').textContent === '· 1 done', 'header: · 1 done');
+    ok(!!$('[aria-label="View completed goals"]'), 'Completed is accessible from the Goals header');
     ok(!!row('g_super-admin').querySelector('.sav svg.ch') && !row('g_lesson-splitting').querySelector('.sav svg.ch'), 'agent avatar only on the goal with a working agent');
     ok(row('g_super-admin').querySelector('.cnt').textContent === '2/4' && row('g_super-admin').querySelector('.nx').textContent.startsWith('Finish chat'), 'row: count 2/4 and next');
     ok(row('g_pdf-export').querySelector('.nx').textContent === 'lead says done', 'proposed row says "lead says done"');
@@ -165,23 +165,39 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     await wait(); ok($('#goalpop').hidden && $('#settings').hidden, 'clicking over Settings dismisses only the goal card');
     // mark done
     row('g_planning-assistance').click(); await wait(); $('#goalpop [data-gfinish]').click(); await wait(300);
-    ok($('#goalpop').hidden && !titles().includes('Plan "planning assistance" for shift scheduling by studying other products') && $('#goals-head .gdn').textContent === '· 2 done', 'Mark done: card closes, goal leaves the list, done count 2 (' + $('#goalpop').hidden + ' ' + $('#goals-head .gdn')?.textContent + ' ' + titles().length + ' ' + JSON.stringify(previewCalls.slice(-3)) + ')');
-    // show done, reopen
-    $('[data-gdone]').click(); await wait(); ok(titles().includes('Intro call with the Germany lawyer') && row('g_lawyer-intro').classList.contains('fin'), 'the done toggle shows done goals');
-    row('g_lawyer-intro').click(); await wait(); ok(!!$('#goalpop [data-greopen]') && !$('#goalpop [data-gfinish]'), 'a done goal offers Reopen');
+    ok($('#goalpop').hidden && !row('g_planning-assistance'), 'Mark done removes the goal from the active list');
+    $('[data-gdone]').click(); await wait();
+    const historyQuery = $('#goal-history-query');
+    ok(titles().length === 2 && row('g_planning-assistance') && !row('g_pdf-export'), 'Completed shows only confirmed goals');
+    historyQuery.value = 'LAWYER'; historyQuery.dispatchEvent(new Event('input')); await wait();
+    ok(titles().length === 1 && row('g_lawyer-intro') && document.activeElement === historyQuery, 'search finds completed titles and retains focus');
+    historyQuery.value = 'no such goal'; historyQuery.dispatchEvent(new Event('input')); await wait();
+    ok($('#goals-rows').textContent.includes('No matching goals'), 'empty search feedback');
+    historyQuery.value = ''; historyQuery.dispatchEvent(new Event('input')); await wait();
+    row('g_lawyer-intro').click(); await wait(); ok(!!$('#goalpop [data-greopen]') && !$('#goalpop [data-gfinish]'), 'a completed goal offers Reopen');
     $('#goalpop [data-greopen]').click(); await wait(300);
-    ok($('#goals-head .gdn').textContent === '· 1 done' && row('g_lawyer-intro').querySelector('.nx'), 'Reopen brings it back as open');
-    // confirm proposed
+    ok(!row('g_lawyer-intro'), 'reopened goal leaves completed history');
+    $('[data-gdone]').click(); await wait();
+    ok(row('g_lawyer-intro').querySelector('.nx'), 'reopened goal is back in the active list');
     row('g_pdf-export').click(); await wait(); ok(!!$('#goalpop [data-gconfirm]') && !!$('#goalpop [data-gnot]') && !$('#goalpop [data-gfinish]'), 'proposed card offers Confirm done / Not yet');
-    $('#goalpop [data-gconfirm]').click(); await wait(300); ok(row('g_pdf-export').classList.contains('fin'), 'Confirm done marks it done');
+    $('#goalpop [data-gconfirm]').click(); await wait(300); ok(!row('g_pdf-export'), 'Confirm done moves the goal out of active goals');
     // not yet on a fresh proposal
     goals.find((x) => x.id === 'g_lesson-splitting').status = 'proposed'; listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals)))); await wait();
     row('g_lesson-splitting').click(); await wait(); $('#goalpop [data-gnot]').click(); await wait(300);
     ok(row('g_lesson-splitting').querySelector('.nx').textContent.startsWith('Answer review') && $('#goalpop').hidden, '"Not yet" sends it back to open');
     // empty title is refused
     row('g_lesson-splitting').click(); await wait(); await edit('title', '   '); await wait(); ok($('#goalpop [data-gedit="title"]').textContent.startsWith('Finish lesson splitting'), 'an emptied title reverts');
-    // searching hides the section
     key(document.body, 'Escape'); await wait();
+    for (let i = 1; i <= 40; i++) goals.push({ ...goals[0], id: 'history-' + i, title: 'Past goal ' + i, status: 'done', doneAt: Date.now() - i * 3600000 });
+    listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals))));
+    $('[data-gdone]').click(); await wait();
+    ok(titles().length === 20 && !!$('[data-gmore]'), 'large history opens with 20 rows');
+    historyQuery.value = 'Past goal 40'; historyQuery.dispatchEvent(new Event('input')); await wait();
+    ok(titles().length === 1 && row('history-40'), 'search reaches past the first batch');
+    historyQuery.value = ''; historyQuery.dispatchEvent(new Event('input')); await wait();
+    $('[data-gmore]').click(); await wait();
+    ok(titles().length === 40, 'Show more reveals the next batch');
+
   } catch (e) { fail.push('exception ' + e.message); log.push('EXC ' + e.stack); }
   if (errors.length) { fail.push('page errors'); log.push(...errors.map((m) => 'ERR ' + m)); }
   document.title = (fail.length ? 'SELFTEST FAIL ' + fail.length : 'SELFTEST PASS ' + log.length) + '\\n' + log.join('\\n');

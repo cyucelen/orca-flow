@@ -78,26 +78,27 @@ test('the header counts the goals still to do, offers the done ones, and + adds'
   const goals = [view(), view({ id: 'b', status: 'proposed' }), view({ id: 'c', status: 'done' }), view({ id: 'd', status: 'done' })]
   const head = goalsHead(goals, state())
   assert.match(head, /<span>Goals<\/span><span class="gc">2<\/span>/)
-  assert.match(head, /data-gdone aria-pressed="false">· 2 done/)
+  assert.match(head, /data-gdone aria-label="View completed goals"/)
   assert.match(head, /data-gadd/)
-  assert.match(goalsHead(goals, state({ showDone: true })), /class="gdn on"/)
-  noMatch(goalsHead([view()], state()), /gdn/, 'no done goals: no toggle')
+  assert.match(goalsHead(goals, state({ showDone: true })), /Completed <span class="gc">2/)
+  assert.match(goalsHead([view()], state()), /View completed goals/)
 })
 
-test('no goals: the header has the title and + only; searching hides the whole section', () => {
+test('no goals: the header has no active count; searching hides the whole section', () => {
   const head = goalsHead([], state())
   assert.match(head, /Goals/)
-  noMatch(head, /class="gc"|gdn/)
+  noMatch(head, /class="gc"/)
   assert.equal(goalsRows([], state()), '')
   assert.equal(goalsHead([view()], state(), true), '')
   assert.equal(goalsRows([view()], state(), true), '')
 })
 
-test('done goals show only when the toggle is on, after the open ones; folded shows no rows', () => {
+test('completed history is separate from the active list; folded active view shows no rows', () => {
   const goals = [view({ id: 'a', title: 'Open one' }), view({ id: 'c', title: 'Finished', status: 'done' })]
   noMatch(goalsRows(goals, state()), /Finished/)
   const shown = goalsRows(goals, state({ showDone: true }))
-  assert.ok(shown.indexOf('Open one') < shown.indexOf('Finished'))
+  noMatch(shown, /Open one/)
+  assert.match(shown, /Finished/)
   assert.equal(goalsRows(goals, state({ folded: true })), '')
   assert.match(goalsRows(goals, state({ open: 'a' })), /class="g menu-open" data-gopen="a"/)
 })

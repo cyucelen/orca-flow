@@ -3,7 +3,7 @@
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
-import { goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
+import { COMPLETED_BATCH, goalCard, GOALS_UI_KEY, goalsUiOf, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
 import type { SpeedRange, TokenSpeedWire } from '../token-speed.ts'
@@ -47,6 +47,8 @@ const goalsHeadEl = $('goals-head')
 const goalsRowsEl = $('goals-rows')
 const goalAddEl = $('goal-add')
 const goalNewEl = $('goal-new') as HTMLInputElement
+const goalHistorySearch = $('goal-history-search')
+const goalHistoryQuery = $('goal-history-query') as HTMLInputElement
 const goalPop = $('goalpop') as HTMLDialogElement
 const speedEl = $('tokenspeed')
 const toastEl = $('toast')
@@ -105,7 +107,8 @@ function paintRows(): void {
   goalsRowsEl.innerHTML = goalsRows
   goalsEl.hidden = !goalsHead
   goalsEl.classList.toggle('folded', ui.goalsFolded)
-  if (!goalsHead) goalAddEl.hidden = true
+  goalHistorySearch.hidden = !goalsHead || !ui.goalsShowDone
+  if (!goalsHead || ui.goalsShowDone) goalAddEl.hidden = true
   copenEl.hidden = !copen // an empty slot would still take a gap in the column
   mainEl.innerHTML = main
   // What asks you, pinned under the tree, so the tree never moves when an ask comes or goes.
@@ -1198,7 +1201,7 @@ function showHistoryList(key: string): void {
 // live outside every redrawn section, so a live repaint never takes the focus or the text out of them.
 // The card is redrawn part by part, leaving the one the person types in alone.
 
-const GOAL_CLICKS = '[data-gfold],[data-gdone],[data-gadd],[data-gopen],[data-gstep],[data-gfinish],[data-greopen],[data-gconfirm],[data-gnot]'
+const GOAL_CLICKS = '[data-gfold],[data-gdone],[data-gmore],[data-gadd],[data-gopen],[data-gstep],[data-gfinish],[data-greopen],[data-gconfirm],[data-gnot]'
 const saveGoalsUi = () => void orca.storage.set(GOALS_UI_KEY, { folded: ui.goalsFolded, showDone: ui.goalsShowDone }).catch(() => null)
 orca.storage.get(GOALS_UI_KEY).then((stored) => {
   const saved = goalsUiOf(stored)
@@ -1322,6 +1325,11 @@ function paintGoalCard(): void {
   }
   placeGoalCard()
 }
+goalHistoryQuery.addEventListener('input', () => {
+  ui.goalsCompletedQuery = goalHistoryQuery.value
+  ui.goalsCompletedLimit = COMPLETED_BATCH
+  draw()
+})
 goalsEl.addEventListener('scroll', placeGoalCard, { passive: true })
 window.addEventListener('resize', placeGoalCard)
 
@@ -1330,7 +1338,25 @@ document.addEventListener('click', (event) => {
   if (!el) return
   const d = el.dataset
   if ('gfold' in d) { ui.goalsFolded = !ui.goalsFolded; saveGoalsUi(); draw(); return }
-  if ('gdone' in d) { ui.goalsShowDone = !ui.goalsShowDone; saveGoalsUi(); draw(); return }
+  if ('gdone' in d) {
+    setGoalAdding(false)
+    ui.goalsShowDone = !ui.goalsShowDone
+    ui.goalsCompletedQuery = goalHistoryQuery.value = ''
+    ui.goalsCompletedLimit = COMPLETED_BATCH
+    saveGoalsUi()
+    draw()
+    goalsEl.scrollTop = 0
+    if (ui.goalsShowDone) goalHistoryQuery.focus()
+    else goalsHeadEl.querySelector<HTMLElement>('[data-gdone]')?.focus()
+    return
+  }
+  if ('gmore' in d) {
+    const firstNew = ui.goalsCompletedLimit
+    ui.goalsCompletedLimit += COMPLETED_BATCH
+    draw()
+    goalsRowsEl.querySelectorAll<HTMLElement>('[data-gopen]')[firstNew]?.focus()
+    return
+  }
   if ('gadd' in d) { setGoalAdding(!!goalAddEl.hidden); return }
   if (d.gopen) {
     const was = ui.goalOpen
