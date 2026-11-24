@@ -1126,15 +1126,17 @@ export function coordinatorCharacter(c: Coordinator, size = 16, face?: Face): st
   return character(coordinatorColor(c), c.look?.shape ?? 'pentagon', face ?? (activity ? faceOf(activity) : 'idle'), size, true, activity ? askKindOf(activity) : 'question')
 }
 
-function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap: Snapshot, ui: UiState, mixed: boolean): string {
+function coordinatorBlock({ c, mine, lines, auxiliary }: TreeBlock, all: AgentInfo[], snap: Snapshot, ui: UiState, mixed: boolean): string {
   const { coordinators, focusedPanes: focused } = snap
   const single = c.repos.length === 1 ? c.repos[0] : null
   const color = coordinatorColor(c)
   const shape: Shape = c.you ? 'solo' : (c.look?.shape ?? 'pentagon')
-  const sub = single ?? (c.you ? 'chats you started' : c.repos.length ? c.repos.join(', ') : 'all projects')
+  const runs = auxiliary?.runs ?? c.split?.mainRuns
+  const runNames = runs?.map(r => r.objective).join(' · ')
+  const sub = runNames ? (auxiliary ? runNames : 'Main · ' + runNames) : single ?? (c.you ? 'chats you started' : c.repos.length ? c.repos.join(', ') : 'all projects')
   // A coordinator shows its own state only; its workers show theirs below it. You has no session of
   // its own, so it shows the busiest of your chats.
-  const activity = c.you ? activityAgent(mine.map((p) => p.a)) : coordinatorActivity(c)
+  const activity = c.you ? activityAgent(mine.map((p) => p.a)) : auxiliary?.p.a ?? coordinatorActivity(c)
   const face: Face = activity ? faceOf(activity) : c.you ? 'done' : 'idle'
   const ask = activity ? askKindOf(activity) : 'question'
   const tip = face === 'idle' ? 'Sleeping' : face === 'asks' ? ASK_TIP[ask] : face === 'done' && !c.you ? 'Available' : STATUS[face]
@@ -1158,8 +1160,9 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
     }).join('')
     return `<div class="lane"${branchAttr(root.row)}>${html}</div>`
   }).join('')
-  const current = !c.you && coordinatorCurrent(c, focused)
-  const folded = ui.folded.has(c.key)
+  const current = auxiliary ? auxiliary.p.row.active && focused?.includes(auxiliary.p.a.paneKey) : !c.you && coordinatorCurrent(c, focused)
+  const foldKey = auxiliary ? auxiliaryKey(auxiliary.p) : c.key
+  const folded = ui.folded.has(foldKey)
   const node: NodeState = face === 'idle' ? 'sleeping' : face === 'asks' ? 'asking' : face === 'done' ? 'done' : face === 'monitoring' ? 'monitoring' : 'working'
   const ringed = !folded && mine.length > 0
   const mark = `${ringed ? headLines(trunk, node, face === 'asks' ? ask : undefined) + beam(node) : ''}${current ? FOCUS : ''}`
@@ -1168,9 +1171,13 @@ function coordinatorBlock({ c, mine, lines }: TreeBlock, all: AgentInfo[], snap:
     : activity ? `<span class="rstatus">${esc(tip)}</span>`
     : `<span class="rstatus sleeping">${c.sessions?.members.length === 0 ? 'Not started' : 'Sleeping'}</span>`
   // A coordinator's row opens its session; the chevron folds its team. You only folds.
-  const row = c.you
+  const fold = mine.length ? `<button class="coord-fold" data-fold="${esc(foldKey)}" aria-expanded="${!folded}" aria-label="Fold ${esc(auxiliary ? 'auxiliary coordinator' : c.name)}">${ICON.chev}</button>` : ''
+  const runTip = runs ? ` data-tip="${esc([...(auxiliary ? [auxiliary.p.a.title] : []), ...runs.map(r => r.objective + ' · ' + r.id)].join('\n'))}"` : ''
+  const row = auxiliary
+    ? `<div class="item coord${current ? ' current' : ''}" data-menu="agent:${esc(auxiliary.p.a.paneKey)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" ${openAttrs(auxiliary.p)} aria-label="Open auxiliary coordinator">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${providerBadge(auxiliary.p.a, mixed)}<button class="coord-name" ${openAttrs(auxiliary.p)}${runTip}><span class="coord-label"><span class="name">${esc(c.name)} · Auxiliary coordinator</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${modelChip(auxiliary.p.a)}</span>${fold}</div>`
+    : c.you
     ? `<button class="item coord" data-fold="${esc(c.key)}" aria-expanded="${!folded}">${mark}${head}</button>`
-    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? sessionStatus}</span>${mine.length ? `<button class="coord-fold" data-fold="${esc(c.key)}" aria-expanded="${!folded}" aria-label="Fold ${esc(c.name)}">${ICON.chev}</button>` : ''}</div>`
+    : `<div class="item coord${current ? ' current' : ''}" data-menu="coordinator:${esc(c.key)}"${current ? ' aria-current="true"' : ''}>${mark}<button class="coord-open" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}">${tipped(character(color, shape, face, 28, true, ask, !ringed), tip, face === 'asks' ? ASK_TONE[ask] : '')}</button>${handoverBadge(c, snap, mixed, ui.status.get(`coordinator:${c.key}`))}<button class="coord-name" data-coordinator="${esc(c.key)}" aria-label="Open ${esc(c.name)}"${runTip}><span class="coord-label"><span class="name">${esc(c.name)}</span><span class="sub">${esc(sub)}</span></span></button><span class="r">${rowStatus(ui, `coordinator:${c.key}`, true) ?? sessionStatus}</span>${fold}</div>`
   return `<section class="coordinator">${row}${folded || !body ? '' : `<div class="group">${body}</div>`}</section>`
 }
 
@@ -1188,7 +1195,8 @@ function handoverBadge(c: Coordinator, snap: Snapshot, mixed: boolean, status?: 
 }
 
 /** One coordinator (or You) in the tree: its team in start order, each lead followed by its workers. */
-type TreeBlock = { c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; lead?: Placed; depth: number }[] }
+const auxiliaryKey = (p: Placed) => `auxiliary:${p.row.id}:${p.a.orcaSession}`
+type TreeBlock = { auxiliary?: { p: Placed; runs: { id: string; objective: string }[] }; c: Coordinator & { you?: boolean }; mine: Placed[]; lines: { p: Placed; lead?: Placed; depth: number }[] }
 
 /** Vertical rails follow actual ancestors and end at their last direct child connector. */
 function treeRails(lines: TreeBlock['lines'], index: number, trunk: number): string {
@@ -1224,30 +1232,38 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
   // lead, whatever state its last summary claimed, except while agents it leads are still open: it
   // stays drawn asleep at the head of their lane until they finish. Unknown liveness is not asleep.
   const live = placed.filter((p) => asleep(p.row) ? leadsOpenWork(p.a, all) : p.a.live === true || faceOf(p.a) !== 'done' || inFlight(p.a, p.row, all) || p.row.liveTerminals > 0)
-  const teamOf = (key: string) => live.filter((p) => p.a.coordinator === key)
+  // A current run route can place a worker whose original dispatcher closed or left the recent-run cache.
+  const routedTeam = new Map(snap.coordinators.flatMap(c => Object.keys(c.split?.parents ?? {}).map(pane => [pane, c.key] as const)))
+  const teamOf = (key: string) => live.filter(p => (routedTeam.get(p.a.paneKey) ?? p.a.coordinator) === key)
   // Grouped by the coordinator row's own status: a live selected conversation first, then You,
   // then Sleeping and Not started, however busy their teams
   // are. Each group keeps the snapshot's order, so a refresh never reshuffles rows; a coordinator
   // moves only when it wakes, starts or sleeps. Its whole team moves with it.
   const awake = (c: Coordinator) => Boolean(c.session || c.sessionPanes?.length)
-  const you = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
+  const you: TreeBlock['c'] = { key: 'you', name: 'You', repos: [], workspaceId: null, you: true }
   return [...snap.coordinators.filter(awake), you, ...snap.coordinators.filter((c) => !awake(c))].flatMap((c) => {
     const mine = teamOf(c.key).sort(byStart)
     // You only shows when you have chats; a coordinator always shows, so you can open it.
     if ('you' in c && mine.length === 0) return []
     const panes = new Set(mine.map((p) => p.a.paneKey))
-    const roots = mine.filter((p) => !p.a.leadPane || !panes.has(p.a.leadPane))
+    const parent = (p: Placed) => c.split?.parents[p.a.paneKey] ?? p.a.leadPane
+    const auxiliaries = (c.split?.auxiliary ?? []).flatMap(root => {
+      const p = mine.find(p => p.a.paneKey === root.pane)
+      return p ? [{ p, runs: root.runs }] : []
+    })
+    const roots = mine.filter(p => !panes.has(parent(p) ?? ''))
     const children = new Map<string, Placed[]>()
-    for (const p of mine) if (p.a.leadPane) {
-      const siblings = children.get(p.a.leadPane) ?? []
+    for (const p of mine) {
+      const key = parent(p)
+      if (!key) continue
+      const siblings = children.get(key) ?? []
       siblings.push(p)
-      children.set(p.a.leadPane, siblings)
+      children.set(key, siblings)
     }
-    const lines: TreeBlock['lines'] = []
-    const seen = new Set<Placed>()
+    const seen = new Set<Placed>(auxiliaries.map(a => a.p))
     // Walk every descendant, not just a root's immediate children. Keep sibling start order and
     // the actual parent; a continuation row above a lead must not swallow that lead's workers.
-    const visit = (root: Placed) => {
+    const visit = (root: Placed, lines: TreeBlock['lines']) => {
       const stack: TreeBlock['lines'] = [{ p: root, depth: 0 }]
       while (stack.length) {
         const line = stack.pop()!
@@ -1257,16 +1273,22 @@ function treeBlocks(snap: Pick<Snapshot, 'rows' | 'coordinators'>): TreeBlock[] 
         for (const p of [...(children.get(line.p.a.paneKey) ?? [])].reverse()) stack.push({ p, lead: line.p, depth: line.depth + 1 })
       }
     }
-    roots.forEach(visit)
+    const separate = auxiliaries.map(auxiliary => {
+      const lines: TreeBlock['lines'] = []
+      for (const child of children.get(auxiliary.p.a.paneKey) ?? []) visit(child, lines)
+      return { c, auxiliary, mine: lines.map(l => l.p), lines }
+    })
+    const lines: TreeBlock['lines'] = []
+    for (const p of roots) visit(p, lines)
     // Missing parents become roots above; cycles have none. Still show each pane once, safely.
-    mine.forEach(visit)
-    return [{ c, mine, lines }]
+    for (const p of mine) visit(p, lines)
+    return [{ c, mine: lines.map(l => l.p), lines }, ...separate]
   })
 }
 
 /** The coordinators in the order the tree shows them (with a live session first, then Sleeping and Not started): the send menu lists them so. */
 export function coordinatorOrder(snap: Pick<Snapshot, 'rows' | 'coordinators'>): Coordinator[] {
-  return treeBlocks(snap).flatMap(({ c }) => ('you' in c ? [] : [c]))
+  return treeBlocks(snap).flatMap(({ c, auxiliary }) => (c.you || auxiliary ? [] : [c]))
 }
 
 /** How many chats get a shortcut: Option+1 to Option+9. */
@@ -1284,10 +1306,10 @@ export type ChatTarget = { key: string } & ({ coordinator: string } | { workspac
  * is hidden, so it takes no numbers. The panel's key handler and the worker's commands both read this.
  */
 export function chatTargets(snap: Pick<Snapshot, 'rows' | 'coordinators'>, folded: ReadonlySet<string> = new Set()): ChatTarget[] {
-  return treeBlocks(snap).flatMap(({ c, lines }): ChatTarget[] => [
-    ...('you' in c ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
+  return treeBlocks(snap).flatMap(({ c, lines, auxiliary }): ChatTarget[] => [
+    ...(auxiliary ? [{ key: `agent:${auxiliary.p.a.paneKey}`, workspaceId: auxiliary.p.row.id, terminal: auxiliary.p.a.terminal! }] : c.you ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
     // A slept lead heading its open workers takes no number: a key press never resumes it unseen.
-    ...(folded.has(c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p }): ChatTarget => p.row.coordinator
+    ...(folded.has(auxiliary ? auxiliaryKey(auxiliary.p) : c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p }): ChatTarget => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)

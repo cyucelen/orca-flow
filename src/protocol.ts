@@ -223,6 +223,10 @@ export type WakeOutcome = { ok: boolean; kind: 'opened' | 'resumed' | 'started' 
 export type CoordinatorHistory = { title: string; text: string; unavailable?: string; truncated?: boolean }
 export type DeliveryRecipient = { member: string; workspaceId: string; orcaSession: string | null; terminal: string; agentType: string | null; receipt?: { requestId?: string; accepted?: boolean; stages?: string[]; provider?: string; observation?: string; processIncarnation?: string } }
 
+/** Presentation only. The parent map describes run reporting in the sidebar tree. */
+type SidebarRun = { id: string; objective: string }
+export type CoordinatorSplit = { mainRuns: SidebarRun[]; auxiliary: { pane: string; runs: SidebarRun[] }[]; parents: Record<string, string> }
+
 /** One of the user's coordinators: a coordinator with its own Orca folder workspace. */
 export type Coordinator = {
   key: string
@@ -231,6 +235,7 @@ export type Coordinator = {
   sessions?: CoordinatorSessions
   members?: CoordinatorMemberView[]
   sessionNotice?: string
+  split?: CoordinatorSplit
   routing?: string
   handover?: import('./handover.ts').HandoverStatus
   /** Its folder workspace in Orca, once added; clicking the coordinator opens it. */

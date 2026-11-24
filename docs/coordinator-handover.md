@@ -38,6 +38,26 @@ The installed CLI's `agent launch` creates a new conversation surface. Its publi
 no in-place provider switch with a guarantee that run consumers and session identity survive.
 Reusing a pane for a different provider remains unverified.
 
+### How the sidebar shows a manual split
+
+The selected main conversation and each verified auxiliary get separate headers in the coordinator
+tree, with their run objectives beneath their names. Open a header to reach that conversation.
+Direct reports appear beneath the owner of their run, and a lead's workers stay beneath that lead.
+Option+1–9 follows the same visible order and skips folded children.
+
+The projection joins a local coordinator folder's live `worktree ps` session, pane and terminal
+address with the run's coordinator handle. It requires a complete all-runs worker inventory to
+exclude dispatched leads, including leads that hold a run themselves. Multiple live bindings,
+missing evidence, a scoped inventory or a historical member leave the ordinary tree in place.
+Ownership reflects the latest background refresh. Session selection, dispatch records and saved
+parentage are independent of this display.
+
+Run `node scripts/coordinator-preview.mjs` and open the printed URL with
+`?split=1&linear=off&speed=off` to inspect the production panel with synthetic data and a mock
+navigation bridge. The regression fixture covers stale original parent panes after transfer, nested
+workers, a same-title independent chat, a dispatched task that holds a run and exact click and
+keyboard targets. [Rendered split at 400 px](coordinator-split.png)
+
 ## Supported behavior
 
 - Compact logo-only target buttons in the existing coordinator menu, with target/retry tooltips,

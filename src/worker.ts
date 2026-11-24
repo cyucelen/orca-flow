@@ -34,6 +34,7 @@ import { choiceLabel, taskKind, type Availability, type ModelChoice } from './ro
 import { discover, type Exec } from './model-discovery.ts'
 import { codexHomeFromAccounts, resolveCli } from './writer.ts'
 import { completeSelection, continueHandover, handoverPrompt, handoverStatus, readHandover, readHandoverContext, readOwnership, requireCoordinatorNavigation, saveHandover, transferPlan, type Handover } from './handover.ts'
+import { splitRoots, projectSplit, readSplitEvidence, type SplitEvidence } from './split-coordinators.ts'
 import { readHandoverProviders } from './handover-providers.ts'
 import { coordinatorProviders, firstProvider, readInstalledProviders } from './coordinator-providers.ts'
 import { checkForUpdates, readReleases, startUpdate, updateItem, updater, type InstalledPlugin, type UpdateCheck, type UpdateState } from './update.ts'
@@ -68,6 +69,7 @@ const DATA_DIR = join(homedir(), '.orca-flow')
 const URGENCY: AgentState[] = ['blocked', 'waiting', 'working', 'done']
 
 export type PsAgent = {
+  address?: string | null
   paneKey?: string
   /** The pane that started this agent (a lead's or coordinator's), when Orca knows it. */
   parentPaneKey?: string | null
@@ -90,6 +92,7 @@ export type PsAgent = {
 }
 
 export type PsWorktree = {
+  hostId?: string | null
   path?: string
   isMainWorktree?: boolean
   worktreeId?: string
@@ -707,25 +710,31 @@ export function isLive(dir: string, rows = allRows): boolean {
 
 /** The last lineage loaded; refreshed in the background so a snapshot never waits on it. */
 let lineage: Lineage = { dispatcherOf: new Map(), paneOf: new Map() }
+let splitEvidence: SplitEvidence | undefined
 let lineageAt = 0
 let lineageLoading = false
 
 /** Agent panes that existed when the lineage last loaded: a new one may be a freshly started worker. */
 let lineagePanes = new Set<string>()
 
-function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[] = []): void {
+function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[], roots: ReturnType<typeof splitRoots>): void {
   const unseen = panes.some((p) => !lineagePanes.has(p))
   if (lineageLoading || Date.now() - lineageAt < (unseen ? 10_000 : 60_000)) return
   lineageLoading = true
   const seen = new Set(panes)
-  loadLineage(orcaRunner(ORCA_BIN))
-    .then((next) => {
+  const run = orcaRunner(ORCA_BIN)
+  Promise.all([loadLineage(run), readSplitEvidence(run, roots).catch(() => undefined)])
+    .then(([next, split]) => {
+      splitEvidence = split
       lineagePanes = seen
       lineage = next
       lineageAt = Date.now()
       onLoaded()
     })
-    .catch((e: Error) => orca.log(`coordinator lineage failed: ${e.message}`))
+    .catch((e: Error) => {
+      if (splitEvidence) { splitEvidence = undefined; onLoaded() }
+      orca.log(`coordinator lineage failed: ${e.message}`)
+    })
     .finally(() => (lineageLoading = false))
 }
 
@@ -779,7 +788,6 @@ export async function snapshot(
   const onDisk = readCoordinators()
   const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
   try {
-    refreshLineage(orca, onLineage, allRows.flatMap((r) => r.agents.map((a) => a.paneKey)))
     refreshMemory(allRows, onLineage)
     // Switching Bots on reads at once, not at the next minute; the cached read may be old by then.
     if (botsOn) {
@@ -788,6 +796,8 @@ export async function snapshot(
     }
     botsWereOn = botsOn
     const worktrees = await ps()
+    const roots = splitRoots(worktrees, onDisk.map(c => c.dir))
+    refreshLineage(orca, onLineage, allRows.flatMap(r => r.agents.map(a => a.paneKey)), roots)
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
     const idByPath = new Map<string, string>()
     if (worktrees.some((w) => !w.identity?.key)) {
@@ -840,6 +850,10 @@ export async function snapshot(
     // A bot's workspaces show in the Bots section only: not in the tree, Idle or search.
     const botRows = all.filter((r) => isBotRow(r))
     const rows = foldCoordinatorFolders(all.filter((r) => !isBotRow(r)), coordinators, onDisk.map((c) => c.dir))
+    for (const c of coordinators) {
+      c.split = projectSplit(c, all, roots, splitEvidence)
+      if (c.split) c.routing = 'Main and auxiliary conversations receive reports for the runs shown under their names.'
+    }
     // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
     const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
     return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}) }
