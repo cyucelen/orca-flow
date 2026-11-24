@@ -47,7 +47,7 @@ const goalsHeadEl = $('goals-head')
 const goalsRowsEl = $('goals-rows')
 const goalAddEl = $('goal-add')
 const goalNewEl = $('goal-new') as HTMLInputElement
-const goalPop = $('goalpop')
+const goalPop = $('goalpop') as HTMLDialogElement
 const speedEl = $('tokenspeed')
 const toastEl = $('toast')
 
@@ -166,7 +166,7 @@ function applyFeatures(): void {
   linearWasOn = l
   // Goals: off hides the section and its card at once and drops the data; on reads the goals at once.
   const gOn = goalsIsOn()
-  if (!gOn && (goals || ui.goalOpen)) { goals = null; ui.goalOpen = null; goalPop.hidden = true; goalPop.innerHTML = '' }
+  if (!gOn && (goals || ui.goalOpen)) { goals = null; hideGoalCard() }
   if (gOn && !goalsWasOn) queueMicrotask(() => void readGoals())
   goalsWasOn = gOn
   speedWasOn = t
@@ -1255,6 +1255,13 @@ function commitGoalEdit(el: HTMLElement): void {
   if (value !== (g[key] ?? '')) void goalAct({ action: 'update', id: g.id, patch: { [key]: value } })
 }
 
+function hideGoalCard(): void {
+  ui.goalOpen = null
+  goalPop.hidden = true
+  goalPop.innerHTML = ''
+  goalPop.close()
+}
+
 function closeGoalCard(restoreFocusToRow = false): void {
   const id = ui.goalOpen
   if (!id) return
@@ -1263,9 +1270,7 @@ function closeGoalCard(restoreFocusToRow = false): void {
     if (active.dataset.gedit) commitGoalEdit(active)
     if (restoreFocusToRow) queueMicrotask(() => goalRowEl(id)?.focus({ preventScroll: true }))
   }
-  ui.goalOpen = null
-  goalPop.hidden = true
-  goalPop.innerHTML = ''
+  hideGoalCard()
   draw()
 }
 
@@ -1297,13 +1302,14 @@ function sync(cur: Element, fresh: Element): void {
 function paintGoalCard(): void {
   const g = goalById(ui.goalOpen ?? undefined)
   if (!g || !goalRowEl(g.id)) {
-    if (ui.goalOpen) { ui.goalOpen = null; goalPop.hidden = true; goalPop.innerHTML = '' }
+    if (ui.goalOpen) hideGoalCard()
     return
   }
   const html = goalCard(g, ui.now)
   if (goalPop.hidden) {
     goalPop.innerHTML = html
     goalPop.hidden = false
+    goalPop.showModal()
   } else {
     const fresh = document.createElement('div')
     fresh.innerHTML = html
@@ -1344,7 +1350,7 @@ document.addEventListener('click', (event) => {
   void goalAct({ action, id })
 })
 
-// Esc closes the card, or the add box; a press outside the card closes it (a press on a row toggles it in its click).
+// Esc closes the card or the add box.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!ctx.hidden || settingsOpen()) return
@@ -1367,11 +1373,20 @@ document.addEventListener('keydown', (e) => {
   }
   if (t.dataset?.gstep && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); t.click() }
 })
-document.addEventListener('pointerdown', (e) => {
-  if (!ui.goalOpen) return
-  const t = e.target as Element
-  if (!goalPop.contains(t) && !t.closest('[data-gopen]')) closeGoalCard()
-}, true)
+// The browser retargets backdrop events to the dialog. Dismiss on a completed click
+// outside its bounds so a drag from a text field or a click on its padding stays inside.
+function onGoalBackdrop(e: MouseEvent): boolean {
+  if (e.target !== goalPop) return false
+  const r = goalPop.getBoundingClientRect()
+  return e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom
+}
+let pressedGoalBackdrop = false
+goalPop.addEventListener('pointerdown', (e) => { pressedGoalBackdrop = onGoalBackdrop(e) })
+goalPop.addEventListener('click', (e) => {
+  if (pressedGoalBackdrop && onGoalBackdrop(e)) closeGoalCard(true)
+  pressedGoalBackdrop = false
+})
+goalPop.addEventListener('cancel', (e) => { e.preventDefault(); closeGoalCard(true) })
 goalPop.addEventListener('focusout', (e) => { const t = e.target as HTMLElement; if (t.dataset?.gedit) commitGoalEdit(t) })
 // "+" keeps the add box's focus on press, so a click on it closes the box instead of blurring it and opening it again.
 goalsHeadEl.addEventListener('pointerdown', (e) => { if ((e.target as Element).closest('[data-gadd]')) e.preventDefault() })

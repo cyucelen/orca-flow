@@ -150,8 +150,16 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     ok($('#goalpop .steps').children.length === 5 && document.activeElement === $('#goalpop [data-gedit="newStep"]'), 'add a step: listed, focus stays for the next');
     // Esc closes
     key(document.body, 'Escape'); await wait(); ok($('#goalpop').hidden, 'Esc closes the card');
-    // outside click closes
-    row('g_shift-scheduling').click(); await wait(); document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); document.body.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); await wait(); ok($('#goalpop').hidden, 'a press outside closes the card');
+    // Hit-test an actual control behind the card, as a pointer would.
+    row('g_shift-scheduling').click(); await wait();
+    const settings = $('#settings-open');
+    const bounds = settings.getBoundingClientRect();
+    const point = { clientX: bounds.x + bounds.width / 2, clientY: bounds.y + bounds.height / 2, bubbles: true };
+    const hit = document.elementFromPoint(point.clientX, point.clientY);
+    ok(!settings.contains(hit), 'backdrop intercepts a pointer over Settings');
+    settings.focus(); ok(document.activeElement !== settings, 'background controls cannot take focus');
+    for (const type of ['pointerdown', 'pointerup', 'click']) hit.dispatchEvent(new PointerEvent(type, point));
+    await wait(); ok($('#goalpop').hidden && $('#settings').hidden, 'clicking over Settings dismisses only the goal card');
     // mark done
     row('g_planning-assistance').click(); await wait(); $('#goalpop [data-gfinish]').click(); await wait(300);
     ok($('#goalpop').hidden && !titles().includes('Plan "planning assistance" for shift scheduling by studying other products') && $('#goals-head .gdn').textContent === '· 2 done', 'Mark done: card closes, goal leaves the list, done count 2 (' + $('#goalpop').hidden + ' ' + $('#goals-head .gdn')?.textContent + ' ' + titles().length + ' ' + JSON.stringify(previewCalls.slice(-3)) + ')');
