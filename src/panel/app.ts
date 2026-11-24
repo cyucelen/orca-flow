@@ -125,7 +125,7 @@ function paintRows(): void {
   linearEl.innerHTML = linearHtml
   linearEl.hidden = !linearHtml
   linearEl.classList.toggle('folded', ui.linearFolded)
-  // Analytics, under Linear; hidden while searching, like the other sections.
+  // Analytics, under Linear (Usage first, Speed & traffic at the bottom); hidden while searching, like the other sections.
   const speedHtml = ui.query ? '' : tokenSpeedSection(speed, { speedFolded: speedUi.folded, speedRange: speedUi.range, usage: { view: usage.view, window: speedUi.window, metric: speedUi.metric, details: usage.details, error: usage.error }, now: ui.now, speedOff: !speedIsOn() })
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
@@ -204,7 +204,7 @@ orca.storage.get(BOTS_UI_KEY).then((stored) => {
   draw()
 }).catch(() => null)
 document.addEventListener('visibilitychange', () => readLinear())
-// Analytics (Token speed's glance): the worker samples every 30 s and posts each sample; the panel asks once on open and
+// Analytics (Usage on top, Speed & traffic at the bottom): the worker samples every 30 s and posts each sample; the panel asks once on open and
 // when it shows again. The fold and the 1 h / 24 h range come back from storage.
 /** Usage changes with each 30 s sample, but a minute is fresh enough; the worker rebuilds at most every 30 s. */
 const USAGE_REFRESH_MS = 60_000

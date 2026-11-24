@@ -238,7 +238,8 @@ function perDay(v: AnalyticsView, ui: UsageOpts, slot: ReturnType<typeof slots>,
   const busiest = cols.reduce<DayColumn | null>((b, c) => (c.total > 0 && (!b || c.total > b.total) ? c : b), null)
   const a = attrs(side)
   const seg = `<span class="seg${side ? ' sm' : ''}" role="group" aria-label="Measure">${(['tokens', 'cost'] as const).map((m) => `<button ${a.metric}="${m}" aria-pressed="${m === ui.metric}">${m === 'tokens' ? 'Tokens' : side ? '$' : 'Est. cost'}</button>`).join('')}</span>`
-  const figs = `<div class="figline"><span><b>${esc(metricText(ui.metric, sum))}</b>${side ? (cost ? ' est.' : ' tokens') : ''} over ${days.length} days</span>`
+  // The sidebar's four figures above the chart already say the window's total: its line keeps average and busiest day.
+  const figs = `<div class="figline">${side ? '' : `<span><b>${esc(metricText(ui.metric, sum))}</b> over ${days.length} days</span>`}`
     + `<span>avg ${esc(metricText(ui.metric, sum / days.length))}${side ? '/day' : ' per day'}</span>`
     + (busiest ? `<span>busiest ${esc(monthDay(busiest.start))}, ${esc(metricText(ui.metric, busiest.total))}</span>` : '') + '</div>'
   const legend = [...shown].sort((a, b) => order(a[0]) - order(b[0])).map(([cls, name]) => `<span><i class="dot ${cls}"></i>${esc(name)}</span>`).join('')
@@ -271,27 +272,44 @@ const order = (cls: string) => (cls === 'sx' ? 99 : Number(cls.slice(1)) || 0)
 const SHORT: Record<AnalyticsWindow, string> = { '7d': '7d', '30d': '30d', all: 'All' }
 
 /**
- * The Analytics section's usage, in place of a Usage tab: the window toggle, usage per day with its
- * Details table, then the strip (tokens and estimate, biggest workstream, model share, input from
- * cache, most expensive task). Null view: still reading.
+ * The Analytics section's usage, in place of a Usage tab: the window and measure toggles, four
+ * figures (`today`, the caller's two stats for today, then the window's tokens and estimate from the
+ * strip), usage per day with its Details table, then the strip's other four cells (biggest
+ * workstream, model share, input from cache, most expensive task). Null view: still reading; the
+ * today figures stand under the header in every state.
  */
-export function sidebarUsage(v: AnalyticsView | null, ui: UsageOpts, error?: string | null): string {
+export function sidebarUsage(v: AnalyticsView | null, ui: UsageOpts, error?: string | null, today = ''): string {
   const win = `<span class="seg sm" role="group" aria-label="Time window" data-tip="Totals are what was recorded in the window; the biggest workstream and most expensive task are those finished in it.">${WINDOWS.map((w) => `<button data-uwin="${w.id}" aria-pressed="${w.id === ui.window}">${SHORT[w.id]}</button>`).join('')}</span>`
   const measure = `<span class="seg sm" role="group" aria-label="Measure" data-tip="Tokens, or the estimate ${ESTIMATE_NOTE}">${(['tokens', 'cost'] as const).map((m) => `<button data-umetric="${m}" aria-pressed="${m === ui.metric}">${m === 'tokens' ? 'Tokens' : '$'}</button>`).join('')}</span>`
   // The part's header: its name, then the two toggles that set everything under it.
   const head = `<div class="tsub first"><span class="thead">Usage</span><span class="tctl">${win}${measure}</span></div>`
-  if (!v) return `<div class="usb">${head}<div class="empty">${error ? `Could not read usage: ${esc(error)}` : 'Reading usage…'}</div></div>`
+  const stats = (window = '') => (today || window ? `<div class="tstats">${today}${window}</div>` : '')
+  if (!v) return `<div class="usb">${head}${stats()}<div class="empty">${error ? `Could not read usage: ${esc(error)}` : 'Reading usage…'}</div></div>`
   const none = v.strip.tokens.total === 0 && (v.daily ?? []).every((d) => d.spend.total === 0)
-  if (none) return `<div class="usb">${head}<div class="empty">${esc(backfillText(v.backfill))}.</div></div>`
+  if (none) return `<div class="usb">${head}${stats()}<div class="empty">${esc(backfillText(v.backfill))}.</div></div>`
   const slot = slots(v)
   const filling = v.backfill.state === 'running' ? `<div class="terr" role="note">Still filling in: ${esc(backfillText(v.backfill))}.</div>` : ''
-  // The chart first: in a 45vh section it is what shows without scrolling; the strip's totals follow.
-  return `<div class="usb">${head}${filling}${perDay(v, ui, slot, true)}${strip(v, ui, slot)}</div>`
+  return `<div class="usb">${head}${stats(windowStats(v, ui))}${filling}${perDay(v, ui, slot, true)}${strip(v, ui, slot, true)}</div>`
 }
+
+/** The estimate's tooltip: how it is priced, the table's version and what has no price. */
+const priceTip = (v: AnalyticsView) => `${esc(v.prices.tip)}\nPrice table ${v.prices.version}, dated ${v.prices.dated}.${v.strip.tokens.unpriced ? ` Excludes ${tok(v.strip.tokens.unpriced)} tokens with no price.` : ''}`
+
+/** The window's tokens and estimate as two headline stats (beside today's): "38.1M tokens, last 7 days", "≈ $34+, est. cost, 7 days". */
+function windowStats(v: AnalyticsView, ui: Pick<UsageUi, 'window'>): string {
+  const t = v.strip.tokens
+  const w = WINDOW_SAY[ui.window]
+  const price = priceTip(v)
+  return `<div class="tstat" data-tip="${esc(`Recorded ${windowSay(ui.window)}. Includes ${UNATTRIBUTED.toLowerCase()} ${tok(v.strip.unattributed.total)}.`)}"><b>${esc(tok(t.total))}</b><span>tokens</span><small>${w.tokens}</small></div>`
+    + `<div class="tstat" data-tip="${price}"><b>${esc(usageLine({ tokens: t.total, cost: t.cost, unpriced: t.unpriced }).cost)}</b><span></span><small>est. cost, ${w.cost}</small></div>`
+}
+/** The window's words under the sidebar's figures. */
+const WINDOW_SAY: Record<AnalyticsWindow, { tokens: string; cost: string }> = { '7d': { tokens: 'last 7 days', cost: '7 days' }, '30d': { tokens: 'last 30 days', cost: '30 days' }, all: { tokens: 'all time', cost: 'all time' } }
 
 // ---------- Usage ----------
 
-function strip(v: AnalyticsView, ui: Pick<UsageUi, 'window'>, slot: ReturnType<typeof slots>): string {
+/** The curiosity strip; in the sidebar (`side`) without its tokens and estimate cell: the section's four figures already carry them. */
+function strip(v: AnalyticsView, ui: Pick<UsageUi, 'window'>, slot: ReturnType<typeof slots>, side = false): string {
   const s = v.strip
   const t = s.tokens
   const w = WINDOWS.find((x) => x.id === ui.window)!
@@ -300,12 +318,12 @@ function strip(v: AnalyticsView, ui: Pick<UsageUi, 'window'>, slot: ReturnType<t
   const total = t.total || 1
   const bar = `<div class="mbar">${top.map((m) => `<i class="${slot(m.model)}" style="flex:${m.tokens / total}"></i>`).join('')}${rest ? `<i class="sx" style="flex:${rest / total}"></i>` : ''}</div>`
   const share = top.map((m) => `<span class="nw">${esc(m.label)} ${pct(m.share)}</span>`).join(' · ') + (rest ? ` · <span class="nw">other ${pct(rest / total)}</span>` : '')
-  const price = `${esc(v.prices.tip)}\nPrice table ${v.prices.version}, dated ${v.prices.dated}.${t.unpriced ? ` Excludes ${tok(t.unpriced)} tokens with no price.` : ''}`
+  const price = priceTip(v)
   const est = t.unpriced > 0 && t.cost === 0 && t.total > 0 ? 'no estimate' : `≈ ${usd(t.cost)}${t.unpriced ? '+' : ''}`
   // A finished workstream that spent nothing is no "biggest": it would read "0" beside a title.
   const big = s.biggest && s.biggest.tokens > 0 ? s.biggest : null
-  return `<div class="strip">`
-    + `<div class="cell"><span class="k">Tokens · ${esc(w.label)}</span><span class="v" data-tip="${esc(`Recorded ${windowSay(ui.window)}. Includes ${UNATTRIBUTED.toLowerCase()} ${tok(s.unattributed.total)}.`)}">${tok(t.total)}</span><span class="s" data-tip="${price}">${est} ${ESTIMATE_NOTE}</span></div>`
+  const first = side ? '' : `<div class="cell"><span class="k">Tokens · ${esc(w.label)}</span><span class="v" data-tip="${esc(`Recorded ${windowSay(ui.window)}. Includes ${UNATTRIBUTED.toLowerCase()} ${tok(s.unattributed.total)}.`)}">${tok(t.total)}</span><span class="s" data-tip="${price}">${est} ${ESTIMATE_NOTE}</span></div>`
+  return `<div class="strip">${first}`
     + `<div class="cell"><span class="k">Biggest workstream</span><span class="v sm">${big ? tok(big.tokens) : '–'}</span><span class="s ell"${big ? ` data-tip="${esc(big.title)}"` : ''}>${big ? esc(big.title) : s.biggest ? 'none finished with usage' : 'none finished'}</span></div>`
     + `<div class="cell"><span class="k">Model share</span>${t.total ? bar : ''}<span class="s">${t.total ? share : '–'}</span></div>`
     + `<div class="cell"><span class="k">Input from cache</span><span class="v sm">${s.cacheShare == null ? '–' : pct(s.cacheShare)}</span><span class="s">cache reads of all input tokens</span></div>`

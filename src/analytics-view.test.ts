@@ -161,14 +161,25 @@ test('the sidebar section is Analytics: the speed glance kept, usage in the sect
   assert.match(html, /tok\/s/)
   assert.match(html, /Internet not tested yet/)
   assert.ok(!html.includes('data-usage-open') && !html.includes('Usage ›'), 'no link to a separate page')
-  // folded: the glance and this week's tokens, no usage block
+  // folded: today's tokens and estimate first, no usage block; the speed stands in when there is no usage
   const folded = tokenSpeedSection(wire(), side({ speedFolded: true }))
-  assert.match(folded, /85 tok\/s<span class="sepd">52.4M this week/)
-  assert.ok(!folded.includes('class="usb"'))
-  // not ready (speed): usage is still there
-  assert.match(tokenSpeedSection(wire({ ready: false }), side()), /class="usb"/)
+  assert.match(folded, /<span class="foldsum">2\.00M today<span class="sepd">≈ \$1\.80\+<\/span><\/span>/)
+  assert.ok(!folded.includes('class="usb"') && !folded.includes('tok/s'))
+  assert.match(tokenSpeedSection(wire({ usage: undefined }), side({ speedFolded: true })), /<span class="foldsum">85 tok\/s<\/span>/)
+  // not ready (speed): usage first, the reading note inside the Speed & traffic block
+  const reading = tokenSpeedSection(wire({ ready: false }), side())
+  assert.match(reading, /class="usb"/)
+  assert.ok(reading.indexOf('class="usb"') < reading.indexOf('Speed &amp; traffic') && reading.indexOf('Speed &amp; traffic') < reading.indexOf('Reading the last 24 h of agent logs…'))
   // no usage block asked: the rest as before
   assert.ok(!tokenSpeedSection(wire(), { speedFolded: false, speedRange: '1h', now: 0 }).includes('class="usb"'))
+})
+
+test('the Usage tab keeps its strip with the window total and its per-day line; only the sidebar drops them', () => {
+  const html = page('7d')
+  assert.ok(html.includes('Tokens · 7 days') && html.includes('class="figline"'))
+  assert.match(html, /<span><b>[^<]+<\/b> over 7 days<\/span><span>avg [^<]* per day<\/span>/)
+  assert.equal((html.match(/class="cell"/g) ?? []).length, 5)
+  assert.ok(!html.includes('class="tstats"') && !html.includes('data-uwin'))
 })
 
 // ---------- usage per day ----------
@@ -226,24 +237,37 @@ test('sidebar usage: the window toggle, the strip, per day with tokens or $, and
     assert.ok(html.includes('class="strip"') && html.includes('Model share') && html.includes('Input from cache') && html.includes('Most expensive task'))
   }
   const html = tokenSpeedSection(wire(), side())
-  assert.ok(html.indexOf('class="usb"') > html.indexOf('class="tnet"'), 'speed & traffic first, usage at the bottom')
-  assert.ok(/data-umetric="tokens" aria-pressed="true"/.test(html) && html.includes(' tokens over 7 days'))
+  assert.ok(html.indexOf('class="usb"') < html.indexOf('class="tnet"') && html.indexOf('class="usb"') < html.indexOf('Speed &amp; traffic'), 'usage first, speed & traffic at the bottom')
+  assert.ok(/data-umetric="tokens" aria-pressed="true"/.test(html) && !html.includes(' over 7 days'), 'no "N tokens over 7 days" line: the figures above carry it')
+  assert.ok(/<span>avg [^<]*\/day<\/span><span>busiest [^<]*<\/span>/.test(html), 'avg and busiest stay as a small line')
   // Each part's controls stand on its own header; the section's header only folds.
   const sechead = html.slice(0, html.indexOf('</div>'))
   assert.ok(!sechead.includes('data-trange') && !sechead.includes('data-uwin'), 'no controls on the section header')
   const usageHead = html.indexOf('<span class="thead">Usage</span>'), speedHead = html.indexOf('Speed &amp; traffic')
   assert.ok(usageHead > 0 && usageHead < html.indexOf('data-uwin') && html.indexOf('data-umetric') < html.indexOf('class="uchart'), 'window and measure on the Usage header, above the chart')
-  assert.ok(speedHead < usageHead && speedHead < html.indexOf('data-trange') && html.indexOf('data-trange') < html.indexOf('class="tnet"'), '1h / 24h on the Speed & traffic header, above the internet line and the speed charts')
-  // One headline for the section: today's tokens and estimate beside tok/s and traffic, above both parts.
-  const stats = html.slice(html.indexOf('class="tstats"'), html.indexOf('class="tsub'))
-  assert.ok(html.indexOf('class="tstats"') < speedHead, 'the headline comes first')
+  assert.ok(usageHead < speedHead && speedHead < html.indexOf('data-trange') && html.indexOf('data-trange') < html.indexOf('class="tnet"'), '1h / 24h on the Speed & traffic header, above the internet line and the speed charts')
+  // Four figures at the top of Usage: today's tokens and estimate, then the window's (the strip's totals).
+  const usb = html.slice(html.indexOf('class="usb"'), speedHead)
+  const stats = usb.slice(usb.indexOf('class="tstats"'), usb.indexOf('class="figline"'))
+  assert.ok(usageHead < html.indexOf('class="tstats"') && html.indexOf('class="tstats"') < html.indexOf('class="uchart'), 'the figures come first under the Usage header')
+  assert.equal((stats.match(/class="tstat"/g) ?? []).length, 4)
   assert.match(stats, /<b>2.00M<\/b><span>tokens<\/span><small>today so far<\/small>/)
   assert.match(stats, /<b>≈ \$1.80\+<\/b><span><\/span><small>est. cost today<\/small>/)
-  assert.ok(stats.indexOf('today so far') < stats.indexOf('tok/s') && stats.indexOf('tok/s') < stats.indexOf('agent traffic'), 'today, then tok/s and traffic')
+  assert.match(stats, new RegExp(`<b>${tok(view('7d').strip.tokens.total)}</b><span>tokens</span><small>last 7 days</small>`))
+  assert.match(stats, /<b>≈ \$[\d,.]+\+?<\/b><span><\/span><small>est\. cost, 7 days<\/small>/)
+  assert.ok(stats.includes('Price table') && stats.includes('Recorded in the last 7 days'), 'the estimate and price table tooltips')
+  assert.ok(stats.indexOf('today so far') < stats.indexOf('est. cost today') && stats.indexOf('est. cost today') < stats.indexOf('last 7 days') && stats.indexOf('last 7 days') < stats.indexOf('est. cost, 7 days'))
+  // No duplicate window total: the strip keeps four cells, not "Tokens · 7 days".
+  assert.ok(!html.includes('Tokens · 7 days') && !html.includes('Tokens · '))
+  assert.equal((html.match(/class="cell"/g) ?? []).length, 4)
+  // Speed & traffic at the bottom: tok/s and traffic under its header, no longer in the headline.
+  const speed = html.slice(speedHead)
+  assert.ok(speed.indexOf('data-trange') < speed.indexOf('agents, last min') && speed.indexOf('agents, last min') < speed.indexOf('agent traffic') && speed.indexOf('agent traffic') < speed.indexOf('class="tnet"'), 'range, tok/s, traffic, then the internet line')
+  assert.ok(!usb.includes('tok/s') && !usb.includes('agent traffic'))
   assert.ok(!/data-act=|data-win=|data-metric=/.test(html), 'the panel\'s own attributes only')
   assert.ok(/class="uchart side"/.test(html))
   const cost = tokenSpeedSection(wire(), side({}, { metric: 'cost' }))
-  assert.ok(cost.includes(' est. over 7 days') && /data-umetric="cost" aria-pressed="true"/.test(cost))
+  assert.ok(/data-umetric="cost" aria-pressed="true"/.test(cost) && /<span>avg \$[\d,.]+\/day<\/span>/.test(cost), 'the line is in dollars')
   assert.ok(cost.includes('not in the estimate'))
   const details = tokenSpeedSection(wire(), side({}, { details: true }))
   clean(details)
@@ -251,8 +275,19 @@ test('sidebar usage: the window toggle, the strip, per day with tokens or $, and
   assert.ok(details.includes('<th>Day</th><th>Total</th><th>Output</th><th>Est. cost</th>'), 'four columns fit 340 px')
   assert.ok(details.includes('(so far)') && /<tr data-tip="input [\d,]+ · cache read/.test(details), 'all four categories in each row\'s tooltip')
   // states: still reading, a failed read, nothing recorded yet
-  assert.ok(tokenSpeedSection(wire(), side({}, { view: null })).includes('Reading usage…'))
-  assert.ok(tokenSpeedSection(wire(), side({}, { view: null, error: 'boom' })).includes('Could not read usage: boom'))
+  // (today's two figures stay at the top, the text under them)
+  const loading = tokenSpeedSection(wire(), side({}, { view: null }))
+  assert.ok(loading.includes('Reading usage…'))
+  assert.ok(loading.indexOf('today so far') < loading.indexOf('Reading usage…') && !loading.includes('last 7 days'), 'today only while the window is unknown')
+  const failed = tokenSpeedSection(wire(), side({}, { view: null, error: 'boom' }))
+  assert.ok(failed.includes('Could not read usage: boom') && failed.includes('today so far'))
   const empty = analyticsView(buildModel({ now: Date.now(), usage: [], coverage: new Map(), links: [], routes: [], routing: normalizeRouting(undefined) }), '7d', { state: 'running', read: 3, total: 9 })
-  assert.ok(tokenSpeedSection(wire(), side({}, { view: empty })).includes('backfill reading 3 of 9 logs'))
+  const none = tokenSpeedSection(wire(), side({}, { view: empty }))
+  assert.ok(none.includes('backfill reading 3 of 9 logs') && none.indexOf('today so far') < none.indexOf('backfill reading'))
+  assert.equal((none.match(/class="tstat"/g) ?? []).length, 4, 'today (2) here, speed (2) below')
+  // the other windows' words
+  for (const [w, say, cost] of [['30d', 'last 30 days', '30 days'], ['all', 'all time', 'all time']] as const) {
+    const h = tokenSpeedSection(wire(), side({}, { view: view(w), window: w }))
+    assert.ok(h.includes(`<small>${say}</small>`) && h.includes(`<small>est. cost, ${cost}</small>`), w)
+  }
 })

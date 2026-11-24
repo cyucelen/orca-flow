@@ -1,13 +1,15 @@
 // The Analytics section (Token Speed's glance, kept, and the usage line) as a pure function: the worker's TokenSpeedWire and the section's UI state
 // in, HTML out (no DOM, no Node), so it is tested in Node and the panel imports it as is.
 //
-// A headline (all agents' output tok/s over the last minute, their traffic, the last internet test
-// with its Test button), two small charts on one time axis (output tok/s per model; agent traffic as
-// a share of the tested connection, or in kbit/s before any test: never two scales on one chart),
-// then one row per model with its median speed over the last hour and the last 24 h. Above the speed,
-// the usage of the last 7 days, 30 days or all (analytics.view, asked by the panel): tokens and
-// estimate, model share, cache, then one column per day, in tokens or the estimate at API list prices,
-// with a per-day table behind Details (src/analytics-view.ts sidebarUsage). No separate page.
+// Top to bottom: Usage of the last 7 days, 30 days or all (analytics.view, asked by the panel): four
+// figures (today's tokens and estimate, the window's tokens and estimate), then one column per day,
+// in tokens or the estimate at API list prices, with a per-day table behind Details, and the model
+// share, cache and priciest-task cells (src/analytics-view.ts sidebarUsage). Then, under a rule,
+// Speed & traffic: the 1 h / 24 h range, all agents' output tok/s over the last minute and their
+// traffic, the last internet test, two small charts on one time axis (output tok/s per model; agent
+// traffic as a share of the tested connection, or in kbit/s before any test: never two scales on
+// one chart), then one row per model with its median speed over the last hour and the last 24 h.
+// No separate page.
 import { dayName, ESTIMATE_NOTE, sidebarUsage, tok, usageLine, usageMetric, usd, type UsageMetric } from './analytics-view.ts'
 import type { AnalyticsView, AnalyticsWindow } from './protocol.ts'
 import type { SpeedRange, SpeedSeries, TokenSpeedWire } from './token-speed.ts'
@@ -161,37 +163,36 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
   const net = d.net ? { up: bits(d.net.up), down: bits(d.net.down) } : null
   const netText = net ? `↑${net.up.value} ↓${net.down.value} ${net.down.unit === net.up.unit ? net.up.unit : `${net.up.unit}/${net.down.unit}`}` : ''
   const fold = `<button class="label lfold" data-tfold aria-expanded="${!folded}">${CHEV}<span>Analytics</span></button>`
-  const week = d.usage ? usageLine(d.usage).tokens : ''
+  // Folded, the usage leads like the section does: "12.8M today · ≈ $11+"; the speed stands in until there is any.
+  const today = d.usage?.daily?.[d.usage.daily.length - 1] ?? null
+  const todayCost = !today ? '' : today.tokens === 0 ? '≈ $0' : today.unpriced > 0 && today.cost === 0 ? 'no estimate' : `≈ ${usd(today.cost)}${today.unpriced > 0 ? '+' : ''}`
   // The section's header only folds it: each part below has its own header with its own controls.
   const right = folded
-    ? `<span class="foldsum">${esc(round(d.tokPerSec))} tok/s${week ? `<span class="sepd">${esc(week)} this week</span>` : netText ? `<span class="sepd">${esc(netText)}</span>` : ''}</span>`
+    ? `<span class="foldsum">${today ? `${esc(tok(today.tokens))} today<span class="sepd">${esc(todayCost)}</span>` : `${esc(round(d.tokPerSec))} tok/s${netText ? `<span class="sepd">${esc(netText)}</span>` : ''}`}</span>`
     : ''
   const head = `<div class="sechead">${fold}${right}</div>`
   if (folded) return head
   // Speed & traffic: the 1 h / 24 h range sets its two charts and nothing else, so it stands on its header.
   const speedHead = `<div class="tsub"><span class="thead">Speed &amp; traffic</span><span class="seg sm" role="group" aria-label="Range of the speed and traffic charts">${(['1h', '24h'] as const).map((r) => `<button data-trange="${r}" aria-pressed="${r === ui.speedRange}">${r}</button>`).join('')}</span></div>`
 
-  // The headline, one block for the whole section: today's tokens and estimate (the usage store,
-  // today's calendar day so far), then the agents' output tok/s and traffic right now.
-  const today = d.usage?.daily?.[d.usage.daily.length - 1] ?? null
-  const todayCost = !today ? '' : today.tokens === 0 ? '≈ $0' : today.unpriced > 0 && today.cost === 0 ? 'no estimate' : `≈ ${usd(today.cost)}${today.unpriced > 0 ? '+' : ''}`
+  // Today's tokens and estimate (the usage store, today's calendar day so far): the first two of the Usage block's four figures.
   const todayStats = today
     ? `<div class="tstat" data-tip="${esc(`Tokens recorded today so far (${dayName(today.start)}), all four categories, every agent`)}"><b>${esc(tok(today.tokens))}</b><span>tokens</span><small>today so far</small></div>`
       + `<div class="tstat" data-tip="${esc(`Today's tokens ${ESTIMATE_NOTE}\n${d.usage!.prices}${today.unpriced > 0 ? `\n${tok(today.unpriced)} tokens have no price and are not in it` : ''}`)}"><b>${esc(todayCost)}</b><span></span><small>est. cost today</small></div>`
     : ''
-  const stats = `<div class="tstats">${todayStats}`
+  // Usage, first: today's and the window's figures, one column per day (an estimate, not a bill).
+  const usage = ui.usage ? sidebarUsage(ui.usage.view, ui.usage, ui.usage.error, todayStats) : ''
+  // Speed & traffic's figures, last: the agents' output tok/s and traffic right now.
+  const stats = '<div class="tstats">'
     + `<div class="tstat" data-tip="Output tokens per second over the last minute, summed over every agent; a response counts once it is written to its log"><b>${esc(round(d.tokPerSec))}</b><span>tok/s</span><small>agents, last min</small></div>`
     + `<div class="tstat" data-tip="${esc(d.net ? `Network traffic of ${d.net.procs} agent ${d.net.procs === 1 ? 'process' : 'processes'} over the last 30 s sample (nettop)` : 'The first 30 s traffic sample is still running')}">${net ? `<b>↑${esc(net.up.value)} ↓${esc(net.down.value)}</b><span>${esc(net.down.unit)}</span>` : '<b>…</b>'}<small>agent traffic</small></div>`
     + '</div>'
-
-  // Usage, in the section itself: the window's totals and one column per day (an estimate, not a bill).
-  const usage = ui.usage ? sidebarUsage(ui.usage.view, ui.usage, ui.usage.error) : ''
   const i = d.internet
   const internet = `<div class="tnet">${i
     ? `<span class="tnetv" data-tip="${esc(`Internet, tested ${new Date(i.at).toLocaleString()}${i.rpm != null ? ` · responsiveness ${Math.round(i.rpm)} RPM` : ''}`)}">Internet ↓${esc(mbit(i.down))} ↑${esc(mbit(i.up))} Mbit/s${i.rtt != null ? ` · ${esc(Math.round(i.rtt))} ms` : ''}</span><span class="tago">tested ${esc(ago(i.at, ui.now))}</span>`
     : '<span class="tnetv muted">Internet not tested yet</span>'}</div>`
 
-  if (!d.ready) return `${head}${stats}${speedHead}${internet}<div class="empty">Reading the last 24 h of agent logs…</div>${usage}`
+  if (!d.ready) return `${head}${usage}${speedHead}${stats}${internet}<div class="empty">Reading the last 24 h of agent logs…</div>`
 
   const s = d.series[ui.speedRange]
   const slotOf = new Map(d.models.map((m) => [m.id, m]))
@@ -236,6 +237,6 @@ export function tokenSpeedSection(d: TokenSpeedWire | null, ui: SpeedUi): string
     ? `<table class="tmodels"><thead><tr><th></th><th colspan="2" class="tgrp" data-tip="Output tokens per second of one response, from its prompt or tool result to its last block; half the responses were faster">Speed per response<br>(median tok/s)</th><th></th></tr>`
       + `<tr><th>Model</th><th>1 h</th><th>24 h</th><th data-tip="Responses in the last 24 h">Resp. 24 h</th></tr></thead><tbody>${rows}</tbody></table>`
     : ''
-  // The headline, then Speed & traffic, then Usage at the bottom.
-  return `${head}${stats}${speedHead}${internet}${tokChart}${netChart}${table}${usage}`
+  // Usage first, then Speed & traffic at the bottom.
+  return `${head}${usage}${speedHead}${stats}${internet}${tokChart}${netChart}${table}`
 }
