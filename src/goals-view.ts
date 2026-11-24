@@ -45,7 +45,7 @@ export function agoText(at: number, now: number): string {
   return m < 60 ? `${m}m ago` : m < 48 * 60 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`
 }
 
-const FIELD = { title: 'Title', note: 'Note', next: 'Next', doneWhen: 'Done criteria', steps: 'Steps', links: 'Links' } as const
+const FIELD = { title: 'Title', note: 'Description', next: 'Next', doneWhen: 'Done criteria', steps: 'Steps', links: 'Links' } as const
 /** The one muted line at the foot of a card: "Next updated by you · 2h ago". */
 export function lastChangeText(g: Pick<Goal, 'lastChange'>, now: number): string {
   const { by, field, at } = g.lastChange
@@ -116,8 +116,7 @@ const editable = (field: string, id: string, value: string | undefined, placehol
 const worktreeName = (w: Goal['links']['worktrees'][number]) => w.name || (w.path ? w.path.split('/').filter(Boolean).pop() : '') || w.key || 'worktree'
 
 /**
- * The details card of a goal: its title, next, steps (tick on click, one more can be added), note, done
- * criteria, links, and the foot with who changed it last and the buttons that fit its status.
+ * The details card of a goal: its title, description, done criteria, next step, checklist, links, and the foot with who changed it last and the buttons that fit its status.
  * Every section is a direct child with a data-part, so a live redraw replaces the parts the person
  * is not typing in (see paintGoalCard in panel/app.ts).
  */
@@ -134,12 +133,12 @@ export function goalCard(g: GoalView, now: number): string {
       : `<button class="gbtn" data-gfinish="${esc(g.id)}">Mark done</button>`
   return [
     `<div class="gpart" data-part="title">${editable('title', g.id, g.title, 'Goal', 'ed ph')}</div>`,
-    g.status === 'proposed' ? '<div class="gpart gsays" data-part="says">An agent says this is done. Is it?</div>' : '',
+    `<div class="gpart f" data-part="note"><span class="k">Description</span>${editable('note', g.id, g.note, 'Add a description', 'ed note')}</div>`,
+    `<div class="gpart f" data-part="doneWhen"><span class="k">Done criteria</span>${editable('doneWhen', g.id, g.doneWhen, 'How will you know it is done?')}</div>`,
     `<div class="gpart f" data-part="next"><span class="k">Next</span>${editable('next', g.id, g.next, 'What is the next thing to do?')}</div>`,
     `<div class="gpart f" data-part="steps"><span class="k">Steps${g.steps.length ? ` · ${completedSteps(g)}/${g.steps.length}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a step', 'ed addstep')}</div>`,
-    `<div class="gpart f" data-part="note"><span class="k">Note</span>${editable('note', g.id, g.note, 'Add a note', 'ed note')}</div>`,
-    `<div class="gpart f" data-part="doneWhen"><span class="k">Done when</span>${editable('doneWhen', g.id, g.doneWhen, 'How will you know it is done?')}</div>`,
-    `<div class="gpart f" data-part="links"><span class="k">Linked</span><div class="links">${links || '<span class="nolinks">No ticket or worktree</span>'}</div></div>`,
+    `<div class="gpart f" data-part="links"><span class="k">Links</span><div class="links">${links || '<span class="nolinks">No ticket or worktree</span>'}</div></div>`,
+    g.status === 'proposed' ? '<div class="gpart gsays" data-part="says">An agent says this is done. Is it?</div>' : '',
     `<div class="gpart pfoot${g.status === 'proposed' ? ' wrap' : ''}" data-part="foot"><span class="meta">${esc(lastChangeText(g, now))}</span>${buttons}</div>`
   ].join('')
 }

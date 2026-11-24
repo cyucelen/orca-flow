@@ -173,7 +173,7 @@ square. The face and the badge at the bottom right show what Orca reports:
 not be a Linear issue: it can span several, or have no issue, worktree or agent at all (a document for
 a lawyer, product research). Each row is two lines: the title with its step count (`2/4`) on the right,
 and under it the next step. A small green dot means an agent on a worktree the goal links is working
-now. Click a row for its card: edit the next step, tick steps, change the note and "Done when" (edits
+now. Click a row for its card: edit the next step, tick steps, edit the description and done criteria (edits
 save when you leave the field or press Enter), see the Linear issues and worktrees it links, and one
 line saying who changed it last ("Next updated by you · 2h ago"). **Mark done** moves it out of the
 list; the header's "· N done" shows the done goals again, each with **Reopen**. **+** adds a goal from
