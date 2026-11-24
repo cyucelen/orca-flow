@@ -56,7 +56,15 @@ export function lastChangeText(g: Pick<Goal, 'lastChange'>, now: number): string
   return `${names.join(' and ')} updated by ${by} · ${when}`
 }
 
-const stepCount = (g: Goal) => (g.steps.length ? `${g.steps.filter((s) => s.done).length}/${g.steps.length}` : '')
+const completedSteps = (g: Goal) => g.steps.filter((s) => s.done).length
+
+function stepProgress(g: Goal): string {
+  const total = g.steps.length
+  if (!total) return ''
+  const done = completedSteps(g)
+  const arc = done ? `<circle cx="7" cy="7" r="5.5" pathLength="${total}" stroke-dasharray="${done} ${total}" transform="rotate(-90 7 7)"/>` : ''
+  return `<span class="gprogress" data-tip="${done} of ${total} steps complete"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5.5"/>${arc}</svg><span class="cnt">${done}/${total}</span></span>`
+}
 
 const CHEV = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3.5 2l3 3-3 3"/></svg>'
 const CHECK = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 5.4L4 7.6L8.2 2.6"/></svg>'
@@ -80,7 +88,6 @@ export function goalsHead(goals: GoalView[], s: GoalsState, searching = false): 
 /** One goal: its title and step count, and under it the next step (or "lead says done" while an agent proposes it). */
 export function goalRow(g: GoalView, open: string | null): string {
   const done = g.status === 'done'
-  const count = stepCount(g)
   const second = done
     ? ''
     : g.status === 'proposed'
@@ -89,7 +96,7 @@ export function goalRow(g: GoalView, open: string | null): string {
         ? `<span class="nx">${esc(g.next)}</span>`
         : '<span class="nx none">No next step yet</span>'
   const dot = g.working ? '<span class="wd" data-tip="An agent is working"></span>' : ''
-  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${dot}${count ? `<span class="cnt">${count}</span>` : ''}</button>`
+  return `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${dot}${stepProgress(g)}</button>`
 }
 
 /** The rows under the header: nothing while folded or empty; done goals only when the toggle shows them. */
@@ -129,7 +136,7 @@ export function goalCard(g: GoalView, now: number): string {
     `<div class="gpart" data-part="title">${editable('title', g.id, g.title, 'Goal', 'ed ph')}</div>`,
     g.status === 'proposed' ? '<div class="gpart gsays" data-part="says">An agent says this is done. Is it?</div>' : '',
     `<div class="gpart f" data-part="next"><span class="k">Next</span>${editable('next', g.id, g.next, 'What is the next thing to do?')}</div>`,
-    `<div class="gpart f" data-part="steps"><span class="k">Steps${g.steps.length ? ` · ${stepCount(g)}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a step', 'ed addstep')}</div>`,
+    `<div class="gpart f" data-part="steps"><span class="k">Steps${g.steps.length ? ` · ${completedSteps(g)}/${g.steps.length}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a step', 'ed addstep')}</div>`,
     `<div class="gpart f" data-part="note"><span class="k">Note</span>${editable('note', g.id, g.note, 'Add a note', 'ed note')}</div>`,
     `<div class="gpart f" data-part="doneWhen"><span class="k">Done when</span>${editable('doneWhen', g.id, g.doneWhen, 'How will you know it is done?')}</div>`,
     `<div class="gpart f" data-part="links"><span class="k">Linked</span><div class="links">${links || '<span class="nolinks">No ticket or worktree</span>'}</div></div>`,

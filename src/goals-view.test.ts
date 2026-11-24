@@ -30,12 +30,14 @@ test('a row shows the title, the step count and the next step on a second line, 
   const html = goalRow(view(), null)
   assert.match(html, /<span class="ti">Ship super admin<\/span><span class="nx">Finish chat oversight<\/span>/)
   assert.match(html, /<span class="cnt">1\/2<\/span>/)
+  assert.match(html, /pathLength="2" stroke-dasharray="1 2"/)
   noMatch(html, /Next:/)
 })
 
 test('a goal with only a title is a valid row: no count, no dot, a quiet line for the missing next step', () => {
   const html = goalRow(view({ steps: [], next: undefined, links: { linear: [], worktrees: [] } }), null)
   noMatch(html, /class="cnt"/)
+  noMatch(html, /class="gprogress"/)
   noMatch(html, /class="wd"/)
   assert.match(html, /class="nx none">No next step yet/)
 })

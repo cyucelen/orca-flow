@@ -954,7 +954,7 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 
 /* Goals: the first section, above the tree. A header (fold, "· N done", +), two-line rows, and a card under the row
    that is clicked. The card is Orca's popover colors, like the Linear Display popover. */
-.gsec { flex: none; max-height: 40vh; overflow-y: auto; margin-inline: -12px; padding: 0 12px; }
+.gsec { flex: none; max-height: 40vh; overflow-y: auto; margin: -10px -12px; padding: 0 12px; }
 .gsec .sechead { top: 0; gap: 4px; }
 .ghead .gc { margin-left: 2px; letter-spacing: 0; font-weight: 500; color: var(--faint); }
 .gdn { flex: none; font-size: 11px; color: var(--faint); padding: 1px 5px; border-radius: 4px; }
@@ -971,6 +971,9 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .g .nx.none { font-style: italic; }
 .g .nx.says { color: var(--review); }
 .g .cnt { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gprogress { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.gprogress svg { fill: none; stroke: var(--action); stroke-width: 2; }
+.gprogress .track { stroke: var(--faint); }
 .g .wd { width: 6px; height: 6px; border-radius: 50%; background: var(--action); flex: none; }
 .g.fin .ti { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
 .gsec .add { margin: 2px 0 4px; }
