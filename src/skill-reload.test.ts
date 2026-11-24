@@ -2,7 +2,7 @@
 // and the request the worker writes. The hooks and the request store: test/skill-reload.test.mjs.
 import { assert, test } from 'orca/testing'
 import type { AgentInfo, AgentSummary, Coordinator, SkillReloadEntry, Snapshot, WorkspaceRow } from './protocol.ts'
-import { confirmText, DONE_SHOWN_MS, reloadPlan, reloadSummary, rolesText, visibleReload } from './skill-reload.ts'
+import { confirmText, DONE_SHOWN_MS, reloadPlan, rolesText, visibleReload } from './skill-reload.ts'
 import { emptyUi, render, reloadMark, RELOAD_ALL, treeLabel } from './view.ts'
 import { requestReload } from './worker.ts'
 
@@ -110,13 +110,6 @@ test('Antigravity sessions take the note once Orca Flow\'s hooks are in agy\'s h
   assert.match(reloadMark({ reloads: new Map([['p-agy', entry('p-agy', 'unsupported', { provider: 'antigravity', reason: notYet })]]) }, 'p-agy'), /data-tip="Antigravity: Orca Flow&#39;s hooks are not installed yet/)
 })
 
-test('the summary counts reloaded, reading, waiting and unsupported apart; requested is never counted as reloaded', () => {
-  const entries = [entry('a', 'reloaded', { doneAt: 2000 }), entry('b', 'reloaded', { doneAt: 2000 }), entry('c', 'reading'), entry('d', 'waiting'), entry('e', 'waiting'), entry('f', 'unsupported', { provider: 'codex' })]
-  assert.equal(reloadSummary(entries), 'Skills: 2 reloaded · 1 reading · 2 waiting for next turn · 1 unsupported')
-  assert.equal(reloadSummary([entry('d', 'waiting')]), 'Skills: 1 waiting for next turn')
-  assert.equal(reloadSummary([]), '')
-})
-
 test('stale state disappears: done marks after a while, everything at expiry', () => {
   const entries = [entry('done', 'reloaded', { doneAt: 2000 }), entry('codex', 'unsupported'), entry('wait', 'waiting'), entry('old', 'waiting', { expiresAt: 5000 })]
   assert.deepEqual(visibleReload(entries, 3000).map((e) => e.pane), ['done', 'codex', 'wait', 'old'])
@@ -125,7 +118,7 @@ test('stale state disappears: done marks after a while, everything at expiry', (
   assert.deepEqual(visibleReload(undefined, 0), [])
 })
 
-test('rows wear a small mark per state, and the heading carries the action and the summary', () => {
+test('rows wear a small mark per state, and the heading carries only the action', () => {
   const reloads = new Map([['p-w1', entry('p-w1', 'waiting')], ['p-lead', entry('p-lead', 'reloaded', { doneAt: 2000 })], ['p-codex', entry('p-codex', 'unsupported')]])
   assert.match(reloadMark({ reloads }, 'p-w1'), /class="srl srl-waiting"[^>]*data-tip="Reload waits for next turn"/)
   assert.match(reloadMark({ reloads }, 'p-lead'), /srl-reloaded/)
@@ -133,20 +126,24 @@ test('rows wear a small mark per state, and the heading carries the action and t
   const why = new Map([['p-codex', entry('p-codex', 'unsupported', { provider: 'codex', reason: 'Codex: approve Orca Flow\'s hooks once; start a Codex agent in Orca and choose Trust all and continue (or /hooks), then restart older Codex sessions' })]])
   assert.match(reloadMark({ reloads: why }, 'p-codex'), /data-tip="Codex: approve Orca Flow&#39;s hooks once; start a Codex agent in Orca and choose Trust all and continue \(or \/hooks\), then restart older Codex sessions"/, 'an unsupported row says why and what to do')
   assert.equal(reloadMark({ reloads }, 'p-other'), '')
-  const label = treeLabel([...reloads.values()], emptyUi())
+  const label = treeLabel(emptyUi())
   assert.match(label, /data-reload-skills="all" aria-label="Reload skills in all running agents"/)
-  assert.match(label, /class="reload-sum"[^]*Skills: 1 reloaded · 1 waiting for next turn · 1 unsupported/)
+  assert.ok(!/reload-sum|Skills:|waiting for next turn/.test(label), 'no summary line in the heading')
   const ui = emptyUi()
   ui.status.set(RELOAD_ALL, { text: 'Requesting…', tone: 'pending' })
-  assert.match(treeLabel([...reloads.values()], ui), /Requesting…/)
-  assert.ok(!treeLabel([], emptyUi()).includes('reload-sum'), 'no summary without a request')
+  assert.match(treeLabel(ui), /Requesting…/)
   // In the whole panel: the coordinator's row and its worker's row carry their marks.
   const ui2 = emptyUi()
   ui2.now = 3000
   const main = render({ ...snap, skillReload: [entry('p-alpha', 'reading'), entry('p-w1', 'waiting')] }, ui2).main
   assert.match(main, /data-menu="coordinator:alpha"[^]*?srl-reading/)
   assert.match(main, /data-menu="agent:p-w1"[^]*?srl-waiting/)
-  assert.match(main, /Skills: 1 reading · 1 waiting for next turn/)
+  assert.ok(!/reload-sum|Skills:|waiting for next turn/.test(main), 'the sidebar no longer shows the summary line, whatever the states')
+  assert.match(main, /^<div class="tree"><div class="label tlabel"><span>Coordinators<\/span><button class="icon lact" data-reload-skills="all"[^>]*>.*?<\/button><\/div><section class="coordinator">/s, 'the heading is followed directly by the first coordinator: no gap')
+  for (const state of ['reloaded', 'reading', 'waiting', 'unsupported'] as const) {
+    const html = render({ ...snap, skillReload: [entry('p-alpha', state, { doneAt: 2000 })] }, ui2).main
+    assert.ok(!/reload-sum|Skills:/.test(html), `no summary line for ${state}`)
+  }
 })
 
 test('the worker writes one request for the plan: supported targets with their session, unsupported ones marked, the hash and scope', () => {

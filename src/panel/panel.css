@@ -960,15 +960,11 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .tmodels td.tm .tdot { margin-right: 6px; vertical-align: 0; }
 .tmodels tbody tr:hover td { background: var(--hover); }
 
-/* Reload skills: one quiet action on the Coordinators heading, a one-line summary under it while a
-   request shows, and a small mark on each targeted row (waiting, reading, reloaded, unsupported). */
+/* Reload skills: one quiet action on the Coordinators heading and a small mark on each targeted row (waiting, reading, reloaded, unsupported). */
 .tlabel { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-bottom: 2px; }
 .tlabel .lact { width: 20px; height: 20px; margin: -3px -4px -3px 0; text-transform: none; letter-spacing: 0; opacity: .7; }
 .tlabel .lact:hover, .tlabel .lact:focus-visible { opacity: 1; }
 .tlabel .lact svg { width: 12px; height: 12px; }
-.reload-sum { display: flex; align-items: flex-start; gap: 5px; min-width: 0; margin: 0 0 6px; font-size: 11px; line-height: 1.35; color: var(--muted); }
-.reload-sum svg { width: 11px; height: 11px; flex: none; margin-top: 1.5px; color: var(--faint); }
-.reload-sum span { min-width: 0; }
 .srl { display: inline-grid; place-items: center; flex: none; width: 12px; height: 12px; align-self: center; }
 .srl svg { width: 11px; height: 11px; }
 .srl-waiting { color: var(--faint); }

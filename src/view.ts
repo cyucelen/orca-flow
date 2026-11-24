@@ -8,7 +8,7 @@ import { askKey } from './coordinator-sessions.ts'
 // Characters carry everything: color = project, shape = role, face = state.
 import { approvalSummary } from './approval.ts'
 import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
-import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, reloadSummary, visibleReload } from './skill-reload.ts'
+import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
 import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue } from './rank.ts'
@@ -1371,17 +1371,12 @@ export function reloadMark(ui: Pick<UiState, 'reloads'>, pane: string): string {
   return `<span class="srl srl-${e.state}" role="img" aria-label="${esc(tip)}" data-tip="${esc(tip)}">${glyph}</span>`
 }
 
-/**
- * The Coordinators heading with its one compact action, Reload skills in every running agent, and
- * under it while any request shows, the one-line summary ("Skills: 3 reloaded · 2 waiting for next turn").
- */
-export function treeLabel(reloading: SkillReloadEntry[], ui: UiState): string {
-  // While a click on the action runs or was refused, its status takes the summary's place.
+/** The Coordinators heading with its one compact action, Reload skills in every running agent. */
+export function treeLabel(ui: UiState): string {
+  // While a click on the action runs or was refused, its status takes the action's place.
   const status = rowStatus(ui, RELOAD_ALL)
   if (status) return `<div class="label tlabel"><span>Coordinators</span>${status}</div>`
-  const summary = reloadSummary(reloading)
-  const tip = 'Waiting: the agent takes the note at its next turn or tool call. Reading: it got the note. Reloaded: it confirmed reading the current files. Unsupported: restart that agent to reload.'
-  return `<div class="label tlabel"><span>Coordinators</span><button class="icon lact" data-reload-skills="all" aria-label="Reload skills in all running agents" data-tip="Reload skills">${RELOAD_ICON}</button></div>${summary ? `<div class="reload-sum" data-tip="${esc(tip)}">${RELOAD_ICON}<span>${esc(summary)}</span></div>` : ''}`
+  return `<div class="label tlabel"><span>Coordinators</span><button class="icon lact" data-reload-skills="all" aria-label="Reload skills in all running agents" data-tip="Reload skills">${RELOAD_ICON}</button></div>`
 }
 
 /** A visible warning, above the tree, while the summary writer is failing; gone after the next successful summary. */
@@ -1440,7 +1435,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
     cockpit: cockpit(snap, ui),
     copen,
     ...goalsOut,
-    main: `${summaryNotice(snap.summaryFailure)}<div class="tree">${treeLabel(reloading, ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
+    main: `${summaryNotice(snap.summaryFailure)}<div class="tree">${treeLabel(ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
     attention: upNext(asking, all, snap.coordinators, ui, snap.bots ?? []),
     bots: botsSection(snap, ui),
     linear: linearSection(snap, ui, linear),

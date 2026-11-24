@@ -123,24 +123,12 @@ export function confirmText(plan: ReloadPlan, where: string): { title: string; t
   return { title: n ? `Reload skills in ${plural(n, 'agent')} ${where}?` : `Nothing to reload ${where}`, text: lines.join('\n'), ok: n > 0 }
 }
 
-/** How long a reloaded or unsupported mark stays on its row and in the summary. */
+/** How long a reloaded or unsupported mark stays on its row. */
 export const DONE_SHOWN_MS = 10 * 60_000
 
 /** The entries still worth showing: waiting and reading until they expire, done ones for a while. */
 export function visibleReload(entries: SkillReloadEntry[] | undefined, now: number): SkillReloadEntry[] {
   return (entries ?? []).filter((e) => e.expiresAt > now && (e.state === 'waiting' || e.state === 'reading' || now - (e.doneAt ?? e.at) < DONE_SHOWN_MS))
-}
-
-/** "Skills: 3 reloaded · 1 reading · 2 waiting for next turn · 1 unsupported"; '' when nothing shows. */
-export function reloadSummary(entries: SkillReloadEntry[]): string {
-  const n = (s: SkillReloadEntry['state']) => entries.filter((e) => e.state === s).length
-  const parts = [
-    n('reloaded') ? `${n('reloaded')} reloaded` : '',
-    n('reading') ? `${n('reading')} reading` : '',
-    n('waiting') ? `${n('waiting')} waiting for next turn` : '',
-    n('unsupported') ? `${n('unsupported')} unsupported` : ''
-  ].filter(Boolean)
-  return parts.length ? `Skills: ${parts.join(' · ')}` : ''
 }
 
 /** A row's tooltip for its reload state: short, like the characters' own. */

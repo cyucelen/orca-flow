@@ -268,15 +268,17 @@ live, because the chosen design uses neither path.
    | `reloaded` | A confirmation with the requested hash, made after the request. |
    | `unsupported` | No live reload for this provider. |
 
-   Requested never counts as reloaded. Rows wear a small mark. The Coordinators heading shows one
-   line, for example "Skills: 2 reloaded · 1 reading · 2 waiting for next turn · 1 unsupported".
-   Reloaded and unsupported marks fade after 10 min, and everything disappears when the request
-   expires.
+   Requested never counts as reloaded. Rows wear a small mark; the sidebar shows no separate
+   summary line (the Coordinators heading carries only the Reload skills action). Reloaded and
+   unsupported marks fade after 10 min, and everything disappears when the request expires.
 
 The hash covers every `.md` file under the skill folder (scripts are run, not read), so a change to
 any file an agent reads makes a new request distinguishable from an old confirmation.
 
 ## Live checks
+
+The transcripts below were captured before the sidebar's one-line "Skills: …" summary was removed; their
+`sidebar: "Skills: …"` entries show that old line. The row marks and delivery behavior they demonstrate are unchanged.
 
 ### Claude Code, idle and busy, in a real Orca pane
 
@@ -290,7 +292,7 @@ Setup (helper scripts in the session scratchpad, not committed):
 - A disposable skill as "orca-flow".
 - The request was made by this branch's sidebar code: `reloadPlan`, `confirmText`, then the worker's
   `requestReload` on a fixture tree holding that real pane. Status came from `reloadStatus`, with the
-  sidebar's `reloadSummary` and `reloadMark`.
+  sidebar's `reloadMark`.
 - An isolated `CLAUDE_CONFIG_DIR` was not usable: it answers "Not logged in · Please run /login", and
   copying credentials is off limits. So the run used the normal login with no user settings loaded.
 
@@ -331,7 +333,7 @@ GRAPE, status `reloaded`, gate closed afterwards.
 These runs use the code as committed (cad6f72, `git archive` snapshot). The hooks' commands pointed at
 the snapshot's scripts under a disposable skill folder, because the installed 0.2.86 lacks
 `reload-check.mjs`. The request came from this branch's `requestReload`, and the status from
-`reloadStatus`, `reloadSummary` and `reloadMark`. Before the run, `~/.codex/hooks.json` did not exist.
+`reloadStatus` and `reloadMark`. Before the run, `~/.codex/hooks.json` did not exist.
 `~/.codex/config.toml` and the selected account's `hooks.json`, `config.toml`, `.bak` files and trust
 provenance were backed up first. No `auth.json` was copied. All three accounts' `auth.json` hashes
 were unchanged afterwards.

@@ -97,9 +97,8 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   next turn. Needs approval: 1 Codex. Skipped: 1 finished."). Each Claude Code, Codex and Antigravity
   session gets a short note at its next turn, or after its next tool call when busy: re-read the
   skill files, then confirm. Nothing is typed into a terminal and no mail is sent; tasks, open asks
-  and runs stay as they are. Rows show waiting, reading, reloaded or unsupported (with the reason),
-  and one line sums it up ("Skills: 3 reloaded · 2 waiting for next turn"); requests expire after
-  24 h. Other agents cannot reload live: restart them.
+  and runs stay as they are. Rows show waiting, reading, reloaded or unsupported (with the reason);
+  requests expire after 24 h. Other agents cannot reload live: restart them.
   **Codex, once:** Orca Flow adds three hooks named *Orca Flow: Reload skills* to
   `~/.codex/hooks.json`. Orca copies them into a Codex account each time it starts a Codex agent
   there. The first Codex agent you start in Orca afterwards shows **Hooks need review**: choose
