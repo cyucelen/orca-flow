@@ -38,6 +38,35 @@ test('known installed release links can be repaired after Orca removes the old h
   } finally { rmSync(home, { recursive: true }) }
 })
 
+test('all discovery links follow a move back from the Bounti fork, even when the old hash is gone', () => {
+  const { home, claudeDir } = profile()
+  try {
+    const fork = join(home, 'plugins/bounti-hq.flow'), own = join(home, 'plugins/cyucelen.flow')
+    const legacy = join(fork, 'a'.repeat(64)), first = join(own, 'b'.repeat(64)), next = join(own, 'c'.repeat(64))
+    mkdirSync(join(legacy, 'skills/orca-flow'), { recursive: true })
+    for (const dir of [legacy, first, next]) {
+      const links = linksFor(dir, home, claudeDir)
+      ensureOwnLinks(links, true, { repairOnly: dir === next })
+      for (const { from, to } of links) assert.equal(readlinkSync(from), to)
+    }
+  } finally { rmSync(home, { recursive: true }) }
+})
+
+test('a cyucelen.flow link is never moved to a bounti-hq.flow release', () => {
+  const { home, claudeDir } = profile()
+  try {
+    const own = join(home, 'plugins/cyucelen.flow', 'a'.repeat(64)), fork = join(home, 'plugins/bounti-hq.flow', 'b'.repeat(64))
+    const links = linksFor(own, home, claudeDir)
+    mkdirSync(join(own, 'skills/orca-flow'), { recursive: true })
+    ensureOwnLinks(links, true)
+    ensureOwnLinks(linksFor(fork, home, claudeDir), true, { repairOnly: true })
+    for (const { from, to } of links) assert.equal(readlinkSync(from), to)
+    rmSync(own, { recursive: true })
+    ensureOwnLinks(linksFor(fork, home, claudeDir), true)
+    for (const { from, to } of links) assert.equal(readlinkSync(from), to)
+  } finally { rmSync(home, { recursive: true }) }
+})
+
 test('installed discovery updates our skill links but preserves user files and other plugin symlinks, including dangling ones', () => {
   const home = mkdtempSync(join(tmpdir(), 'discovery-'))
   try {

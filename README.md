@@ -129,6 +129,12 @@ Orca lists the access the plugin asks for: running its own worker process, readi
 workspaces, getting agent status changes, and starting agents (to open coordinator sessions).
 Approve it, then open **Orca Flow** from the right sidebar (the layers icon).
 
+Switching back from the Bounti fork (`bounti-hq.flow`)? Disable or uninstall the fork first, so its
+Alt+1..9 shortcuts don't collide with this plugin's. On macOS the panel preferences live in
+`~/Library/Application Support/orca/plugins-data/bounti-hq.flow/storage.json`; copy that file into the
+sibling `cyucelen.flow` directory before the first install to keep them. Both use the same
+`~/.orca-flow` settings and coordinator folders. The skill links move to this plugin's release by themselves.
+
 The installed copy sets up these files outside its own folder:
 
 | Path | What it is |
