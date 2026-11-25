@@ -319,6 +319,25 @@ if (q.get('selftest')) window.addEventListener('load', () => setTimeout(async ()
     act('g_shift-scheduling').click(); await wait(); document.querySelectorAll('#ctx .mi')[1].click(); await wait(60);
     goals.find((y) => y.id === 'g_shift-scheduling').next = 'Changed meanwhile'; listeners['sidebar.goalsChanged'].forEach((f) => f(JSON.parse(JSON.stringify(goals)))); await wait(800);
     ok(word('g_shift-scheduling') === 'Assign' && /changed while it was being sent/.test($('#toast').textContent), 'a late delivery answer for the old text leaves the new step unassigned');
+    // ---------- hidden while the CLI changes a goal ----------
+    // The panel is hidden, the CLI (orca-flow goal ...) changes a goal and the worker's post never reaches the panel (it was hidden).
+    // When the panel shows again it asks for the goals itself, and the list and the open card show the change.
+    const setVisibility = (state) => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state }); document.dispatchEvent(new Event('visibilitychange')); };
+    row('g_super-admin').click(); await wait();
+    setVisibility('hidden'); await wait();
+    const cli = goals.find((y) => y.id === 'g_super-admin');
+    cli.next = 'Changed by the CLI while hidden'; cli.title = 'Ship super admin (CLI)'; cli.steps[2].done = true;
+    await wait(200);
+    ok(row('g_super-admin').querySelector('.nx').textContent.startsWith('Finish chat'), 'hidden panel: no post reached it, the list still shows the old goal');
+    before = previewCalls.length;
+    setVisibility('visible'); await wait(300);
+    ok(previewCalls.slice(before).some((c) => c.name === 'sidebar.goals'), 'showing again asks the worker for the goals');
+    ok(row('g_super-admin').querySelector('.nx').textContent === 'Changed by the CLI while hidden' && row('g_super-admin').querySelector('.ti').textContent === 'Ship super admin (CLI)' && row('g_super-admin').querySelector('.cnt').textContent === '3/4', 'shown again: the list has the goal as the CLI left it');
+    ok(!$('#goalpop').hidden && $('#goalpop [data-gedit="next"]').textContent === 'Changed by the CLI while hidden', 'the open card stays open and shows the change');
+    // Hiding alone asks for nothing.
+    before = previewCalls.length; setVisibility('hidden'); await wait(100);
+    ok(!previewCalls.slice(before).some((c) => c.name === 'sidebar.goals'), 'hiding the panel does not ask for the goals');
+    setVisibility('visible'); key(document.body, 'Escape'); await wait();
 
   } catch (e) { fail.push('exception ' + e.message); log.push('EXC ' + e.stack); }
   if (errors.length) { fail.push('page errors'); log.push(...errors.map((m) => 'ERR ' + m)); }
