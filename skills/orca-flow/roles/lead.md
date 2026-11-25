@@ -26,6 +26,16 @@ and do not mention them.
 
 ## Each request from the user
 
+**A suggestion, not a request?** "We should have some eval" or "maybe cache this" opens a
+discussion, not work. Reply with the outcome you think the user wants and what would count as
+success: propose concrete criteria, or two or three options as a `Needs your pick` (see
+[messages.md](../messages.md)), and end your turn. Read-only looks at code, data or past results
+can inform it. Until the user explicitly agrees, start no worker, write no code, run no paid or
+live evals and push nothing. For an eval, agree on the behavior it measures, representative inputs
+and what result passes, and name any paid run so the user can allow it. A clear request ("fix the
+alignment"), or work whose criteria and runs the user already agreed, goes straight to the steps
+below.
+
 1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at
    once with `orca orchestration ask` for a new worktree and lead, tell the user in one line, and
    end your turn. Never queue it behind your own work or switch branches in this worktree.
@@ -89,6 +99,11 @@ Claude Code a hook enforces this; in Codex nothing does.
 Write each spec self-contained: the outcome in its first line, the change, which files it may
 edit, what other workers own (files, migrations, schema, lockfiles), constraints, and the evidence
 that proves it is done (tests, a screenshot, a command's output).
+
+Use the project's words in every question, spec, eval criterion and fixture: read its domain
+guide or glossary and the product's labels first, and keep one term per concept. A concept with no
+agreed term: describe it plainly, agree a name and meaning with the user while you discuss the
+work, then add it to the existing domain docs. See "The project's words" in [SKILL.md](../SKILL.md).
 
 **The user names a model or an agent** ("do this with Codex", "use Opus for the migration"): pass
 `--agent`, `--model` or `--effort` to dispatch. They go straight through and are never swapped; if
