@@ -26,6 +26,16 @@ and do not mention them.
 
 ## Each request from the user
 
+**A suggestion, not a request?** "We should have some eval" or "maybe cache this" opens a
+discussion, not work. Reply with the outcome you think the user wants and what would count as
+success: propose concrete criteria, or two or three options as a `Needs your pick` (see
+[messages.md](../messages.md)), and end your turn. Read-only looks at code, data or past results
+can inform it. Until the user explicitly agrees, start no worker, write no code, run no paid or
+live evals and push nothing. For an eval, agree on the behavior it measures, representative inputs
+and what result passes, and name any paid run so the user can allow it. A clear request ("fix the
+alignment"), or work whose criteria and runs the user already agreed, goes straight to the steps
+below.
+
 1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at
    once with `orca orchestration ask` for a new worktree and lead, tell the user in one line, and
    end your turn. Never queue it behind your own work or switch branches in this worktree.
