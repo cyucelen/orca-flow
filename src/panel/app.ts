@@ -1444,10 +1444,16 @@ function sync(cur: Element, fresh: Element): void {
     if (cur.innerHTML !== fresh.innerHTML) cur.innerHTML = fresh.innerHTML
     return
   }
+  // A step that has focus (a click or Space gave it) is redrawn like the rest, and focus goes back to the same step.
+  // Anything else with focus (the fields a person types in, a button) is left alone, with the part around it.
+  const step = active instanceof HTMLElement ? active.dataset.gstep : undefined
   for (let i = 0; i < cur.children.length && i < fresh.children.length; i++) {
     const c = cur.children[i]
-    if (c === active || c.contains(active)) continue
-    if (c.outerHTML !== fresh.children[i].outerHTML) c.replaceWith(fresh.children[i].cloneNode(true))
+    const holdsFocus = c === active || c.contains(active)
+    if (holdsFocus && !step) continue
+    if (c.outerHTML === fresh.children[i].outerHTML) continue
+    c.replaceWith(fresh.children[i].cloneNode(true))
+    if (holdsFocus) cur.querySelector<HTMLElement>(`[data-gstep="${step}"]`)?.focus({ preventScroll: true })
   }
 }
 
@@ -1501,7 +1507,9 @@ document.addEventListener('click', (event) => {
   if (d.gstep) {
     const step = Number(d.gstep)
     const g = el.dataset.g
-    if (g) void goalAct({ action: 'step', id: g, step, done: el.getAttribute('aria-checked') !== 'true' })
+    // The new value comes from the goal, never from the card's markup, which can be a moment behind.
+    const now = g ? goalById(g)?.steps[step - 1] : undefined
+    if (g && now) void goalAct({ action: 'step', id: g, step, done: !now.done })
     return
   }
   const id = d.gfinish ?? d.greopen ?? d.gconfirm ?? d.gnot
