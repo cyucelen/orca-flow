@@ -202,7 +202,45 @@ test('render() draws the button on the row from the snapshot and the panel state
   assert.match(render(s, ui, null, [view({ id: 'g_two', links: { linear: [], worktrees: [] } })]).goalsRows, /Assigning…/)
 })
 
+// ---------- a goal with only todos ----------
+
+test('a goal with only todos gets the Assign button, and Jump once its first todo is handed over', () => withDataAsync(async (dir) => {
+  const g = add('Ship', { steps: ['Draft', 'Send'], worktrees: [] }, { data: dir })
+  const v = (goal = get(g.id, { data: dir })!) => readGoals([], dir).find((x) => x.id === goal.id)!
+  assert.equal(v().next, undefined)
+  assert.equal(nextButton(v(), snap())?.kind, 'assign', 'no written next: the first open todo is the next step')
+  assert.match(render({ source: 'cli', capacity: null, ready: true, features: { goals: true, linear: false, tokenSpeed: false }, rows: [], coordinators: [] } as unknown as Snapshot, { ...emptyUi(), now: NOW }, null, [v()]).goalsRows, new RegExp(`data-gassign="${g.id}"`))
+  const x = io(dir)
+  const r = await assignNext({ id: g.id, coordinator: 'home', next: 'Draft' }, x)
+  assert.equal(r.ok, true, r.error)
+  assert.match(x.sent[0].message, /Next step: "Draft" \(todo 1 of the goal's list\)/)
+  assert.match(x.sent[0].message, new RegExp(`orca-flow goal step ${g.id} tick 1 `))
+  assert.ok(!/goal set \S+ --next/.test(x.sent[0].message), 'a todo is finished by ticking it, not by setting --next')
+  const live = snap([], [coordinator('home', agent('cpane', 'done', { terminal: 'term-c' }))])
+  assert.equal(v().assigned?.next, 'Draft')
+  assert.equal(nextButton(v(), live)?.kind, 'jump', 'assigned: Jump to the coordinator')
+  assert.equal(jumpTarget(v(), live)?.coordinator, 'home')
+  applyGoalAction({ action: 'step', id: g.id, step: 1, done: true }, [], dir)
+  assert.equal(v().assigned, null, 'its todo is ticked: the assignment is no longer current')
+  assert.equal(nextButton(v(), live)?.kind, 'assign', 'the next todo is unassigned')
+  assert.equal((await assignNext({ id: g.id, coordinator: 'home', next: 'Draft' }, x)).ok, false, 'the old todo text is refused')
+  assert.equal((await assignNext({ id: g.id, coordinator: 'home', next: 'Send' }, x)).ok, true)
+  assert.equal(nextButton(view({ next: undefined, steps: [{ text: 'a', done: true }] }), live), null, 'all todos done: no button')
+}))
+
+test('ticking the todo that is the written next clears it; the button then follows the next open todo', () => withDataAsync(async (dir) => {
+  const g = add('Ship', { next: 'Draft', steps: ['Draft', 'Send'] }, { data: dir })
+  await assignNext({ id: g.id, coordinator: 'home', next: 'Draft' }, io(dir))
+  assert.equal(readGoals([], dir)[0].assigned?.next, 'Draft')
+  const r = applyGoalAction({ action: 'step', id: g.id, step: 1, done: true }, [], dir)
+  assert.equal(r.goals[0].next, undefined)
+  assert.equal(r.goals[0].assigned, null)
+  assert.equal(nextButton(r.goals[0], snap())?.kind, 'assign')
+}))
+
 // ---------- the message ----------
+
+
 
 test('the message carries the exact step, the goal title and id, and the goal commands, each goal text on one line', () => {
   const m = goalStepMessage({ id: 'g_ship', title: 'Ship\nit', next: 'Finish chat oversight; rm -rf ~ $(whoami)\r\x1b[2J', doneWhen: 'PR merged' })

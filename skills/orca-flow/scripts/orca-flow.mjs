@@ -512,6 +512,7 @@ export function role(args, { env = process.env, cwd = process.cwd(), home = home
 // ---------- goals ----------
 
 const goals = await import('./goals.mjs')
+const { goalNext } = await import('./goal-next.mjs')
 
 /** Who a goal change is recorded for: --by, else the recorded lead / coordinator folder / worktree name, else "an agent". */
 function goalBy(args, { env = process.env, cwd = process.cwd(), home = homedir() } = {}) {
@@ -547,11 +548,18 @@ function assignedText(g) {
   return a ? `next assigned to coordinator ${a.name || a.coordinator} (${ASSIGNED_STATE[a.state]}, ${WHEN(a.deliveredAt ?? a.at)})` : ''
 }
 
+/** The goal's next step: its written next, else its first open todo marked "(first open todo)"; '' when neither (goal-next.mjs). */
+function nextLine(g) {
+  const n = goalNext(g)
+  return n ? (n.fromStep ? `${n.text} (first open todo)` : n.text) : ''
+}
+
 /** One goal as plain text. */
 export function formatGoal(g) {
   const done = g.steps.filter((s) => s.done).length
   const out = [`${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}`]
-  if (g.next) out.push(`  next: ${g.next}`)
+  const next = nextLine(g)
+  if (next) out.push(`  next: ${next}`)
   const assigned = assignedText(g)
   if (assigned) out.push(`  ${assigned}`)
   if (g.doneWhen) out.push(`  done when: ${g.doneWhen}`)
@@ -570,7 +578,7 @@ export function formatGoals(list) {
   return list
     .map((g) => {
       const done = g.steps.filter((s) => s.done).length
-      return `${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}${g.next ? `\n    next: ${g.next}` : ''}${assignedText(g) ? `\n    ${assignedText(g)}` : ''}`
+      return `${g.id}  ${g.title}${g.status === 'open' ? '' : `  [${g.status}]`}${g.steps.length ? `  ${done}/${g.steps.length}` : ''}${nextLine(g) ? `\n    next: ${nextLine(g)}` : ''}${assignedText(g) ? `\n    ${assignedText(g)}` : ''}`
     })
     .join('\n')
 }

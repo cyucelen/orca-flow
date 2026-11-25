@@ -3,6 +3,7 @@
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
 import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { nextText } from '../../skills/orca-flow/scripts/goal-next.mjs'
 import { goalCard, GOALS_UI_KEY, goalsUiOf, jumpTarget, liveCoordinators, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
 import { SPEED_UI_KEY, speedUiOf, tokenSpeedSection } from '../token-speed-view.ts'
@@ -1367,11 +1368,12 @@ function goalAssignMenu(id: string): MenuItem[] {
 
 /** Sends the exact Next text the button was drawn for; Assigning… until the worker answers, then Jump to agent. */
 async function goalAssign(g: GoalView, coordinator: string): Promise<void> {
-  if (!goalsIsOn() || !g.next || ui.goalAssigning?.has(g.id)) return
+  const next = nextText(g)
+  if (!goalsIsOn() || !next || ui.goalAssigning?.has(g.id)) return
   ui.goalAssigning?.add(g.id)
   draw()
   try {
-    const r = await orca.plugin.request('sidebar.goalAssign', { id: g.id, coordinator, next: g.next }, { timeoutMs: 120_000 })
+    const r = await orca.plugin.request('sidebar.goalAssign', { id: g.id, coordinator, next }, { timeoutMs: 120_000 })
     goals = r.goals
     if (!r.ok) goalToast(r.error ?? 'Could not assign the step')
     else if (r.warning) goalToast(r.warning)

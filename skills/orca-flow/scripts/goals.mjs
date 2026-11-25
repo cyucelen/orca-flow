@@ -14,12 +14,14 @@
 // `by` is "you" for the user in the panel, else the agent's role or worktree name. Agents only
 // propose done; the user confirms (done). Step references are a 1-based number or a piece of text.
 // `assignment`: the Next step handed to one of the user's coordinators from the panel (beginAssign,
-// finishAssign). It is for the exact `next` text it was sent for: changing Next drops it, and a goal
+// finishAssign). It is for the exact next text it was sent for (the written `next`, else the first open step:
+// goal-next.mjs): changing Next drops it, ticking the step it came from moves it on, and a goal
 // without one (every goal written before) reads and edits as before.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { nextText } from './goal-next.mjs'
 
 export const GOALS_DIR = 'goals'
 export const STATUSES = ['open', 'proposed', 'done']
@@ -202,7 +204,15 @@ export function setStep(id, ref, done, by, { data } = {}) {
   const g = need(id, data)
   const i = stepIndex(g, ref)
   if (g.steps[i].done === !!done) return g
-  const out = stamp({ ...g, steps: g.steps.map((s, j) => (j === i ? { ...s, done: !!done } : s)) }, by, 'steps')
+  let next = { ...g, steps: g.steps.map((s, j) => (j === i ? { ...s, done: !!done } : s)) }
+  // Ticking the step the written Next names finishes that Next: it goes (and its assignment), so the next open step takes over.
+  // A free-text Next that matches no step stays; unticking restores nothing.
+  const same = g.next && clean(g.next).toLowerCase() === clean(g.steps[i].text).toLowerCase()
+  if (done && same) {
+    const { next: _n, assignment: _a, ...rest } = next
+    next = rest
+  }
+  const out = stamp(next, by, same && done ? 'steps,next' : 'steps')
   writeGoal(data, out)
   return out
 }
@@ -298,7 +308,8 @@ export const ASSIGN_STATES = ['pending', 'delivered', 'unconfirmed']
 export function currentAssignment(g, now = Date.now()) {
   const a = g?.assignment
   if (!isObject(a) || typeof a.coordinator !== 'string' || typeof a.next !== 'string' || !ASSIGN_STATES.includes(a.state)) return null
-  if (!g.next || a.next !== g.next) return null
+  const nx = nextText(g)
+  if (!nx || a.next !== nx) return null
   if (a.state === 'pending' && !(now - (Number(a.at) || 0) <= ASSIGN_PENDING_MS)) return null
   return a
 }
@@ -313,8 +324,9 @@ export function beginAssign(id, { coordinator, name, next, session }, by, { data
   const g = need(id, data)
   if (g.status !== 'open') throw new Error(`goal ${g.id} is ${g.status}; only an open goal's next step can be assigned`)
   const want = clean(next)
-  if (!g.next) throw new Error(`goal ${g.id} has no next step`)
-  if (g.next !== want) throw new Error('The next step changed; nothing was sent. Look at the new step and assign it again.')
+  const nx = nextText(g)
+  if (!nx) throw new Error(`goal ${g.id} has no next step`)
+  if (nx !== want) throw new Error('The next step changed; nothing was sent. Look at the new step and assign it again.')
   const key = clean(coordinator)
   if (!key) throw new Error('assign needs a coordinator')
   const cur = currentAssignment(g, now)
@@ -323,7 +335,7 @@ export function beginAssign(id, { coordinator, name, next, session }, by, { data
     throw new Error(cur.state === 'pending' ? `This step is already being sent to ${who}.` : `This step is already assigned to ${who}.`)
   }
   const token = randomBytes(6).toString('hex')
-  const assignment = { coordinator: key, ...(clean(name) && { name: clean(name) }), next: g.next, state: 'pending', at: now, by: clean(by) || 'you', token, ...(isObject(session) && { session }) }
+  const assignment = { coordinator: key, ...(clean(name) && { name: clean(name) }), next: nx, state: 'pending', at: now, by: clean(by) || 'you', token, ...(isObject(session) && { session }) }
   const out = { ...g, assignment }
   writeGoal(data, out)
   return { goal: out, token }
@@ -338,7 +350,7 @@ export function beginAssign(id, { coordinator, name, next, session }, by, { data
 export function finishAssign(id, token, { ok, state = 'delivered', session } = {}, { data, now = Date.now() } = {}) {
   const g = get(id, { data })
   const a = g?.assignment
-  if (!g || !isObject(a) || !token || a.token !== token || a.state !== 'pending' || !g.next || a.next !== g.next) return { goal: g, applied: false }
+  if (!g || !isObject(a) || !token || a.token !== token || a.state !== 'pending' || !nextText(g) || a.next !== nextText(g)) return { goal: g, applied: false }
   let out
   if (ok) out = { ...g, assignment: { ...a, state: state === 'unconfirmed' ? 'unconfirmed' : 'delivered', deliveredAt: now, ...(isObject(session) && { session }) } }
   else {

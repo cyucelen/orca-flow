@@ -1058,6 +1058,7 @@ html.light { --c3: #eda100; --c4: #e87ba4; --c5: #008300; }
 .g .nx { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
 .g .nx.none { font-style: italic; }
 .g .nx.says { color: var(--review); }
+.g .nx .tg { width: 9px; height: 9px; margin-right: 5px; vertical-align: -0.5px; opacity: 0.75; }
 .g .cnt { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gprogress { flex: none; display: inline-flex; align-items: center; gap: 5px; }
 .gprogress svg { fill: none; stroke: var(--action); stroke-width: 2; }

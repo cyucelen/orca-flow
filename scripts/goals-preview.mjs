@@ -74,7 +74,7 @@ const goals = [
   g('g_planning-assistance', 'Plan "planning assistance" for shift scheduling by studying other products', {
     note: 'Research that leads to a plan. Look at how other scheduling tools suggest or auto-fill shifts.',
     steps: ['List 5 products to analyze', 'Write down what each one automates', 'Draft the feature plan'].map((text) => ({ text, done: false })),
-    next: 'List 5 products to analyze', doneWhen: 'A written plan for the feature, ready to turn into tickets', lastChange: { by: 'you', field: 'next', at: now - 2 * 24 * H } }),
+    /* no written next: the row and the card's Next follow the first open todo (goal-next.mjs) */ doneWhen: 'A written plan for the feature, ready to turn into tickets', lastChange: { by: 'you', field: 'next', at: now - 2 * 24 * H } }),
   g('g_onboarding-review', 'Ship the onboarding fix', {
     steps: [['Fix the empty state', 1], ['Review the PR', 0]].map(([text, d]) => ({ text, done: !!d })),
     next: 'Review the PR and merge it', links: { linear: ['DES-360'], worktrees: [{ key: 'des-360', name: 'mono/des-360-onboarding-review' }] },
@@ -418,6 +418,7 @@ server.listen(0, '127.0.0.1', () => {
     jobs.push({ theme, name: 'section', h: 760 })
     jobs.push({ theme, name: 'card', h: 760, click: '[data-gopen="g_super-admin"]' })
     jobs.push({ theme, name: 'card-proposed', h: 760, click: '[data-gopen="g_pdf-export"]' })
+    jobs.push({ theme, name: 'card-todo-next', h: 760, click: '[data-gopen="g_planning-assistance"]' }) // todos, no written next
     jobs.push({ theme, name: 'add', h: 760, click: '[data-gadd]', type: 'Book the lawyer call for next week' })
     jobs.push({ theme, name: 'empty', h: 360, empty: true })
   }

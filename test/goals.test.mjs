@@ -281,6 +281,82 @@ test('CLI: show and list name the coordinator the current next step was assigned
   assert.doesNotMatch(cli(dir, bin, 'goal', 'show', id).out, /assigned/, 'goal set --next: the new step is not assigned')
 })
 
+// ---------- a goal's next step: its written next, else its first open todo ----------
+
+test('goalNext: the written next, else the first open step in list order, else nothing', async () => {
+  const { goalNext, nextText, allStepsDone } = await import('../skills/orca-flow/scripts/goal-next.mjs')
+  const steps = [{ text: 'one', done: true }, { text: 'two', done: false }, { text: 'three', done: false }]
+  assert.deepEqual(goalNext({ steps }), { text: 'two', fromStep: 2 })
+  assert.deepEqual(goalNext({ next: ' call them ', steps }), { text: 'call them' }, 'a written next wins, trimmed')
+  assert.deepEqual(goalNext({ next: '  ', steps }), { text: 'two', fromStep: 2 }, 'a blank next is no next')
+  assert.equal(goalNext({ steps: [{ text: 'one', done: true }] }), null)
+  assert.equal(goalNext({ steps: [] }), null)
+  assert.equal(nextText({ steps: [] }), '')
+  assert.equal(allStepsDone({ steps: [{ text: 'one', done: true }] }), true)
+  assert.equal(allStepsDone({ steps: [] }), false, 'no steps is not "all done"')
+  assert.equal(allStepsDone({ steps }), false)
+})
+
+test('ticking the step the written next names clears that next and its assignment; the next open step takes over', () => {
+  const data = tmp()
+  const g = goals.add('Ship', { next: 'Draft it', steps: ['Intro', 'draft it', 'Review'] }, { data })
+  goals.beginAssign(g.id, { coordinator: 'home', next: 'Draft it' }, 'you', { data })
+  goals.tick(g.id, 'Intro', 'you', { data })
+  assert.equal(goals.get(g.id, { data }).next, 'Draft it', 'a step that is not the next leaves it')
+  const after = goals.tick(g.id, 2, 'lead', { data })
+  assert.equal(after.next, undefined, 'case-insensitive match: next cleared')
+  assert.equal(after.assignment, undefined, 'and its assignment goes')
+  assert.equal(after.lastChange.field, 'steps,next')
+  assert.equal(goals.currentAssignment(after), null)
+  assert.equal(goals.get(g.id, { data }).steps[2].done, false)
+  const re = goals.setStep(g.id, 2, false, 'you', { data })
+  assert.equal(re.next, undefined, 'unticking restores nothing')
+  assert.equal(re.lastChange.field, 'steps')
+})
+
+test('a free-text next that matches no step stays when steps are ticked', () => {
+  const data = tmp()
+  const g = goals.add('Ship', { next: 'Call the lawyer', steps: ['Draft', 'Send'] }, { data })
+  goals.tick(g.id, 1, 'you', { data })
+  goals.tick(g.id, 2, 'you', { data })
+  assert.equal(goals.get(g.id, { data }).next, 'Call the lawyer')
+})
+
+test('a goal with only todos is assignable: the assignment is for the first open todo and stops being current when it is ticked', () => {
+  const data = tmp()
+  const g = goals.add('Ship', { steps: ['Draft', 'Send'] }, { data })
+  assert.throws(() => goals.beginAssign(g.id, { coordinator: 'home', next: 'Send' }, 'you', { data }), /next step changed/)
+  const { goal, token } = goals.beginAssign(g.id, { coordinator: 'home', next: 'Draft' }, 'you', { data })
+  assert.equal(goal.assignment.next, 'Draft')
+  assert.equal(goal.next, undefined, 'nothing derived is stored on the goal')
+  assert.equal(goals.finishAssign(g.id, token, { ok: true }, { data }).applied, true)
+  assert.equal(goals.currentAssignment(goals.get(g.id, { data }))?.next, 'Draft')
+  const ticked = goals.tick(g.id, 1, 'lead', { data })
+  assert.equal(goals.currentAssignment(ticked), null, 'the next is now "Send": the old assignment is not current')
+  assert.equal(goals.beginAssign(g.id, { coordinator: 'home', next: 'Send' }, 'you', { data }).goal.assignment.next, 'Send')
+  const all = goals.add('Done todos', { steps: [{ text: 'a', done: true }] }, { data })
+  assert.throws(() => goals.beginAssign(all.id, { coordinator: 'home', next: 'a' }, 'you', { data }), /no next step/)
+})
+
+test('CLI: list and show print the first open todo as the next step when none is written, and the stored goal stays as written', () => {
+  const bin = fakeOrca()
+  const dir = tmp()
+  const id = JSON.parse(cli(dir, bin, 'goal', 'add', 'Ship', '--step', 'Draft', '--step', 'Send', '--json').out).id
+  assert.match(cli(dir, bin, 'goal', 'list').out, new RegExp(`${id}  Ship  0/2\\n    next: Draft \\(first open todo\\)`))
+  assert.match(cli(dir, bin, 'goal', 'show', id).out, /^  next: Draft \(first open todo\)$/m)
+  cli(dir, bin, 'goal', 'step', id, 'tick', '1')
+  assert.match(cli(dir, bin, 'goal', 'list').out, /next: Send \(first open todo\)/, 'ticking moves it on')
+  const json = JSON.parse(cli(dir, bin, 'goal', 'show', id, '--json').out)
+  assert.equal(json.next, undefined, '--json is the stored goal: nothing derived')
+  cli(dir, bin, 'goal', 'set', id, '--next', 'Call them')
+  assert.match(cli(dir, bin, 'goal', 'list').out, /next: Call them(\n|$)/, 'a written next is printed as is')
+  assert.doesNotMatch(cli(dir, bin, 'goal', 'show', id).out, /first open todo/)
+  cli(dir, bin, 'goal', 'step', id, 'tick', '2')
+  assert.match(cli(dir, bin, 'goal', 'list').out, /next: Call them/, 'a free-text next stays')
+  const none = JSON.parse(cli(dir, bin, 'goal', 'add', 'Bare', '--json').out).id
+  assert.doesNotMatch(cli(dir, bin, 'goal', 'show', none).out, /next:/)
+})
+
 // ---------- completed goals: who completed it, and Undo keeping the date ----------
 
 test('done records who completed it; the agent that proposed it is kept; reopen clears all three', () => {

@@ -42,6 +42,33 @@ test('a goal with only a title is a valid row: no count, no avatars, a quiet lin
   assert.match(html, /class="nx none">No next step yet/)
 })
 
+test('an open goal with no written next shows its first open todo, marked as a todo; the written next wins', () => {
+  const html = goalRow(view({ next: undefined }), null)
+  assert.match(html, /<span class="nx todo" title="From the todos"><svg class="tg"[^>]*>.*<\/svg>Moderation<\/span>/)
+  assert.match(goalRow(view(), null), /<span class="nx">Finish chat oversight<\/span>/, 'a written next has no todo mark')
+  noMatch(goalRow(view(), null), /class="tg"/)
+  const second = goalRow(view({ next: undefined, steps: [{ text: 'a', done: true }, { text: '<b>b</b>', done: false }, { text: 'c', done: false }] }), null)
+  assert.match(second, /<\/svg>&lt;b&gt;b&lt;\/b&gt;<\/span>/, 'the first open step in list order, escaped')
+})
+
+test('a goal whose todos are all ticked and has no next says "All todos done"; "No next step yet" only with no todos', () => {
+  const ticked = goalRow(view({ next: undefined, steps: [{ text: 'a', done: true }, { text: 'b', done: true }] }), null)
+  assert.match(ticked, /class="nx none">All todos done</)
+  noMatch(ticked, /No next step yet/)
+  assert.match(goalRow(view({ next: undefined, steps: [] }), null), /class="nx none">No next step yet</)
+  assert.match(goalRow(view({ next: 'Call them', steps: [{ text: 'a', done: true }] }), null), /class="nx">Call them</, 'a written next shows even with every todo ticked')
+  assert.match(goalRow(view({ next: undefined, status: 'proposed' }), null), /class="nx says">lead says done</, 'a proposed goal keeps "lead says done"')
+})
+
+test('the card keeps the written next in the field; while empty its placeholder is the todo it follows', () => {
+  const card = goalCard(view({ next: undefined }), NOW)
+  assert.match(card, /aria-label="Next" data-gedit="next" data-g="g_ship" data-ph="Moderation \(from todos\)"><\/div>/, 'empty field, placeholder names the todo')
+  assert.match(goalCard(view(), NOW), /data-gedit="next" data-g="g_ship" data-ph="What is the next thing to do\?">Finish chat oversight<\/div>/, 'a written next fills the field')
+  assert.match(goalCard(view({ next: undefined, steps: [] }), NOW), /data-ph="What is the next thing to do\?"><\/div>/)
+  assert.match(goalCard(view({ next: undefined, steps: [{ text: 'a', done: true }] }), NOW), /data-ph="What is the next thing to do\?"><\/div>/, 'all ticked: back to the prompt')
+  assert.match(goalCard(view({ next: undefined, steps: [{ text: '"><script>', done: false }] }), NOW), /data-ph="&quot;&gt;&lt;script&gt; \(from todos\)"/, 'escaped')
+})
+
 test('a goal lists the live agents on its linked worktrees, in any state, until they sleep or are removed', () => {
   const g = view({ links: { linear: [], worktrees: [{ key: 'wt:1' }] } })
   const panes = (rows: (ReturnType<typeof wrow> & { historical?: boolean })[], goal = g) => goalViews([goal], rows)[0].livePanes

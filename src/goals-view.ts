@@ -3,12 +3,13 @@
 // file has no Node imports, so the panel bundles it. Every goal text is untrusted: escaped when drawn.
 import type { Goal, GoalAssignment } from '../skills/orca-flow/scripts/goals.d.mts'
 import type { AgentInfo, Coordinator, Snapshot, WorkspaceRow } from './protocol.ts'
+import { allStepsDone, goalNext, nextText } from '../skills/orca-flow/scripts/goal-next.mjs'
 import { ARROW } from './icons.ts'
 import { worktreeLead } from './rank.ts'
 
 /**
  * A goal as the panel gets it: the stored goal, the live agents on its linked worktrees (goalAgents), and the
- * assignment of its Next step when it is for the current Next text (goals.mjs currentAssignment; the
+ * assignment of its next step when it is for the current effective next (goals.mjs currentAssignment; the
  * worker fills it, absent on older views).
  */
 export type GoalView = Goal & { livePanes: string[]; assigned?: GoalAssignment | null }
@@ -99,19 +100,20 @@ export function jumpTarget(g: GoalView, snap: SnapLike, gone: ReadonlySet<string
   const pick = goalAgents(g, snap.rows, gone)[0]
   if (pick) return { workspaceId: pick.row.id, terminal: pick.a.terminal!, paneKey: pick.a.paneKey, name: pick.a.title || pick.row.name }
   const a = g.assigned
-  if (!a || a.state === 'pending' || a.next !== g.next) return null
+  if (!a || a.state === 'pending' || a.next !== nextText(g)) return null
   return coordinatorTarget(snap.coordinators.find((c) => c.key === a.coordinator), gone)
 }
 
 export type NextButton = { kind: 'jump'; target: JumpTarget } | { kind: 'assign' } | { kind: 'pending' }
 
 /**
- * The one button for an open goal's Next step; null for a done or proposed goal, or one with no Next
- * step. Pending while this panel sends it (`assigning`) or the store says a send is under way.
+ * The one button for an open goal's next step (its written next, else its first open todo: goal-next.mjs); null for a
+ * done or proposed goal, or one with no next step. Pending while this panel sends it (`assigning`) or the store says a send is under way.
  */
 export function nextButton(g: GoalView, snap: SnapLike, opts: { assigning?: ReadonlySet<string>; gone?: ReadonlySet<string> } = {}): NextButton | null {
-  if (g.status !== 'open' || !g.next) return null
-  if (opts.assigning?.has(g.id) || (g.assigned?.state === 'pending' && g.assigned.next === g.next)) return { kind: 'pending' }
+  const next = nextText(g)
+  if (g.status !== 'open' || !next) return null
+  if (opts.assigning?.has(g.id) || (g.assigned?.state === 'pending' && g.assigned.next === next)) return { kind: 'pending' }
   const target = jumpTarget(g, snap, opts.gone)
   return target ? { kind: 'jump', target } : { kind: 'assign' }
 }
@@ -133,14 +135,15 @@ export function nextButtonHtml(g: Pick<GoalView, 'id'>, b: NextButton | null): s
 }
 
 /** The text a coordinator gets: the exact step, the goal for context, and the commands to keep the goal current. Goal text is data, quoted, on one line each. */
-export function goalStepMessage(g: Pick<Goal, 'id' | 'title' | 'next' | 'doneWhen'>): string {
+export function goalStepMessage(g: Pick<Goal, 'id' | 'title' | 'doneWhen'> & Partial<Pick<Goal, 'next' | 'steps'>>): string {
+  const next = goalNext(g)
   const line = (s: string | undefined) => String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
   return [
     `The user assigned you the next step of their Orca Flow goal ${g.id} (from the Goals section).`,
-    `Next step: "${line(g.next)}"`,
+    `Next step: "${line(next?.text)}"${next?.fromStep ? ` (todo ${next.fromStep} of the goal's list)` : ''}`,
     `Goal: "${line(g.title)}"`,
     ...(g.doneWhen ? [`Done when: "${line(g.doneWhen)}"`] : []),
-    `Commands: orca-flow goal show ${g.id} · orca-flow goal link ${g.id} --worktree <sel> (link the worktree you start for it) · orca-flow goal step ${g.id} tick <n|text> · orca-flow goal set ${g.id} --next "<the step after>" (when this one is done) · orca-flow goal propose-done ${g.id}`
+    `Commands: orca-flow goal show ${g.id} · orca-flow goal link ${g.id} --worktree <sel> (link the worktree you start for it) · ${next?.fromStep ? `orca-flow goal step ${g.id} tick ${next.fromStep} (when this todo is done; the next open todo then becomes the next step)` : `orca-flow goal step ${g.id} tick <n|text> · orca-flow goal set ${g.id} --next "<the step after>" (when this one is done)`} · orca-flow goal propose-done ${g.id}`
   ].join('\n')
 }
 
@@ -183,6 +186,15 @@ export function goalsHead(goals: GoalView[], s: GoalsState, searching = false): 
 
 const completedDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
+const TODO_GLYPH = '<svg class="tg" aria-hidden="true" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="7" height="7" rx="1.8"/></svg>'
+
+/** An open goal's line under its title: the written next; else its first open todo (marked as one); else why there is none. */
+function nextLine(g: Goal): string {
+  const next = goalNext(g)
+  if (!next) return `<span class="nx none">${allStepsDone(g) ? 'All todos done' : 'No next step yet'}</span>`
+  return next.fromStep ? `<span class="nx todo" title="From the todos">${TODO_GLYPH}${esc(next.text)}</span>` : `<span class="nx">${esc(next.text)}</span>`
+}
+
 /**
  * One goal: its title and step count, and under it the next step (or "lead says done" while an agent proposes it).
  * `button` (nextButton) ends the right-hand cluster, after the avatars and progress, beside the row's button (not inside it).
@@ -193,9 +205,7 @@ export function goalRow(g: GoalView, open: string | null, avatars = '', button: 
     ? ''
     : g.status === 'proposed'
       ? '<span class="nx says">lead says done</span>'
-      : g.next
-        ? `<span class="nx">${esc(g.next)}</span>`
-        : '<span class="nx none">No next step yet</span>'
+      : nextLine(g)
   const detail = done ? `<span class="cnt">${completedDate.format(g.doneAt ?? g.updatedAt)}</span>` : stepProgress(g)
   const row = `<button class="g${done ? ' fin' : ''}${open === g.id ? ' menu-open' : ''}" data-gopen="${esc(g.id)}" aria-haspopup="dialog" aria-expanded="${open === g.id}"><span class="m"><span class="ti">${esc(g.title)}</span>${second}</span>${avatars}${detail}</button>`
   return button && !done ? `<div class="gline">${row}${nextButtonHtml(g, button)}</div>` : row
@@ -209,8 +219,8 @@ export function goalsRows(goals: GoalView[], s: GoalsState, searching = false, a
 
 // ---------- the card ----------
 
-const editable = (field: string, id: string, value: string | undefined, placeholder: string, cls = 'ed') =>
-  `<div class="${cls}" contenteditable="plaintext-only" spellcheck="false" role="textbox" aria-label="${esc(placeholder)}" data-gedit="${field}" data-g="${esc(id)}" data-ph="${esc(placeholder)}">${esc(value ?? '')}</div>`
+const editable = (field: string, id: string, value: string | undefined, placeholder: string, cls = 'ed', label = placeholder) =>
+  `<div class="${cls}" contenteditable="plaintext-only" spellcheck="false" role="textbox" aria-label="${esc(label)}" data-gedit="${field}" data-g="${esc(id)}" data-ph="${esc(placeholder)}">${esc(value ?? '')}</div>`
 
 /** A worktree link's text: its name, else the last part of its path. */
 const worktreeName = (w: Goal['links']['worktrees'][number]) => w.name || (w.path ? w.path.split('/').filter(Boolean).pop() : '') || w.key || 'worktree'
@@ -219,8 +229,14 @@ const ASSIGNED_WORD = { pending: 'Sending to', delivered: 'Assigned to', unconfi
 /** Under the card's Next: who the current step was handed to, while it is for this exact step. */
 function assignedLine(g: GoalView, now: number): string {
   const a = g.assigned
-  if (!a || g.status === 'done' || a.next !== g.next) return ''
+  if (!a || g.status === 'done' || a.next !== nextText(g)) return ''
   return `<span class="gassigned">${ASSIGNED_WORD[a.state] ?? 'Assigned to'} ${esc(a.name || a.coordinator)} · ${agoText(a.deliveredAt ?? a.at, now)}</span>`
+}
+
+/** The Next field's placeholder: the first open todo it follows while empty, else the prompt. */
+function cardNextPlaceholder(g: Goal): string {
+  const next = goalNext(g)
+  return next?.fromStep ? `${next.text} (from todos)` : 'What is the next thing to do?'
 }
 
 /**
@@ -243,7 +259,7 @@ export function goalCard(g: GoalView, now: number): string {
     `<div class="gpart" data-part="title">${editable('title', g.id, g.title, 'Goal', 'ed ph')}</div>`,
     `<div class="gpart f" data-part="note"><span class="k">Description</span>${editable('note', g.id, g.note, 'Add a description', 'ed note')}</div>`,
     `<div class="gpart f" data-part="doneWhen"><span class="k">Done criteria</span>${editable('doneWhen', g.id, g.doneWhen, 'How will you know it is done?')}</div>`,
-    `<div class="gpart f" data-part="next"><span class="k">Next</span>${editable('next', g.id, g.next, 'What is the next thing to do?')}${assignedLine(g, now)}</div>`,
+    `<div class="gpart f" data-part="next"><span class="k">Next</span>${editable('next', g.id, g.next, cardNextPlaceholder(g), 'ed', 'Next')}${assignedLine(g, now)}</div>`,
     `<div class="gpart f" data-part="steps"><span class="k">Todos${g.steps.length ? ` · ${completedSteps(g)}/${g.steps.length}` : ''}</span><div class="steps">${steps}</div>${editable('newStep', g.id, '', 'Add a todo', 'ed addstep')}</div>`,
     `<div class="gpart f" data-part="links"><span class="k">Links</span><div class="links">${links || '<span class="nolinks">No ticket or worktree</span>'}</div></div>`,
     g.status === 'proposed' ? '<div class="gpart gsays" data-part="says">An agent says this is done. Is it?</div>' : '',

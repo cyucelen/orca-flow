@@ -307,7 +307,11 @@ orca-flow goal link <id> --worktree <selector> | --linear <ID>     # unlink remo
 orca-flow goal propose-done <id>
 ```
 
-The user and leads keep a goal current: tick steps, set `next`. Agents never mark a goal done: they
+A goal's next step is its `next` when one is written, else its first open step: with no `--next`,
+the sidebar, `goal list` and the Jump/Assign button show that step. Set `--next` only when the real
+next action differs from it; ticking the step that is the `next` clears it, so the next open step takes over.
+
+The user and leads keep a goal current: tick steps, set `next` when it differs. Agents never mark a goal done: they
 `propose-done` and the user confirms it in the sidebar. `goal done` and `goal reopen` run only on
 the user's word. Workers do not touch goals.
 

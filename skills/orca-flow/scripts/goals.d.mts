@@ -6,7 +6,7 @@ export type GoalChange = { by: string; field: string; at: number }
 /** Where the step was delivered: the coordinator's current session at the time. */
 export type AssignedSession = { workspaceId: string; terminal: string; paneKey?: string; orcaSession?: string | null; agentType?: string | null; member?: string }
 export type AssignmentState = 'pending' | 'delivered' | 'unconfirmed'
-/** The Next step handed to a coordinator; it applies only while `next` is the goal's Next text. */
+/** The next step handed to a coordinator; it applies only while `next` is the goal's effective next (its written next, else its first open step). */
 export type GoalAssignment = { coordinator: string; name?: string; next: string; state: AssignmentState; at: number; by: string; token: string; session?: AssignedSession; deliveredAt?: number }
 export type Goal = {
   id: string
@@ -37,7 +37,7 @@ export function list(options?: Opts & { status?: GoalStatus }): Goal[]
 export function get(id: string, options?: Opts): Goal | null
 export function add(title: string, fields?: { note?: string; next?: string; doneWhen?: string; steps?: (string | GoalStep)[]; linear?: string[]; worktrees?: WorktreeLink[] }, options?: Opts & { by?: string; now?: number }): Goal
 export function update(id: string, patch: { title?: string; note?: string; next?: string; doneWhen?: string }, by: string, options?: Opts): Goal
-/** ref: a 1-based step number, or text matching one step. */
+/** ref: a 1-based step number, or text matching one step. Ticking the step the written Next names also clears that Next and its assignment. */
 export function setStep(id: string, ref: number | string, done: boolean, by: string, options?: Opts): Goal
 export function tick(id: string, ref: number | string, by: string, options?: Opts): Goal
 export function addStep(id: string, text: string, by: string, options?: Opts): Goal
@@ -50,8 +50,8 @@ export function done(id: string, by: string, options?: Opts & { doneAt?: number;
 export function reopen(id: string, by: string, options?: Opts): Goal
 export const ASSIGN_PENDING_MS: number
 export const ASSIGN_STATES: AssignmentState[]
-/** The assignment when it is for the goal's current Next text (and not an abandoned pending one), else null. */
-export function currentAssignment(g: Pick<Goal, 'next' | 'assignment'> | null | undefined, now?: number): GoalAssignment | null
+/** The assignment when it is for the goal's current effective next (and not an abandoned pending one), else null. */
+export function currentAssignment(g: Pick<Goal, 'next' | 'steps' | 'assignment'> | null | undefined, now?: number): GoalAssignment | null
 export function beginAssign(id: string, to: { coordinator: string; name?: string; next: string; session?: AssignedSession }, by: string, options?: Opts & { now?: number; stillOn?: (a: GoalAssignment) => boolean }): { goal: Goal; token: string }
 export function finishAssign(id: string, token: string, outcome: { ok: boolean; state?: 'delivered' | 'unconfirmed'; session?: AssignedSession }, options?: Opts & { now?: number }): { goal: Goal | null; applied: boolean }
 /** True for a step that holds a list: parentheses with a comma or slash, or 3+ comma-separated items. */
