@@ -111,6 +111,10 @@ guess. See "The project's words" in [SKILL.md](../SKILL.md).
    EOF
    ```
 
+   A plan you have goes in either spec as "Proposed plan: ...", for the lead to agree with the user
+   before any worker starts. Never write it as an order ("hand implementation to workers",
+   "implement X"): the lead would start a worker on it at once.
+
    Name the project's bots in every lead's spec (`orca-flow bots --repo <repo>`), so the lead
    hands QA and other specialist work to them. When the user asks for a model or an agent for
    this workstream ("use Codex", "run it on Opus"), pass `--agent`, `--model` or `--effort`; they
@@ -131,8 +135,9 @@ guess. See "The project's words" in [SKILL.md](../SKILL.md).
    Start it with `orca-flow dispatch --role lead --worktree path:<your folder>` and no creation
    flags, with the same lead preamble. It shows as a child row under you in the sidebar. When it must change code, it asks
    you for a worktree with `orca orchestration ask`. Then create one as above, start a new lead
-   there with the first lead's findings in its spec, and reply to the first lead that the work
-   moved; it then sends `worker_done`.
+   there with the first lead's findings in its spec as a proposed plan (the new lead agrees on it
+   with the user before any worker starts), and reply to the first lead that the work moved; it
+   then sends `worker_done`.
 4. **Confirm with a route line** (see [messages.md](../messages.md)): which lead is on it, where,
    at what level. The lead tells the user its plan in its own chat, so don't repeat it. When you
    have one more thing to say (a level you guessed), put the route line above a frame. End your
@@ -169,7 +174,8 @@ stands. A person asking "status?" or "what's next" is a normal prompt: answer wi
 
 When you route to a lead or it reports, glance at `orca orchestration worker-list`: a lead that has
 been working a long time with no workers is doing the work itself. Remind it to delegate
-(`orca orchestration send --to dispatch:<id>`).
+(`orca orchestration send --to dispatch:<id>`). Not a lead that is still questioning the user or
+waiting for their yes on the plan: it starts workers after that.
 
 **A lead asks for a separate branch** (with `orca orchestration ask`): treat it as a new
 workstream (step 3), then `orca orchestration reply --id <message_id>` with the new lead's name.

@@ -79,6 +79,7 @@ function assertBootstrap(w, out) {
   assert.ok(text.includes(join(w.skill, 'SKILL.md')), 'SKILL.md through the skill link')
   assert.ok(text.includes(join(w.skill, 'roles', 'lead.md')), 'roles/lead.md through the skill link')
   assert.match(text, /worker_done .*whole workstream/)
+  assert.match(text, /plan isn't in the user's own words.*question the user one question per turn.*only after their yes/)
 }
 
 // ---------- SessionStart ----------

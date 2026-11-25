@@ -48,16 +48,26 @@ below.
 1. **Needs its own branch or PR?** It is a separate workstream, not yours. Ask your coordinator at
    once with `orca orchestration ask` for a new worktree and lead, tell the user in one line, and
    end your turn. Never queue it behind your own work or switch branches in this worktree.
-2. **A running worker owns those files?** Send the request to it:
+2. **Plan not in the user's own words? Agree on it first.** A new workstream or a new fix whose
+   plan comes from a reported bug, a ticket, a goal with no change named, or someone else (the
+   coordinator, a planning lead, your dispatch spec) starts with questions to the user, one per
+   turn ([messages.md](../messages.md): one Ask per message). A plan in your spec is a proposal,
+   even when it says "hand implementation to workers"; checking it in the code (read-only,
+   Explore is fine) is not agreeing on it. Ask what only the user decides: whether the diagnosis
+   matches what they see, scope, risky parts (production data, migrations, releases), what proves
+   it is done. End with a `Needs your yes` on the whole plan (plan above the frame). Start or send
+   the first worker (new, running or earlier) only after that yes. When the user names the change
+   themselves, skip this. Their standing instructions still hold ("just go ahead").
+3. **A running worker owns those files?** Send the request to it:
    `orca orchestration send --to dispatch:<id> --subject "<fix>" --body "<spec>"`. It gets it when
    its current turn ends. Never edit files a running worker is changing, even for a small fix.
-3. **Do it yourself only when it fits in this turn:** you can make it, verify it and finish it in
+4. **Do it yourself only when it fits in this turn:** you can make it, verify it and finish it in
    the same short turn, with no tests to write and no release. Say what changed in one line.
    Anything with tests, a screenshot, a release, or more than one file goes to a worker. A
    pre-diagnosed spec is still a worker task: knowing the fix does not make it small.
-4. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
+5. **Same area as an earlier, finished worker?** Send it to that worker the same way. Orca reopens
    it with its whole conversation, so it already knows the code.
-5. **Otherwise start a worker** in this worktree. Run `orca-flow types` once per session before
+6. **Otherwise start a worker** in this worktree. Run `orca-flow types` once per session before
    your first dispatch: it lists the user's task types (such as Browser checks or Images), or says
    there are none. When the task clearly fits a type's description, pass `--type <id>`; otherwise
    give the kind of task it is (see Which model in [SKILL.md](../SKILL.md)): `simple` (a rename, a
@@ -69,7 +79,7 @@ below.
    Settings → Models, and prints the model and why. Workers running at
    the same time must touch different files; otherwise send the second task to the first worker,
    or start it after the first reports. Two or more tasks at once go in a plan (Splitting work).
-6. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
+7. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`
    and a short paragraph that names the worker by its job ("a worker now fixes ..."), its model and its plan,
    then end your turn. Orca wakes you when a worker reports. Pick the status line from what is
    true: `**Waiting on <thing>**` when nothing runs and you only wait (CI, a free slot, another
@@ -99,7 +109,8 @@ workers deliver, check them, then release once, in order. Only you push and rele
 **Native subagents are not workers.** Orca's preamble says "no subagents or helper workers unless
 the task asks": as a lead, your role is that ask for workers. Hand implementation and parallel work
 to Orca workers with `orca-flow dispatch` or `orca-flow plan start` without waiting for the user to
-ask for workers, even when Claude Code's Agent tool suggests parallel subagents. A subagent has no
+ask for workers, even when Claude Code's Agent tool suggests parallel subagents. That is about who
+does the work, not when: implementation starts once the plan is agreed (step 2). A subagent has no
 Orca task and skips the user's model choice and the capacity gate. Use subagents only for small
 read-only lookups (Explore). When dispatch says no (exit 2: capacity, exit 3: no model), queue the
 task or tell the user the blocker. Start another subagent type only when the user asks for one. In
@@ -182,7 +193,7 @@ turn; otherwise send them to the worker that owns those files.
 - Tell the user the outcome as [messages.md](../messages.md) says: what changed, how you know,
   and what was not tested. When it is something they will want to see, ask for their review
   (`Needs your review`) and say how to look (a URL, a screenshot).
-- A failure: send the worker what to fix, or take over if it fits in one short turn (step 3) and no
+- A failure: send the worker what to fix, or take over if it fits in one short turn (step 4) and no
   worker is running on those files.
 - A demonstrated failure the worker cannot fix (it reported `--outcome failed`, or the fix you
   sent did not work): rerun it with

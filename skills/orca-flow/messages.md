@@ -64,6 +64,8 @@ One Ask per message. With more questions, ask the most important one and add `(+
 - **Result:** what is done, how you know, what was not tested, and where to look (the PR).
 - **Diagnosis:** the cause in one sentence, and where the evidence is: "(log above)".
 - **Plan or answer:** one or two sentences. The full plan goes above the frame.
+- **Questions before a plan:** one question per message; the plan so far goes above the frame; the
+  last message is a `Needs your yes` on the whole plan.
 
 ## Readable cold
 
