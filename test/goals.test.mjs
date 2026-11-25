@@ -372,3 +372,59 @@ test('CLI: goal show names who completed a goal', () => {
   cli(dir, bin, 'goal', 'propose-done', id, '--by', 'lead alpha')
   assert.match(cli(dir, bin, 'goal', 'done', id, '--by', 'you').out, /done by: you \(proposed by lead alpha\)/)
 })
+
+test('goalHints: the two feedback examples get hints', () => {
+  const hints = goals.goalHints({
+    title: 'Ship super admin',
+    steps: [{ text: 'Moderation rights (edit, delete, block)', done: false }, { text: 'Super Admins see everything', done: false }],
+    doneWhen: 'Super Admins see everything, can moderate, and the PR is merged'
+  })
+  assert.equal(hints.length, 3)
+  assert.match(hints[0], /"Moderation rights \(edit, delete, block\)".*one step per checkable outcome/)
+  assert.match(hints[1], /ends at the merge.*released to production/)
+  assert.match(hints[2], /no release step.*"Released to production"/)
+})
+
+test('goalHints: a bundled step has a list in parentheses or three comma-separated items, not just "and"', () => {
+  const bundled = (text) => goals.bundledStep(text)
+  assert.equal(bundled('Moderation rights (edit, delete, block)'), true)
+  assert.equal(bundled('Rights (edit/delete)'), true)
+  assert.equal(bundled('Edit, delete, block'), true)
+  assert.equal(bundled('Edit and delete posts'), false)
+  assert.equal(bundled('Super Admins can delete any post'), false)
+  assert.equal(bundled('Move the card (the old one)'), false)
+  assert.equal(bundled('Edit, delete'), false)
+})
+
+test('goalHints: nothing for a release step, a done-when that ends at the release, or a goal that ships nothing', () => {
+  assert.deepEqual(goals.goalHints({ title: 'Ship super admin', steps: ['Super Admins can delete any post', 'Released to production'], doneWhen: 'Super Admins can moderate and it is released to production' }), [])
+  assert.deepEqual(goals.goalHints({ title: 'Add export', steps: ['Export works', 'Deployed'] }), [])
+  assert.deepEqual(goals.goalHints({ title: 'Decide on pricing', steps: ['Compare three tiers', 'Pick one'], doneWhen: 'The user has chosen a tier' }), [])
+  assert.deepEqual(goals.goalHints({ title: 'Ship super admin', steps: [] }), [], 'a goal without steps is left alone')
+  assert.deepEqual(goals.goalHints({ title: 'Write the doc', steps: ['Draft'], doneWhen: 'The PR is merged' }).length, 1, 'only the merge hint: the title ships nothing')
+  assert.deepEqual(goals.goalHints({ title: 'Fix login', steps: ['Login works'], doneWhen: 'Users can log in, the PR is merged and deployed' }), [])
+})
+
+test('CLI: goal add prints hints and still saves the goal as written', () => {
+  const dir = tmp()
+  const bin = fakeOrca()
+  const step = 'Moderation rights (edit, delete, block)'
+  const doneWhen = 'Super Admins can moderate, and the PR is merged'
+  const r = cli(dir, bin, 'goal', 'add', 'Ship super admin', '--step', step, '--done-when', doneWhen)
+  assert.equal(r.code, 0)
+  assert.match(r.out, /^Added\./)
+  assert.match(r.out, /hint: step "Moderation rights \(edit, delete, block\)" bundles/)
+  assert.match(r.out, /hint: done-when ends at the merge/)
+  assert.match(r.out, /hint: this goal ships a change but has no release step/)
+  const g = goals.list({ data: dir })[0]
+  assert.equal(g.title, 'Ship super admin')
+  assert.deepEqual(g.steps, [{ text: step, done: false }])
+  assert.equal(g.doneWhen, doneWhen)
+  // step add and set --done-when hint too; a clean goal gets none; --json stays plain JSON.
+  assert.match(cli(dir, bin, 'goal', 'step', g.id, 'add', 'Block, mute, ban').out, /hint: step "Block, mute, ban" bundles/)
+  assert.match(cli(dir, bin, 'goal', 'set', g.id, '--done-when', 'It is merged').out, /hint: done-when ends at the merge/)
+  assert.doesNotMatch(cli(dir, bin, 'goal', 'set', g.id, '--next', 'Start').out, /hint:/)
+  const clean = cli(dir, bin, 'goal', 'add', 'Ship exports', '--step', 'Users can export a CSV', '--step', 'Released to production', '--done-when', 'Users can export a CSV and it is released to production')
+  assert.doesNotMatch(clean.out, /hint:/)
+  assert.doesNotThrow(() => JSON.parse(cli(dir, bin, 'goal', 'add', 'Ship x', '--step', 'A (b, c)', '--json').out))
+})

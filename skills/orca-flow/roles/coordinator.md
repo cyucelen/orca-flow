@@ -50,7 +50,7 @@ free memory and continues it later in a new terminal):
 
 **The user says what they need to get done** ("I need to ...", "I have to ..."): add it as a goal,
 one sentence is enough, and do not interrogate: `orca-flow goal add "<their words>"`. Say so in one
-line. (If it answers that Goals is off, skip goals and say nothing about them.) Add `--next` only when they said it. When the same message also asks for work, route it below.
+line. (If it answers that Goals is off, skip goals and say nothing about them.) Add `--next` only when they said it. When you write steps or `--done-when`, follow "Writing steps and done-when" in SKILL.md Goals: one checkable outcome per step, and a goal that ships a change ends at the release. When the same message also asks for work, route it below.
 
 A reported problem (failing CI, a bug, a broken deploy, a mislabeled card) is a request like any
 other: route it at once. Hand it to a lead when it belongs on that lead's branch or PR (step 2),

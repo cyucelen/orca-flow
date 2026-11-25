@@ -54,3 +54,7 @@ export const ASSIGN_STATES: AssignmentState[]
 export function currentAssignment(g: Pick<Goal, 'next' | 'assignment'> | null | undefined, now?: number): GoalAssignment | null
 export function beginAssign(id: string, to: { coordinator: string; name?: string; next: string; session?: AssignedSession }, by: string, options?: Opts & { now?: number; stillOn?: (a: GoalAssignment) => boolean }): { goal: Goal; token: string }
 export function finishAssign(id: string, token: string, outcome: { ok: boolean; state?: 'delivered' | 'unconfirmed'; session?: AssignedSession }, options?: Opts & { now?: number }): { goal: Goal | null; applied: boolean }
+/** True for a step that holds a list: parentheses with a comma or slash, or 3+ comma-separated items. */
+export function bundledStep(text: string): boolean
+/** Advice for agents writing a goal (bundled steps, ends at the merge, no release step); never a refusal. Plain sentences. */
+export function goalHints(goal: Pick<Goal, 'title' | 'doneWhen' | 'steps'> | { title?: string; doneWhen?: string; steps?: (string | GoalStep)[] }): string[]

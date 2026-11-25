@@ -20,6 +20,9 @@
 //   orca-flow goal show <id> [--json]         One goal with its steps, links and who changed it last
 //   orca-flow goal set <id> [--title ..] [--note ..] [--next ..] [--done-when ..]
 //   orca-flow goal step <id> add "<text>" | tick <n|text> | untick <n|text>   (n counts from 1)
+//                                             After add, step add and set --done-when it prints "hint:" lines
+//                                             (a bundled step, a goal that ends at the merge or has no release step);
+//                                             hints are advice, the goal is saved as written
 //   orca-flow goal link|unlink <id> --worktree <sel> | --linear <ID>
 //   orca-flow goal propose-done <id>          Agents: say the goal looks done; the user confirms
 //   orca-flow goal done <id> | reopen <id>    Only on the user's word
@@ -580,6 +583,8 @@ export function goalCommand(args, ctx = {}) {
   if (!goals.goalsEnabled({ data })) return goals.GOALS_OFF
   const by = () => goalBy(args, ctx)
   const shown = (g) => (args.json ? g : formatGoal(g))
+  // The goal, then hint lines for an agent writing steps or done-when. Advice only; --json stays plain JSON.
+  const shownWithHints = (g) => (args.json ? g : [formatGoal(g), ...goals.goalHints(g).map((h) => `hint: ${h}`)].join('\n'))
   const id1 = () => {
     if (!id) throw new Error(`usage: orca-flow goal ${sub} <id> (orca-flow goal list shows the ids)`)
     return id
@@ -589,7 +594,7 @@ export function goalCommand(args, ctx = {}) {
       const title = args._.slice(2).join(' ')
       const worktrees = args.worktree ? [worktreeLink(args.worktree)] : []
       const g = goals.add(title, { note: args.note, next: args.next, doneWhen: args['done-when'], steps: many(args.step), linear: many(args.linear), worktrees }, { data, by: by() })
-      return args.json ? g : `Added.\n${formatGoal(g)}`
+      return args.json ? g : `Added.\n${shownWithHints(g)}`
     }
     case 'list': {
       let list = goals.list({ data })
@@ -602,12 +607,14 @@ export function goalCommand(args, ctx = {}) {
       if (!g) throw new Error(`no goal "${id}"`)
       return shown(g)
     }
-    case 'set':
-      return shown(goals.update(id1(), { title: args.title, note: args.note, next: args.next, doneWhen: args['done-when'] }, by(), { data }))
+    case 'set': {
+      const g = goals.update(id1(), { title: args.title, note: args.note, next: args.next, doneWhen: args['done-when'] }, by(), { data })
+      return args['done-when'] === undefined ? shown(g) : shownWithHints(g)
+    }
     case 'step': {
       const [action, ...words] = rest
       const text = words.join(' ')
-      if (action === 'add') return shown(goals.addStep(id1(), text, by(), { data }))
+      if (action === 'add') return shownWithHints(goals.addStep(id1(), text, by(), { data }))
       if (action === 'tick' || action === 'untick') return shown(goals.setStep(id1(), text, action === 'tick', by(), { data }))
       throw new Error('usage: orca-flow goal step <id> add "<text>" | tick <n|text> | untick <n|text>')
     }

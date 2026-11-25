@@ -311,6 +311,24 @@ The user and leads keep a goal current: tick steps, set `next`. Agents never mar
 `propose-done` and the user confirms it in the sidebar. `goal done` and `goal reopen` run only on
 the user's word. Workers do not touch goals.
 
+### Writing steps and done-when
+
+- A goal that ships a change (a feature, a fix, "Ship ...", "Add ...") ends at the release, not the
+  merge. Its last step is "Released to production" (or the project's own word: deployed, published,
+  installed), and done-when ends with "... and it is released to production". A merged PR is a step on
+  the way, never the end. A goal that ships nothing (decide, research, write a doc) ends where the user
+  said.
+- Each step is one checkable outcome: one thing anyone can see is true or not, written as the outcome
+  ("Super Admins can delete any post"), not an activity ("work on moderation"). No bundles:
+  "Moderation rights (edit, delete, block)" is three steps.
+- done-when is one sentence the user can check, and it ends where the last step ends.
+- A step only partly done: split it, tick the done part, keep the rest as its own step, so the missing
+  part shows.
+
+`goal add`, `goal step add` and `goal set --done-when` print `hint:` lines when a step bundles outcomes,
+done-when ends at the merge, or a shipping goal has no release step. They are advice: the goal is saved
+as written, so fix it with `goal step` or `goal set` if the hint is right.
+
 ## Keeping the user's attention cheap
 
 - Coordinators and leads end every message to the user as [messages.md](messages.md) says: read

@@ -348,3 +348,32 @@ export function finishAssign(id, token, { ok, state = 'delivered', session } = {
   writeGoal(data, out)
   return { goal: out, applied: true }
 }
+
+// ---------- hints ----------
+// Hints for agents that write goals: advice only, never a refusal and never a change to the goal. Goals are
+// the user's words; the CLI prints these after `goal add`, `goal step add` and `goal set --done-when`.
+const SHIP_TITLE = /^\s*(ship|launch|release|roll\s*out|add|build|fix|implement)\b/i
+const MERGE_WORDS = /\b(merge|merged|merging|pr|pull request)\b/i
+const RELEASE_WORDS = /\b(release[ds]?|releasing|deploy(?:s|ed|ing|ment)?|publish(?:es|ed|ing)?|production|prod|live|install(?:s|ed|ing)?)\b/i
+
+/** A step that holds a list: parentheses with a comma or slash inside, or three or more comma-separated items. */
+export function bundledStep(text) {
+  const t = clean(text)
+  if (/\([^)]*[,/][^)]*\)/.test(t)) return true
+  return t.split(',').filter((part) => clean(part)).length >= 3
+}
+
+/** The hints for one goal, as plain sentences (no "hint:" prefix); [] when it reads fine. */
+export function goalHints(goal) {
+  const hints = []
+  const steps = (goal?.steps ?? []).map((s) => (typeof s === 'string' ? s : s?.text ?? ''))
+  const doneWhen = clean(goal?.doneWhen)
+  steps.filter(bundledStep).forEach((text) => hints.push(`step "${clean(text)}" bundles several outcomes: one step per checkable outcome (split it).`))
+  if (doneWhen && MERGE_WORDS.test(doneWhen) && !RELEASE_WORDS.test(doneWhen)) {
+    hints.push('done-when ends at the merge: a goal that ships a change ends at the release, so end it "... and it is released to production".')
+  }
+  if (steps.length && SHIP_TITLE.test(clean(goal?.title)) && ![...steps, doneWhen].some((t) => RELEASE_WORDS.test(t))) {
+    hints.push('this goal ships a change but has no release step: add the step "Released to production" and end done-when at the release.')
+  }
+  return hints
+}

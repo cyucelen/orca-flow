@@ -24,6 +24,15 @@ the user is trying to get done. When a worker's result completes one of its step
 the frame; only the user marks a goal done. Do not create goals yourself unless the user asks. If a goal command says Goals is off, skip goals
 and do not mention them.
 
+Keep steps checkable (see "Writing steps and done-when" in SKILL.md Goals):
+
+- A worker's result completes only part of a step: split it. `orca-flow goal step <id> add "<the
+  missing part>"`, then tick the part that is done, so the missing part shows.
+- A linked goal ships a change but has no release step: add "Released to production" with `goal step
+  <id> add`, and if done-when ends at the merge, fix it with `goal set <id> --done-when "... and it is
+  released to production"`. Tell the user in one line.
+- Tick the release step only after the release is out, and `propose-done` only after that.
+
 ## Each request from the user
 
 **A suggestion, not a request?** "We should have some eval" or "maybe cache this" opens a
