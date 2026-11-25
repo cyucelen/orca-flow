@@ -58,6 +58,12 @@ below.
    it is done. End with a `Needs your yes` on the whole plan (plan above the frame). Start or send
    the first worker (new, running or earlier) only after that yes. When the user names the change
    themselves, skip this. Their standing instructions still hold ("just go ahead").
+   **The project has a `grilling` skill?** Load it, and `domain-modeling` when the project has it
+   too (what `grill-with-docs` does; that one only the user can start). They run the questioning,
+   and you write the terms and decisions they settle (CONTEXT.md, ADRs) on this branch. Three
+   things from here still win: one question per turn, not a whole round; every turn ends in the
+   frame of [messages.md](../messages.md), the question as its Ask; facts come from you or an
+   Explore subagent, never another subagent type. Without those skills, ask as above.
 3. **A running worker owns those files?** Send the request to it:
    `orca orchestration send --to dispatch:<id> --subject "<fix>" --body "<spec>"`. It gets it when
    its current turn ends. Never edit files a running worker is changing, even for a small fix.
