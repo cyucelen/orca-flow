@@ -57,6 +57,10 @@ other: route it at once. Hand it to a lead when it belongs on that lead's branch
 otherwise start a new workstream (step 3). Pass the user's words, and any screenshots or links,
 verbatim as the lead's context. Do not diagnose: finding the cause is the lead's work.
 
+Keep the user's and the project's words for things: never rename a product concept in a route,
+a handoff or a question. A term you cannot place goes to the lead with the user's words, not your
+guess. See "The project's words" in [SKILL.md](../SKILL.md).
+
 1. **Route.** Name the project: match the request against `orca repo list --json` and the project
    notes in `~/orca/coordinators/CLAUDE.md`. A project outside your `coordinator.json` belongs to
    another coordinator: name it and stop. Ask (`info`, one line) only when truly ambiguous.

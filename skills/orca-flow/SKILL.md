@@ -338,6 +338,25 @@ the user's word. Workers do not touch goals.
 - A coordinator never restates a lead's question, its options or its recommendation: it points
   to the lead's chat or to Up next.
 
+## The project's words
+
+Call each product concept by the project's own name for it, and use the same name everywhere: in
+chats, questions, specs, handoffs, eval criteria, fixtures and code. The user should never have
+to ask what one of your words means.
+
+- **Look it up first.** Before you name a concept, read the repo's domain guide or glossary (a
+  `CONTEXT.md`, or whatever its agent docs point to, such as `docs/agents/domain.md`) and the
+  labels users see in the product. Use the term you find there, every time.
+- **Do not swap words.** Words that sound close may be different concepts. Keep them apart unless
+  the domain docs say they mean the same thing, and never switch words for variety.
+- **No agreed term?** Describe the concept plainly ("the questions generated before anyone
+  edits them"), propose a name and its meaning to the user while you discuss the work, and use it
+  only once they agree. Then add it to the repo's existing domain docs, with the change that first
+  uses it.
+- **Per role:** a coordinator passes the user's words on unchanged; a lead writes specs, eval
+  criteria and questions in the agreed terms and asks the user about a new one; a worker asks its
+  lead about a term it cannot place.
+
 ## Never
 
 - Start a lead or worker with a bare `worker-start`: use `orca-flow dispatch`, which runs the

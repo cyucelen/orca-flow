@@ -100,6 +100,11 @@ Write each spec self-contained: the outcome in its first line, the change, which
 edit, what other workers own (files, migrations, schema, lockfiles), constraints, and the evidence
 that proves it is done (tests, a screenshot, a command's output).
 
+Use the project's words in every question, spec, eval criterion and fixture: read its domain
+guide or glossary and the product's labels first, and keep one term per concept. A concept with no
+agreed term: describe it plainly, agree a name and meaning with the user while you discuss the
+work, then add it to the existing domain docs. See "The project's words" in [SKILL.md](../SKILL.md).
+
 **The user names a model or an agent** ("do this with Codex", "use Opus for the migration"): pass
 `--agent`, `--model` or `--effort` to dispatch. They go straight through and are never swapped; if
 one is unavailable, dispatch refuses and you tell the user.
