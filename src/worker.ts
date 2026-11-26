@@ -390,6 +390,20 @@ export async function awaitLaunched(launch: Launch, io: { terminals: () => Promi
 }
 
 /**
+ * Whether `terminal` is a non-current coordinator member's recorded terminal whose chat is no longer
+ * open: its read-only history route, which never opens. A non-current member still open (its agent
+ * is live in that terminal) is answerable and opens like any chat; so does a terminal no member
+ * records, or the current member's.
+ */
+export function closedMemberTerminal(coordinators: Pick<Coordinator, 'sessions' | 'members'>[], workspaceId: string, terminal: string): boolean {
+  return coordinators.some((c) => c.sessions?.members.some((m) => {
+    if (m.id === c.sessions?.current || m.workspaceId !== workspaceId || !m.terminals.includes(terminal)) return false
+    const open = c.members?.find((x) => x.id === m.id)?.agent
+    return !(open && open.live !== false && open.terminal === terminal)
+  }))
+}
+
+/**
  * Shows an agent's session: its workspace, then its own tab. `workspace.open` alone lands on
  * whichever tab was last active there, so every agent of a worktree would open its lead's tab. The
  * host API has no call to focus a tab, so the CLI switches to it. With no terminal (a session that
@@ -1218,8 +1232,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     const target = nextTarget(askingRows(latest ?? (await refresh())), lastJump, Date.now())
     if (!target) return 'Nothing is waiting on you.'
     lastJump = { id: target.queueKey ?? target.id, at: Date.now() }
-    if (target.historical) return 'This ask belongs to a previous session. View its read-only source in Up next.'
     const terminal = leadAgent(target)?.terminal
+    // The current session's closed chat has no terminal: ⌘⇧N wakes the coordinator, as its tree row does.
+    if (target.coordinator && target.coordinatorMember && target.liveTerminals === 0) {
+      const woke = await openCoordinator(target.coordinator)
+      return woke.ok ? `${target.repo}/${target.name}` : woke.error ?? 'The coordinator could not be woken.'
+    }
     if (target.coordinator && !terminal) return 'The exact asking session is unavailable.'
     const opened = await openChat(terminal ? { workspaceId: target.id, terminal } : { workspaceId: target.id })
     if (!opened.opened) return 'The exact source session is unavailable or is now read-only history.'
@@ -1736,10 +1754,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
   const openChat = async (input: { workspaceId: string; terminal?: string }) => {
-    if (input.terminal) {
-      const historical = readCoordinators().some((c) => c.sessions?.members.some((m) => m.id !== c.sessions?.current && m.workspaceId === input.workspaceId && m.terminals.includes(input.terminal!)))
-      if (historical) return { opened: false }
-    }
+    if (input.terminal && closedMemberTerminal(latest?.coordinators ?? [], input.workspaceId, input.terminal)) return { opened: false }
     const opened = await openAgent(orca, run, input)
     // A read already in flight predates the switch; read again after it.
     void (focusReading ?? Promise.resolve()).then(rereadFocus)

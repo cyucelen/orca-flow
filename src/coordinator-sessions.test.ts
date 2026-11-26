@@ -1,7 +1,7 @@
 import { assert, test } from 'orca/testing'
 import { associateSession, askKey, resumeExactMember, bindLaunched, resumeIdFor, withResumeId, chooseSession, currentRecipient, exclusive, launchedAgent, launchOnce, settlePending, terminalPane, wakeCoordinator, wakePlan, type Launch, type WakeIo, deliverCurrent, deliveryReceipt, DeliveryUncertainError, deliveryBlock, memberAgent, memberFrom, readMemberHistory, reconcileSessions, selectCurrent, sessionChoices, sessionKey, validSessions, conversationMissing, conversationSaved, markRefused, parseProcs, programRuns, providerMessage, ResumeRefusedError, type ResumeBinding } from './coordinator-sessions.ts'
 import { assignCoordinators, coordinatorSession, readCoordinators, scaffoldCoordinator, updateCoordinatorSessions, writeCoordinatorSessions } from './coordinators.ts'
-import { foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, resumeFolderConversation, statusOf, summaryAgents } from './worker.ts'
+import { closedMemberTerminal, foldCoordinatorFolders, fromPs, livePanes, openAgent, openNthChat, resumeFolderConversation, statusOf, summaryAgents } from './worker.ts'
 import { nextTarget } from './rank.ts'
 import { askingRows, asleep, character, chatTargets, colorOf, emptyUi, finishedAgents, NO_RESUME_ID, render, upNextOrder, wakeView } from './view.ts'
 import { closeSessions } from './cockpit.ts'
@@ -94,7 +94,7 @@ test('an exact session rebinds to its new pane; new same-provider sessions never
   assert.equal(memberAgent(next.members[1], [{ ...nextRows[0], id: 'folder:other' }]), null)
 })
 
-test('current status comes from current once; previous asks stay source-attributed and read-only', () => {
+test('current status comes from current once; the ask of a still-open other session is answerable and Jump to session opens its exact terminal', () => {
   const { rows, lineage, c } = fixture()
   const all = assignCoordinators(rows, [c], lineage)
   const coordinators: Coordinator[] = [{ ...c }]
@@ -103,10 +103,12 @@ test('current status comes from current once; previous asks stay source-attribut
   const asks = askingRows(snap)
   assert.equal(asks.length, 1)
   assert.equal(asks[0].coordinatorMember, c.sessions.members[0].id)
-  assert.equal(asks[0].historical, true)
+  assert.ok(!asks[0].historical)
   const html = render(snap, emptyUi())
-  assert.match(html.attention, /previous session · read-only/)
-  assert.match(html.attention, /data-history="home"/)
+  assert.match(html.attention, /claude · other session/)
+  assert.match(html.attention, /Jump to session/)
+  assert.match(html.attention, /data-open="folder:home" data-terminal="term-old:1"/)
+  assert.ok(!/previous session|read-only|View source history|data-history/.test(html.attention))
   assert.ok(!html.attention.includes('data-coordinator="home"'))
   assert.equal((html.main.match(/data-coordinator="home"/g) ?? []).length, 2)
   assert.ok(!html.main.includes('data-menu="agent:new:1"'), 'current member is not also a workstream lead')
@@ -118,14 +120,52 @@ test('current status comes from current once; previous asks stay source-attribut
   assert.match(html.main, /class="ch(?: |")/)
 })
 
-test('offline historical asks remain visible without becoming the current status', () => {
+test('a closed non-current session\'s ask leaves the queue, tree badges and jump-to-next; its history stays listed', () => {
   const { rows, lineage, c } = fixture()
   rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'old:1')
   const all = assignCoordinators(rows, [c], lineage)
   const coordinators: Coordinator[] = [{ ...c }]
   const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
-  assert.equal(askingRows({ rows: visible, coordinators })[0].agents[0].paneKey, 'old:1')
+  assert.equal(coordinators[0].members?.[0].agent, null)
+  assert.deepEqual(askingRows({ rows: visible, coordinators }), [])
+  assert.ok(!nextTarget(askingRows({ rows: visible, coordinators }), null, 0))
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi())
+  assert.ok(!html.attention.includes('Jump to session'))
+  assert.equal(coordinators[0].sessions?.members.length, 2, 'the closed session stays in the saved history list')
   assert.equal(coordinators[0].session?.state, 'working')
+})
+
+test('a closed current session\'s ask stays in Up next and Jump to session wakes the coordinator', () => {
+  const { rows, lineage, c } = fixture()
+  c.sessions.members[0].lastAgent!.state = 'working' // the other session is quiet; only the current one asks
+  c.sessions.members[1].lastAgent!.state = 'waiting'
+  rows[0].agents = rows[0].agents.filter((a) => a.paneKey !== 'new:1')
+  const all = assignCoordinators(rows, [c], lineage)
+  const coordinators: Coordinator[] = [{ ...c }]
+  const visible = foldCoordinatorFolders(all, coordinators, [c.dir])
+  const asks = askingRows({ rows: visible, coordinators })
+  assert.equal(asks.length, 1)
+  assert.equal(asks[0].coordinatorMember, c.sessions.current)
+  assert.equal(asks[0].liveTerminals, 0)
+  const html = render({ rows: visible, coordinators, source: 'cli', capacity: null }, emptyUi()).attention
+  assert.match(html, /claude|codex/)
+  assert.match(html, /current session/)
+  assert.match(html, /<button class="jump" data-coordinator="home">Jump to session<\/button>/)
+  assert.ok(!/View source history|data-history|data-open=|read-only/.test(html))
+})
+
+test('opening a non-current member terminal is refused only when its chat is closed', () => {
+  const { rows, lineage, c } = fixture()
+  const coordinators: Coordinator[] = [{ ...c }]
+  foldCoordinatorFolders(assignCoordinators(rows, [c], lineage), coordinators, [c.dir])
+  const old = c.sessions.members[0]
+  assert.equal(closedMemberTerminal(coordinators, old.workspaceId, 'term-old:1'), false, 'live other session opens')
+  assert.equal(closedMemberTerminal(coordinators, old.workspaceId, 'term-new:1'), false, 'the current member opens')
+  assert.equal(closedMemberTerminal(coordinators, old.workspaceId, 'term-unknown'), false, 'a terminal no member records is not history')
+  coordinators[0].members![0].agent = null
+  assert.equal(closedMemberTerminal(coordinators, old.workspaceId, 'term-old:1'), true, 'closed other session stays refused')
+  coordinators[0].members![0].agent = { ...old.lastAgent!, live: false }
+  assert.equal(closedMemberTerminal(coordinators, old.workspaceId, 'term-old:1'), true)
 })
 
 test('delivery resolves the current member, validates its exact terminal, and records the actual receipt', async () => {
@@ -288,7 +328,7 @@ test('a non-live member remaining in ps never becomes a duplicate workstream row
   const visible = foldCoordinatorFolders(assignCoordinators(rows, [c], lineage), coordinators, [c.dir])
   assert.ok(!visible.some((r) => r.agents.some((a) => a.paneKey === 'old:1')))
   assert.equal(coordinators[0].members?.[0].agent, null)
-  assert.equal(askingRows({ rows: visible, coordinators })[0].historical, true)
+  assert.deepEqual(askingRows({ rows: visible, coordinators }), [], 'a closed non-current session never queues')
 })
 
 test('provider mixing includes live associated history members without replacing coordinator avatars', async () => {

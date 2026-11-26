@@ -879,12 +879,15 @@ export function updateButton(state: UpdateState | undefined): string {
  */
 export function askingRows(snap: SnapLike): WorkspaceRow[] {
   const own = snap.coordinators.flatMap((c) => {
-    const sources = c.members ? c.members.map((m) => ({ a: m.agent ?? m.lastAgent, id: m.id, workspaceId: m.workspaceId, historical: m.id !== c.sessions?.current || !m.agent })) : c.session ? [{ a: c.session, id: undefined, workspaceId: c.workspaceId, historical: false }] : []
+    // A member is answerable only while its chat is open (agent present): the current one wakes the
+    // coordinator when it is closed (asleep), and a still-open other one is jumped to. A closed
+    // non-current member's ask is past history and never queues (its history stays in Sessions).
+    const sources = c.members ? c.members.flatMap((m) => m.agent || m.id === c.sessions?.current ? [{ a: m.agent ?? m.lastAgent, id: m.id, workspaceId: m.workspaceId, asleep: !m.agent }] : []) : c.session ? [{ a: c.session, id: undefined, workspaceId: c.workspaceId, asleep: false }] : []
     return sources.filter((m) => m.a && asksYou(m.a)).map((m): WorkspaceRow => ({
       id: m.workspaceId ?? `coordinator:${c.key}`, name: c.name, branch: null, repo: c.repos.length === 1 ? c.repos[0] : c.name, path: null,
       main: true, agents: [m.a!], state: m.a!.state, priority: m.a!.summary?.priority ?? null, card: null, parentId: null,
-      liveTerminals: m.historical ? 0 : 1, pinned: false, unread: false, active: !m.historical && Boolean(c.active), workspaceStatus: null,
-      lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id, historical: m.historical
+      liveTerminals: m.asleep ? 0 : 1, pinned: false, unread: false, active: !m.asleep && m.id === c.sessions?.current && Boolean(c.active), workspaceStatus: null,
+      lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id
     }))
   })
   return waitingQueue([...snap.rows.filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
@@ -951,12 +954,12 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
     const who = c
       ? tipped(character(c.look?.color ?? (c.repos.length === 1 ? colorOf(c.repos[0]) : NEUTRAL), c.look?.shape ?? 'pentagon', 'asks', 20, true, askKindOf(p.a)), ASK_TIP[askKindOf(p.a)], ASK_TONE[askKindOf(p.a)])
       : agentCharacter(p.a, p.row, all)
-    const menu = c ? `${p.row.historical ? 'history' : 'coordinator'}:${c.key}` : `agent:${p.a.paneKey}`
-    const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.historical ? 'previous session · read-only' : 'current session'}` : coordinatorName(p.a.coordinator, coordinators)
+    const menu = c ? `coordinator:${c.key}` : `agent:${p.a.paneKey}`
+    const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.coordinatorMember === c.sessions?.current ? 'current session' : 'other session'}` : coordinatorName(p.a.coordinator, coordinators)
     const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
-    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>${p.row.historical ? 'View source history' : 'Jump to session'}</button>${reviewPr(p)}</div></div>`
+    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
   })
   return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }
@@ -1082,10 +1085,13 @@ export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for i
 /**
  * What a click on an agent opens: its workspace and, when its terminal is known, its own tab. An
  * Asleep row resumes its exact conversation, or is disabled with the reason when no id is verified.
+ * A coordinator's own ask, or its current session's ask once that chat is closed, opens the
+ * coordinator as its tree row does (waking it).
  */
 const openAttrs = (p: Placed) =>
   asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
-  : !p.a.terminal && !p.row.historical && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && p.row.coordinatorMember && p.row.historical ? `data-history="${esc(p.row.coordinator)}" data-member="${esc(p.row.coordinatorMember)}"` : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
+  : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
+  : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
 
 /** Finished sessions that still hold a terminal: what the footer lists and the cockpit counts. */
 const leadsOpenWork = (a: AgentInfo, all: AgentInfo[]) => all.some((b) => b.leadPane === a.paneKey && faceOf(b) !== 'done')
