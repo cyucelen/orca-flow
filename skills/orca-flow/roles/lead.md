@@ -57,7 +57,9 @@ below.
    matches what they see, scope, risky parts (production data, migrations, releases), what proves
    it is done. End with a `Needs your yes` on the whole plan (plan above the frame). Start or send
    the first worker (new, running or earlier) only after that yes. When the user names the change
-   themselves, skip this. Their standing instructions still hold ("just go ahead").
+   themselves, or already agreed its plan, criteria or steps (a suggestion's discussion above, an
+   earlier yes), skip this: never ask again for what they agreed. Their standing instructions still
+   hold ("just go ahead").
    **The project has a `grilling` skill?** Load it, and `domain-modeling` when the project has it
    too (what `grill-with-docs` does; that one only the user can start). They run the questioning,
    and you write the terms and decisions they settle (CONTEXT.md, ADRs) on this branch. Three
