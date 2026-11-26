@@ -39,7 +39,6 @@ const usage: { view: AnalyticsView | null; details: boolean; error: string | nul
 const $ = (id: string) => document.getElementById(id)!
 const cockpitEl = $('cockpit')
 const mainEl = $('main')
-const footerEl = $('footer')
 const attentionEl = $('attention')
 const searchEl = $('search') as HTMLInputElement
 const searchBox = $('searchbox')
@@ -71,7 +70,7 @@ function paint(): void {
 }
 
 /** The redrawn sections; keyboard focus inside them is kept across a redraw by its logical key. */
-const painted = () => [cockpitEl, copenEl, goalsHeadEl, goalsRowsEl, mainEl, attentionEl, botsEl, linearEl, speedEl, footerEl, updateEl]
+const painted = () => [cockpitEl, copenEl, goalsHeadEl, goalsRowsEl, mainEl, attentionEl, botsEl, linearEl, speedEl, updateEl]
 let restoringFocus = false
 function focusKey(): string | null {
   const el = document.activeElement
@@ -103,7 +102,7 @@ function paintRows(): void {
     return
   }
   ui.now = Date.now()
-  const { cockpit, copen, goalsHead, goalsRows, main, attention, bots, linear: linearHtml, footer } = render(snap, ui, linear, goals)
+  const { cockpit, copen, goalsHead, goalsRows, main, attention, bots, linear: linearHtml } = render(snap, ui, linear, goals)
   cockpitEl.innerHTML = cockpit
   copenEl.innerHTML = copen
   // Goals, above the tree. Its add box and the open card are not part of what is redrawn, so typing in them survives.
@@ -131,8 +130,6 @@ function paintRows(): void {
   speedEl.innerHTML = speedHtml
   speedEl.hidden = !speedHtml
   speedEl.classList.toggle('folded', speedUi.folded)
-  footerEl.innerHTML = footer
-  footerEl.hidden = !footer
   if (typeof markTarget === 'function') markTarget()
 }
 
@@ -300,7 +297,7 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-unfold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
   if (!el) return
   const d = el.dataset
   if (d.handover) {
@@ -347,12 +344,6 @@ document.addEventListener('click', (event) => {
   if (d.fold) {
     toggle(ui.folded, d.fold)
     sendFolds()
-  }
-  if (d.unfold) {
-    // One footer fold open at a time keeps the footer from taking over the panel (the Linear section's folds are its own).
-    const wasOpen = ui.unfolded.has(d.unfold)
-    for (const k of [...ui.unfolded]) if (!k.startsWith('linear-')) ui.unfolded.delete(k)
-    if (!wasOpen) ui.unfolded.add(d.unfold)
   }
   draw()
 })

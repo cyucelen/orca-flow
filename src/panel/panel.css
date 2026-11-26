@@ -19,13 +19,11 @@ body { user-select: none; -webkit-user-select: none; cursor: default; margin: 0;
 button { all: unset; cursor: pointer; box-sizing: border-box; }
 :focus-visible { outline: 1px solid var(--ask); outline-offset: 2px; border-radius: 4px; }
 [hidden] { display: none !important; }
-/* The middle scrolls; the footer stays pinned to the bottom and grows up to a cap. */
+/* The middle scrolls; the sections under it (Up next, Bots, Linear, Analytics) stay pinned below it. */
 main { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; margin-inline: -12px; padding: 0 12px 12px; }
-footer { flex: none; margin: -14px -12px 0; padding: 4.5px 12px 3.5px; border-top: 1px solid var(--line); }
-/* What asks you (Up next): pinned under the tree and above the footer, so the tree never moves when
+/* What asks you (Up next): pinned under the tree and above Bots, so the tree never moves when
    an ask comes or goes. Capped so the tree keeps most of a short panel; several asks scroll here. */
 .attention { flex: none; max-height: min(45vh, 360px); overflow-y: auto; margin: -14px -12px 0; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
-.fold-list { max-height: 40vh; overflow-y: auto; margin-inline: -12px; padding-inline: 12px; }
 
 /* cockpit */
 .cockpit { display: flex; align-items: center; gap: 0; cursor: pointer; border-radius: 6px; margin-left: -4px; padding-inline: 4px; height: 28px; }
@@ -335,8 +333,7 @@ html.light .mbadge { background: color-mix(in srgb, var(--ink) 8%, transparent);
 .fb { position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 3px; z-index: 3; pointer-events: none;
   background: var(--br, color-mix(in srgb, var(--ink) 55%, var(--bg))); }
 
-/* folds */
-.folds { display: grid; }
+/* folds (the Linear section's "more" and hidden-state buttons) */
 .fold { display: flex; align-items: center; gap: 6px; color: var(--muted); padding: 4px 0; font-size: 12.5px; }
 .fold svg { width: 10px; height: 10px; transition: transform .15s; }
 .fold[aria-expanded="true"] svg { transform: rotate(90deg); }
@@ -509,9 +506,9 @@ button.item.coord { padding: 5px 6px; }
 .rstatus.sleeping { color: var(--faint); }
 .btn .rstatus { color: inherit; font-size: inherit; max-width: none; }
 
-/* Linear: pinned under Up next (.attention) and above the footer. The tree scrolls above it; open, it
+/* Linear: pinned under Up next (.attention) and Bots, above Analytics. The tree scrolls above it; open, it
    is capped and scrolls on its own under a sticky header; folded, it is its header row. */
-/* A divided block (Up next, a section, the footer) owns the space inside its two dividers (capitals sit a pixel above their line box's centre, so a header row takes 1px more above than below). Its top margin
+/* A divided block (Up next, a section) owns the space inside its two dividers (capitals sit a pixel above their line box's centre, so a header row takes 1px more above than below). Its top margin
    takes back the body's 14px gap above its divider, so a row's height is its own padding and never
    depends on what follows it; the room above a divider is the block above's own bottom padding. */
 .lsec { flex: none; max-height: 45vh; overflow-y: auto; margin: -14px -12px 0; padding: 6px 12px 12px; border-top: 1px solid var(--line); }

@@ -261,7 +261,6 @@ test("a bot's workspace shows only in Bots: not in the tree, Idle, search or a s
   const ui = { ...emptyUi(), now: NOW }
   const r = render(s, ui)
   noMatch(r.main, /live-qa|replies/i, 'the tree has no bot workspace')
-  assert.equal(r.footer, '', 'no Idle fold for the empty bot workspace')
   assert.equal(upNextOrder(s).length, 1)
   assert.equal((r.attention.match(/data-brief=/g) ?? []).length, 1, 'its ask shows once')
   assert.match(r.bots, /class="bname">super-agent-live-qa</)

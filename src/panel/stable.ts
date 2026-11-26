@@ -3,7 +3,7 @@
 // this key, never by the DOM node.
 
 /** Data attributes that name what an element stands for (a row, a coordinator, a gauge, a button). */
-const NAMES = ['status', 'menu', 'coordinator', 'handover', 'open', 'use', 'update', 'pr', 'url', 'fold', 'brief', 'act', 'yes', 'no', 'history', 'sessions', 'lsend', 'lfold', 'ldisplay', 'newCoordinator', 'cockpit', 'unfold', 'tfold', 'trange', 'gopen', 'gfold', 'gadd', 'gcompleted']
+const NAMES = ['status', 'menu', 'coordinator', 'handover', 'open', 'use', 'update', 'pr', 'url', 'fold', 'brief', 'act', 'yes', 'no', 'history', 'sessions', 'lsend', 'lfold', 'ldisplay', 'newCoordinator', 'cockpit', 'tfold', 'trange', 'gopen', 'gfold', 'gadd', 'gcompleted']
 
 /**
  * The element's logical key: its path up to the nearest named element (above) or id'd container,

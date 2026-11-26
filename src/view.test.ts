@@ -63,7 +63,8 @@ test('Up next is pinned under the tree, so the tree never moves when an ask come
   assert.match(asking.attention, /^<section class="upnext"><div class="label">Up next · 2<\/div>/)
   const html = readFileSync(new URL('./panel/index.html', import.meta.url).pathname, 'utf8')
   const at = (id: string) => html.indexOf(`id="${id}"`)
-  assert.ok(at('main') > 0 && at('main') < at('attention') && at('attention') < at('footer'), 'the page: tree, then Up next, then the footer')
+  assert.ok(at('main') > 0 && at('main') < at('attention') && at('attention') < at('bots') && at('bots') < at('linear'), 'the page: tree, then Up next, Bots, Linear')
+  noMatch(html, /id="footer"/, 'no footer element: the Idle fold was its only content')
   // With no asks the tree starts the same way, and Up next is empty (the page hides its slot).
   const calm: Snapshot = { ...snap, rows: snap.rows.map((r) => ({ ...r, agents: r.agents.map((a) => ({ ...a, summary: a.summary ? summary() : null })) })) }
   const quiet = render(calm, emptyUi())
@@ -103,11 +104,11 @@ test('characters carry state; no status dots', () => {
   assert.equal(faceOf(agent('x', 'x', 'done', { summary: summary() })), 'done')
 })
 
-test('a finished session stays in its place in the tree, dimmed; only Idle folds in the footer', () => {
-  const { main, footer } = render(snap, emptyUi())
-  noMatch(footer, /Finished/, 'no Finished section')
-  assert.match(main, /<button class="item finished" data-open="cleanup"[^>]*data-menu="agent:p-cleanup"[^>]*>[\s\S]*?data-tip="Done"[\s\S]*?State cleanup/)
-  assert.match(footer, /Idle · 1/)
+test('a finished session stays in its place in the tree, dimmed; there is no Idle section', () => {
+  const out = render(snap, emptyUi())
+  noMatch(out.main, /Finished/, 'no Finished section')
+  assert.match(out.main, /<button class="item finished" data-open="cleanup"[^>]*data-menu="agent:p-cleanup"[^>]*>[\s\S]*?data-tip="Done"[\s\S]*?State cleanup/)
+  noMatch(Object.values(out).join('\n'), /Idle ·/, 'no Idle section anywhere in the render')
 })
 
 test('cockpit flags only what is over and explains on demand; search replaces the lists', () => {
@@ -796,9 +797,8 @@ test('a lead whose worker is still working stays in the tree as available, with 
   const lead = agent('p-lead', 'Onboarding', 'done', { coordinator: 'alpha' })
   const reviewer = agent('p-rev', 'Review PR', 'working', { coordinator: 'alpha', leadPane: 'p-lead' })
   const s: Snapshot = { ...snap, rows: [row('ob', 'shop', [reviewer, lead])] }
-  const { main, footer } = render(s, emptyUi())
+  const { main } = render(s, emptyUi())
   assert.match(main, /data-tip="Available"[\s\S]*?Onboarding[\s\S]*?class="item indent"[\s\S]*?Review PR/, 'the lead heads the tree and its worker nests under it')
-  noMatch(footer, /Onboarding/)
   assert.deepEqual(finishedAgents(s.rows).map((a) => a.paneKey), [], 'Sleep all leaves the lead alone')
   const done: Snapshot = { ...snap, rows: [row('ob', 'shop', [{ ...reviewer, state: 'done' }, lead])] }
   assert.deepEqual(finishedAgents(done.rows).map((a) => a.paneKey).sort(), ['p-lead', 'p-rev'], 'once its workers are done, it is finished too')
@@ -830,9 +830,8 @@ test('a lead stays available, never finished, until it reports worker_done', () 
   const at = (dispatch: AgentInfo['dispatch']) => ({ ...snap, rows: [row('ob', 'shop', [lead(dispatch)])] }) as Snapshot
   for (const d of ['open', null] as const) {
     assert.deepEqual(finishedAgents(at(d).rows), [], `dispatch ${d}: Sleep all leaves the lead alone`)
-    const { main, footer } = render(at(d), emptyUi())
+    const { main } = render(at(d), emptyUi())
     assert.match(main, /data-tip="Available"[\s\S]*?Onboarding/, `dispatch ${d}: shown as available in the tree`)
-    noMatch(footer, /Onboarding/, `dispatch ${d}: not under Finished`)
   }
   assert.deepEqual(finishedAgents(at('settled').rows).map((a) => a.paneKey), ['p-lead'], 'after worker_done it finishes')
   const worker = agent('p-w', 'Fix', 'done', { dispatch: 'open', summary: summary({ role: 'worker' }) })

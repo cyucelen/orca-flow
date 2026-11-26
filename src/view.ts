@@ -11,7 +11,7 @@ import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, L
 import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
-import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, needsYou, waitingQueue, worktreeLead } from './rank.ts'
+import { asksYou, byUrgency, canRemove, claimsAsk, holdsWorkstream, laterAsk, monitoring, waitingQueue, worktreeLead } from './rank.ts'
 import { BEAMS, capGlyph, headLines, nodeX, rowLines, trunkX, type NodeState } from './lines.ts'
 import { goalsHead, goalsRows, nextButton, type GoalView } from './goals-view.ts'
 import { ARROW } from './icons.ts'
@@ -21,7 +21,7 @@ export type UiState = {
   /** Up-next items the person opened, and ones they closed (the first is open by default). */
   opened: Set<string>
   closed: Set<string>
-  /** Coordinator groups folded away, and bottom folds (finished, idle) opened. */
+  /** Coordinator groups folded away, and the Linear section's opened folds (its more rows and hidden states). */
   folded: Set<string>
   unfolded: Set<string>
   query: string
@@ -806,7 +806,7 @@ function cockpitOpen(snap: Snapshot, ui: UiState): string {
     return these.length ? `<span class="tally${face === 'asks' ? ' ask' : ''}">${avatarStack(these, all, 4)}<span><b>${these.length}</b> ${word}</span></span>` : ''
   }).join('')
   // Sleeping every finished session is offered only when memory is tight; otherwise they cost nothing
-  // you need, and each one sleeps from its own menu. The same set the footer's Sleep all used.
+  // you need, and each one sleeps from its own menu. The same set "Sleep all" puts to sleep.
   const finished = finishedOf(placedAll)
   const n = finished.length
   const freedMb = finished.reduce((m, p) => m + (st.finished.find((f) => f.paneKey === p.a.paneKey)?.memMB ?? 0), 0)
@@ -1093,7 +1093,7 @@ const openAttrs = (p: Placed) =>
   : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
   : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
 
-/** Finished sessions that still hold a terminal: what the footer lists and the cockpit counts. */
+/** Finished sessions that still hold a terminal: what the cockpit counts. */
 const leadsOpenWork = (a: AgentInfo, all: AgentInfo[]) => all.some((b) => b.leadPane === a.paneKey && faceOf(b) !== 'done')
 
 /**
@@ -1109,7 +1109,7 @@ function inFlight(a: AgentInfo, row: WorkspaceRow, all: AgentInfo[]): boolean {
   return prOpen && !worker
 }
 
-/** Finished sessions that still hold a terminal: what the footer lists and "Sleep all" puts to sleep. */
+/** Finished sessions that still hold a terminal: what "Sleep all" puts to sleep. */
 export function finishedAgents(rows: WorkspaceRow[]): AgentInfo[] {
   const all = rows.flatMap((r) => r.agents)
   return rows.filter((r) => r.liveTerminals > 0 && !asleep(r)).flatMap((r) => r.agents.filter((a) => faceOf(a) === 'done' && !inFlight(a, r, all)))
@@ -1336,19 +1336,13 @@ export function chatDigit(e: { code: string; altKey: boolean; metaKey: boolean; 
   return m && Number(m[1]) <= CHAT_KEYS ? Number(m[1]) : null
 }
 
-function foldList(key: string, title: string, rows: string[], ui: UiState, count = rows.length): string {
-  if (count === 0) return ''
-  const open = ui.unfolded.has(key)
-  return `<button class="fold" data-unfold="${key}" aria-expanded="${open}">${ICON.chev}${esc(title)} · ${count}</button>${open ? `<div class="group fold-list">${rows.join('')}</div>` : ''}`
-}
-
 // ---------- the panel ----------
 
 /**
  * The parts the page places separately: the cockpit row (beside the static search control in the top
  * bar), its opened stats below the bar, the scrolling middle (the tree), what asks you (Up next),
- * pinned below it, and the pinned footer. Up next sits at the bottom so the tree never moves when an
- * ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
+ * pinned below it, and the Linear section below that. Up next sits at the bottom of the tree so the tree
+ * never moves when an ask comes or goes: it starts at the top of its own scroll area, which only gets shorter.
  */
 /** Settings → Features: a section shows unless its switch is off (an older snapshot has no switches). */
 export const linearOn = (snap: Pick<Snapshot, 'features'>): boolean => snap.features?.linear !== false
@@ -1394,7 +1388,7 @@ export function summaryNotice(failure: Snapshot['summaryFailure']): string {
   return `<div class="sumfail" role="status" data-tone="warn" data-tip="${esc(tip)}">${STATUS_ICON.warn}<span class="sumtext">Summaries failing: ${esc(failure.reason)}</span></div>`
 }
 
-export function render(given: Snapshot, state: UiState, linearData: LinearData | null = null, goals: GoalView[] | null = null): { cockpit: string; copen: string; goalsHead: string; goalsRows: string; main: string; attention: string; bots: string; linear: string; footer: string } {
+export function render(given: Snapshot, state: UiState, linearData: LinearData | null = null, goals: GoalView[] | null = null): { cockpit: string; copen: string; goalsHead: string; goalsRows: string; main: string; attention: string; bots: string; linear: string } {
   const reloading = visibleReload(given.skillReload, state.now)
   const ui: UiState = { ...state, reloads: new Map(reloading.map((e) => [e.pane, e])) }
   // Linear off: no Linear data reaches the section or the rows' labels.
@@ -1431,14 +1425,11 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
       found.length
         ? found.map((r) => `<button class="item" ${r.folderOf && r.agents[0] ? openAttrs({ a: r.agents[0], row: r }) : `data-open="${esc(r.id)}"`}>${asleep(r) ? tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Asleep') : character(colorOf(r.repo), 'solo', r.agents.length ? faceOf(r.agents[0]) : 'idle', 20)}${providerBadge(r.agents[0], mixed)}<span class="t">${esc(r.agents[0]?.title ?? r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`).join('')
         : '<div class="empty">No matching workspaces</div>'
-    }</div>`, ...goalsOut, attention: '', bots: '', linear: '', footer: '' }
+    }</div>`, ...goalsOut, attention: '', bots: '', linear: '' }
   }
 
   // Sleep and remove are in the rows' menus.
-  const idleRows = snap.rows.filter((r) => r.agents.length === 0 && !needsYou(r)).sort((x, y) => x.createdAt - y.createdAt)
   const tree = treeBlocks(snap).map((b) => coordinatorBlock(b, all, snap, ui, mixed)).join('')
-
-  const idle = idleRows.map((r) => `<button class="item" data-open="${esc(r.id)}">${tipped(character(colorOf(r.repo), 'solo', 'idle', 20), 'Idle')}<span class="t muted">${esc(r.name)}</span><span class="r soft">${esc(r.repo)}</span></button>`)
 
   return {
     cockpit: cockpit(snap, ui),
@@ -1447,8 +1438,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
     main: `${summaryNotice(snap.summaryFailure)}<div class="tree">${treeLabel(ui)}${tree || '<div class="empty">No agents running</div>'}<button class="newcoord" data-new-coordinator>${ICON.plus}New coordinator</button></div>`,
     attention: upNext(asking, all, snap.coordinators, ui, snap.bots ?? []),
     bots: botsSection(snap, ui),
-    linear: linearSection(snap, ui, linear),
-    footer: idle.length ? `<div class="folds">${foldList('idle', 'Idle', idle, ui)}</div>` : ''
+    linear: linearSection(snap, ui, linear)
   }
 }
 
