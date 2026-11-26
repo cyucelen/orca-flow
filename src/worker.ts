@@ -1754,7 +1754,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
   const openChat = async (input: { workspaceId: string; terminal?: string }) => {
-    if (input.terminal && closedMemberTerminal(latest?.coordinators ?? [], input.workspaceId, input.terminal)) return { opened: false }
+    if (input.terminal && closedMemberTerminal(latest?.coordinators ?? readCoordinators(), input.workspaceId, input.terminal)) return { opened: false }
     const opened = await openAgent(orca, run, input)
     // A read already in flight predates the switch; read again after it.
     void (focusReading ?? Promise.resolve()).then(rereadFocus)
