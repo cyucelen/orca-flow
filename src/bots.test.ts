@@ -245,7 +245,7 @@ test('bot chats go through the same summarizer as agents', () => {
 
 // ---------- bot workspaces are not ordinary rows ----------
 
-test("a bot's workspace shows only in Bots: not in the tree, Idle, search or a second Up next item", () => {
+test("a bot's workspace shows only in Bots: not in the tree, search or a second Up next item", () => {
   const ps: PsWorktree[] = [
     { identity: { key: 'wt2:local:a' }, displayName: 'shop-fix', repo: 'shop', path: '/w/shop-fix', branch: 'refs/heads/fix', liveTerminalCount: 1, agents: [{ paneKey: 'p-shop', state: 'working', agentType: 'claude', conversationName: 'Fix the cart' }] },
     { displayName: 'super-agent-live-qa', repo: 'Bots', path: '/bots/live-qa', bot: 'super-agent-live-qa', botHome: true, agents: [{ paneKey: 'p-home', orcaSessionId: 's1', state: 'blocked', agentType: 'claude', conversationName: 'super-agent-live-qa', structuredHostOwned: true }] },

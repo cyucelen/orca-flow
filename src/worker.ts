@@ -558,7 +558,7 @@ export function capacityOf(rows: WorkspaceRow[], pressure: Pressure, facts: Memo
     agentGB: facts.agentGB,
     envGB,
     pressure,
-    // The same finished sessions the panel's footer lists (an open PR's owner is still at work).
+    // The same finished sessions "Sleep all" puts to sleep (an open PR's owner is still at work).
     finishedOpen: finishedAgents(checkouts).length
   }
 }
@@ -863,7 +863,7 @@ export async function snapshot(
       const currentAgent = current ? memberAgent(current, all) : null
       coordinators[i].routing = !lineageAt ? 'Run routing unverified.' : !routes.length ? 'No verified run route. Selecting current does not claim a run.' : routes.some((r) => r.terminal !== currentAgent?.terminal) ? 'Some runs still route to a previous member. Pending asks keep their source; changing current does not rebind runs.' : 'Existing runs route to the current terminal.'
     }
-    // A bot's workspaces show in the Bots section only: not in the tree, Idle or search.
+    // A bot's workspaces show in the Bots section only: not in the tree or search.
     const botRows = all.filter((r) => isBotRow(r))
     const rows = foldCoordinatorFolders(all.filter((r) => !isBotRow(r)), coordinators, onDisk.map((c) => c.dir))
     for (const c of coordinators) {
