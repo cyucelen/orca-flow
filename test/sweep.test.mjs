@@ -435,6 +435,16 @@ test('remove rechecks each item right before its rm: dirty, moved HEAD or a new 
   assert.match(out, /removed web-app\/one/)
   assert.match(out, /kept web-app\/two: changed since the preview, skipped: now unclear: .*1 changed file not committed/)
   assert.match(out, /kept web-app\/three: changed since the preview, skipped: now unclear: .*1 commit beyond origin\/main/)
+  // A dispatch started after the preview is seen even before ps shows its terminal.
+  const d = removable()
+  const before = fakeSweep(d.world)
+  await sweepCommand(argsOf({ coordinator: 'firstview-gtm', json: true }), before)
+  const dId = JSON.parse(before.output[0]).batch.id
+  const d3 = fakeSweep(d.world, { onRm: (wt) => { if (wt.endsWith('/one')) d.world.dispatches = [dispatch('ctx_new', `repo1::${d.paths[1]}`, { terminal: 'active', liveness: 'live' })] } })
+  await sweepCommand(argsOf({ coordinator: 'firstview-gtm', batch: dId }, 'remove'), d3)
+  assert.match(d3.output.join('\n'), /kept web-app\/two: changed since the preview, skipped: now skipped: dispatch ctx_new is live/)
+  assert.deepEqual(rmCalls(d3).map((a) => a[3]), [`id:repo1::${d.paths[0]}`, `id:repo1::${d.paths[2]}`])
+  assert.equal(d3.calls.filter((a) => a[1] === 'worker-list').length, 1 + 3, 'read once for the batch, then again before each item')
   // A live terminal appearing is caught the same way.
   const t = removable()
   const pre = fakeSweep(t.world)
@@ -506,7 +516,9 @@ test('the coordinator comes from the folder the command runs in, and a text prev
   const text = deps.output.join('\n')
   assert.match(text, /^Sweep for firstview-gtm \(scope: web-app\)/)
   assert.match(text, /finished \(3\): removal candidates\n {2}web-app\/one @ [0-9a-f]{7}: no commits beyond origin\/main; clean/)
-  assert.match(text, /Ask the user once: "Remove these 3 finished worktrees \(batch sweep-[0-9a-f]{10}\)\? yes or no"/)
+  const ask = text.split('\n').find((l) => l.startsWith('Ask the user once'))
+  assert.equal(ask, 'Ask the user once (Needs your yes): "Remove these 3 finished worktrees: one, two, three? (branches are kept)"  Reply: yes or no')
+  assert.doesNotMatch(ask, /sweep-|[0-9a-f]{7,}/, 'the Ask holds no batch id or hash (messages.md internal-id)')
   assert.match(text, /yes: orca-flow sweep remove --batch sweep-/)
   await assert.rejects(sweepCommand(argsOf({}), fakeSweep(world)), /run it in a coordinator folder, or pass --coordinator/)
   await assert.rejects(sweepCommand(argsOf({ coordinator: 'nope' }), fakeSweep(world)), /no coordinator named nope/)
@@ -575,6 +587,19 @@ test("leads decide interrupted vs unclear: a lead that reported success with wor
   assert.equal(again.recovery.kind, 'resume')
   assert.match(again.recovery.alternative.command, /^orca-flow dispatch --role lead --task task_rep --retry-of ctx_rep /)
   assert.match(again.recovery.alternative.why, /Capacity gate/)
+  // After the coordinator resumed it once, a lead that dies again is the user's call, even under a new dispatch of the same task.
+  const deps = fakeSweep(world)
+  assert.equal(await sweepCommand(argsOf({ coordinator: 'firstview-gtm', dispatch: 'ctx_rep' }, 'resumed'), deps), 0)
+  world.dispatches.unshift(dispatch('ctx_rep2', id(wt.reported), { task: 'task_rep', worker: 'failed', status: 'failed' }))
+  const died = byName(classify(await gather(deps, 'firstview-gtm')), 'reported')
+  assert.equal(died.bucket, 'interrupted')
+  assert.equal(died.recovery.kind, 'ask-user')
+  assert.match(died.recovery.why, /resumed before at 2026-11-27T10:00:00.000Z and died again: tell the user and ask/)
+  deps.output.length = 0
+  await sweepCommand(argsOf({ coordinator: 'firstview-gtm' }), deps)
+  assert.match(deps.output[0], /recovery \(ask-user\): resumed before/)
+  assert.doesNotMatch(deps.output[0], /send --to dispatch:ctx_rep2/, 'no resume command offered a second time')
+  await assert.rejects(sweepCommand(argsOf({ coordinator: 'firstview-gtm' }, 'resumed'), deps), /needs --dispatch/)
 })
 
 test('a detached HEAD is unclear even when its commit is in base', async () => {

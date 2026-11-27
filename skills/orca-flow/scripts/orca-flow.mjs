@@ -52,6 +52,7 @@
 //                                             unclear (a fact is missing) and skipped, decided from facts,
 //                                             plus one named batch to ask about (scripts/sweep.mjs)
 //   orca-flow sweep asked|declined --batch <id>   Record that the batch was offered / the user said no
+//   orca-flow sweep resumed --dispatch <id>   Record a resumed interrupted lead (if it dies again: ask the user)
 //   orca-flow sweep remove --batch <id>       Only after the user's yes to that exact batch: rechecks each
 //                                             item, then `orca worktree rm --run-hooks` one at a time
 //   route, dispatch and plan cache model discovery for 10 minutes (models-cache.json);
@@ -62,7 +63,7 @@
 // limits and `routing` (Settings → Models), roles.json for leads the user named (roles.mjs),
 // goals/<id>.json (goals.mjs, one file per goal), routes.jsonl (one line per routed start), plans/<slug>-<path hash>.json (plan state),
 // pending-starts.json (dispatches whose outcome is unknown), models-cache.json, sweep/<coordinator>.json
-// (when a sweep batch was offered and what the user kept). The Orca plugin reads
+// (when a sweep batch was offered, what the user kept, which leads were resumed). The Orca plugin reads
 // them too. No dependencies.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'

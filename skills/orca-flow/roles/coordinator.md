@@ -42,8 +42,9 @@ free memory and continues it later in a new terminal):
 2. `orca-flow queue`, `orca-flow capacity` and `orca orchestration task-list --ready` (tasks you
    queued). If there is room now, start the highest queued one with
    `orca-flow dispatch --role lead --task <id>` and its place flags.
-3. `orca-flow sweep` (read-only; see Worktree cleanup). Recover what it lists as interrupted,
-   and when it prints `daily review: due`, put its one batch question in the Briefing's list.
+3. `orca-flow sweep` (read-only; see Worktree cleanup). Recover at most one interrupted lead,
+   within capacity, and when it prints `daily review: due`, put its one batch question in the
+   Briefing's list.
 4. Greet with a Briefing (see [messages.md](../messages.md)): the status line, one short
    paragraph with what runs and the room left, then the top three waiting items as a numbered
    list, one line each (level, workstream, who waits, the kind of need).
@@ -216,19 +217,25 @@ Then show item 2. One decision at a time; never dump the whole queue unless aske
 Cleanup is decided from facts, not from whether a lead reported: leads die without reporting when
 Orca restarts or you sleep, so their worktrees and open work pile up unseen. Run the read-only
 `orca-flow sweep` when you wake (step 3 above), once a day while you are awake, after a lead
-reports its workstream finished, and when capacity is short. It reads Orca's worktrees and dispatch records, git (local refs, no fetch) and the PR,
-and puts each worktree in one bucket, with reasons:
+reports its workstream finished, and when capacity is short. It reads Orca's worktrees and
+dispatch records, git (local refs, no fetch) and the PR, and puts each worktree in one bucket,
+with reasons:
 
 - **finished**: yours by lineage (Orca's parent workspace or a dispatch from your runs; your
   `repos` alone is not ownership), idle (no live or unverifiable terminal, agent, child worktree or
   live dispatch), clean, and integrated: nothing beyond origin's default branch, or a merged PR
   whose head contains HEAD (squash merges included). These form one named batch.
 - **interrupted**: yours, idle, a lead that died without reporting success, and work still open
-  (an open PR, unmerged or unpushed commits, changes). Recover it now, in this order: resume the
-  exact lead with the `orca orchestration send --to dispatch:<id>` it prints. When it says `wait`
-  (liveness unknown), do not launch a duplicate; check again later. Reassign with the printed
-  `orca-flow dispatch --role lead ... --retry-of` only when it offers that and resuming did not
-  work; the capacity gate applies.
+  (an open PR, unmerged or unpushed commits, changes). Name each interrupted lead in the Briefing,
+  one line each, by its work. Resuming reopens an agent (about 0.5 GB), so run `orca-flow capacity`
+  first and resume only on `ok` or `agents-only`; otherwise queue it and tell the user in one line.
+  Resume at most one lead per wake, the highest priority first: the exact lead, with the
+  `orca orchestration send --to dispatch:<id>` the sweep prints, then record it with
+  `orca-flow sweep resumed --dispatch <id>`. When the sweep says `ask-user` (that lead was resumed
+  before and died again), do not resume it a second time on your own: tell the user and ask. When
+  it says `wait` (liveness unknown), do not launch a duplicate; check again later. Reassign with the
+  printed `orca-flow dispatch --role lead ... --retry-of` only when it offers that and resuming did
+  not work; the capacity gate applies.
 - **unclear**: a fact is missing (owner, liveness, upstream, PR metadata, base ref, a merged PR
   with newer local commits, a lead that reported success with work open). Never remove one;
   mention it to the user only when it blocks something.
@@ -236,11 +243,14 @@ and puts each worktree in one bucket, with reasons:
   kept by the user. Counts only. `INCOMPLETE` means Orca did not list everything: say so.
 
 Ask about removal only when the sweep prints `daily review: due`, as one yes or no in the
-Briefing's list or with the next "what's next" (`Needs your yes`), never on your own: "Remove these
-3 finished worktrees (batch sweep-…)? <names>". Then run `orca-flow sweep asked --batch <id>`.
+Briefing's list or with the next "what's next" (`Needs your yes`), never on your own. Name the
+worktrees, never the batch id (an internal id): "Remove these 3 finished worktrees: checkout-totals,
+login-copy, release-notes? (branches are kept)" with `Reply: yes or no`. Keep the batch id for the
+commands, and after asking run `orca-flow sweep asked --batch <id>`.
 - On yes to that exact batch: `orca-flow sweep remove --batch <id>`. It re-derives the batch and
   refuses when it changed (ask again about the new one), rechecks each worktree right before
-  removing it, and runs `orca worktree rm --worktree id:<id> --run-hooks` one at a time, so the
+  removing it (Orca's worktree row and dispatch records read again, git, the PR), and runs
+  `orca worktree rm --worktree id:<id> --run-hooks` one at a time, so the
   repo's `orca.yaml` archive hook runs. Local branches stay. A failed hook keeps the worktree and
   stops the batch: report the reason, never retry, never `--force`.
 - On no: `orca-flow sweep declined --batch <id>`. Those worktrees are not asked about again until

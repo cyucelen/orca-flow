@@ -278,15 +278,16 @@ dispatch records, git (local refs, never fetched) and the PR, and sorts every wo
   inside a merged PR's head (squash merges count). These form one batch, named by a hash of the
   worktrees, their HEADs and PRs.
 - **interrupted**: a lead that died without reporting while work is still open, with one recovery
-  to take: resume that exact lead, wait when Orca cannot tell whether it is alive, or reassign
-  when Orca allows it.
+  to take: resume that exact lead (one per wake, only when memory allows), wait when Orca cannot
+  tell whether it is alive, or reassign when Orca allows it. A lead that dies again after a resume
+  is not resumed twice: the coordinator asks you.
 - **unclear**: a missing fact, named (no owner, unknown liveness, no PR metadata, newer local commits
   than the merged PR, and so on). Never removed.
 - **skipped**: another coordinator's, main, pinned, protected by Orca, active, or kept by you.
 
-The preview changes nothing. The coordinator asks you one yes or no per batch, at most daily
-(`daily review: due`), and records it with `orca-flow sweep asked`. Your no (`sweep declined`)
-holds until a worktree's HEAD moves. After your yes, `orca-flow sweep remove --batch <id>`
+The preview changes nothing. The coordinator asks you one yes or no per batch, naming the
+worktrees, at most daily (`daily review: due`), and records it with `orca-flow sweep asked`.
+Your no (`sweep declined`) holds until a worktree's HEAD moves. After your yes, `orca-flow sweep remove --batch <id>`
 re-derives the batch (a changed batch is refused), rechecks each worktree right before removing
 it, and runs `orca worktree rm --run-hooks` one at a time. It keeps the local branches and stops
 at the first failed archive hook, with no retry and no `--force`. Nothing runs in the background:

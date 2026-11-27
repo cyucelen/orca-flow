@@ -5,11 +5,13 @@
 //   orca-flow sweep [--coordinator <name>] [--json]       Read-only preview: four buckets and one batch
 //   orca-flow sweep asked --batch <id> [--coordinator ..]   Record that the batch was offered to the user
 //   orca-flow sweep declined --batch <id> [--coordinator ..] The user said no: do not ask again until HEAD moves
+//   orca-flow sweep resumed --dispatch <id> [--coordinator ..] After resuming an interrupted lead: if it dies
+//                                         again, the preview says to ask the user instead of resuming it again
 //   orca-flow sweep remove --batch <id> [--coordinator ..]   Only after the user's yes to that exact batch:
 //                                         re-derive, recheck each item, `orca worktree rm --run-hooks` one at a time
 //
 // Pure classification (classify, batchIdOf, dailyStatus, formatPreview) plus a thin live layer
-// (gather, liveSweepDeps). The preview writes nothing. `asked` and `declined` write only
+// (gather, liveSweepDeps). The preview writes nothing. `asked`, `declined` and `resumed` write only
 // <ORCA_FLOW_DIR>/sweep/<coordinator>.json. `remove` writes nothing of ours: it only calls Orca's rm.
 // No git fetch anywhere: base and upstream refs are the local ones and may be stale, which can only
 // make a worktree look less finished, never more. No dependencies.
@@ -309,6 +311,7 @@ export function classify(facts) {
   const me = ctx.coordinators.find((c) => c.name === facts.coordinator)
   if (!me) throw new UsageError(`no coordinator named ${facts.coordinator}`)
   const declined = facts.state?.declined ?? {}
+  const resumed = facts.state?.resumed ?? {}
   const buckets = { finished: [], interrupted: [], unclear: [], skipped: [] }
   const incomplete = []
   const notes = [...(facts.notes ?? [])]
@@ -385,7 +388,10 @@ export function classify(facts) {
     }
     if (work.open.length) {
       if (lead && !lead.succeeded && lead.liveness === 'dead') {
-        buckets.interrupted.push({ ...item, reasons: [`lead ${lead.taskId} died without reporting success (${leadInfo.state})`, ...work.open.map((o) => `open: ${o}`)], open: work.open, missing: work.missing, lead: leadInfo, recovery: recoveryOf(lead, row) })
+        // A lead the coordinator already resumed once (any attempt of its task here) that died again: the user decides.
+        const before = (ctx.byWorktree.get(row.worktreeId) ?? []).filter((d) => d.taskId === lead.taskId).map((d) => resumed[d.dispatchId]).find(Boolean) ?? resumed[lead.dispatchId]
+        const recovery = before ? { kind: 'ask-user', resumedAt: before.at, why: `resumed before at ${before.at} and died again: tell the user and ask; do not resume it again on your own` } : recoveryOf(lead, row)
+        buckets.interrupted.push({ ...item, reasons: [`lead ${lead.taskId} died without reporting success (${leadInfo.state})`, ...work.open.map((o) => `open: ${o}`)], open: work.open, missing: work.missing, lead: leadInfo, recovery })
       } else if (lead?.succeeded) {
         buckets.unclear.push({ ...item, reasons: [`lead ${lead.taskId} reported succeeded but work is still open: ${work.open.join('; ')}`], open: work.open, missing: [...work.missing, 'why the work is still open'], lead: leadInfo })
       } else {
@@ -422,6 +428,12 @@ export function dailyStatus(state, batch, now) {
 
 const SKIP_WORDS = { scope: 'not in scope', 'other-owner': "another coordinator's", ambiguous: 'conflicting lineage', unowned: 'no owner evidence', home: 'coordinator homes', main: 'main checkouts', pinned: 'pinned', archived: 'archived', folder: 'folder workspaces', remote: 'other hosts', 'default-branch': 'on the default branch', protected: "kept by Orca's cleanup", active: 'active', 'user-kept': 'user kept' }
 
+/** Worktree names as the user knows them: the folder name, with the repo only when two share a name. */
+function askNames(items) {
+  const short = items.map((i) => i.name.split('/').slice(1).join('/'))
+  return items.map((i, n) => (short.filter((x) => x === short[n]).length > 1 ? i.name : short[n]))
+}
+
 export function formatPreview(p) {
   const out = [`Sweep for ${p.coordinator} (scope: ${p.scope === 'all' ? 'all repos' : p.scope.join(', ')}). Git facts from local refs, not fetched: a stale base can only hold a worktree back.`]
   if (p.incomplete.length) out.push(`INCOMPLETE: ${p.incomplete.join('; ')}.`)
@@ -433,7 +445,12 @@ export function formatPreview(p) {
   for (const i of interrupted) {
     out.push(`  ${i.name}${i.pr ? ` · PR #${i.pr.number} ${i.pr.state}` : ''}: ${i.reasons.join('; ')}`)
     out.push(`    lead: task ${i.lead.taskId} · dispatch ${i.lead.dispatchId} · Orca next action: ${i.lead.nextAction?.kind ?? 'unknown'}`)
+    if (i.recovery.kind === 'ask-user') {
+      out.push(`    recovery (ask-user): ${i.recovery.why}`)
+      continue
+    }
     out.push(`    recovery (${i.recovery.kind}): ${i.recovery.command}`)
+    out.push(`    after resuming: orca-flow sweep resumed --dispatch ${i.lead.dispatchId}`)
     if (i.recovery.alternative) out.push(`    or (${i.recovery.alternative.kind}): ${i.recovery.alternative.command} — ${i.recovery.alternative.why}`)
   }
   out.push('', `unclear (${unclear.length}): not enough evidence`)
@@ -445,7 +462,8 @@ export function formatPreview(p) {
   out.push('', `daily review: ${p.daily}`)
   if (p.batch) {
     out.push(`Batch ${p.batch.id}: remove ${plural(p.batch.items.length, 'finished worktree')} (${p.batch.items.map((i) => i.name).join(', ')}), local branches kept.`)
-    out.push(`Ask the user once: "Remove these ${plural(p.batch.items.length, 'finished worktree')} (batch ${p.batch.id})? yes or no"`)
+    // The batch id is for the commands only: an Ask holds no internal ids (messages.md internal-id).
+    out.push(`Ask the user once (Needs your yes): "Remove these ${plural(p.batch.items.length, 'finished worktree')}: ${askNames(p.batch.items).join(', ')}? (branches are kept)"  Reply: yes or no`)
     out.push(`  after asking: orca-flow sweep asked --batch ${p.batch.id}`)
     out.push(`  yes: orca-flow sweep remove --batch ${p.batch.id}`)
     out.push(`  no:  orca-flow sweep declined --batch ${p.batch.id}`)
@@ -458,7 +476,8 @@ export function formatPreview(p) {
 export const statePath = (dir, coordinator) => join(dir, 'sweep', `${fileKey(coordinator)}.json`)
 export function readSweepState(dir, coordinator) {
   const s = readJson(statePath(dir, coordinator), null)
-  return { version: 1, coordinator, asked: Array.isArray(s?.asked) ? s.asked : [], declined: s?.declined && typeof s.declined === 'object' ? s.declined : {} }
+  const obj = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : {})
+  return { version: 1, coordinator, asked: Array.isArray(s?.asked) ? s.asked : [], declined: obj(s?.declined), resumed: obj(s?.resumed) }
 }
 
 // ---------- live facts ----------
@@ -473,7 +492,7 @@ export async function gather(deps, coordinator) {
   const coordinators = deps.coordinators()
   if (!coordinators.some((c) => c.name === coordinator)) throw new UsageError(`no coordinator named ${coordinator} (known: ${coordinators.map((c) => c.name).join(', ') || 'none'})`)
   const ps = await deps.orca(['worktree', 'ps'])
-  const dispatches = await pageAll(deps, ['orchestration', 'worker-list', '--full', '--limit', '100'], (r) => r.workers, (r) => (r.page?.hasMore ? r.page.nextCursor : null)).catch((e) => {
+  const dispatches = await listDispatches(deps).catch((e) => {
     notes.push(`worker-list failed: ${e.message}`)
     return null
   })
@@ -509,6 +528,9 @@ async function factsFor(deps, facts, row) {
   }
   facts.gitOf[row.worktreeId] = git
 }
+
+/** Every dispatch record Orca keeps (worker-list is global and paged, newest first). */
+const listDispatches = (deps) => pageAll(deps, ['orchestration', 'worker-list', '--full', '--limit', '100'], (r) => r.workers, (r) => (r.page?.hasMore ? r.page.nextCursor : null))
 
 async function pageAll(deps, args, items, next) {
   const out = []
@@ -596,7 +618,18 @@ export async function sweepCommand(args, deps) {
     deps.out(args.json ? JSON.stringify(p, null, 2) : formatPreview(p))
     return 0
   }
-  if (!['asked', 'declined', 'remove'].includes(sub)) throw new UsageError('usage: orca-flow sweep [asked|declined|remove --batch <id>] [--coordinator <name>] [--json]')
+  if (sub === 'resumed') {
+    // Only a record, no Orca facts needed: the next preview asks the user instead of resuming this lead again.
+    const id = typeof args.dispatch === 'string' ? args.dispatch : null
+    if (!id) throw new UsageError('orca-flow sweep resumed needs --dispatch <id> (the lead dispatch the preview named)')
+    const state = readSweepState(deps.dir, coordinator)
+    const at = deps.now().toISOString()
+    state.resumed[id] = { at }
+    writeJson(statePath(deps.dir, coordinator), state)
+    deps.out(`Recorded: lead dispatch ${id} resumed at ${at}. If it shows as interrupted again, the sweep says to ask the user.`)
+    return 0
+  }
+  if (!['asked', 'declined', 'remove'].includes(sub)) throw new UsageError('usage: orca-flow sweep [asked|declined|remove --batch <id> | resumed --dispatch <id>] [--coordinator <name>] [--json]')
   const want = typeof args.batch === 'string' ? args.batch : null
   if (!want) throw new UsageError(`orca-flow sweep ${sub} needs --batch <id> (the id the preview printed)`)
   const { facts, p } = await preview()
@@ -633,7 +666,13 @@ async function removeBatch(deps, facts, p, batch) {
       kept.push({ name: item.name, reason: 'Orca no longer lists it' })
       continue
     }
-    const fresh = { ...facts, ps, gitOf: { ...facts.gitOf }, prOf: { ...facts.prOf } }
+    // Dispatch records again too: a dispatch started after the preview counts even before ps shows its terminal.
+    const dispatches = await listDispatches(deps).catch(() => null)
+    if (!dispatches) {
+      kept.push({ name: item.name, reason: 'could not re-read Orca dispatch records, skipped' })
+      continue
+    }
+    const fresh = { ...facts, ps, dispatches, gitOf: { ...facts.gitOf }, prOf: { ...facts.prOf } }
     await factsFor(deps, fresh, row)
     const again = classify(fresh).buckets
     const now = again.finished.find((f) => f.worktreeId === item.worktreeId)
