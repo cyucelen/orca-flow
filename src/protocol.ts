@@ -143,7 +143,7 @@ export type WorkspaceRow = {
    * STALE_AFTER_MS or the host is unavailable now. Absent: a row of this machine. Such a row's id is
    * `remote:<host id>|<worktree id>`, never a plugin workspace id: nothing here opens, closes or removes it.
    */
-  host?: { id: string; name: string; stale: boolean }
+  host?: { id: string; name: string; stale: boolean; /** When the host last answered (for "seen 12m ago" while it is stale). */ seenAt?: number | null }
 }
 
 /**
@@ -165,6 +165,10 @@ export type HostView = {
   memory: { totalGB: number; availableGB: number; at: number | null } | null
   agents: string[] | null
   remoteWorkers: boolean | null
+  /** When the next check of it is due (paired hosts; null while unknown). */
+  nextCheckAt?: number | null
+  /** What its older Orca lacks that this Flow's workers use (HOST_LIMITS: keep-open, auto-release, direct mail); null when unknown. */
+  limits?: string[] | null
 }
 
 /** A chat of an Orca bot: its agent, and the workspace a click on it opens. */

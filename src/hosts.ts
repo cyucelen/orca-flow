@@ -38,7 +38,14 @@ export const TICK_MS = 5_000
 export type HostRun = (args: string[], options?: { timeoutMs?: number }) => Promise<any>
 
 /** What a snapshot takes from the poller: the paired hosts, and each one's last rows (re-keyed to it). */
-export type RemoteHosts = { hosts: HostView[]; worktrees: { host: { id: string; name: string; stale: boolean }; worktrees: PsWorktree[] }[] }
+export type RemoteHosts = { hosts: HostView[]; worktrees: { host: { id: string; name: string; stale: boolean; seenAt: number | null }; worktrees: PsWorktree[] }[] }
+
+/** Capabilities newer Orca lists for supervised workers, as the Hosts card names their absence on an older host. */
+export const HOST_LIMITS: [capability: string, word: string][] = [
+  ['orchestration.worker-keep-open.v1', 'keep-open'],
+  ['orchestration.worker-auto-release.v1', 'auto-release'],
+  ['orchestration.peer-mail.v1', 'direct mail']
+]
 
 type Entry = {
   host: PairedHost
@@ -82,7 +89,8 @@ export function viewOf(e: Entry, now: number): HostView {
   const stale = state === 'unavailable' || (e.rowsAt !== null && (!e.rowsFresh || now - e.rowsAt > STALE_AFTER_MS))
   return {
     id: e.host.id, name: e.host.name, kind: 'paired', state, stale, checkedAt: e.probedAt, seenAt: e.seenAt, version: e.version,
-    reason: e.reason, memory: e.memory, agents: e.agents, remoteWorkers: e.capabilities ? e.capabilities.includes(REMOTE_WORKER_CAPABILITY) : null
+    reason: e.reason, memory: e.memory, agents: e.agents, remoteWorkers: e.capabilities ? e.capabilities.includes(REMOTE_WORKER_CAPABILITY) : null,
+    nextCheckAt: e.reachable === null ? null : e.due, limits: e.capabilities ? HOST_LIMITS.filter(([c]) => !e.capabilities!.includes(c)).map(([, w]) => w) : null
   }
 }
 
@@ -260,7 +268,7 @@ export function createHostPoller(opts: { run: HostRun; file?: string | null; now
       const hosts = list.map((e) => viewOf(e, t))
       return {
         hosts,
-        worktrees: list.flatMap((e, i) => (e.worktrees?.length ? [{ host: { id: e.host.id, name: e.host.name, stale: hosts[i].stale }, worktrees: e.worktrees }] : []))
+        worktrees: list.flatMap((e, i) => (e.worktrees?.length ? [{ host: { id: e.host.id, name: e.host.name, stale: hosts[i].stale, seenAt: e.seenAt }, worktrees: e.worktrees }] : []))
       }
     }
   }

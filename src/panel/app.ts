@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 import type { AgentInfo, CockpitStats, Coordinator, CoordinatorProvider, LinearData, LinearIssue, LinearWire, Look, Priority, Snapshot, UpdateState, WakeOutcome, WorkspaceRow } from '../protocol.ts'
-import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, localView, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
+import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay, type RowStatus, type WakeMenu } from '../view.ts'
 import { nextText } from '../../skills/orca-flow/scripts/goal-next.mjs'
 import { goalCard, GOALS_UI_KEY, goalsUiOf, jumpTarget, liveCoordinators, type GoalView } from '../goals-view.ts'
 import type { GoalAction } from '../goals.ts'
@@ -148,9 +148,8 @@ function toggle(set: Set<string>, key: string): void {
 // The first snapshot can take a few seconds (Orca's CLI is slow on a busy machine).
 mainEl.innerHTML = crew('Loading workspaces…')
 setTimeout(draw, LINEAGE_WAIT_MS)
-// A paired host's rows (row.host) are left out until the agreed host UI lands: nothing here opens, closes or removes them.
-orca.plugin.request('sidebar.list').then((s) => ((snap = localView(s as Snapshot)), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
-orca.plugin.on('sidebar.changed', (s) => ((snap = localView(s as Snapshot)), settingsUpdateState(snap.update), applyFeatures(), draw()))
+orca.plugin.request('sidebar.list').then((s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e: Error) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
+orca.plugin.on('sidebar.changed', (s) => ((snap = s as Snapshot), settingsUpdateState(snap.update), applyFeatures(), draw()))
 
 // Settings → Features: Linear and Analytics (stored as tokenSpeed). While one is off its data is dropped and not asked
 // for; switching it on asks at once, so the section shows fresh data, not what it had before.
@@ -298,9 +297,11 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-hosts],[data-cockpit]')
   if (!el) return
   const d = el.dataset
+  // The host chip (inside the top bar) opens the Hosts card, not the cockpit.
+  if ('hosts' in d) { ui.hostsOpen = !ui.hostsOpen; draw(); return }
   if (d.handover) {
     const target = `handover:${d.handover}`
     if (menuTarget === target) closeMenu()
@@ -1060,7 +1061,8 @@ document.addEventListener('contextmenu', (e) => {
   if (kind === 'linear') return openMenu(sendMenu(id), e.clientX, e.clientY, target)
   const row = snap.rows.find((r) => r.agents.some((a) => a.paneKey === id))
   const a = row?.agents.find((x) => x.paneKey === id)
-  if (row && a) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
+  // A paired host's agent has nothing to sleep, prioritize or remove from here (the worker refuses it too).
+  if (row && a && !row.host) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
@@ -1333,7 +1335,7 @@ const goalById = (id: string | undefined) => goals?.find((g) => g.id === id)
  * the button offers Assign to coordinator.
  */
 async function goalJump(id: string): Promise<void> {
-  try { snap = localView((await orca.plugin.request('sidebar.list')) as Snapshot) } catch {}
+  try { snap = (await orca.plugin.request('sidebar.list')) as Snapshot } catch {}
   const g = goalById(id)
   const target = g && snap ? jumpTarget(g, snap, ui.goalGone) : null
   if (!target) { goalToast('The agent on this step is gone. Assign it to a coordinator instead.'); draw(); return }

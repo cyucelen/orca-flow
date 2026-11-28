@@ -70,10 +70,11 @@ test('paired discovery: environment list names caca, a probe reads it, its rows 
   const v = p.view()!
   assert.deepEqual(v.hosts, [{
     id: 'runtime:env-caca', name: 'caca', kind: 'paired', state: 'reachable', stale: false, checkedAt: clock, seenAt: clock, version: '1.4.232',
-    reason: null, memory: { totalGB: 128, availableGB: 96, at: 42 }, agents: ['claude', 'codex'], remoteWorkers: true
+    reason: null, memory: { totalGB: 128, availableGB: 96, at: 42 }, agents: ['claude', 'codex'], remoteWorkers: true,
+    nextCheckAt: clock + PROBE_EVERY_MS, limits: ['keep-open', 'auto-release', 'direct mail']
   }])
   assert.equal(v.worktrees.length, 1)
-  assert.deepEqual(v.worktrees[0].host, { id: 'runtime:env-caca', name: 'caca', stale: false })
+  assert.deepEqual(v.worktrees[0].host, { id: 'runtime:env-caca', name: 'caca', stale: false, seenAt: clock })
   const [w] = v.worktrees[0].worktrees
   assert.equal(w.hostId, 'runtime:env-caca')
   assert.equal(w.worktreeId, 'runtime:env-caca|repo1::/Users/me/reputation')

@@ -1908,7 +1908,7 @@ const twin = (hostId = 'local'): main.PsWorktree => ({
 })
 const remoteOf = (worktrees: main.PsWorktree[], stale = false): RemoteHosts => ({
   hosts: [{ id: CACA.id, name: CACA.name, kind: 'paired', state: stale ? 'unavailable' : 'reachable', stale, checkedAt: 1, seenAt: 1, version: '1.4.232', reason: stale ? 'host unreachable' : null, memory: { totalGB: 128, availableGB: 96, at: 1 }, agents: ['claude'], remoteWorkers: true }],
-  worktrees: [{ host: { ...CACA, stale }, worktrees: relabelWorktrees(worktrees, CACA) }]
+  worktrees: [{ host: { ...CACA, stale, seenAt: 1 }, worktrees: relabelWorktrees(worktrees, CACA) }]
 })
 const noLineage = { dispatcherOf: new Map<string, string>(), paneOf: new Map<string, string>() }
 
@@ -1922,7 +1922,7 @@ test('duplicate identities: the same repo, branch, path and pane on this machine
   assert.equal(r.id, 'remote:runtime:env-caca|repo1::/Users/me/reputation') // never from name, branch or path
   assert.notEqual(r.id, l.id)
   assert.equal(l.host, undefined) // a local row is unchanged
-  assert.deepEqual(r.host, { id: 'runtime:env-caca', name: 'caca', stale: false })
+  assert.deepEqual(r.host, { id: 'runtime:env-caca', name: 'caca', stale: false, seenAt: 1 })
   assert.deepEqual([r.repo, r.branch, r.path], [l.repo, l.branch, l.path])
   assert.deepEqual(r.agents.map((a) => a.paneKey), ['runtime:env-caca|tab1:leaf1', 'runtime:env-caca|tab1:leaf2'])
   // Each worker nests under its own host's lead only.
@@ -2023,9 +2023,10 @@ test('caca paired: its rows follow this machine\'s with host labels, the hosts l
   // Unreachable: its last rows stay, marked stale, and the host says why.
   assert.deepEqual(stale.rows.filter((r) => r.host).map((r) => r.host?.stale), [true])
   assert.equal(stale.hosts?.[1].reason, 'host unreachable')
-  // Never in what reaches summaries, skill reloads or the status bar's queue.
+  // Never in what reaches local summaries or skill reloads; a remote ask does count as waiting (it shows in Up next).
   assert.ok(main.summaryAgents(paired).every((t) => !t.agent.paneKey.startsWith('runtime:')))
-  assert.equal(main.statusOf(paired).text, main.statusOf(local).text)
+  assert.equal(main.statusOf(local).text, '1 waiting')
+  assert.equal(main.statusOf(paired).text, '3 waiting')
   const asked: string[] = []
   main.requestReload(paired, 'all', '/skill', { hashOf: () => 'h', write: (_d, targets) => { asked.push(...targets.map((t) => t.pane)); return { id: 'r', hash: 'h', count: targets.length } }, sessionOf: () => null })
   assert.ok(asked.every((p) => !p.startsWith('runtime:')))

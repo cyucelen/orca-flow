@@ -7,7 +7,7 @@ import { askKey } from './coordinator-sessions.ts'
 // open (what it is about, the ask at a glance, one button to jump); then the coordinators tree.
 // Characters carry everything: color = project, shape = role, face = state.
 import { approvalSummary } from './approval.ts'
-import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
+import type { AgentInfo, Bot, Capacity, CockpitStats, Coordinator, HostView, LinearData, LinearIssue, LookShape, Look, SkillReloadEntry, Snapshot, StartedGroup, UpdateState, WakeOutcome, WorkspaceRow } from './protocol.ts'
 import { AGY_WAITING_TIP, CODEX_WAITING_TIP, RELOAD_TIP, visibleReload } from './skill-reload.ts'
 import { mixedProviders, providerBadge, providerMark, providerOf } from './providers.ts'
 import { PROVIDER_LOGOS } from './provider-logos.ts'
@@ -56,6 +56,8 @@ export type UiState = {
   goalGone?: Set<string>
   /** Set by render from the snapshot: each pane's skill reload still worth a mark on its row. */
   reloads?: Map<string, SkillReloadEntry>
+  /** The Hosts card under the top bar, opened by the host chip (only while a host is paired). */
+  hostsOpen?: boolean
 }
 
 export const emptyUi = (): UiState => ({
@@ -271,8 +273,11 @@ export const localRows = <R extends Pick<WorkspaceRow, 'host'>>(rows: R[]): R[] 
  */
 export const localView = <S extends Pick<Snapshot, 'rows'>>(snap: S): S => (snap.rows.some((r) => r.host) ? { ...snap, rows: localRows(snap.rows) } : snap)
 
-/** Why a paired host's row opens nothing here. */
-export const remoteTip = (row: Pick<WorkspaceRow, 'host'>) => `${row.host?.name ?? 'That host'}'s worktrees open from Orca's own sidebar`
+/**
+ * Why a paired host's row opens nothing here: Flow cannot open another host's worktree in this window
+ * (the plugin API has no workspace id for it), so it says where it opens instead.
+ */
+export const remoteTip = (row: Pick<WorkspaceRow, 'host'>) => `${row.host?.name ?? 'That host'}'s worktrees open from Orca's own sidebar, under their project with a ${row.host?.name ?? 'host'} label`
 
 /**
  * A closed conversation in a coordinator's folder (folderRows in worker.ts): no open terminal of its
@@ -843,7 +848,99 @@ function cockpit(snap: Snapshot, ui: UiState): string {
   const gauges = snap.capacity ? gaugesOf(snap.capacity) : []
   return `<div class="cockpit" data-cockpit role="button" tabindex="0" aria-expanded="${ui.cockpitOpen}">${gauges
     .map((g) => `<span class="gauge ${g.tone}" data-tip="${esc(g.tip)}" data-tone="${g.tone}" aria-label="${esc(g.tip)}">${ICON[g.icon]}${g.loading ? '<span class="refreshing"></span>' : `<span>${esc(g.text)}</span>`}</span>`)
-    .join('')}<span class="spacer"></span><span class="chev">${ICON.chev}</span></div>`
+    .join('')}${hostChip(snap, ui)}<span class="spacer"></span><span class="chev">${ICON.chev}</span></div>`
+}
+
+// ---------- paired hosts (src/hosts.ts) ----------
+
+/** The paired hosts of the snapshot (this machine excluded); empty while none is paired. */
+const pairedOf = (snap: Pick<Snapshot, 'hosts'>): HostView[] => (snap.hosts ?? []).filter((h) => h.kind === 'paired')
+
+/** A host's state as a dot: up (filled), down (hollow, amber), checking (grey). */
+const hostDot = (state: HostView['state']) => `<i class="hdot ${state}" aria-hidden="true"></i>`
+
+/** A small host label beside a remote row's project; dashed while that host's data is stale. */
+const hostLabel = (row: Pick<WorkspaceRow, 'host'>) => (row.host ? `<span class="hostlbl${row.host.stale ? ' stale' : ''}">${esc(row.host.name)}</span>` : '')
+
+/** A remote row's age: its last activity on that host, or "seen 12m ago" while the host is stale. */
+const remoteAge = (row: WorkspaceRow, now: number) =>
+  row.host?.stale ? `<span class="age seen">${row.host.seenAt ? `seen ${ago(row.host.seenAt, now)} ago` : 'not seen yet'}</span>` : `<span class="age">${ago(row.lastActivityAt, now)}</span>`
+
+const gbText = (n: number) => `${Math.round(n * 10) / 10}`
+
+/**
+ * The top bar's host chip: one host shows its state dot, name and free RAM there (dashed and
+ * "unavailable" while it is down, "checking…" before its first answer); two or more fold into one
+ * chip, "N hosts · K down". Nothing while no host is paired, so the bar is as it was.
+ */
+export function hostChip(snap: Pick<Snapshot, 'hosts'>, ui: Pick<UiState, 'hostsOpen'>): string {
+  const paired = pairedOf(snap)
+  if (!paired.length) return ''
+  const open = ui.hostsOpen ? 'true' : 'false'
+  if (paired.length === 1) {
+    const h = paired[0]
+    const after = h.state === 'unavailable' ? '<span class="hwhat">unavailable</span>' : h.state === 'checking' ? '<span class="hwhat">checking…</span>' : h.memory ? `<span class="hwhat">${gbText(h.memory.availableGB)} GB</span>` : ''
+    const tip = h.state === 'unavailable' ? `${h.name} is unavailable${h.reason ? `: ${h.reason}` : ''}` : h.state === 'checking' ? `Checking ${h.name}` : `${h.name}${h.memory ? `: ${gbText(h.memory.availableGB)} of ${gbText(h.memory.totalGB)} GB free` : ''}`
+    return `<button class="hostchip ${h.state}" data-hosts aria-expanded="${open}" data-tip="${esc(tip)}">${hostDot(h.state)}<span class="hname">${esc(h.name)}</span>${after}</button>`
+  }
+  const down = paired.filter((h) => h.state === 'unavailable').length
+  const state: HostView['state'] = down ? 'unavailable' : paired.some((h) => h.state === 'checking') ? 'checking' : 'reachable'
+  return `<button class="hostchip several ${state}" data-hosts aria-expanded="${open}" data-tip="${esc(`${paired.length} paired hosts${down ? `, ${down} unavailable` : ''}`)}">${hostDot(down ? 'unavailable' : state === 'checking' ? 'checking' : 'reachable')}<span class="hname">${paired.length} hosts</span>${down ? `<span class="hwhat down">· ${down} down</span>` : ''}</button>`
+}
+
+/** Pure: how many more agents a host's free memory holds, by the capacity formula (free after the margin, per agent). */
+export function roomFor(h: Pick<HostView, 'memory'>, capacity: Pick<Capacity, 'marginGB' | 'agentGB'> | null): number | null {
+  if (!h.memory) return null
+  const margin = capacity?.marginGB ?? 2
+  const agent = capacity?.agentGB && capacity.agentGB > 0 ? capacity.agentGB : 0.5
+  return Math.max(0, Math.floor((h.memory.availableGB - margin) / agent))
+}
+
+const agentNames = (ids: string[] | null) => (ids ?? []).map((id) => { const p = providerOf(id); return p ? providerMark({ agentType: p } as AgentInfo).name : id.charAt(0).toUpperCase() + id.slice(1) })
+
+/**
+ * The Hosts card: this machine and each paired host, with its state and free RAM, its Orca version,
+ * agents and worktrees, whether it takes workers and how many more agents it has room for, and what
+ * its older Orca lacks. An unavailable host says when it was last seen, with how much RAM then, why
+ * it is down and when it is checked next. With two or more paired hosts they sort by free RAM.
+ */
+export function hostsCard(snap: Pick<Snapshot, 'hosts' | 'rows' | 'capacity'>, ui: Pick<UiState, 'now'>): string {
+  const paired = pairedOf(snap)
+  if (!paired.length) return ''
+  const local = (snap.hosts ?? []).filter((h) => h.kind === 'local')
+  const several = paired.length >= 2
+  const free = (h: HostView) => (h.state === 'reachable' || h.kind === 'local') && h.memory ? h.memory.availableGB : -1
+  const hosts = several ? [...local, ...paired].sort((a, b) => free(b) - free(a)) : [...local, ...paired]
+  const worktrees = (h: HostView) => new Set(snap.rows.filter((r) => (h.kind === 'local' ? !r.host && !r.folderOf && !r.bot : r.host?.id === h.id)).map((r) => r.id)).size
+  const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  const entry = (h: HostView) => {
+    const n = worktrees(h)
+    const mem = h.memory ? `${gbText(h.memory.availableGB)} of ${gbText(h.memory.totalGB)} GB free` : ''
+    if (h.state === 'unavailable') {
+      const seen = h.seenAt ? `Last seen ${ago(h.seenAt, ui.now)} ago${mem ? ` with ${mem}` : ''}.` : 'Not seen yet.'
+      const why = h.reason ? ` ${h.reason.charAt(0).toUpperCase()}${h.reason.slice(1).replace(/\.?$/, '.')}` : ''
+      const next = h.nextCheckAt ? ` Next check in ${until(h.nextCheckAt, ui.now)}.` : ''
+      return `<div class="host down">${hostDot('unavailable')}<span class="hn">${esc(h.name)}</span><span class="hv down">unavailable</span></div>
+        <div class="hsub">${esc(`${seen}${why}${next}`)}</div>
+        <div class="hsub faint">New work cannot start there until it is back.${n ? ` ${esc(count(n, 'worktree'))} kept as last seen.` : ''}</div>`
+    }
+    if (h.state === 'checking') {
+      return `<div class="host">${hostDot('checking')}<span class="hn">${esc(h.name)}</span><span class="hv">checking…</span></div>
+        <div class="hsub">${esc(h.seenAt ? `Last seen ${ago(h.seenAt, ui.now)} ago${mem ? ` with ${mem}` : ''}; first check of this session pending.` : 'First check pending.')}${n ? ` ${esc(count(n, 'worktree'))} kept as last seen.` : ''}</div>`
+    }
+    const facts = [h.version && `Orca ${h.version}`, agentNames(h.agents).join(', '), count(n, 'worktree'), h.kind === 'paired' && h.remoteWorkers === true && 'takes workers', h.kind === 'paired' && h.remoteWorkers === false && 'cannot take workers (older Orca)'].filter(Boolean).join(' · ')
+    const room = h.kind === 'paired' ? roomFor(h, snap.capacity) : null
+    const limits = h.kind === 'paired' && h.limits?.length ? `Older Orca: no ${h.limits.length > 1 ? `${h.limits.slice(0, -1).join(', ')} or ${h.limits.at(-1)}` : h.limits[0]}` : ''
+    const notes = [room !== null && `<span class="hnote">${room ? `Room for ${count(room, 'more agent')}` : 'No room for another agent'}</span>`, limits && `<span class="hnote warn">${esc(limits)}</span>`].filter(Boolean).join('')
+    return `<div class="host">${hostDot('reachable')}<span class="hn">${esc(h.name)}</span><span class="hv">${esc(mem)}</span></div>
+      ${facts ? `<div class="hsub">${esc(facts)}</div>` : ''}${notes ? `<div class="hnotes">${notes}</div>` : ''}`
+  }
+  const checked = paired.map((h) => h.checkedAt ?? 0).reduce((a, b) => Math.max(a, b), 0)
+  const right = several ? 'most free RAM first' : checked ? `checked ${Math.max(0, Math.round((ui.now - checked) / 1000)) < 60 ? `${Math.max(0, Math.round((ui.now - checked) / 1000))} s` : ago(checked, ui.now)} ago` : 'checking…'
+  // The host on top of the list (most free RAM, with several) is the one to name.
+  const up = hosts.find((h) => h.kind === 'paired' && h.state === 'reachable')
+  const how = up ? `<div class="hhow">To start work there, tell a coordinator or lead: "do it on ${esc(up.name)}". Flow never moves work to another host by itself.</div>` : ''
+  return `<div class="hosts" role="region" aria-label="Hosts"><div class="hhead"><span class="label">Hosts</span><span class="hright">${esc(right)}</span></div>${hosts.map((h) => `<div class="hentry">${entry(h)}</div>`).join('<div class="hsep"></div>')}${how}</div>`
 }
 
 // ---------- update button (top bar, left of search) ----------
@@ -902,7 +999,8 @@ export function askingRows(snap: SnapLike): WorkspaceRow[] {
       lastActivityAt: m.a!.summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` } as WorkspaceRow, m.a!), coordinatorMember: m.id
     }))
   })
-  return waitingQueue([...localRows(snap.rows).filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
+  // A paired host's agent that asks lands here like a local one (its jump says where it opens).
+  return waitingQueue([...snap.rows.filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
 }
 
 /** What the queue reads: the rows, the coordinators and, when known, the bots. */
@@ -942,7 +1040,7 @@ export function botChatRows(snap: Pick<Partial<Snapshot>, 'bots'>): WorkspaceRow
  */
 export function upNextOrder(snap: SnapLike): Placed[] {
   const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
-  const working = localRows(snap.rows).filter((r) => !asleep(r)).sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const working = snap.rows.filter((r) => !asleep(r)).sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
   const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
@@ -968,10 +1066,14 @@ function upNext(placed: Placed[], all: AgentInfo[], coordinators: Coordinator[],
       : agentCharacter(p.a, p.row, all)
     const menu = c ? `coordinator:${c.key}` : `agent:${p.a.paneKey}`
     const where = c ? !p.row.coordinatorMember ? 'coordinator' : `${p.a.agentType ?? 'Unknown provider'} · ${p.row.coordinatorMember === c.sessions?.current ? 'current session' : 'other session'}` : coordinatorName(p.a.coordinator, coordinators)
-    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
+    const head = `<button class="item" data-brief="${esc(key)}" data-menu="${esc(menu)}" aria-expanded="${open}">${who}<span class="t${open ? ' strong' : ''}">${esc(c ? c.name : nameOf(p.a, p.row))}</span><span class="r">${rowStatus(ui, menu) ?? `${hostLabel(p.row)}${esc(where)}${p.row.priority ? ` · ${p.row.priority}` : ''}`}</span></button>`
     if (!open) return head
     const about = aboutOf(p)
-    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps"><button class="jump" ${openAttrs(p)}>Jump to session</button>${reviewPr(p)}</div></div>`
+    // A paired host's session opens only in Orca's own sidebar: the button says where, and opens nothing.
+    const jump = p.row.host
+      ? `<button class="jump" aria-disabled="true" data-remote-jump data-tip="${esc(remoteTip(p.row))}">Open in Orca's sidebar, under ${esc(p.row.host.name)}</button>`
+      : `<button class="jump" ${openAttrs(p)}>Jump to session</button>`
+    return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps">${jump}${reviewPr(p)}</div></div>`
   })
   return `<section class="upnext"><div class="label">Up next · ${placed.length}</div><div class="group">${items.join('')}</div></section>`
 }
@@ -1062,10 +1164,13 @@ function agentLine(p: Placed, all: AgentInfo[], coordinators: Coordinator[], sof
   // the age. A worker nested under its lead in the same worktree shows none of them (its lead's row
   // does; the branch's color on the lines groups them); one in a worktree of its own shows that
   // worktree's issue and PR.
-  const right = status ?? (asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : reloadMark(ui, p.a.paneKey) + (lead
+  // A paired host's row always says which host and project it is on, nested or not, and how old its
+  // data is: its own last activity there, or while the host is stale when it was last seen.
+  const right = status ?? (p.row.host ? `${chip}${prBadge(p.row.pr)}${hostLabel(p.row)}<span class="soft">${esc(p.row.repo)}</span>${remoteAge(p.row, ui.now)}`
+    : asleep(p.row) ? '<span class="rstatus sleeping">Asleep</span>' : reloadMark(ui, p.a.paneKey) + (lead
     ? `${own ? `${chip}${prBadge(p.row.pr)}` : ''}`
     : `${chip}${prBadge(p.row.pr)}${soft ? `<span class="soft">${esc(p.row.repo)}</span>` : ''}<span class="age">${ago(p.row.lastActivityAt, ui.now)}</span>`))
-  const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}`
+  const cls = `item${indent ? ' indent' : ''}${done ? ' finished' : ''}${current ? ' current' : ''}${p.row.host ? ' remote' : ''}${p.row.host?.stale ? ' stale' : ''}`
   // A row on a feature branch draws its connector and ring in the branch's color (panel.css, tree lines).
   const menu = `data-menu="agent:${esc(p.a.paneKey)}"${current ? ' aria-current="true"' : ''}${branchAttr(p.row)} data-node="${nodeOf(p.a, p.row, all)}" data-depth="${depth}" style="--node-x:${nodeX(depth)}px"`
   // Its lines and focus bar; its character leaves out the spinning badge, the ring's shimmer shows it working.
@@ -1101,7 +1206,7 @@ export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for i
  * coordinator as its tree row does (waking it).
  */
 const openAttrs = (p: Placed) =>
-  p.row.host ? `disabled data-tip="${esc(remoteTip(p.row))}"`
+  p.row.host ? `aria-disabled="true" data-tip="${esc(remoteTip(p.row))}"`
   : asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
   : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
   : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
@@ -1410,7 +1515,7 @@ export function render(given: Snapshot, state: UiState, linearData: LinearData |
   // A worktree created without --linear-issue is linked by the issue in its branch name, in the tree and the section alike.
   // Its label opens the issue in Linear when the data gives its page.
   const snap = linear ? { ...given, rows: linkRows(given.rows, teamsOf(linear)).map((r) => (r.linearIssue ? { ...r, linearLink: issueLink(r.linearIssue, linear) } : r)) } : given
-  const copen = ui.cockpitOpen && !ui.query ? cockpitOpen(snap, ui) : ''
+  const copen = ui.query ? '' : `${ui.hostsOpen ? hostsCard(snap, ui) : ''}${ui.cockpitOpen ? cockpitOpen(snap, ui) : ''}`
   // Goals, at the top above the tree; hidden while searching, like the other sections.
   const goalsData = goalsOn(given) ? goals : null
   const gs = { folded: ui.goalsFolded, open: ui.goalOpen, now: ui.now }

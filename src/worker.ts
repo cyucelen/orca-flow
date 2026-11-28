@@ -418,7 +418,7 @@ export function remoteRefusal(ids: unknown[], rows: WorkspaceRow[], hosts: HostV
 }
 
 /** This machine as a host: always reachable; its memory is the local capacity data. */
-export function localHost(facts: MemoryFacts, at: number, name = 'This computer'): HostView {
+export function localHost(facts: MemoryFacts, at: number, name = (globalThis as { process?: { platform?: string } }).process?.platform === 'darwin' ? 'This Mac' : 'This computer'): HostView {
   const memory = facts.totalGB != null && facts.availableGB != null ? { totalGB: Math.round(facts.totalGB * 10) / 10, availableGB: Math.round(facts.availableGB * 10) / 10, at: at || null } : null
   return { id: LOCAL_HOST, name, kind: 'local', state: 'reachable', stale: false, checkedAt: at || null, seenAt: at || null, version: null, reason: null, memory, agents: null, remoteWorkers: null }
 }
@@ -1212,6 +1212,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   const hostsStart = setTimeout(() => poller.start(), hostPolling.startAfterMs)
   ;(hostsStart as unknown as { unref?: () => void }).unref?.()
   disposers.push(() => { clearTimeout(hostsStart); poller.stop(); if (hostPoller === poller) hostPoller = null })
+  let localVersion: string | null | undefined
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
@@ -1224,7 +1225,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
-    if (snap.hosts?.[0]?.kind === 'local') snap.hosts[0] = { ...snap.hosts[0], agents: installedAgents }
+    if (snap.hosts?.[0]?.kind === 'local') {
+      // This machine's Orca version for the Hosts card: read once (local `orca status`), only while a host is paired.
+      if (localVersion === undefined) { localVersion = null; void run(['status'], { timeoutMs: 10_000 }).then((r) => { localVersion = typeof r?.runtime?.appVersion === 'string' ? r.runtime.appVersion : null }).catch(() => { localVersion = undefined }) }
+      snap.hosts[0] = { ...snap.hosts[0], agents: installedAgents, version: localVersion ?? null }
+    }
     latest = snap
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
@@ -1338,7 +1343,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   // ⌘⇧N and the status bar item: open the next workspace waiting on the person.
   let lastJump: { id: string; at: number } | null = null
   orca.commands.register('sidebar.next', async () => {
-    const target = nextTarget(askingRows(latest ?? (await refresh())), lastJump, Date.now())
+    // A paired host's ask shows in Up next, but opens only from Orca's own sidebar: ⌘⇧N skips it.
+    const target = nextTarget(askingRows(latest ?? (await refresh())).filter((r) => !r.host), lastJump, Date.now())
     if (!target) return 'Nothing is waiting on you.'
     lastJump = { id: target.queueKey ?? target.id, at: Date.now() }
     const terminal = leadAgent(target)?.terminal
