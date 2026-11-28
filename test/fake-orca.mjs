@@ -73,3 +73,68 @@ export function fakeDeps({ routing, avail = CLAUDE_ONLY, verdict = 'ok', stdin =
   return deps
 }
 
+const GiB = 1024 ** 3
+const CAPS = ['runtime.status.compat.v1', 'orchestration.federation.v1']
+
+/**
+ * A fake paired host for `fakeDeps({ orca: pairedOrca(...) })`: answers `environment list` and every
+ * read with `--environment <id>` (status, agent installed, diagnostics memory, worktree ps/show,
+ * repo show), plus this machine's own reads for `orca-flow hosts`; anything else falls through to
+ * fakeDeps (worker-start). `hosts` lists the paired hosts ([] for none); per environment id,
+ * `fail` ({ status: 'x' }) makes a read throw that message, `unreachable` lists hosts whose status
+ * says not reachable. Endpoints are in the list, as Orca returns them, so tests can check they are
+ * never copied out.
+ */
+export function pairedOrca({
+  hosts = [{ id: 'env-caca', name: 'caca' }],
+  version = '1.4.232',
+  capabilities = CAPS,
+  agents = ['claude', 'codex'],
+  availableGB = 12,
+  totalGB = 16,
+  sessionsGB = [0.6, 0.4],
+  repos = { 'name:mono': 'mono', 'id:r-mono': 'mono' },
+  worktrees = ['name:feature', 'branch:feature'],
+  fail = {},
+  unreachable = [],
+  listFails = null,
+  local = { version: '1.4.263', availableGB: 30, totalGB: 64, agents: ['claude', 'codex'], worktrees: 3 }
+} = {}) {
+  const panes = sessionsGB.map((_, i) => `pane-${i}`)
+  return async (args) => {
+    if (args[0] === 'environment' && args[1] === 'list') {
+      if (listFails) throw new Error(listFails)
+      return { environments: hosts.map((h) => ({ id: h.id, name: h.name, runtimeId: `rt-${h.id}`, endpoints: [{ id: 'e1', url: 'ws://10.0.0.9:7777' }], pairedDeviceId: 'device-secret' })) }
+    }
+    const at = args.indexOf('--environment')
+    const what = `${args[0]} ${args[1]}`
+    if (at === -1) {
+      // This machine's own reads (orca-flow hosts).
+      if (what.startsWith('status')) return { runtime: { reachable: true, connectionState: 'connected', appVersion: local.version, capabilities: [...CAPS, 'orchestration.peer-mail.v1'] } }
+      if (what === 'worktree ps') return { worktrees: Array.from({ length: local.worktrees }, (_, i) => ({ worktreeId: `r::/l/${i}`, hostId: 'local', agents: [] })) }
+      if (what === 'agent installed') return { agents: local.agents.map((id) => ({ id, name: id, default: false })) }
+      if (what === 'diagnostics memory') return { host: { totalMemory: local.totalGB * GiB, availableMemory: local.availableGB * GiB }, worktrees: [] }
+      return undefined
+    }
+    const env = args[at + 1]
+    if (!hosts.some((h) => h.id === env)) throw new Error(`Unknown environment: ${env}`)
+    const key = { status: 'status', 'agent installed': 'agents', 'diagnostics memory': 'memory', 'worktree ps': 'worktrees', 'worktree show': 'worktree', 'repo show': 'repo' }[args[0] === 'status' ? 'status' : what]
+    const f = fail[env]?.[key]
+    if (f) throw Object.assign(new Error(f), f.endsWith('_not_found') ? { code: f } : {})
+    if (args[0] === 'status') return { runtime: { reachable: !unreachable.includes(env), connectionState: unreachable.includes(env) ? 'disconnected' : 'connected', appVersion: version, capabilities } }
+    if (what === 'agent installed') return { agents: agents.map((id) => ({ id, name: id, default: id === 'claude' })) }
+    if (what === 'diagnostics memory') return { host: { totalMemory: totalGB * GiB, availableMemory: availableGB * GiB }, worktrees: [{ worktreeId: 'x', sessions: [...sessionsGB.map((gb, i) => ({ paneKey: panes[i], memory: gb * GiB })), { paneKey: 'shell', memory: 3 * GiB }] }], collectedAt: 1 }
+    if (what === 'worktree ps') return { worktrees: [{ worktreeId: 'r::/home/x', hostId: 'local', agents: panes.map((paneKey) => ({ paneKey })) }, { worktreeId: 'r::/home/y', hostId: 'local', agents: [] }] }
+    if (what === 'worktree show') {
+      const sel = args[args.indexOf('--worktree') + 1]
+      if (!worktrees.includes(sel)) throw Object.assign(new Error('selector_not_found'), { code: 'selector_not_found' })
+      return { worktree: { id: `r::/home/${sel}`, displayName: sel } }
+    }
+    if (what === 'repo show') {
+      const sel = args[args.indexOf('--repo') + 1]
+      if (!repos[sel]) throw Object.assign(new Error('repo_not_found'), { code: 'repo_not_found' })
+      return { repo: { id: sel, displayName: repos[sel] } }
+    }
+    throw new Error(`unexpected orca ${args.join(' ')}`)
+  }
+}

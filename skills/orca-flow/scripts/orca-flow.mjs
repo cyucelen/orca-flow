@@ -4,6 +4,9 @@
 //
 //   orca-flow queue [--json] [--all]         What needs the user, in order (scoped to your coordinator)
 //   orca-flow capacity [--repo <name>] [--json]   Does another agent or a new worktree fit in memory?
+//   orca-flow capacity --on <host> [--repo <name>] [--json]   The same verdict, on a paired host
+//   orca-flow hosts [--json]                  This machine and each paired host: reachable or not, Orca
+//                                             version, RAM, agents, remote workers, worktree count
 //   orca-flow set --worktree <sel> [...]      Write a workstream card (coordinator, at spawn)
 //   orca-flow get [--worktree <sel>]          Print a card (default: current worktree)
 //   orca-flow resume                          Coordinator, after waking: take back the runs it coordinated
@@ -37,13 +40,17 @@
 //   orca-flow dispatch --role worker|lead [routing flags] [worker-start flags: --worktree --task
 //       --task-title --spec --spec-file --keep-open --repo --name --base-branch --display-name
 //       --comment --setup --deps --parent --run --retry-of --retry-request] [--attempt n, only with
-//       --retry-of] [--arm baseline|variant --pair <id>] [--restart] [--dry-run] [--json]
+//       --retry-of] [--arm baseline|variant --pair <id>] [--on <host>] [--restart] [--dry-run] [--json]
 //                                             Capacity gate, route, then `orca orchestration worker-start`
 //                                             on the routed model. Exit 2: capacity said no; 3: no model;
 //                                             4: start outcome unknown. The same command asks Orca first:
 //                                             running, nothing starts; unknown, it replays the request,
 //                                             or with no request id refuses (exit 4) until --restart.
 //                                             --arm/--pair label one arm of a comparison (routes.jsonl)
+//                                             --on <host>: start it on that paired host (the user's
+//                                             choice), checked against its status, agents and memory;
+//                                             exit 3 for an unknown host or a failed check, 2 when its
+//                                             memory has no room or cannot be read
 //   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
 //       [--restart <id>]                      A lead's parallel plan: checked file ownership and deps,
 //                                             one Orca task each, started in waves, each behind the memory check
@@ -673,6 +680,7 @@ export function skillsReloaded(args, { env = process.env, cwd = process.cwd(), h
 // ---------- route, dispatch, plan ----------
 
 const flow = await import('./dispatch.mjs')
+const { PROBE_TIMEOUT_MS } = await import('./hosts.mjs')
 const { discover } = await import(new URL('../../../src/model-discovery.ts', import.meta.url).href)
 
 /** The real machine: Orca's CLI, model discovery and the memory gate. Tests pass fakes instead. */
@@ -682,6 +690,8 @@ function liveDeps(args = {}) {
     cwd: process.cwd(),
     orcaBin: ORCA_BIN,
     orca: flow.orcaRunner(ORCA_BIN),
+    // Host checks (--on, hosts, capacity --on): each command bounded, so a slow host never holds a start.
+    probeOrca: flow.orcaRunner(ORCA_BIN, { timeoutMs: PROBE_TIMEOUT_MS }),
     // Codex lists models from the selected Codex account's home, as in Settings (src/worker.ts
     // discoverHere). Cached 10 minutes per home in models-cache.json; --refresh-models looks again.
     discover: flow.accountDiscovery(DIR, { orca: flow.orcaRunner(ORCA_BIN, { timeoutMs: 10_000 }), discover: (opts) => discover(flow.execCommand, { orcaBin: ORCA_BIN, ...opts }), refresh: !!args['refresh-models'] }),
@@ -694,6 +704,17 @@ function liveDeps(args = {}) {
 
 // ---------- main ----------
 
+/** Runs one of dispatch.mjs's commands on the real machine; a refusal or usage error sets the exit code. */
+async function runFlow(run, args) {
+  try {
+    process.exitCode = await run(args, liveDeps(args))
+  } catch (e) {
+    if (!(e instanceof flow.Refused || e instanceof flow.UsageError)) throw e
+    console.error(e.message)
+    process.exitCode = e instanceof flow.Refused ? e.code : 1
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const [command] = args._
@@ -704,10 +725,17 @@ async function main() {
       break
     }
     case 'capacity': {
+      if (args.on !== undefined) {
+        await runFlow(flow.capacityOnCommand, args)
+        break
+      }
       const c = await capacity(args)
       args.json ? console.log(JSON.stringify(c, null, 2)) : printCapacity(c)
       break
     }
+    case 'hosts':
+      await runFlow(flow.hostsCommand, args)
+      break
     case 'set':
       console.log(JSON.stringify(setCard(args), null, 2))
       break
@@ -740,18 +768,11 @@ async function main() {
     case 'route':
     case 'dispatch':
     case 'plan': {
-      const run = { types: flow.typesCommand, route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command]
-      try {
-        process.exitCode = await run(args, liveDeps(args))
-      } catch (e) {
-        if (!(e instanceof flow.Refused || e instanceof flow.UsageError)) throw e
-        console.error(e.message)
-        process.exitCode = e instanceof flow.Refused ? e.code : 1
-      }
+      await runFlow({ types: flow.typesCommand, route: flow.routeCommand, dispatch: flow.dispatchCommand, plan: flow.planCommand }[command], args)
       break
     }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|goal|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|hosts|set|get|goal|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }

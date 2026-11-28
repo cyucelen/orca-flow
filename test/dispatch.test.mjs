@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CLAUDE_ONLY, fakeDeps } from './fake-orca.mjs'
+import { CLAUDE_ONLY, fakeDeps, pairedOrca } from './fake-orca.mjs'
 import { accountDiscovery, armLabel, cachedDiscover, dispatchCommand, MODELS_CACHE_MS, PENDING_MAX_MS, readRoutes, Refused, routeCommand, startOutcome, typesCommand, UsageError } from '../skills/orca-flow/scripts/dispatch.mjs'
 import { codexHomeFromAccounts } from '../src/writer.ts'
 
@@ -568,4 +568,171 @@ test("discovery lists Codex models from the selected account's CODEX_HOME, and t
   await run()
   assert.deepEqual(seen.at(-1), {}, 'Orca cannot say: the default home')
   assert.equal(JSON.parse(readFileSync(join(deps.dir, 'models-cache.json'), 'utf8')).key, null)
+})
+
+// ---------- --on <host>: a paired host the user chose (fake paired host, never the real one) ----------
+
+const onCaca = (flags = {}) => argsOf({ role: 'worker', kind: 'hard', on: 'caca', worktree: 'new-top-level', repo: 'name:mono', spec: 'do it', ...flags }, 'dispatch')
+const hostReads = (deps) => deps.calls.filter((c) => c.args.includes('--environment'))
+
+test('--on starts exactly one worker on that host with the routed agent, model and effort; the local gate does not run', async () => {
+  const deps = fakeDeps({ orca: pairedOrca() })
+  assert.equal(await dispatchCommand(onCaca(), deps), 0)
+  const all = starts(deps)
+  assert.equal(all.length, 1)
+  assert.deepEqual(all[0].args, ['orchestration', 'worker-start', '--on', 'env-caca', '--worktree', 'new-top-level', '--spec', 'do it', '--repo', 'name:mono', '--agent', 'claude', '--model', 'opus', '--effort', 'high'])
+  assert.deepEqual(deps.capacityCalls, [], "this machine's capacity gate does not run for a start elsewhere")
+  // Every host read is by environment id, read-only, and this machine's memory is never read.
+  assert.ok(hostReads(deps).every((c) => c.args[c.args.indexOf('--environment') + 1] === 'env-caca'))
+  assert.deepEqual(new Set(hostReads(deps).map((c) => `${c.args[0]} ${c.args[1]}`)), new Set(['status --environment', 'worktree ps', 'agent installed', 'repo show', 'diagnostics memory']))
+  assert.equal(deps.calls.filter((c) => c.args[0] === 'diagnostics' && !c.args.includes('--environment')).length, 0)
+  const out = deps.output[0]
+  assert.match(out, /^Started ctx_1 on Claude Opus · high on caca — hard task/)
+  assert.match(out, /capacity: ok \(caca's verdict: 10 GB free there after a 2 GB margin, 12 of 16 GB available; this machine's memory is not part of it\)/)
+  assert.match(out, /The model is not verified there \(Orca lists no models for another host\), and the agent runs on caca's own account\./)
+  assert.equal(out.match(/not verified/g).length, 1, 'said once')
+  const [entry] = readRoutes(deps.dir)
+  assert.deepEqual(entry.host, { id: 'runtime:env-caca', name: 'caca' })
+  assert.doesNotMatch(JSON.stringify(entry), /ws:\/\/|device-secret|"env-caca"/, 'no endpoint or pairing data, and the host by its host id')
+})
+
+test("--on passes the user's agent, model and effort through unchanged, and an exact selector there is checked, not a project", async () => {
+  const avail = { agents: ['claude', 'codex'], models: { claude: null, codex: [{ id: 'gpt-6-luna', efforts: ['low', 'medium', 'high'] }] } }
+  const deps = fakeDeps({ avail, orca: pairedOrca() })
+  await dispatchCommand(onCaca({ worktree: 'name:feature', repo: undefined, agent: 'codex', model: 'gpt-6-luna', effort: 'low', 'keep-open': true }), deps)
+  const argv = starts(deps)[0].args
+  assert.deepEqual(argv.slice(-6), ['--agent', 'codex', '--model', 'gpt-6-luna', '--effort', 'low'])
+  assert.equal(after(argv, '--worktree'), 'name:feature')
+  assert.ok(argv.includes('--keep-open'))
+  assert.equal(deps.calls.filter((c) => c.args[0] === 'repo').length, 0)
+  assert.equal(deps.calls.filter((c) => c.args[0] === 'worktree' && c.args[1] === 'show').length, 1)
+  assert.match(deps.output[0], /caca's Orca does not list orchestration\.worker-keep-open\.v1, so --keep-open may not hold there/)
+})
+
+test('--on refuses, starting nothing: low memory there (2), unreadable memory (2), agent missing (3), no remote workers (3), unreachable (3)', async () => {
+  const cases = [
+    [{ availableGB: 3 }, {}, 2, /^Not started: caca's capacity says agents-only \(1 GB free there after the margin\).*This machine's memory is not part of it\.\nAn existing worktree on caca has room/s],
+    [{ availableGB: 2.2 }, { worktree: 'name:feature', repo: undefined }, 2, /caca's capacity says full/],
+    [{ fail: { 'env-caca': { memory: 'diagnostics timed out' } } }, {}, 2, /^Not started: capacity unknown on caca: its memory could not be read \(diagnostics timed out\)\. Nothing was started; this machine's memory does not stand in for it\.$/],
+    [{ agents: ['codex'] }, {}, 3, /^Not started: Claude Opus · high runs on the claude agent, which is not installed on caca\. caca has: codex\. Pass --agent/],
+    [{ agents: ['codex'] }, { agent: 'claude', model: 'sonnet' }, 3, /caca has: codex\. You named claude, so nothing was swapped/],
+    [{ capabilities: ['runtime.status.compat.v1'] }, {}, 3, /^Not started: caca's Orca \(1\.4\.232\) does not list orchestration\.federation\.v1/],
+    [{ unreachable: ['env-caca'] }, {}, 3, /^Not started: caca is unavailable: its connection is disconnected\. Nothing was started\.$/],
+    [{ fail: { 'env-caca': { status: 'connect failed ws://10.0.0.9:7777 token=abc' } } }, {}, 3, /^Not started: caca is unavailable: connect failed <endpoint> token=<hidden>\. Nothing was started\.$/]
+  ]
+  for (const [host, flags, code, message] of cases) {
+    const deps = fakeDeps({ orca: pairedOrca(host) })
+    await assert.rejects(dispatchCommand(onCaca(flags), deps), (e) => e instanceof Refused && e.code === code && message.test(e.message))
+    assert.equal(starts(deps).length, 0, `${JSON.stringify(host)}: nothing started`)
+    assert.equal(existsSync(join(deps.dir, 'routes.jsonl')), false)
+    assert.deepEqual(deps.capacityCalls, [])
+  }
+  // Unreachable: the other reads are not tried.
+  const down = fakeDeps({ orca: pairedOrca({ unreachable: ['env-caca'] }) })
+  await assert.rejects(dispatchCommand(onCaca(), down), /unavailable/)
+  assert.deepEqual(hostReads(down).map((c) => c.args[0]), ['status'])
+})
+
+test('--on an unknown or ambiguous host is refused (exit 3) with the paired hosts by name; nothing starts', async () => {
+  const unknown = fakeDeps({ orca: pairedOrca({ hosts: [{ id: 'env-caca', name: 'caca' }, { id: 'env-big', name: 'bigbox' }] }) })
+  await assert.rejects(dispatchCommand(onCaca({ on: 'nope' }), unknown), (e) => e instanceof Refused && e.code === 3 && e.message === 'Not started: no paired host "nope". Paired hosts: caca, bigbox. Nothing was started.')
+  const twice = fakeDeps({ orca: pairedOrca({ hosts: [{ id: 'env-a', name: 'caca' }, { id: 'env-b', name: 'Caca' }] }) })
+  await assert.rejects(dispatchCommand(onCaca(), twice), (e) => e.code === 3 && /"caca" names 2 paired hosts; pass the environment id of the one you mean: caca \(env-a\), Caca \(env-b\)/.test(e.message))
+  // By environment id, the same host starts.
+  const byId = fakeDeps({ orca: pairedOrca({ hosts: [{ id: 'env-a', name: 'caca' }, { id: 'env-b', name: 'Caca' }] }) })
+  await dispatchCommand(onCaca({ on: 'env-b' }), byId)
+  assert.equal(after(starts(byId)[0].args, '--on'), 'env-b')
+  const none = fakeDeps({ orca: pairedOrca({ hosts: [] }) })
+  await assert.rejects(dispatchCommand(onCaca(), none), (e) => e.code === 3 && /no paired host "caca"\. No host is paired with this Orca\./.test(e.message))
+  const listFails = fakeDeps({ orca: pairedOrca({ listFails: 'runtime_unavailable' }) })
+  await assert.rejects(dispatchCommand(onCaca(), listFails), (e) => e.code === 3 && /could not list the paired hosts: runtime_unavailable/.test(e.message))
+  for (const d of [unknown, twice, none, listFails]) assert.equal(starts(d).length, 0)
+})
+
+test("--on placement: current (or no --worktree) is refused, a new worktree needs a project there, an exact selector must exist there", async () => {
+  for (const flags of [{ worktree: 'current' }, { worktree: undefined }, { worktree: 'active' }, { worktree: 'issue:12' }]) {
+    const deps = fakeDeps({ orca: pairedOrca() })
+    await assert.rejects(dispatchCommand(onCaca({ ...flags, repo: undefined }), deps), (e) => e instanceof UsageError && /Use --worktree new-top-level or new-child with --repo <a project on caca>, or an exact selector/.test(e.message))
+    assert.equal(deps.calls.length, 0, 'refused before any Orca call')
+  }
+  await assert.rejects(dispatchCommand(onCaca({ worktree: 'current' }), fakeDeps({ orca: pairedOrca() })), /--worktree current is this machine's current worktree, which Orca refuses on another host/)
+  await assert.rejects(dispatchCommand(onCaca({ repo: undefined }), fakeDeps({ orca: pairedOrca() })), (e) => e instanceof UsageError && /needs --repo <selector> naming a project on caca/.test(e.message))
+  await assert.rejects(dispatchCommand(onCaca({ on: true }), fakeDeps({ orca: pairedOrca() })), /--on needs a paired host/)
+  const noRepo = fakeDeps({ orca: pairedOrca() })
+  await assert.rejects(dispatchCommand(onCaca({ repo: 'name:web' }), noRepo), (e) => e.code === 3 && /^Not started: caca has no project name:web \(`orca repo list --environment caca` lists its projects\)\. Nothing was started\.$/.test(e.message))
+  const noTree = fakeDeps({ orca: pairedOrca() })
+  await assert.rejects(dispatchCommand(onCaca({ worktree: 'branch:gone', repo: undefined }), noTree), (e) => e.code === 3 && /caca has no worktree branch:gone/.test(e.message))
+  assert.equal(starts(noRepo).length + starts(noTree).length, 0)
+})
+
+test('--on with an unknown outcome: the pending record carries the host, and the same command replays to that same host', async () => {
+  let first = true
+  const paired = pairedOrca()
+  const deps = fakeDeps({ orca: async (args) => {
+    if (args[1] === 'worker-start' && first) {
+      first = false
+      throw unknownStart()
+    }
+    return paired(args)
+  } })
+  await assert.rejects(dispatchCommand(onCaca(), deps), (e) => e.code === 4)
+  const rec = JSON.parse(readFileSync(join(deps.dir, 'pending-starts.json'), 'utf8'))[REQ]
+  assert.deepEqual(rec.base.slice(0, 4), ['orchestration', 'worker-start', '--on', 'env-caca'])
+  assert.deepEqual(rec.req.host, { id: 'runtime:env-caca', name: 'caca' })
+  // A run for another host is another command: it does not replay caca's start.
+  const other = fakeDeps({ orca: pairedOrca({ hosts: [{ id: 'env-caca', name: 'caca' }, { id: 'env-big', name: 'bigbox' }] }) })
+  writeFileSync(join(other.dir, 'pending-starts.json'), JSON.stringify({ [REQ]: rec }))
+  await dispatchCommand(onCaca({ on: 'bigbox' }), other)
+  assert.deepEqual(starts(other)[0].args.slice(2, 4), ['--on', 'env-big'])
+  assert.equal(starts(other)[0].args.includes('--retry-request'), false)
+
+  assert.equal(await dispatchCommand(onCaca(), deps), 0)
+  const [orig, replay] = starts(deps)
+  assert.equal(starts(deps).length, 2)
+  assert.deepEqual(replay.args, [...orig.args, '--retry-request', REQ], 'replayed to the same host by its request id: never a second worker')
+  assert.match(deps.output.at(-1), /^Replayed request .*\nStarted ctx_1 on Claude Opus · high on caca/)
+  assert.deepEqual(readRoutes(deps.dir)[0].host, { id: 'runtime:env-caca', name: 'caca' })
+})
+
+test('--retry-of a start that ran on a host needs --on again, naming the host and worktree; with it, it starts there', async () => {
+  const line = { at: 'x', role: 'worker', taskId: 'task_r', dispatchId: 'ctx_remote', workspace: 'r::/home/cacaking/orca/mono-x', choice: { agent: 'claude', model: 'sonnet', effort: 'medium' }, source: 'kind', reason: 'r', kind: 'normal', attempt: 0, host: { id: 'runtime:env-caca', name: 'caca' } }
+  const deps = fakeDeps({ orca: pairedOrca() })
+  writeFileSync(join(deps.dir, 'routes.jsonl'), `${JSON.stringify(line)}\n`)
+  await assert.rejects(dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_remote', worktree: 'current' }, 'dispatch'), deps), (e) => e instanceof Refused && e.code === 3 && /^Not started: ctx_remote ran on caca \(worktree r::\/home\/cacaking\/orca\/mono-x\)\. Orca's worker-start does not carry placement over to a retry, so without --on it would start on this machine instead\.\nRun it again with --on caca/.test(e.message))
+  assert.equal(deps.calls.length, 0)
+  await dispatchCommand(argsOf({ role: 'worker', 'retry-of': 'ctx_remote', on: 'caca', worktree: 'new-top-level', repo: 'name:mono' }, 'dispatch'), deps)
+  const argv = starts(deps)[0].args
+  assert.equal(after(argv, '--on'), 'env-caca')
+  assert.equal(after(argv, '--retry-of'), 'ctx_remote')
+  assert.equal(after(argv, '--model'), 'opus', 'escalated as any retry')
+  assert.deepEqual(readRoutes(deps.dir).at(-1).host, { id: 'runtime:env-caca', name: 'caca' })
+})
+
+test('--dry-run with --on runs the host checks and prints the exact command and that host\'s verdict; starts and logs nothing', async () => {
+  const deps = fakeDeps({ orca: pairedOrca() })
+  assert.equal(await dispatchCommand(onCaca({ 'dry-run': true }), deps), 0)
+  assert.equal(starts(deps).length, 0)
+  assert.ok(hostReads(deps).some((c) => c.args[0] === 'diagnostics'), 'the checks ran')
+  assert.equal(existsSync(join(deps.dir, 'routes.jsonl')), false)
+  assert.deepEqual(deps.output[0].split('\n'), [
+    'Would start on Claude Opus · high on caca — hard task → Claude Opus · high',
+    "capacity: ok (caca's verdict: 10 GB free there after a 2 GB margin, 12 of 16 GB available; this machine's memory is not part of it)",
+    'caca: Orca 1.4.232. The model is not verified there (Orca lists no models for another host), and the agent runs on caca\'s own account.',
+    "orca orchestration worker-start --on env-caca --worktree new-top-level --spec 'do it' --repo name:mono --agent claude --model opus --effort high --json"
+  ])
+  const json = fakeDeps({ orca: pairedOrca() })
+  await dispatchCommand(onCaca({ 'dry-run': true, json: true }), json)
+  const view = JSON.parse(json.output[0])
+  assert.deepEqual(view.capacity, { verdict: 'ok', freeGB: 10, host: 'caca' })
+  assert.deepEqual(view.host, { id: 'runtime:env-caca', name: 'caca', environmentId: 'env-caca', version: '1.4.232', lacks: ['orchestration.remote-owned-workers.v1', 'orchestration.peer-mail.v1', 'orchestration.worker-auto-release.v1', 'orchestration.worker-keep-open.v1'] })
+  // Still refused on the host's checks.
+  await assert.rejects(dispatchCommand(onCaca({ 'dry-run': true }), fakeDeps({ orca: pairedOrca({ agents: [] }) })), (e) => e.code === 3)
+})
+
+test('a slow host read is bounded: the check gives up and nothing starts', async () => {
+  const paired = pairedOrca()
+  const deps = fakeDeps({ orca: (args) => (args[0] === 'status' ? new Promise(() => {}) : paired(args)) })
+  deps.probeTimeoutMs = 50
+  await assert.rejects(dispatchCommand(onCaca(), deps), (e) => e.code === 3 && /caca is unavailable: no answer from orca status --environment within 0.1 s/.test(e.message))
+  assert.equal(starts(deps).length, 0)
 })

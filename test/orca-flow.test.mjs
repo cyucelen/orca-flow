@@ -1,7 +1,7 @@
 // node --test test/*.test.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -192,4 +192,67 @@ test('bots: a project sees its coordinator\'s bots and the Personal ones, each w
   assert.match(text, /^Bots for super-agent:\n\nsuper-agent-coordinator:\n  super-agent-live-qa: Live regression sentinel/)
   assert.match(text, /Personal \(cross-project\):\n  Replies you owe: Reminds you/)
   assert.match(formatBots({ repo: 'shop', bots: [] }), /No bots for shop/)
+})
+
+// A disposable paired runtime: a fake `orca` on ORCA_CLI_BIN_DIR that answers this machine's and
+// one paired host's (caca's) read-only commands, logs every call, and fails anything else.
+const FAKE_ORCA = (node) => `#!${node}
+const fs = require('fs')
+const args = process.argv.slice(2).filter((a) => a !== '--json')
+fs.appendFileSync(process.env.FAKE_ORCA_LOG, JSON.stringify(args) + '\\n')
+const GiB = 1024 ** 3
+const remote = args.includes('--environment')
+if (remote && args[args.indexOf('--environment') + 1] !== 'env-caca') return fail('Unknown environment')
+const caps = ['orchestration.federation.v1'].concat(remote ? [] : ['orchestration.peer-mail.v1', 'orchestration.remote-owned-workers.v1', 'orchestration.worker-auto-release.v1', 'orchestration.worker-keep-open.v1'])
+const what = args.slice(0, 2).join(' ')
+const answers = {
+  'environment list': { environments: [{ id: 'env-caca', name: 'caca', runtimeId: 'rt', endpoints: [{ url: 'ws://10.1.2.3:7777' }] }] },
+  'status --environment': { runtime: { reachable: true, connectionState: 'connected', appVersion: '1.4.232', capabilities: caps } },
+  status: { runtime: { reachable: true, connectionState: 'connected', appVersion: '1.4.263', capabilities: caps } },
+  'worktree ps': { worktrees: remote ? [{ worktreeId: 'r::/home/a', hostId: 'local', agents: [{ paneKey: 'p1' }] }] : [{ worktreeId: 'l::/a', agents: [] }, { worktreeId: 'l::/b', agents: [] }] },
+  'agent installed': { agents: [{ id: 'claude' }, { id: 'codex' }] },
+  'diagnostics memory': remote ? { host: { totalMemory: 16 * GiB, availableMemory: 8 * GiB }, worktrees: [{ sessions: [{ paneKey: 'p1', memory: 0.5 * GiB }] }] } : { host: { totalMemory: 64 * GiB, availableMemory: 20 * GiB }, worktrees: [] },
+  'repo show': remote && (args.includes('name:mono') || args.includes('mono')) ? { repo: { id: 'r', displayName: 'mono' } } : null
+}
+const result = answers[what] !== undefined ? answers[what] : answers[args[0]]
+if (!result) return fail('not in the fixture: ' + args.join(' '))
+console.log(JSON.stringify({ ok: true, result }))
+function fail(message) { console.log(JSON.stringify({ ok: false, error: { code: 'fixture', message } })); process.exit(1) }
+`.replace(/^(const fs)/m, '(() => {\n$1') + '})()\n'
+
+test('end to end: `orca-flow dispatch --on caca --dry-run` and `orca-flow hosts` against a fake orca start nothing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flow-hosts-'))
+  try {
+    const cli = fileURLToPath(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url))
+    writeFileSync(join(dir, 'orca'), FAKE_ORCA(process.execPath), { mode: 0o700 })
+    // Model discovery from the cache, so no real agent CLI runs (Codex home unknown: key null).
+    writeFileSync(join(dir, 'models-cache.json'), JSON.stringify({ at: Date.now(), key: null, avail: { agents: ['claude', 'codex'], models: { claude: null, codex: null } } }))
+    const log = join(dir, 'calls.jsonl')
+    const env = { ...process.env, ORCA_CLI_BIN_DIR: dir, ORCA_FLOW_DIR: dir, FAKE_ORCA_LOG: log }
+    const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env })
+
+    const dry = run('dispatch', '--on', 'caca', '--dry-run', '--role', 'worker', '--kind', 'simple', '--worktree', 'new-top-level', '--repo', 'name:mono', '--spec', 'x')
+    assert.equal(dry.status, 0, dry.stderr)
+    const lines = dry.stdout.trim().split('\n')
+    assert.equal(lines[0], 'Would start on Claude Haiku on caca — simple task → Claude Haiku')
+    assert.equal(lines[1], "capacity: ok (caca's verdict: 6 GB free there after a 2 GB margin, 8 of 16 GB available; this machine's memory is not part of it)")
+    assert.match(lines[2], /^caca: Orca 1\.4\.232\. The model is not verified there/)
+    assert.equal(lines[3], `${join(dir, 'orca')} orchestration worker-start --on env-caca --worktree new-top-level --spec x --repo name:mono --agent claude --model haiku --json`)
+
+    const hosts = run('hosts')
+    assert.equal(hosts.status, 0, hosts.stderr)
+    assert.match(hosts.stdout, /^This machine and 1 paired host:\nthis machine: reachable · Orca 1\.4\.263 · RAM 20 of 64 GB available · 2 worktrees\n {2}agents: claude, codex\ncaca: reachable · Orca 1\.4\.232 · RAM 8 of 16 GB available · 1 worktree · takes remote workers\n/)
+    assert.doesNotMatch(dry.stdout + hosts.stdout, /10\.1\.2\.3/)
+
+    const unknown = run('dispatch', '--on', 'nope', '--role', 'worker', '--worktree', 'new-top-level', '--repo', 'name:mono', '--spec', 'x')
+    assert.equal(unknown.status, 3)
+    assert.match(unknown.stderr, /no paired host "nope"\. Paired hosts: caca\./)
+    const cap = run('capacity', '--on', 'caca', '--repo', 'mono')
+    assert.equal(cap.status, 0, cap.stderr)
+    assert.match(cap.stdout, /^host: caca .*\nverdict: ok\nfree: 6 GB/)
+
+    const calls = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(calls.filter((a) => a[1] === 'worker-start').length, 0, 'nothing started')
+    for (const a of calls) assert.match(a.slice(0, 2).join(' '), /^(environment list|status|worktree ps|agent installed|diagnostics memory|repo show|account list)/, 'read-only commands only')
+  } finally { rmSync(dir, { recursive: true }) }
 })
