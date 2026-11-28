@@ -138,6 +138,42 @@ export type WorkspaceRow = {
    * row of a bot chat that asks: such rows show in the Bots section, never as ordinary rows.
    */
   bot?: string | null
+  /**
+   * Set on a paired host's row (src/hosts.ts): which host it is on, and whether its data is older than
+   * STALE_AFTER_MS or the host is unavailable now. Absent: a row of this machine. Such a row's id is
+   * `remote:<host id>|<worktree id>`, never a plugin workspace id: nothing here opens, closes or removes it.
+   */
+  host?: { id: string; name: string; stale: boolean; /** When the host last answered (for "seen 12m ago" while it is stale). */ seenAt?: number | null }
+  /**
+   * A paired host's row that Orca's plugin `workspace.list` also lists (same host id, exact path): the
+   * plugin workspace id `workspace.open` takes. Absent: the row opens only from Orca's own sidebar.
+   */
+  openId?: string
+}
+
+/**
+ * One Orca host the user has: this machine (`local`) or a paired server (`runtime:<environment id>`),
+ * as src/hosts.ts last saw it. `checking`: not probed yet this session. `stale`: the data shown is
+ * older than STALE_AFTER_MS or the host is unavailable now. `reason` is safe to show (safeReason).
+ * `remoteWorkers`: its `orca status` lists REMOTE_WORKER_CAPABILITY (null when unknown).
+ */
+export type HostView = {
+  id: string
+  name: string
+  kind: 'local' | 'paired'
+  state: 'reachable' | 'unavailable' | 'checking'
+  stale: boolean
+  checkedAt: number | null
+  seenAt: number | null
+  version: string | null
+  reason: string | null
+  memory: { totalGB: number; availableGB: number; at: number | null } | null
+  agents: string[] | null
+  remoteWorkers: boolean | null
+  /** When the next check of it is due (paired hosts; null while unknown). */
+  nextCheckAt?: number | null
+  /** What its older Orca lacks that this Flow's workers use (HOST_LIMITS: keep-open, auto-release, direct mail); null when unknown. */
+  limits?: string[] | null
 }
 
 /** A chat of an Orca bot: its agent, and the workspace a click on it opens. */
@@ -293,7 +329,7 @@ export type Snapshot = {
   /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
   bots?: Bot[] | null
   /** Settings → Features: Goals (off by default), Linear and Analytics (stored as `tokenSpeed`). Linear and Analytics default to on; false hides the section and its entry points. */
-  features?: { goals?: boolean; linear: boolean; tokenSpeed: boolean }
+  features?: { goals?: boolean; linear: boolean; tokenSpeed: boolean; hosts?: boolean }
   /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
   skillReload?: SkillReloadEntry[]
   /**
@@ -304,6 +340,8 @@ export type Snapshot = {
   codexReload?: { ready: boolean; reason: string; /** The user's approval in Codex is what is missing. */ approval?: boolean }
   /** The same for Antigravity sessions: Orca Flow's hooks in ~/.gemini/config/hooks.json (src/antigravity-hooks.ts). */
   antigravityReload?: { ready: boolean; reason: string; approval?: boolean }
+  /** This machine first, then each paired host (src/hosts.ts); absent while no host is paired. */
+  hosts?: HostView[]
 }
 
 /**
@@ -678,7 +716,7 @@ declare module 'orca' {
      */
     'sidebar.update': { output: { started: boolean; message: string } }
     /** Shows a workspace in Orca and, given an agent's terminal, that agent's tab in it. */
-    'sidebar.open': { input: { workspaceId: string; terminal?: string }; output: { opened: boolean } }
+    'sidebar.open': { input: { workspaceId: string; terminal?: string }; output: { opened: boolean; reason?: string } }
     /**
      * Re-reads which tab is in front in the focused workspace (no Orca event reports a tab switch);
      * the panel asks every few seconds while it is visible. A change is posted as sidebar.changed.

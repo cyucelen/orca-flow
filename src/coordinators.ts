@@ -12,6 +12,7 @@ import type { Coordinator, CoordinatorSessions, LinearSent, Look, WorkspaceRow }
 
 import { conversationRows, memberRows, terminalPane, unambiguousSession, validSessions } from './coordinator-sessions.ts'
 import { bootstrapCoordinator } from './coordinator-bootstrap.ts'
+import { hostKey, LOCAL_HOST } from '../skills/orca-flow/scripts/hosts.mjs'
 
 export const COORDINATOR_HOME = join(homedir(), 'orca', 'coordinators')
 export const COORDINATOR_FILE = 'coordinator.json'
@@ -289,7 +290,33 @@ export function dirOfTerminalRecord(t: { worktreePath?: string; worktreeId?: str
  * terminal is open, it is the worker's dispatcher (a lead's worker nests under the lead even when
  * Orca recorded no parent pane); otherwise the run's coordinator is, as before.
  */
-export async function loadLineage(run: Run, now = Date.now(), force = false): Promise<Lineage> {
+/**
+ * Pure: the pane of a worker that runs on a paired host, re-keyed to that host as its rows are
+ * (`hostKey`), or null for a worker of this machine or one whose record names no pane.
+ * UNVERIFIED field names: no remote worker existed to look at. `projection.host.id` is checked on a
+ * local record (`local` there); the pane fields are guesses, so a remote worker none of them names
+ * simply stays with 'you' (never matched to a local pane by its title or name).
+ */
+export function remoteWorkerPane(w: any): string | null {
+  const hostId = remoteWorkerHost(w)
+  if (!hostId) return null
+  const pane = w.paneKey ?? w.agentPaneKey ?? w.projection?.paneKey ?? w.projection?.agent?.paneKey ?? null
+  return typeof pane === 'string' && pane ? hostKey(hostId, pane) : null
+}
+
+/** The paired host a worker record runs on (`projection.host.id`, checked: `local` here), else null. */
+export function remoteWorkerHost(w: any): string | null {
+  const hostId = w?.projection?.host?.id ?? w?.hostId ?? null
+  return typeof hostId === 'string' && hostId && hostId !== LOCAL_HOST ? hostId : null
+}
+
+/**
+ * `includeRemote` (only while a host is paired, so the commands stay the same without one) asks
+ * worker-list for workers on paired hosts too; one whose pane is known (remoteWorkerPane) nests under
+ * the local lead or coordinator that dispatched it. It gets no dispatch id: the token-speed links and
+ * routes read local panes only.
+ */
+export async function loadLineage(run: Run, now = Date.now(), force = false, opts: { includeRemote?: boolean } = {}): Promise<Lineage> {
   const [terminals, runs] = await Promise.all([run(['terminal', 'list']), run(['orchestration', 'run-list', '--limit', '30', '--full'])])
   const paneOf = new Map<string, string>()
   // A background-launched terminal has no tab yet; its recorded pane still names its agent.
@@ -302,10 +329,10 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
   for (const r of runs.runs ?? []) {
     const handle: string | null = r.coordinator_handle
     if (!handle || (!force && now - (quietRuns.get(r.id) ?? -Infinity) < QUIET_RECHECK_MS)) continue
-    const listed = await run(['orchestration', 'worker-list', '--run', r.id, '--full']).catch(() => null)
+    const listed = await run(['orchestration', 'worker-list', '--run', r.id, '--full', ...(opts.includeRemote ? ['--include-remote'] : [])]).catch(() => null)
     if (!listed) continue
     // The full record names fields differently from the concise one: read both.
-    const rows = (listed.workers ?? []).map((w: any) => ({ terminal: w.terminal ?? w.agentTerminalHandle, state: w.state ?? w.workerState, terminalState: w.terminalState, taskId: w.taskId, dispatchId: w.dispatchId, parentTask: w.projection?.parent?.taskId }))
+    const rows = (listed.workers ?? []).map((w: any) => ({ terminal: w.terminal ?? w.agentTerminalHandle, state: w.state ?? w.workerState, terminalState: w.terminalState, taskId: w.taskId, dispatchId: w.dispatchId, parentTask: w.projection?.parent?.taskId, remote: remoteWorkerHost(w) !== null, remotePane: remoteWorkerPane(w) }))
     const active = rows.filter((w: any) => w.terminal && w.terminalState !== 'released')
     if (active.length === 0) {
       // A new run gets its first worker a moment after it is created; only an older one is quiet.
@@ -322,14 +349,15 @@ export async function loadLineage(run: Run, now = Date.now(), force = false): Pr
       if (open || !terminalOfTask.has(w.taskId)) terminalOfTask.set(w.taskId, w.terminal)
     }
     for (const w of active) {
-      const pane = paneOf.get(w.terminal)
+      // A remote worker's terminal is the host's own handle, never in this machine's terminal list.
+      const pane = w.remote ? w.remotePane : paneOf.get(w.terminal)
       if (!pane) continue
       const creator = typeof w.parentTask === 'string' ? terminalOfTask.get(w.parentTask) : undefined
       dispatcherOf.set(pane, creator && creator !== w.terminal && paneOf.has(creator) ? creator : handle)
       // A follow-up sent to a settled worker opens a new dispatch on the same terminal: any open one wins.
       if (dispatchOf.get(pane) !== 'open') {
         dispatchOf.set(pane, SETTLED.has(w.state) ? 'settled' : 'open')
-        if (typeof w.dispatchId === 'string') dispatchIdOf.set(pane, w.dispatchId)
+        if (typeof w.dispatchId === 'string' && !w.remote) dispatchIdOf.set(pane, w.dispatchId)
       }
     }
   }

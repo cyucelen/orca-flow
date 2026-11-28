@@ -48,7 +48,7 @@ const PAGES                                                                     
     tip: 'Checks that coordinators and leads end each message with the status line and ask the sidebar reads. A miss stops the turn once so the agent can fix it. Your own chats and workers are never checked.' },
   { id: 'capacity', label: 'Memory', tint: '#f08c00', keys: ['marginGB', 'warnHeadroomGB'],
     tip: 'Before a coordinator or lead starts more work, Orca Flow checks free memory. Each agent costs about 0.5 GB, plus any dev servers its project runs.' },
-  { id: 'features', label: 'Features', tint: '#bf5af2', keys: ['bots', 'goals', 'linear', 'tokenSpeed'], tip: 'Choose which sections Orca Flow shows in the sidebar. A section that is off is hidden and stops reading its data.' },
+  { id: 'features', label: 'Features', tint: '#bf5af2', keys: ['bots', 'goals', 'linear', 'tokenSpeed', 'hosts'], tip: 'Choose which sections Orca Flow shows in the sidebar. A section that is off is hidden and stops reading its data.' },
   { id: 'advanced', label: 'Advanced', tint: '#8e8e93', keys: ['linearDryRun'], tip: 'Settings mostly used while testing Orca Flow.' },
   { id: 'about', label: 'About', tint: '#6e6e73', keys: [], tip: 'Orca Flow’s version and updates.' }
 ]
@@ -157,11 +157,13 @@ function pageFeatures()         {
   const goals = 'Show the Goals section at the top of the sidebar, and let agents keep goals with orca-flow goal. Off: no goals are read or shown; the goal files stay.'
   const linear = 'Show the Linear section in the sidebar, and read your Linear issues. Off: nothing is read from Linear.'
   const speed = 'Show the Analytics section in the sidebar, and record the agents’ token usage from their logs (counts only, never messages) with their network traffic. Off: nothing is read or recorded; what was recorded is kept.'
+  const hosts = 'Show the hosts paired with this Orca, their agents and RAM, and let agents start work on them (--on). Needs Orca host API 1.11. Off: no host is polled or shown; hosts.json stays.'
   return group([
     row(label('Bots', bots), toggle('s-bots', d().bots, 'Bots', bots)),
     row(label('Goals', goals), toggle('s-goals', d().goals, 'Goals', goals)),
     row(label('Linear', linear), toggle('s-linear-on', d().linear, 'Linear', linear)),
-    row(label('Analytics', speed), toggle('s-speed', d().tokenSpeed, 'Analytics', speed))
+    row(label('Analytics', speed), toggle('s-speed', d().tokenSpeed, 'Analytics', speed)),
+    row(label('Paired hosts', hosts), toggle('s-hosts', d().hosts, 'Paired hosts', hosts))
   ])
 }
 
@@ -642,6 +644,7 @@ function onChange(e       )       {
   else if (t.id === 's-goals') void session.change((x) => { x.goals = t.checked })
   else if (t.id === 's-linear-on') void session.change((x) => { x.linear = t.checked })
   else if (t.id === 's-speed') void session.change((x) => { x.tokenSpeed = t.checked })
+  else if (t.id === 's-hosts') void session.change((x) => { x.hosts = t.checked })
   else if (t.id === 's-linear') void session.change((x) => { x.linearDryRun = t.checked })
 }
 

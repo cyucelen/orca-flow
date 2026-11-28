@@ -409,6 +409,50 @@ export async function summarizePane(input: { pane: string; transcript: string; t
   return 'written'
 }
 
+// ---------- a paired host's turn ----------
+
+/** What a paired host's `worktree ps` gives of a finished turn (src/hosts.ts RemoteTurn): no transcript. */
+export type RemoteTurnInput = { hostId: string; prompt: string; lastAssistant: string; at: number; key: string; orcaSession: string | null }
+
+/**
+ * Pure: the digest of a paired host's turn from its latest prompt and final message only (its transcript
+ * is on that host). The role comes from that prompt (a dispatched worker's preamble, a lead's start
+ * prompt), else the role its card already had: a later prompt no longer names it. No tool calls are
+ * seen, so a worker's worker_done is not known (`reported` false).
+ */
+export function remoteDigest(prompt: string, lastAssistant: string, at: number, previousRole: Role | null = null): Digest | null {
+  const message = lastAssistant.trim()
+  if (!message) return null
+  const raw = conversationalPrompt(prompt ?? '')
+  const ask = briefOf(raw) || '(not shown)'
+  const found = roleOf(prompt ?? '', [], null)
+  const role = found === 'solo' && previousRole ? previousRole : found
+  return { role, firstPrompt: clip(ask, 1500), context: '', turn: `USER: ${clip(ask, 1500)}`, lastAssistant: clip(message, 4000), lastMessage: message, turnAt: new Date(at).toISOString(), reported: false }
+}
+
+/**
+ * Summarizes a paired host's finished turn into ~/.orca-flow/agents/<host-prefixed pane>.json, with the
+ * same writer, prompt, validation and frame rules as a local turn. The card is marked `remote` (its
+ * host, the message key, when) and has no `transcript`, so nothing looks for one on this Mac. Skips a
+ * message already on the card, and never replaces a newer turn's card.
+ */
+export async function summarizeRemote(input: { pane: string; remote: RemoteTurnInput; worktreeId?: string; force?: boolean; dir?: string; writer?: Writer }): Promise<'written' | 'skipped' | 'empty'> {
+  const { remote } = input
+  const out = join(input.dir ?? AGENTS, `${fileKey(input.pane)}.json`)
+  const saved = readJson(out)
+  const ours = (card: any) => card?.remote?.hostId === remote.hostId && (!card.orcaSession || !remote.orcaSession || card.orcaSession === remote.orcaSession)
+  const previous = ours(saved) ? saved : null
+  if (!input.force && previous?.remote?.key === remote.key) return 'skipped'
+  const d = remoteDigest(remote.prompt, remote.lastAssistant, remote.at, previous?.role ?? null)
+  if (!d) return 'empty'
+  const generated = await (input.writer ?? summaryWriter)({ prompt: promptFor(d, previous, undefined), system: SYSTEM_PROMPT, schema: SUMMARY_SCHEMA })
+  const summary = withFrame(d, withFacts(d, validateSummary(generated)))
+  const latest = readJson(out)
+  if (ours(latest) && (latest.remote?.at ?? 0) > remote.at) return 'skipped'
+  writeJson(out, { pane: input.pane, worktreeId: input.worktreeId ?? '', remote: { hostId: remote.hostId, key: remote.key, at: remote.at }, ...(remote.orcaSession ? { orcaSession: remote.orcaSession } : {}), turnAt: d.turnAt, updatedAt: Date.now(), role: d.role, summarizer: SUMMARIZER_VERSION, ...summary })
+  return 'written'
+}
+
 // ---------- when to summarize ----------
 
 type StatusEvent = {
@@ -429,7 +473,8 @@ export function endsTurn(event: Pick<StatusEvent, 'state' | 'mainAgent'>): boole
   const main = event.mainAgent?.state
   return event.state === 'working' && (main === 'done' || main === 'waiting')
 }
-export type Job = { pane: string; transcript: string; transcriptSource?: TranscriptSource; worktreeId?: string; force?: boolean; refresh?: boolean }
+/** `remote`: a paired host's turn (summarizeRemote); its `transcript` is empty and never read. */
+export type Job = { pane: string; transcript: string; transcriptSource?: TranscriptSource; worktreeId?: string; force?: boolean; refresh?: boolean; remote?: RemoteTurnInput }
 type Queued = Job & { waiters: (() => void)[] }
 
 /**

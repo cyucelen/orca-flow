@@ -8,7 +8,8 @@
 //    context, explicit, attempt}
 // `type` is the task type's id (null for a task routed by difficulty). Only when given: `retryOf`
 // (the failed dispatch, from --retry-of) and `arm`/`pair` (--arm baseline|variant --pair <id>, a
-// comparison label for Analytics; a retry keeps its first attempt's arm).
+// comparison label for Analytics; a retry keeps its first attempt's arm) and `host` ({id, name} of
+// the paired host a `--on` start ran on).
 // `class` repeats `kind` in its old name (trivial, standard, complex) for older readers. `explicit`
 // is what the caller chose itself ({agent, model, effort}, or null). The sidebar reads it to show
 // the model on each row; `--retry-of` reads it to rebuild the request and escalate.
@@ -20,14 +21,24 @@
 // unknown, it is replayed with Orca's `--retry-request <id>`, or, with no id to replay it by,
 // refused (exit 4) until the user checks it or passes `--restart`. Records older than 24 hours are
 // dropped with a note. `plan next` replays and settles its own unknown starts the same way.
+//
+// `dispatch --on <host>` starts the worker or lead on a paired host the user chose (hosts.mjs has the
+// contract). Before anything starts, read-only and each bounded by PROBE_TIMEOUT_MS: the host is
+// reachable and takes remote workers, the worktree or project exists there, the agent is installed
+// there, and that host's memory has room (priced as `orca-flow capacity` prices it; this machine's
+// gate does not run). The Run and the mailbox stay here. The start's routes.jsonl line gains
+// `host: {id, name}`; a `--retry-of` of such a start needs `--on` again (Orca does not carry the
+// placement over). `orca-flow hosts` and `orca-flow capacity --on <host>` read the same facts.
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { agentsOf, findHost, hostKey, LOCAL_HOST, memoryOf, pairedHosts, PROBE_TIMEOUT_MS, probeHost, REMOTE_WORKER_CAPABILITY, safeReason, statusOf } from './hosts.mjs'
 
 const routing = await import(new URL('../../../src/routing.ts', import.meta.url).href)
 const planLib = await import(new URL('../../../src/plan.ts', import.meta.url).href)
 const { codexHomeFromAccounts } = await import(new URL('../../../src/writer.ts', import.meta.url).href)
+const capacityLib = await import(new URL('../../../src/capacity.ts', import.meta.url).href)
 
 /** worker-start flags `dispatch` passes through unchanged. Routing flags are not among them. */
 const PASSTHROUGH = ['worktree', 'task', 'task-title', 'spec', 'spec-file', 'repo', 'name', 'base-branch', 'display-name', 'comment', 'setup', 'deps', 'parent', 'run', 'retry-of', 'retry-request']
@@ -241,7 +252,9 @@ function routeEntry({ at, role, receipt, decision, req }) {
     attempt: req.attempt ?? 0,
     // Only when given, so older lines and readers stay as they were.
     ...(req.retryOf && { retryOf: req.retryOf }),
-    ...(req.arm && { arm: req.arm, pair: req.pair })
+    ...(req.arm && { arm: req.arm, pair: req.pair }),
+    // A start on a paired host (--on); absent for this machine.
+    ...(req.host && { host: { id: req.host.id, name: req.host.name } })
   }
 }
 
@@ -532,6 +545,8 @@ export async function dispatchCommand(args, deps) {
   let keepModel = false
   if (flags['retry-of']) {
     prev = previousAttempt(deps.dir, flags['retry-of'])
+    // Orca's worker-start does not carry placement over to a retry: without --on it would start here.
+    if (prev?.host && flags.on === undefined) throw new Refused(retryNeedsHost(String(flags['retry-of']), prev), 3)
     if (req.attempt === undefined) {
       if (!prev) throw new UsageError(`no route recorded for ${flags['retry-of']} in ${ROUTES(deps.dir)}: pass --attempt <n>`)
       req.attempt = prev.attempt + 1
@@ -563,7 +578,17 @@ export async function dispatchCommand(args, deps) {
   if (!flags.task && !flags.spec && !flags['spec-file']) throw new UsageError('dispatch needs --task <id>, --spec <text> or --spec-file <path|->')
   const newWorktree = NEW_WORKTREE.includes(flags.worktree)
 
-  const base = ['orchestration', 'worker-start']
+  // --on <host>: the placement first (no I/O), then the host by name or id. The command carries the
+  // host's environment id, so the pending-start key does too and a replay goes to the same host.
+  let host = null
+  let placement = null
+  if (flags.on !== undefined) {
+    placement = placementOn(flags)
+    host = await resolveHost(flags.on, deps)
+    req.host = { id: host.id, name: host.name }
+  }
+
+  const base = ['orchestration', 'worker-start', ...(host ? ['--on', host.environmentId] : [])]
   for (const k of PASSTHROUGH) if (k !== 'retry-request' && flags[k] !== undefined && flags[k] !== true) base.push(`--${k}`, String(flags[k]))
   for (const k of BOOLEAN_PASSTHROUGH) if (flags[k]) base.push(`--${k}`)
   let input
@@ -608,11 +633,20 @@ export async function dispatchCommand(args, deps) {
   }
   save()
 
-  const [cap, avail] = await Promise.all([
-    newWorktree && typeof flags.repo === 'string' ? repoName(flags.repo, deps).then((repo) => deps.capacity({ repo })) : deps.capacity({}),
-    deps.discover()
-  ])
-  if (!capacityAllows(cap.verdict, newWorktree)) throw new Refused(refusal(cap, { newWorktree, taskId: flags.task, title: flags['task-title'] }), 2)
+  let cap
+  let avail
+  let target = null
+  if (host) {
+    // That host's checks and capacity; this machine's gate does not run for a start elsewhere.
+    ;[target, avail] = await Promise.all([checkTarget(host, placement, deps), deps.discover()])
+    cap = target.capacity
+  } else {
+    ;[cap, avail] = await Promise.all([
+      newWorktree && typeof flags.repo === 'string' ? repoName(flags.repo, deps).then((repo) => deps.capacity({ repo })) : deps.capacity({}),
+      deps.discover()
+    ])
+    if (!capacityAllows(cap.verdict, newWorktree)) throw new Refused(refusal(cap, { newWorktree, taskId: flags.task, title: flags['task-title'] }), 2)
+  }
 
   const settings = readRouting(deps.dir)
   req = canonicalType(settings, req)
@@ -625,13 +659,24 @@ export async function dispatchCommand(args, deps) {
     if (decision.type) throw new Refused(`${routing.noStrongerModel(decision.type.name)} Attempt ${req.attempt} routes to ${label(decision)} again, the model that failed. Nothing was started.`, 3)
     throw new Refused(`Escalation could not move up: attempt ${req.attempt} routes to ${label(decision)} again, the model that failed (${decision.reason}). Nothing was started. Change the rows in Settings → Models, pass --model, or ask the user.`, 3)
   }
+  if (target) {
+    // The routed (or named) agent must be installed there; nothing is swapped for another one.
+    const agent = decision.choice.agent
+    if (!target.agents.includes(agent)) {
+      const how = asked?.agent ? `You named ${agent}, so nothing was swapped: name one ${host.name} has with --agent, or ask the user.` : `Pass --agent <one ${host.name} has> (with --model), change the rows in Settings → Models, or ask the user.`
+      throw new Refused(`Not started: ${label(decision)} runs on the ${agent} agent, which is not installed on ${host.name}. ${host.name} has: ${target.agents.join(', ') || 'no agents'}. ${how}`, 3)
+    }
+    if (!capacityAllows(cap.verdict, newWorktree)) throw new Refused(hostRefusal(cap, host, { newWorktree, taskId: flags.task, title: flags['task-title'] }), 2)
+  }
 
   const argv = [...base, ...(given ? ['--retry-request', given] : []), ...routing.launchArgs(decision.choice)]
-  const capacityView = { verdict: cap.verdict, freeGB: cap.freeGB ?? null }
+  const capacityView = { verdict: cap.verdict, freeGB: cap.freeGB ?? null, ...(host && { host: host.name }) }
+  const hostView = target ? { id: host.id, name: host.name, environmentId: host.environmentId, version: target.version, lacks: target.lacks } : null
 
   if (dryRun) {
     const command = shellLine([deps.orcaBin ?? 'orca', ...argv, '--json'])
-    if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, command, ...(notes.length && { notes }) }, null, 2))
+    if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, ...(hostView && { host: hostView, capacityDetail: cap }), command, ...(notes.length && { notes }) }, null, 2))
+    else if (target) deps.out([...notes, `Would start on ${label(decision)} on ${host.name} — ${decision.reason}`, `capacity: ${cap.verdict} (${hostVerdictText(cap)})`, ...hostNotes(target, flags), command].join('\n'))
     else deps.out([...notes, `Would start on ${label(decision)} — ${decision.reason}`, `capacity: ${cap.verdict}`, command].join('\n'))
     return 0
   }
@@ -649,8 +694,8 @@ export async function dispatchCommand(args, deps) {
     throw new Refused([...notes, unknownMessage(outcome, e)].join('\n'), 4)
   }
   appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: req.role, receipt, decision, req }))
-  if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, receipt, ...(notes.length && { notes }) }, null, 2))
-  else deps.out([...notes, formatStart(receipt, decision)].join('\n'))
+  if (args.json) deps.out(JSON.stringify({ route: decision, capacity: capacityView, ...(hostView && { host: hostView }), receipt, ...(notes.length && { notes }) }, null, 2))
+  else deps.out([...notes, formatStart(receipt, decision, req.host), ...(target ? [`  capacity: ${cap.verdict} (${hostVerdictText(cap)})`, ...hostNotes(target, flags).map((l) => `  ${l}`)] : [])].join('\n'))
   return 0
 }
 
@@ -680,19 +725,340 @@ async function replayStart(key, pending, args, deps, notes = []) {
   writePending(deps.dir, pending)
   const decision = { ...rec.decision, ok: true, skipped: [] }
   appendRoute(deps.dir, routeEntry({ at: deps.now().toISOString(), role: rec.role, receipt, decision, req: rec.req }))
-  if (args.json) deps.out(JSON.stringify({ route: decision, replayed: id, receipt, ...(notes.length && { notes }) }, null, 2))
-  else deps.out([...notes, `Replayed request ${id} (its outcome was unknown).`, formatStart(receipt, decision)].join('\n'))
+  if (args.json) deps.out(JSON.stringify({ route: decision, replayed: id, receipt, ...(rec.req?.host && { host: rec.req.host }), ...(notes.length && { notes }) }, null, 2))
+  else deps.out([...notes, `Replayed request ${id} (its outcome was unknown).`, formatStart(receipt, decision, rec.req?.host)].join('\n'))
   return 0
 }
 
-function formatStart(receipt, decision) {
+function formatStart(receipt, decision, host = null) {
   const id = receipt?.dispatchId ?? receipt?.taskId ?? '(no dispatch id)'
-  const lines = [`Started ${id} on ${label(decision)} — ${decision.reason}`]
+  const lines = [`Started ${id} on ${label(decision)}${host ? ` on ${host.name}` : ''} — ${decision.reason}`]
   const facts = [receipt?.taskId && `task ${receipt.taskId}`, receipt?.runId && `run ${receipt.runId}`, receipt?.state && `state ${receipt.state}`, receipt?.workspace && `workspace ${receipt.workspace}`].filter(Boolean)
   if (facts.length) lines.push(`  ${facts.join(' · ')}`)
   if (receipt?.warning) lines.push(`  warning: ${receipt.warning}`)
   if (receipt?.next) lines.push(`  next: ${typeof receipt.next === 'string' ? receipt.next : JSON.stringify(receipt.next)}`)
   return lines.join('\n')
+}
+
+// ---------- paired hosts (--on, hosts, capacity --on) ----------
+
+const GB = 1024 ** 3
+/** Exact worktree selectors `worker-start --on` takes (Orca refuses `current` on another host). */
+const EXACT_SELECTOR = /^(id|path|name|branch|identity):\S/
+/**
+ * Capabilities this machine's Orca (1.4.263) lists and an older host may not (caca, 1.4.232, lists
+ * none of them). `orca-flow hosts` names the missing ones as that host's version limits.
+ */
+export const HOST_LIMIT_CAPABILITIES = ['orchestration.remote-owned-workers.v1', 'orchestration.peer-mail.v1', 'orchestration.worker-auto-release.v1', 'orchestration.worker-keep-open.v1']
+
+const pre = (starting) => (starting ? 'Not started: ' : '')
+const post = (starting) => (starting ? ' Nothing was started.' : '')
+
+/** Orca commands for host checks, each bounded (PROBE_TIMEOUT_MS): a slow host never holds a start up. */
+function bounded(deps) {
+  const run = deps.probeOrca ?? deps.orca
+  const ms = deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+  return (args) =>
+    new Promise((res, rej) => {
+      const timer = setTimeout(() => rej(new Error(`no answer from orca ${args.slice(0, 2).join(' ')} within ${Math.round(ms / 100) / 10} s`)), ms)
+      Promise.resolve()
+        .then(() => run(args))
+        .then(
+          (v) => {
+            clearTimeout(timer)
+            res(v)
+          },
+          (e) => {
+            clearTimeout(timer)
+            rej(e)
+          }
+        )
+    })
+}
+
+/** Where a `--on` start goes, from the flags alone: a new worktree in a project there, or an exact selector. */
+function placementOn(flags) {
+  if (flags.on === true || !String(flags.on ?? '').trim()) throw new UsageError('--on needs a paired host: its name or environment id (`orca-flow hosts` lists them)')
+  const on = String(flags.on)
+  const wt = flags.worktree
+  if (NEW_WORKTREE.includes(wt)) {
+    if (typeof flags.repo !== 'string') throw new UsageError(`--on ${on} --worktree ${wt} needs --repo <selector> naming a project on ${on} (\`orca repo list --environment ${on}\` lists them)`)
+    return { kind: 'new', repo: flags.repo }
+  }
+  if (typeof wt === 'string' && EXACT_SELECTOR.test(wt)) return { kind: 'existing', worktree: wt }
+  const what = wt === undefined || wt === true || wt === 'current' || wt === 'active' ? `${wt === undefined || wt === true ? 'no --worktree means' : `--worktree ${wt} is`} this machine's current worktree, which Orca refuses on another host` : `--worktree ${wt} is not an exact selector`
+  throw new UsageError(`--on ${on}: ${what}. Use --worktree new-top-level or new-child with --repo <a project on ${on}>, or an exact selector (id:, path:, name:, branch: or identity:) of a worktree on ${on}.`)
+}
+
+/** The paired host `--on` names (name, environment id or host id); refuses (exit 3) an unknown or ambiguous one. */
+export async function resolveHost(query, deps, { starting = true } = {}) {
+  if (query === true || !String(query ?? '').trim()) throw new UsageError('--on needs a paired host: its name or environment id (`orca-flow hosts` lists them)')
+  const q = String(query)
+  let all
+  try {
+    all = pairedHosts(await bounded(deps)(['environment', 'list']))
+  } catch (e) {
+    throw new Refused(`${pre(starting)}could not list the paired hosts: ${safeReason(e)}.${post(starting)}`, 3)
+  }
+  const host = findHost(all, q)
+  if (host) return host
+  const same = all.filter((h) => h.name.toLowerCase() === q.toLowerCase())
+  if (same.length > 1) throw new Refused(`${pre(starting)}"${q}" names ${same.length} paired hosts; pass the environment id of the one you mean: ${same.map((h) => `${h.name} (${h.environmentId})`).join(', ')}.${post(starting)}`, 3)
+  throw new Refused(`${pre(starting)}no paired host "${q}". ${all.length ? `Paired hosts: ${all.map((h) => h.name).join(', ')}.` : 'No host is paired with this Orca.'}${post(starting)}`, 3)
+}
+
+/** probeHost, refusing (exit 3) when the host is not reachable. */
+async function reachHost(host, run, deps, want, starting) {
+  const probe = await probeHost(host, run, { want, now: () => deps.now().getTime() })
+  if (probe.reachable) return probe
+  const cs = probe.status?.connectionState
+  const why = probe.errors.status ?? (cs && cs !== 'connected' ? `its connection is ${cs}` : 'Orca reports it unreachable')
+  throw new Refused(`${pre(starting)}${host.name} is unavailable: ${why}.${post(starting)}`, 3)
+}
+
+/** The host's `diagnostics memory`, or a refusal: capacity there is unknown, and is never guessed. */
+async function readHostMemory(host, run, starting) {
+  try {
+    return await run(['diagnostics', 'memory', '--environment', host.environmentId])
+  } catch (e) {
+    throw new Refused(`${pre(starting)}capacity unknown on ${host.name}: its memory could not be read (${safeReason(e)}).${starting ? " Nothing was started; this machine's memory does not stand in for it." : ''}`, 2)
+  }
+}
+
+const notFound = (e, code) => e?.code === code || String(e?.message ?? '').includes(code)
+
+/** The worktree or project a `--on` start names, checked on that host; a new worktree's project name for pricing. */
+async function checkPlacement(host, placement, run, starting = true) {
+  const env = ['--environment', host.environmentId]
+  if (placement.kind === 'new') {
+    try {
+      const r = await run(['repo', 'show', '--repo', placement.repo, ...env])
+      const repo = r?.repo ?? r
+      const name = repo?.displayName ?? repo?.name
+      return { repo: typeof name === 'string' && name ? name : placement.repo.replace(/^name:/, '') }
+    } catch (e) {
+      if (notFound(e, 'repo_not_found')) throw new Refused(`${pre(starting)}${host.name} has no project ${placement.repo} (\`orca repo list --environment ${host.name}\` lists its projects).${post(starting)}`, 3)
+      throw new Refused(`${pre(starting)}could not check the project ${placement.repo} on ${host.name}: ${safeReason(e)}.${post(starting)}`, 3)
+    }
+  }
+  try {
+    await run(['worktree', 'show', '--worktree', placement.worktree, ...env])
+    return { worktree: placement.worktree }
+  } catch (e) {
+    if (notFound(e, 'selector_not_found')) throw new Refused(`${pre(starting)}${host.name} has no worktree ${placement.worktree} (\`orca worktree ps --environment ${host.name}\` lists its worktrees).${post(starting)}`, 3)
+    throw new Refused(`${pre(starting)}could not check the worktree ${placement.worktree} on ${host.name}: ${safeReason(e)}.${post(starting)}`, 3)
+  }
+}
+
+/**
+ * Pure: the capacity verdict on a paired host, with `orca-flow capacity`'s formula (src/capacity.ts
+ * decide: available memory minus the margin, against an agent plus the project's environment). The
+ * agent costs the median of that host's agent sessions (its `worktree ps` panes; all sessions when
+ * that read failed); a project costs the median of environments measured on that host, which this
+ * machine has none of yet, so every project there is priced at the fallback. Memory pressure is a
+ * macOS reading of this machine and is not read there. null when the memory report has no totals.
+ */
+export function hostCapacity({ host, memResult, worktrees = null, repo, dir }) {
+  const mem = memoryOf(memResult)
+  if (!mem) return null
+  const config = { ...capacityLib.DEFAULT_CONFIG, ...readJson(join(dir, 'config.json'), {}) }
+  const panes = Array.isArray(worktrees) ? new Set(worktrees.flatMap((w) => (w.agents ?? []).map((a) => a.paneKey))) : null
+  const sessions = (Array.isArray(memResult?.worktrees) ? memResult.worktrees : [])
+    .flatMap((w) => w?.sessions ?? [])
+    .filter((s) => typeof s?.memory === 'number' && (!panes || panes.has(hostKey(host.id, s.paneKey))))
+    .map((s) => s.memory / GB)
+  const agentGB = capacityLib.costsOf(sessions, []).agentGB
+  const memory = capacityLib.readEnvMemory(dir)
+  const prices = capacityLib.envPrices({ samples: memory.samples.filter((s) => s.path.startsWith(`${host.id}|`)), legacy: {} })
+  const envGB = repo ? capacityLib.envCost(prices, repo) : capacityLib.typicalEnv(prices)
+  const { verdict, freeGB } = capacityLib.decide({ availableGB: mem.availableGB, pressure: 'unknown', config, agentGB, envGB })
+  return {
+    host: { id: host.id, name: host.name },
+    verdict,
+    freeGB,
+    marginGB: config.marginGB,
+    totalGB: mem.totalGB,
+    availableGB: mem.availableGB,
+    costs: {
+      agentGB,
+      agentSessions: sessions.filter((g) => g >= 0.1).length,
+      envGB,
+      priced: repo ? { repo, envGB, measured: prices[repo] !== undefined } : { typicalEnvGB: envGB, measured: Object.keys(prices).length > 0 }
+    }
+  }
+}
+
+/** One line: whose verdict it is, and the numbers behind it. */
+function hostVerdictText(cap) {
+  return `${cap.host.name}'s verdict: ${cap.freeGB ?? '?'} GB free there after a ${cap.marginGB} GB margin, ${cap.availableGB} of ${cap.totalGB} GB available; this machine's memory is not part of it`
+}
+
+export function formatHostCapacity(cap) {
+  const name = cap.host.name
+  const p = cap.costs.priced
+  const agent = cap.costs.agentSessions ? `an agent ~${cap.costs.agentGB} GB (median of ${cap.costs.agentSessions} agent session${cap.costs.agentSessions === 1 ? '' : 's'} there)` : `an agent ~${cap.costs.agentGB} GB (the fallback: no agent session there to measure)`
+  const env = p.repo ? `a new ${p.repo} worktree ~${Math.round((cap.costs.agentGB + p.envGB) * 10) / 10} GB` : `a new workstream ~${Math.round((cap.costs.agentGB + p.typicalEnvGB) * 10) / 10} GB`
+  const lines = [
+    `host: ${name} (the verdict is ${name}'s; this machine's memory is not part of it)`,
+    `verdict: ${cap.verdict}`,
+    `free: ${cap.freeGB ?? '?'} GB (after a ${cap.marginGB} GB margin; ${cap.availableGB} of ${cap.totalGB} GB available on ${name})`,
+    `costs on ${name}: ${agent}, ${env}`
+  ]
+  if (!p.measured) lines.push(`  ${p.repo ? `${p.repo}'s environment was` : 'no project environment was'} never measured on ${name}: priced at the ${p.envGB ?? p.typicalEnvGB} GB fallback`)
+  return lines.join('\n')
+}
+
+function hostRefusal(cap, host, { newWorktree, taskId, title }) {
+  const why = VERDICT_WORDS[cap.verdict] ?? cap.verdict
+  const lines = [`Not started: ${host.name}'s capacity says ${cap.verdict} (${cap.freeGB ?? '?'} GB free there after the margin): ${why} on ${host.name}. This machine's memory is not part of it.`]
+  if (newWorktree && cap.verdict === 'agents-only') lines.push(`An existing worktree on ${host.name} has room: start it there (--worktree <exact selector>), or queue it.`)
+  if (taskId) lines.push(`It stays queued as ${taskId}; start it with the same command when \`orca-flow capacity --on ${host.name}\` allows.`)
+  else lines.push(`Queue it: orca orchestration task-create --task-title ${shellLine([title ?? '<outcome>'])} --spec-file -`)
+  lines.push('Another host, or this machine, only if the user chooses it.')
+  return lines.join('\n')
+}
+
+/** What a `--on` start says once: the model is not verified there, the account is that host's own, and version limits that touch it. */
+function hostNotes(target, flags) {
+  const name = target.host.name
+  const lines = [`${name}: Orca ${target.version ?? '(version unknown)'}. The model is not verified there (Orca lists no models for another host), and the agent runs on ${name}'s own account.`]
+  if (flags['keep-open'] && target.lacks.includes('orchestration.worker-keep-open.v1')) lines.push(`note: ${name}'s Orca does not list orchestration.worker-keep-open.v1, so --keep-open may not hold there.`)
+  return lines
+}
+
+function retryNeedsHost(id, prev) {
+  return [
+    `Not started: ${id} ran on ${prev.host.name} (worktree ${prev.workspace ?? 'unknown'}). Orca's worker-start does not carry placement over to a retry, so without --on it would start on this machine instead.`,
+    `Run it again with --on ${prev.host.name} and the --worktree you mean there (an exact selector of that worktree, or new-top-level/new-child with --repo), or with --on another host only if the user chose one.`
+  ].join('\n')
+}
+
+/**
+ * The read-only checks before a start on a paired host, each bounded, in order: reachable, takes
+ * remote workers, agents readable, the worktree or project exists there, memory readable. Refuses on
+ * the first that fails. Returns the host's agents, version, version limits and capacity verdict.
+ */
+export async function checkTarget(host, placement, deps) {
+  const run = bounded(deps)
+  const probe = await reachHost(host, run, deps, { worktrees: true, agents: true }, true)
+  const caps = probe.status.capabilities
+  const version = probe.status.version
+  if (!caps.includes(REMOTE_WORKER_CAPABILITY)) throw new Refused(`Not started: ${host.name}'s Orca (${version ?? 'version unknown'}) does not list ${REMOTE_WORKER_CAPABILITY}, so it cannot take a worker started from here. Updating Orca there is the user's call. Nothing was started.`, 3)
+  if (!probe.agents) throw new Refused(`Not started: could not read the agents installed on ${host.name} (${probe.errors.agents ?? 'no answer'}). Nothing was started.`, 3)
+  const [where, memResult] = await Promise.all([checkPlacement(host, placement, run), readHostMemory(host, run, true)])
+  const capacity = hostCapacity({ host, memResult, worktrees: probe.worktrees, repo: where.repo, dir: deps.dir })
+  if (!capacity) throw new Refused(`Not started: capacity unknown on ${host.name}: its memory report has no host totals. Nothing was started.`, 2)
+  return { host, version, agents: probe.agents, lacks: HOST_LIMIT_CAPABILITIES.filter((c) => !caps.includes(c)), capacity, placement: where }
+}
+
+/** `orca-flow capacity --on <host> [--repo <name>]`: the capacity verdict on that host. Returns the exit code. */
+export async function capacityOnCommand(args, deps) {
+  const host = await resolveHost(args.on, deps, { starting: false })
+  const run = bounded(deps)
+  const probe = await reachHost(host, run, deps, { worktrees: true }, false)
+  const [where, memResult] = await Promise.all([typeof args.repo === 'string' ? checkPlacement(host, { kind: 'new', repo: args.repo }, run, false) : {}, readHostMemory(host, run, false)])
+  const cap = hostCapacity({ host, memResult, worktrees: probe.worktrees, repo: where.repo, dir: deps.dir })
+  if (!cap) throw new Refused(`capacity unknown on ${host.name}: its memory report has no host totals.`, 2)
+  deps.out(args.json ? JSON.stringify(cap, null, 2) : formatHostCapacity(cap))
+  return 0
+}
+
+/** This machine's row for `orca-flow hosts`: the same reads as probeHost, without --environment. */
+async function probeLocal(run, now) {
+  const errors = {}
+  const read = async (field, args) => {
+    try {
+      return await run(args)
+    } catch (e) {
+      errors[field] = safeReason(e)
+      return null
+    }
+  }
+  const at = now()
+  const [st, ps, ag, mem] = await Promise.all([read('status', ['status']), read('worktrees', ['worktree', 'ps']), read('agents', ['agent', 'installed']), read('memory', ['diagnostics', 'memory'])])
+  return { host: { id: LOCAL_HOST, environmentId: null, name: 'this machine' }, at, reachable: true, status: st ? statusOf(st) : null, worktrees: ps ? (ps.worktrees ?? []) : null, agents: ag ? agentsOf(ag) : null, memory: mem ? memoryOf(mem) : null, errors }
+}
+
+/** Runs `fn` over `items`, at most `n` at once, keeping their order. */
+async function inPool(items, n, fn) {
+  const out = new Array(items.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(n, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++
+        out[i] = await fn(items[i])
+      }
+    })
+  )
+  return out
+}
+
+/** Pure: one probe as a roster row (`orca-flow hosts --json`). */
+export function hostRow(p) {
+  const local = p.host.id === LOCAL_HOST
+  const caps = p.status?.capabilities ?? []
+  const cs = p.status?.connectionState
+  return {
+    id: p.host.id,
+    name: p.host.name,
+    ...(local ? { local: true } : { environmentId: p.host.environmentId }),
+    state: p.reachable ? 'reachable' : 'unavailable',
+    ...(p.reachable ? {} : { reason: p.errors.status ?? (cs && cs !== 'connected' ? `its connection is ${cs}` : 'Orca reports it unreachable') }),
+    version: p.status?.version ?? null,
+    ram: p.memory ? { totalGB: p.memory.totalGB, availableGB: p.memory.availableGB } : null,
+    agents: p.agents,
+    takesRemoteWorkers: local || !p.reachable || !p.status ? null : caps.includes(REMOTE_WORKER_CAPABILITY),
+    lacks: local || !p.reachable || !p.status ? [] : HOST_LIMIT_CAPABILITIES.filter((c) => !caps.includes(c)),
+    worktrees: p.worktrees ? p.worktrees.length : null,
+    errors: p.errors
+  }
+}
+
+export function formatHosts(rows) {
+  const paired = rows.filter((r) => !r.local).length
+  const lines = [`This machine and ${paired} paired host${paired === 1 ? '' : 's'}:`]
+  for (const r of rows) {
+    if (r.state === 'unavailable') {
+      lines.push(`${r.name}: unavailable: ${r.reason}`)
+      continue
+    }
+    const facts = [
+      `Orca ${r.version ?? '?'}`,
+      r.ram ? `RAM ${r.ram.availableGB} of ${r.ram.totalGB} GB available` : `RAM unknown${r.errors.memory ? ` (${r.errors.memory})` : ''}`,
+      r.worktrees == null ? `worktrees unknown${r.errors.worktrees ? ` (${r.errors.worktrees})` : ''}` : `${r.worktrees} worktree${r.worktrees === 1 ? '' : 's'}`
+    ]
+    if (!r.local) facts.push(r.takesRemoteWorkers ? 'takes remote workers' : `does not take remote workers (no ${REMOTE_WORKER_CAPABILITY})`)
+    lines.push(`${r.name}: reachable · ${facts.join(' · ')}`)
+    lines.push(`  agents: ${r.agents ? r.agents.join(', ') || 'none' : `unknown (${r.errors.agents ?? 'no answer'})`}`)
+    if (r.lacks.length) lines.push(`  host-version limits: its Orca does not list ${r.lacks.join(', ')}`)
+  }
+  lines.push('Start work on a paired host only when the user or your lead chose it: orca-flow dispatch --on <name> ...; `orca-flow capacity --on <name>` gives that host\'s verdict.')
+  return lines.join('\n')
+}
+
+/**
+ * `orca-flow hosts`: this machine and each paired host, read-only and bounded (one command's timeout,
+ * at most 2 hosts at once). No paired host (or the list unreadable): one line. Returns the exit code.
+ */
+export async function hostsCommand(args, deps) {
+  const run = bounded(deps)
+  let paired
+  try {
+    paired = pairedHosts(await run(['environment', 'list']))
+  } catch (e) {
+    deps.out(args.json ? JSON.stringify({ hosts: [], error: safeReason(e) }, null, 2) : `No paired hosts known: Orca could not list them (${safeReason(e)}).`)
+    return 0
+  }
+  if (!paired.length) {
+    deps.out(args.json ? JSON.stringify({ hosts: [] }, null, 2) : 'No paired hosts: everything runs on this machine. Pair a server in Orca (Settings, or `orca pair`) to see it here.')
+    return 0
+  }
+  const now = () => deps.now().getTime()
+  const probes = await inPool([null, ...paired], 2, (h) => (h ? probeHost(h, run, { want: { worktrees: true, agents: true, memory: true }, now }) : probeLocal(run, now)))
+  const rows = probes.map(hostRow)
+  deps.out(args.json ? JSON.stringify({ hosts: rows }, null, 2) : formatHosts(rows))
+  return 0
 }
 
 // ---------- plan ----------

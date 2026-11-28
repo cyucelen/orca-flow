@@ -250,6 +250,38 @@ shows none and you are a home coordinator, `run-create --objective "<goal>"` fir
 needs. **P0 preempts:** if a P0 is queued, propose pausing the lowest-priority idle agent as a
 yes-or-no ask (`Needs your yes`); never stop one without the user's yes.
 
+### Paired hosts
+
+Orca can pair other machines (servers) with this one. Start work on a paired host only when the
+user, or your lead on the user's word, chose that host ("run it on caca, it has more RAM"). Never
+move work there on your own: not when the gate here says no, not to spread load. When the gate
+says no here, queue or offer what frees room as usual; you may add in one line that a paired host
+has room, and the user decides.
+
+```sh
+orca-flow hosts                                  # this machine and each paired host
+orca-flow capacity --on <host> --repo <name>     # that host's verdict
+orca-flow dispatch --on <host> --role worker --kind normal --worktree new-top-level \
+  --repo <a project on that host> --task-title "<outcome>" --spec-file -
+```
+
+`--on` (and `hosts`) need the Paired hosts switch on (Orca Flow Settings → Features); off, they refuse and start nothing. `--on` takes the host's name or environment id. `--worktree current` (or none) is this machine's
+worktree and is refused: use `new-top-level` or `new-child` with `--repo` naming a project on that
+host (`orca repo list --environment <host>`), or an exact selector (`id:`, `path:`, `name:`,
+`branch:`, `identity:`) of a worktree there. Before anything starts, dispatch checks read-only that
+the host is reachable and takes remote workers, the worktree or project exists there, the agent is
+installed there, and that host's memory has room; this machine's gate does not run. Exit 3: an
+unknown host or a failed check; exit 2: no room there, or its memory could not be read. Nothing
+starts on a refusal. The model and effort pass through unverified (Orca lists no models for
+another host) and the agent runs on that host's own account. The Run and your mailbox stay here:
+the worker reports to you as usual; address it by its dispatch id. A `--retry-of` of a start on a
+host needs `--on` again (Orca does not carry the placement over).
+
+Reading `orca-flow hosts`: `unavailable` means it cannot be reached now, so nothing starts there;
+`does not take remote workers` means its Orca is too old for `--on`; `host-version limits` names
+what its older Orca lacks, so do not rely on those there. What is and is not supported:
+[docs/remote-hosts.md](../../docs/remote-hosts.md).
+
 ## Bots
 
 Orca bots are always-on specialists the user set up (live QA, checks, releases, reviews). Before
@@ -390,4 +422,5 @@ to ask what one of your words means.
   investigate it yourself.
 - Release or close workers; Orca does that.
 - Remove a worktree without the user's yes.
+- Start work on a paired host nobody chose, or move a running session between hosts.
 - Poll workers or run watch scripts.

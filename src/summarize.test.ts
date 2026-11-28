@@ -2,7 +2,7 @@
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentSummary } from './protocol.ts'
-import { digest, frameAsk, roleOf, shortAsk, withFrame } from './summarize.ts'
+import { digest, frameAsk, remoteDigest, roleOf, shortAsk, summarizeRemote, withFrame } from './summarize.ts'
 
 const line = (type: string, content: unknown, cwd?: string) => JSON.stringify({ type, cwd, timestamp: '2026-11-18T12:00:00Z', message: { content } })
 /** A session whose first prompt names its role and whose latest turn ends with `message`. */
@@ -303,4 +303,48 @@ test('meta records (skill bodies) do not start a turn; real prompts still do', (
   assert.equal(/go on/.test(d.context), false, 'and it did not push the real prompt into the earlier turn')
   const human = digest([...base, line('user', 'status?'), say('Noted.')], '/h/orca/coordinators')!
   assert.equal(human.lastMessage, 'Noted.')
+})
+
+// ---------- a paired host's turn (no transcript here) ----------
+
+test("a paired host's turn is summarized from its prompt and final message, marked remote, with no transcript", async () => {
+  const { mkdtempSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'remote-cards-'))
+  const prompts: string[] = []
+  const writer = async (req: { prompt: string }) => {
+    prompts.push(req.prompt)
+    return { title: 'Status check', about: 'Answers how the work stands.', goal: '', since: 'Reported status', glance: '', watching: '', needs: { type: 'none', ask: '', options: [] }, effort: 'quick', priority: 'P3' }
+  }
+  const remote = { hostId: 'runtime:env-caca', prompt: 'whats statuss', lastAssistant: 'All green: 3 PRs merged.', at: Date.parse('2026-11-28T12:00:00Z'), key: 'k1', orcaSession: 's1' }
+  const pane = 'runtime:env-caca|tab1:leaf1'
+  assert.equal(await summarizeRemote({ pane, remote, worktreeId: 'remote:runtime:env-caca|w', dir, writer: writer as never }), 'written')
+  const file = join(dir, 'runtime_env-caca_tab1_leaf1.json')
+  assert.ok(existsSync(file))
+  const card = JSON.parse(readFileSync(file, 'utf8'))
+  assert.deepEqual(card.remote, { hostId: 'runtime:env-caca', key: 'k1', at: remote.at })
+  assert.equal('transcript' in card, false)
+  assert.equal(card.title, 'Status check')
+  assert.equal(card.orcaSession, 's1')
+  assert.match(prompts[0], /FIRST REQUEST:\nwhats statuss/)
+  assert.match(prompts[0], /AGENT'S FINAL MESSAGE THIS TURN:\nAll green: 3 PRs merged\./)
+  // The same message again: skipped, no writer call.
+  assert.equal(await summarizeRemote({ pane, remote, dir, writer: writer as never }), 'skipped')
+  assert.equal(prompts.length, 1)
+  // An older turn arriving late never replaces the newer card.
+  const late = async () => { return writer({ prompt: 'x' }) }
+  assert.equal(await summarizeRemote({ pane, remote: { ...remote, key: 'k0', at: remote.at - 1000 }, dir, writer: late as never }), 'skipped')
+})
+
+test("a paired host's role: a worker's preamble or a lead's start prompt, else the card's earlier role", () => {
+  const preamble = 'You are working inside Orca. You are a dispatched worker.\nYour task ID is: task_1\n=== TASK ===\nFix the build.'
+  assert.equal(remoteDigest(preamble, 'Done.', 1)!.role, 'worker')
+  assert.match(remoteDigest(preamble, 'Done.', 1)!.turn, /Fix the build/)
+  // Orca's mail wake is no prompt: the turn shows none, the message still does.
+  assert.equal(remoteDigest('You have 1 orchestration message. Run `orca orchestration check`.', 'Read it.', 1)!.lastAssistant, 'Read it.')
+  assert.equal(remoteDigest('Your role: lead. Ship the docs.', 'Working.', 1)!.role, 'lead')
+  assert.equal(remoteDigest('any news?', 'Not yet.', 1, 'worker')!.role, 'worker')
+  assert.equal(remoteDigest('any news?', 'Not yet.', 1)!.role, 'solo')
+  assert.equal(remoteDigest('any news?', '   ', 1), null)
 })

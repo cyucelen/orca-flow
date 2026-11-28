@@ -94,7 +94,8 @@ guess. See "The project's words" in [SKILL.md](../SKILL.md).
      EOF
      ```
 3. **New workstream: start a lead.** Set the level, then (dispatch runs the capacity gate for a
-   new worktree of that project, and refuses with exit 2 when it does not fit):
+   new worktree of that project, and refuses with exit 2 when it does not fit). Only when the user
+   picks a paired host for it, add `--on <host>` with a `--repo` that host has (Paired hosts in SKILL.md):
 
    ```sh
    orca-flow dispatch --role lead --worktree new-top-level --repo id:<repoId> \

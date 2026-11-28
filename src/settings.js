@@ -37,7 +37,7 @@ export const DEFAULT_SETTINGS               = {
   warnHeadroomGB: 2,
   linearDryRun: false,
   routing: DEFAULT_ROUTING,
-  features: { bots: false, goals: false, linear: true, tokenSpeed: true }
+  features: { bots: false, goals: false, linear: true, tokenSpeed: true, hosts: false }
 }
 export const SETTINGS_KEYS                         = ['writers', 'messageFormat', 'marginGB', 'warnHeadroomGB', 'linearDryRun', 'routing', 'features']
 
@@ -77,10 +77,10 @@ export function normalizeFormat(value         )                {
   return 'off'
 }
 
-/** The feature switches. Bots and Goals are off unless exactly true; Linear and Analytics are shown today, so they are on unless exactly false (Analytics is stored as `tokenSpeed`, its name before 0.2.87, so older files keep working). An older or broken file changes nothing on screen. */
+/** The feature switches. Bots, Goals and Paired hosts are off unless exactly true; Linear and Analytics are shown today, so they are on unless exactly false (Analytics is stored as `tokenSpeed`, its name before 0.2.87, so older files keep working). An older or broken file changes nothing on screen. */
 export function normalizeFeatures(value         )                  {
   const f = isObject(value) ? value : {}
-  return { bots: f.bots === true, goals: f.goals === true, linear: f.linear !== false, tokenSpeed: f.tokenSpeed !== false }
+  return { bots: f.bots === true, goals: f.goals === true, linear: f.linear !== false, tokenSpeed: f.tokenSpeed !== false, hosts: f.hosts === true }
 }
 
 const gb = (value         , fallback        ) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback)
@@ -194,6 +194,7 @@ export const settingsToSave = (current              , base                      
 
 
 
+
 export const DEFAULT_FOLDERS = ['~/orca/coordinators']
 /** What the dialog shows for a writer without a model choice. */
 export const AGY_DEFAULT_MODEL = 'agy-default'
@@ -219,7 +220,7 @@ export function fromDraft(d       )               {
   return normalizeSettings({
     writers: d.writers.map((provider) => ({ provider, ...(WRITER_MODELS[provider].length ? { model: d.models[provider] } : {}), enabled: d.enabled[provider] })),
     messageFormat: d.format === 'folders' ? d.folders : d.format,
-    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing, features: { bots: d.bots, goals: d.goals, linear: d.linear, tokenSpeed: d.tokenSpeed }
+    marginGB: d.marginGB, warnHeadroomGB: d.warnHeadroomGB, linearDryRun: d.linearDryRun, routing: d.routing, features: { bots: d.bots, goals: d.goals, linear: d.linear, tokenSpeed: d.tokenSpeed, hosts: d.hosts }
   })
 }
 

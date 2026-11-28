@@ -2,8 +2,8 @@ import { askKey } from './coordinator-sessions.ts'
 // The panel's HTML from a snapshot, checked in Node.
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
-import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, adoptionWarning, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import type { AgentInfo, AgentSummary, HostView, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
+import { hostChip, hostsCard, localView, roomFor, upNextOrder, type UiState, adoptionWarning, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { openerToggle } from './panel/opener.ts'
@@ -1591,4 +1591,163 @@ test('the summaries notice shows the full reason, wrapping instead of truncating
   const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
   const rule = css.match(/\.sumfail \.sumtext \{[^}]*\}/)?.[0] ?? ''
   assert.ok(/white-space: normal/.test(rule) && !/text-overflow: ellipsis/.test(rule), 'the notice wraps')
+})
+
+// ---------- paired hosts (row.host, snapshot.hosts) ----------
+
+const NOW = Date.parse('2026-11-28T12:00:00Z')
+const MIN = 60_000
+const caca = (over: Partial<HostView> = {}): HostView => ({ id: 'runtime:env-caca', name: 'caca', kind: 'paired', state: 'reachable', stale: false, checkedAt: NOW - 20_000, seenAt: NOW - 20_000, version: '1.4.232', reason: null,
+  memory: { totalGB: 15.5, availableGB: 10.6, at: NOW }, agents: ['claude', 'codex'], remoteWorkers: true, nextCheckAt: NOW + 40_000, limits: ['keep-open', 'auto-release', 'direct mail'], ...over })
+const thisMac: HostView = { id: 'local', name: 'This Mac', kind: 'local', state: 'reachable', stale: false, checkedAt: NOW, seenAt: NOW, version: '1.4.263', reason: null, memory: { totalGB: 16, availableGB: 7.5, at: NOW }, agents: ['claude', 'codex', 'cursor'], remoteWorkers: null }
+const onCaca = (h: HostView) => ({ id: h.id, name: h.name, stale: h.stale, seenAt: h.seenAt })
+/** A lead on this Mac with a worker it started on caca, and a chat of yours on caca. */
+const hosted = (h: HostView, extra: Partial<Snapshot> = {}): Snapshot => ({
+  ...snap,
+  hosts: [thisMac, h],
+  rows: [
+    ...snap.rows,
+    row('remote:runtime:env-caca|repo1::/home/c/mono', 'mono', [agent('runtime:env-caca|t:e2e', "Run mono's full e2e suite", 'working', { coordinator: 'alpha', leadPane: 'p-coord', live: true })], { host: onCaca(h), lastActivityAt: NOW - 2 * MIN }),
+    row('remote:runtime:env-caca|repo1::/home/c/reputation', 'reputation', [agent('runtime:env-caca|t:rep', 'cyucelen/reputation', 'done', { live: true })], { host: onCaca(h), lastActivityAt: NOW - 39 * 24 * 60 * MIN })
+  ],
+  ...extra
+})
+const ui = (over: Partial<UiState> = {}): UiState => ({ ...emptyUi(), now: NOW, ...over })
+const lineOf = (html: string, pane: string) => { const at = html.indexOf(`data-menu="agent:${pane}"`); return html.slice(html.lastIndexOf('<', at), html.indexOf('</button>', at)) }
+
+test('no paired host: the panel is exactly as before (no chip, no card), even with the Hosts card asked open', () => {
+  const before = render(snap, ui())
+  assert.deepEqual(render({ ...snap, hosts: undefined }, ui({ hostsOpen: true })), before)
+  assert.deepEqual(render({ ...snap, hosts: [thisMac] }, ui({ hostsOpen: true })), before)
+  noMatch(before.cockpit, /hostchip|data-hosts/)
+  assert.equal(before.copen, '')
+  assert.equal(localView(snap), snap)
+})
+
+test('caca reachable: one chip with its free RAM; its rows carry a caca label beside the project, its worker nests under the local lead', () => {
+  const s = hosted(caca())
+  const r = render(s, ui())
+  assert.match(r.cockpit, /<button class="hostchip reachable" data-hosts aria-expanded="false" data-tip="caca: 10.6 of 15.5 GB free"><i class="hdot reachable" aria-hidden="true"><\/i><span class="hname">caca<\/span><span class="hwhat">10.6 GB<\/span><\/button><span class="spacer">/)
+  const worker = lineOf(r.main, 'runtime:env-caca|t:e2e')
+  assert.match(worker, /data-depth="1"/, 'nested under its lead')
+  assert.ok(r.main.indexOf('agent:p-coord') < r.main.indexOf('agent:runtime:env-caca|t:e2e'))
+  assert.match(worker, /<span class="hostlbl">caca<\/span><span class="soft">mono<\/span><span class="age">2m<\/span>/)
+  assert.match(worker, /aria-disabled="true" data-tip="caca&#39;s worktrees open from Orca&#39;s own sidebar, under their project with a caca label"/)
+  noMatch(worker, /data-open=|disabled data-tip/)
+  assert.match(lineOf(r.main, 'runtime:env-caca|t:rep'), /<span class="hostlbl">caca<\/span><span class="soft">reputation<\/span><span class="age">39d<\/span>/)
+  for (const pane of ['runtime:env-caca|t:e2e', 'runtime:env-caca|t:rep']) noMatch(lineOf(r.main, pane), /Asleep|Sleeping|data-remove=/)
+})
+
+test('the Hosts card: This Mac and caca with state, free RAM, version, agents, worktrees, takes workers, room and older-Orca limits', () => {
+  const s = hosted(caca())
+  const r = render(s, ui({ hostsOpen: true }))
+  assert.match(r.cockpit, /aria-expanded="true"/)
+  const card = r.copen
+  assert.match(card, /<span class="label">Hosts<\/span><span class="hright">checked 20 s ago<\/span>/)
+  assert.ok(card.indexOf('This Mac') < card.indexOf('>caca<'), 'This Mac first with one paired host')
+  assert.match(card, /This Mac<\/span><span class="hv">7.5 of 16 GB free<\/span>/)
+  assert.match(card, /Orca 1.4.263 · Claude, Codex, Cursor · 6 worktrees/)
+  assert.match(card, /caca<\/span><span class="hv">10.6 of 15.5 GB free<\/span>/)
+  assert.match(card, /Orca 1.4.232 · Claude, Codex · 2 worktrees · takes workers/)
+  // Room from caca's memory by the capacity formula: (10.6 − 2 GB margin) / 0.5 GB per agent.
+  assert.equal(roomFor(caca(), snap.capacity), 17)
+  assert.match(card, /<span class="hnote">Room for 17 more agents<\/span><span class="hnote warn">Older Orca: no keep-open, auto-release or direct mail<\/span>/)
+  assert.match(card, /To start work there, tell a coordinator or lead: "do it on caca". Flow never moves work to another host by itself./)
+  // A newer host lists every capability: no amber note; a full one has no room.
+  const newer = hostsCard(hosted(caca({ limits: [], memory: { totalGB: 16, availableGB: 1.5, at: NOW } })), ui())
+  noMatch(newer, /Older Orca/)
+  assert.match(newer, /No room for another agent/)
+})
+
+test('caca unavailable: a dashed chip, its rows kept dimmed with "seen 12m ago", the card says when, how much RAM then, why and the next check', () => {
+  const down = caca({ state: 'unavailable', stale: true, seenAt: NOW - 12 * MIN, checkedAt: NOW - MIN, reason: 'Orca could not connect: connection refused', nextCheckAt: NOW + 2 * MIN })
+  const r = render(hosted(down), ui({ hostsOpen: true }))
+  assert.match(r.cockpit, /<button class="hostchip unavailable" data-hosts aria-expanded="true" data-tip="caca is unavailable: Orca could not connect: connection refused"><i class="hdot unavailable" aria-hidden="true"><\/i><span class="hname">caca<\/span><span class="hwhat">unavailable<\/span><\/button>/)
+  for (const pane of ['runtime:env-caca|t:e2e', 'runtime:env-caca|t:rep']) {
+    const line = lineOf(r.main, pane)
+    assert.match(line, /class="item[^"]* remote stale"/)
+    assert.match(line, /<span class="hostlbl stale">caca<\/span><span class="soft">[a-z]+<\/span><span class="age seen">seen 12m ago<\/span>/)
+    noMatch(line, /Asleep|Sleeping|data-remove=/)
+  }
+  assert.match(r.copen, /caca<\/span><span class="hv down">unavailable<\/span>/)
+  assert.match(r.copen, /Last seen 12m ago with 10.6 of 15.5 GB free. Orca could not connect: connection refused. Next check in 2m./)
+  assert.match(r.copen, /New work cannot start there until it is back. 2 worktrees kept as last seen./)
+  noMatch(r.copen, /do it on caca/, 'no host to start work on')
+})
+
+test('caca checking (not probed yet this session): a grey dot and "checking…" in the chip and the card', () => {
+  const checking = caca({ state: 'checking', stale: true, checkedAt: null, nextCheckAt: null, seenAt: NOW - 3 * 60 * MIN })
+  const r = render(hosted(checking), ui({ hostsOpen: true }))
+  assert.match(r.cockpit, /<i class="hdot checking" aria-hidden="true"><\/i><span class="hname">caca<\/span><span class="hwhat">checking…<\/span>/)
+  assert.match(r.copen, /<span class="hright">checking…<\/span>/)
+  assert.match(r.copen, /caca<\/span><span class="hv">checking…<\/span>/)
+  assert.match(r.copen, /Last seen 3h ago with 10.6 of 15.5 GB free; first check of this session pending. 2 worktrees kept as last seen./)
+})
+
+test('several hosts: one chip "N hosts · K down"; the card lists every host by free RAM, This Mac included', () => {
+  const box = caca({ id: 'runtime:box', name: 'build-box', memory: { totalGB: 64, availableGB: 48.2, at: NOW }, version: '1.4.263', limits: [] })
+  const old = caca({ id: 'runtime:old', name: 'old-laptop', state: 'unavailable', stale: true, seenAt: NOW - 2 * 24 * 60 * MIN, reason: 'timed out', memory: { totalGB: 8, availableGB: 6, at: NOW } })
+  const s = { ...hosted(caca()), hosts: [thisMac, caca(), box, old] }
+  const r = render(s, ui({ hostsOpen: true }))
+  assert.match(r.cockpit, /<button class="hostchip several unavailable" data-hosts aria-expanded="true" data-tip="3 paired hosts, 1 unavailable"><i class="hdot unavailable" aria-hidden="true"><\/i><span class="hname">3 hosts<\/span><span class="hwhat down">· 1 down<\/span><\/button>/)
+  assert.equal((r.cockpit.match(/data-hosts/g) ?? []).length, 1)
+  assert.match(r.copen, /<span class="hright">most free RAM first<\/span>/)
+  const order = [...r.copen.matchAll(/<span class="hn">([^<]+)<\/span>/g)].map((m) => m[1])
+  assert.deepEqual(order, ['build-box', 'caca', 'This Mac', 'old-laptop'])
+  assert.match(r.copen, /Last seen 2d ago with 6 of 8 GB free. Timed out. Next check in 1m./)
+  assert.match(r.copen, /"do it on build-box"/, 'the host with the most room is the one named')
+  // All up: a green dot, no "down".
+  const up = hostChip({ hosts: [thisMac, caca(), box] }, {})
+  assert.match(up, /hostchip several reachable[\s\S]*hdot reachable[\s\S]*3 hosts|2 hosts/)
+  noMatch(up, /down/)
+})
+
+test("a caca agent that asks lands in Up next with its host label and summary; its button says where it opens and opens nothing", () => {
+  const s = hosted(caca())
+  s.rows.push(row('remote:runtime:env-caca|repo1::/home/c/ask', 'reputation', [agent('runtime:env-caca|t:ask', 'cyucelen/reputation', 'done', { summary: asks('Allow npm install for reputation?', 'P1') })], { host: onCaca(caca()), priority: 'P1', lastActivityAt: NOW }))
+  assert.ok(askingRows(s).some((r) => r.host), 'counted in the queue like a local ask')
+  const first = { ...ui(), opened: new Set([askKey(s.rows.at(-1)!, s.rows.at(-1)!.agents[0])]) }
+  const up = render(s, first).attention
+  const at = up.indexOf('data-menu="agent:runtime:env-caca|t:ask"')
+  const item = up.slice(at, up.indexOf('</div></div>', at))
+  assert.match(item, /<span class="hostlbl">caca<\/span>/)
+  assert.match(item, /Allow npm install for reputation\?/)
+  assert.match(item, /<button class="jump" aria-disabled="true" data-remote-jump data-tip="[^"]+">Open in Orca's sidebar, under caca<\/button>/)
+  noMatch(item, /data-open=|Jump to session/)
+  // The chat shortcuts still skip it (a key press never lands on something it cannot open).
+  assert.ok(chatTargets(s).every((t) => !('workspaceId' in t) || !t.workspaceId.startsWith('remote:')))
+})
+
+test('remote rows never offer remove, never count as finished cleanup, and age by their own host\'s activity', () => {
+  const host = onCaca(caca())
+  const lead = agent('runtime:env-caca|tab1:leaf1', 'Onboarding', 'done', { coordinator: 'alpha', dispatch: 'settled', summary: summary({ role: 'lead' }) })
+  const finished = agent('runtime:env-caca|tab1:leaf3', 'Done', 'done', { terminal: 'term-x' })
+  const remote = [row('remote:runtime:env-caca|repo1::/w/ob', 'shop', [lead], { host, lastActivityAt: NOW - 5 * MIN }), row('remote:runtime:env-caca|repo1::/w/fin', 'blog', [finished], { host, liveTerminals: 1 })]
+  const both: Snapshot = { ...snap, hosts: [thisMac, caca()], rows: [...snap.rows, ...remote] }
+  assert.deepEqual(finishedAgents(both.rows).map((a) => a.paneKey), finishedAgents(snap.rows).map((a) => a.paneKey))
+  assert.deepEqual(chatTargets(both), chatTargets(snap))
+  const html = render(both, ui()).main
+  noMatch(html, /data-remove=/)
+  assert.match(lineOf(html, 'runtime:env-caca|tab1:leaf1'), /<span class="age">5m<\/span>/)
+  // The same lead on this machine does offer remove.
+  assert.match(render({ ...snap, rows: [row('ob', 'shop', [{ ...lead, paneKey: 'p-ob', terminal: 'term-1' }])] }, emptyUi()).main, /data-remove="ob"/)
+})
+
+test("a caca row Orca lists here (openId) opens like a local one: its row, Up next's Jump to session and the chat shortcuts", () => {
+  const s = hosted(caca())
+  s.rows = s.rows.map((r) => (r.host ? { ...r, openId: `ws-${r.agents[0].paneKey.split(':').at(-1)}` } : r))
+  s.rows.push(row('remote:runtime:env-caca|repo1::/home/c/ask', 'reputation', [agent('runtime:env-caca|t:ask', 'cyucelen/reputation', 'done', { summary: asks('Allow npm install for reputation?', 'P1') })], { host: onCaca(caca()), openId: 'ws-ask', priority: 'P1', lastActivityAt: NOW }))
+  const r = render(s, { ...ui(), opened: new Set([askKey(s.rows.at(-1)!, s.rows.at(-1)!.agents[0])]) })
+  const worker = lineOf(r.main, 'runtime:env-caca|t:e2e')
+  assert.match(worker, /data-open="remote:runtime:env-caca\|repo1::\/home\/c\/mono"/)
+  noMatch(worker, /aria-disabled|data-terminal/)
+  assert.match(worker, /<span class="hostlbl">caca<\/span>/, 'still labelled')
+  const at = r.attention.indexOf('data-menu="agent:runtime:env-caca|t:ask"')
+  const item = r.attention.slice(at, r.attention.indexOf('</div></div>', at))
+  assert.match(item, /<button class="jump" data-open="remote:runtime:env-caca\|repo1::\/home\/c\/ask">Jump to session<\/button>/)
+  noMatch(item, /Open in Orca's sidebar/)
+  assert.ok(chatTargets(s).some((t) => 'workspaceId' in t && t.workspaceId === 'remote:runtime:env-caca|repo1::/home/c/mono'))
+  // Without one, the same row keeps the refusal and its button text, and takes no shortcut.
+  noMatch(render(hosted(caca()), ui()).main, /data-open="remote:/)
+  assert.ok(chatTargets(hosted(caca())).every((t) => !('workspaceId' in t) || !t.workspaceId.startsWith('remote:')))
 })

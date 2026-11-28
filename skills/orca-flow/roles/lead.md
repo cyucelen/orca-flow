@@ -84,7 +84,9 @@ below.
    `orca-flow dispatch --role worker --kind <simple|normal|hard> --worktree current
    --task-title "<outcome>" --spec-file -` (or `--type <id>` instead of `--kind`). It runs the
    capacity gate, starts the worker on the model the user picked for that type or kind in
-   Settings → Models, and prints the model and why. Workers running at
+   Settings → Models, and prints the model and why. Only when the user names a paired host for a
+   task, add `--on <host>` (needs the Paired hosts switch on in Orca Flow Settings → Features; an exact selector of a worktree there, or `--worktree new-top-level
+   --repo <project there>` once the user agreed to the new worktree; Paired hosts in [SKILL.md](../SKILL.md)). Workers running at
    the same time must touch different files; otherwise send the second task to the first worker,
    or start it after the first reports. Two or more tasks at once go in a plan (Splitting work).
 7. **Confirm** who is on it, as [messages.md](../messages.md) says: the status line `**Working**`

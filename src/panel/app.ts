@@ -297,9 +297,11 @@ document.addEventListener('click', (event) => {
     void orca.shell?.openExternal(url)
     return
   }
-  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-cockpit]')
+  const el = (event.target as Element).closest<HTMLElement>('[data-open],[data-resume],[data-status],[data-handover],[data-sessions],[data-history],[data-brief],[data-fold],[data-act],[data-yes],[data-no],[data-coordinator],[data-new-coordinator],[data-hosts],[data-cockpit]')
   if (!el) return
   const d = el.dataset
+  // The host chip (inside the top bar) opens the Hosts card, not the cockpit.
+  if ('hosts' in d) { ui.hostsOpen = !ui.hostsOpen; draw(); return }
   if (d.handover) {
     const target = `handover:${d.handover}`
     if (menuTarget === target) closeMenu()
@@ -326,7 +328,9 @@ document.addEventListener('click', (event) => {
   if (d.yes) { void runAction(d.yes); return }
   if ('cockpit' in d) toggleCockpit()
   if (d.open) {
+    // A paired host's workspace Orca could not open here comes back with where it opens instead.
     void orca.plugin.request('sidebar.open', d.terminal ? { workspaceId: d.open, terminal: d.terminal } : { workspaceId: d.open })
+      .then((r) => { if (!r.opened && r.reason) goalToast(r.reason) }).catch(() => {})
     return
   }
   if (d.resume && d.workspace) { void resumeAsleep(d.workspace, d.resume); return }
@@ -841,7 +845,7 @@ function agentMenu(row: WorkspaceRow, a: AgentInfo): MenuItem[] {
   // conversation has no terminal to close: no Sleep that cannot work.
   if (!asleep(row)) items.push({ label: 'Sleep', icon: 'moon', run: () => inline(target, 'Sleeping…', 'Asleep', () => orca.plugin.request('sidebar.closeSessions', { panes: [a.paneKey] })) }, 'separator')
   // Hidden while any agent in the worktree is mid-turn: removing it would end that agent too.
-  if (canRemove(row)) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
+  if (canRemove(row) && !row.host) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
   return items
 }
 
@@ -1059,7 +1063,8 @@ document.addEventListener('contextmenu', (e) => {
   if (kind === 'linear') return openMenu(sendMenu(id), e.clientX, e.clientY, target)
   const row = snap.rows.find((r) => r.agents.some((a) => a.paneKey === id))
   const a = row?.agents.find((x) => x.paneKey === id)
-  if (row && a) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
+  // A paired host's agent has nothing to sleep, prioritize or remove from here (the worker refuses it too).
+  if (row && a && !row.host) openMenu(agentMenu(row, a), e.clientX, e.clientY, target)
 })
 /** The menu a button opens with a click (its key, as `menuTarget`), or null for anything else. */
 function openerOf(target: EventTarget | null): string | null {
