@@ -15,9 +15,13 @@
 # Exactly one Orca Flow may run (both bind Alt+1..9; two running error each other). `load` swaps
 # to local.flow and goes back to the installed copy when local.flow fails; `off` goes back to it.
 #
-#   scripts/dev.sh check   types + tsc + tests, in a temporary copy of this folder
-#   scripts/dev.sh load    copy this folder to $DEV_DIR, disable the installed copy, approve and
-#                          (re)start local.flow from the copy, fall back on failure
+# The panel and editors load generated .js (scripts/build-frames.mjs), never .ts: Orca transpiles a frame's .ts under
+# a 2000 ms timer that a busy cold start loses. `check` fails when that .js is stale; `load` regenerates it in the copy.
+#
+#   scripts/dev.sh check   generated frame JS fresh + types + tsc + tests (+ the cold-start check when Chrome is
+#                          installed), in a temporary copy of this folder
+#   scripts/dev.sh load    copy this folder to $DEV_DIR, regenerate the frame JS there, disable the installed copy,
+#                          approve and (re)start local.flow from the copy, fall back on failure
 #   scripts/dev.sh off     unload local.flow and run the installed copy again
 #   scripts/dev.sh shot    screenshot the panel and status bar to $SHOTS (default /tmp/orca-sidebar-shots)
 set -eu
@@ -52,13 +56,24 @@ case "${1:-}" in
     rsync -a --exclude .git --exclude .orca --exclude node_modules ./ "$tmp/"
     no_dot_orca "$tmp"
     cd "$tmp"
+    node scripts/build-frames.mjs --check
     orca plugin types . --json >/dev/null
-    npx -y -p typescript tsc -p . --noEmit
-    # Show the summaries, but fail the script when any test fails.
-    out=$(orca plugin test . 2>&1) || { echo "$out" | grep -E '✖|Error|expected|actual' | head -20; echo 'plugin tests FAILED'; exit 1; }
+    # Erasable syntax and explicit type-only imports: what build-frames.mjs's type stripping needs to stay exact.
+    npx -y -p typescript tsc -p . --noEmit --erasableSyntaxOnly --verbatimModuleSyntax
+    # Show the summaries, but fail the script when any test fails. A throwaway HOME: src/writer.ts reads the Claude
+    # profile Orca selected (~/Library/Application Support/orca/claude-profiles/selected-host), which would override
+    # the writer tests' own config dir on a machine that has one selected.
+    mkdir -p "$tmp/.home"
+    out=$(HOME="$tmp/.home" orca plugin test . 2>&1) || { echo "$out" | grep -E '✖|Error|expected|actual' | head -20; echo 'plugin tests FAILED'; exit 1; }
     echo "$out" | tail -1
     out=$(node --test test/*.test.mjs 2>&1) || { echo "$out" | grep -E '✖|Error' | head -20; echo 'orca-flow tests FAILED'; exit 1; }
     echo "$out" | grep -E '(pass|fail) [0-9]'
+    if [ -x "${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}" ]; then
+      out=$(node scripts/cold-start-check.mjs 2>&1) || { echo "$out" | grep -E 'FAIL|failed'; echo 'cold-start check FAILED'; exit 1; }
+      echo "$out" | tail -1
+    else
+      echo 'cold-start check skipped: no Chrome (set CHROME to its binary)'
+    fi
     ;;
   load)
     # Both copies bind Alt+1..9, and Orca errors both when they run at once: the installed copy
@@ -67,6 +82,9 @@ case "${1:-}" in
     mkdir -p "$DEV_DIR"
     rsync -a --delete --exclude .git --exclude .orca --exclude node_modules ./ "$DEV_DIR/"
     rm -rf "$DEV_DIR/.orca" # rsync leaves an excluded folder in the destination alone
+    # The copy runs fresh frame JS even when this folder's is stale; say so, since a commit needs it here too.
+    node "$DEV_DIR/scripts/build-frames.mjs" >/dev/null
+    node scripts/build-frames.mjs --check >/dev/null 2>&1 || echo 'note: the generated frame JS here is stale; run node scripts/build-frames.mjs before committing'
     no_dot_orca "$DEV_DIR"
     fp=$(orca plugin dev load "$DEV_DIR" --json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error',{}).get('data',{}).get('approvalFingerprint',''))")
     # `dev load` writes .orca/ typings into the folder: remove them before the worker starts.
@@ -97,5 +115,5 @@ case "${1:-}" in
     orca plugin shot "$KEY" --panel orca-flow --out "$SHOTS/panel.png" --json >/dev/null && echo "$SHOTS/panel.png"
     orca plugin shot "$KEY" --status-bar --out "$SHOTS/status.png" --json >/dev/null && echo "$SHOTS/status.png"
     ;;
-  *) sed -n 2,21p "$0"; exit 1 ;;
+  *) sed -n 2,26p "$0"; exit 1 ;;
 esac

@@ -513,7 +513,8 @@ your Claude profile's `skills` folder, the hooks that run `stop-check.mjs`, `pro
 ## Develop
 
 ```sh
-scripts/dev.sh check   # types, tsc, plugin tests and orca-flow tests
+node scripts/build-frames.mjs   # regenerate the .js the panel and editors load (after editing any .ts they import)
+scripts/dev.sh check   # generated .js fresh, types, tsc, plugin tests, orca-flow tests and the cold-start check
 scripts/dev.sh load    # copy this folder to ~/.orca-flow/dev/flow and run it as local.flow (installed copy off; back on if it fails)
 scripts/dev.sh off     # unload local.flow and run the installed cyucelen.flow again
 scripts/dev.sh shot    # screenshot the panel to /tmp/orca-sidebar-shots
@@ -526,6 +527,7 @@ node scripts/goals-preview.mjs --selftest               # clicks through add, ti
 node scripts/goals-history-preview.mjs                  # the Completed goals tab and the sidebar over one fixture worker (/tab, /side, /both)
 node scripts/goals-history-preview.mjs --shots /tmp/orca-goals-history-shots   # the tab at 1000 and 600 px, light and dark, every state, and the sidebar header
 node scripts/goals-history-preview.mjs --selftest       # search, filters, no matches, empty, Reopen, Undo, live updates and the states in headless Chrome
+node scripts/cold-start-check.mjs --shots /tmp/orca-flow-cold-start   # the frames under a busy cold start, from fixture saved state (below)
 ```
 
 The settings preview bundles the real panel with a stubbed `orca` global: no plugin load, worker
@@ -543,9 +545,40 @@ and `off` swap between them, so `cyucelen.flow` stays installed and its skill li
 working. Orca ties a development plugin's approval to its exact files, so any edit drops it to pending:
 `load` therefore runs a copy, and edits here show in the sidebar only after the next `load`.
 `check` type-checks a temporary copy, so no `.orca/` is written here. `src/worker.ts` is the plugin's worker;
-`src/view.ts` renders the panel as HTML, which `src/panel/app.ts` draws and wires up. Orca
-transpiles TypeScript when it loads, so there is no build step. See Orca's
+`src/view.ts` renders the panel as HTML, which `src/panel/app.ts` draws and wires up. See Orca's
 [plugin authoring guide](https://github.com/stablyai/orca/blob/main/docs/reference/plugin-authoring.md).
+
+### Generated frame JavaScript
+
+You write TypeScript everywhere, and there are no dependencies to install. Orca runs the worker's TypeScript as it is.
+The panel (`src/panel/index.html`) and the two editors (`src/editor/index.html`, `src/editor/goals.html`) load plain
+JavaScript instead: `app.js`, `main.js` and `goals-main.js`, and the `.js` next to every `.ts` they import.
+`node scripts/build-frames.mjs` generates those files with Node's built-in type stripping (Node 22.13 or later). Each
+line keeps its line and column, so an error at `view.js:120:7` is at `view.ts:120:7`. The files are committed, because
+Orca installs the tagged tree as it is. Each one ends with a "Generated … Do not edit" line, and `.gitattributes` marks
+them as generated.
+
+Why: Orca transpiles every `.ts` that a panel or editor imports in a worker thread, under a 2000 ms timer on its main
+thread. During a cold boot or a relaunch the main thread is busy for longer than that, so even a one-line file times
+out. Orca then keeps the failure until it quits, and the panel stays black. Orca serves `.js` and `.mjs` without
+transpiling them. The worker is not affected, because Orca's plugin host loads it in its own process with no timer.
+
+What keeps the generated files right:
+
+- `scripts/dev.sh check` fails when a generated file is stale, missing, or no longer loaded. It also fails when any
+  HTML entry's import graph, static or dynamic, contains a file Orca would transpile. Both checks are in
+  `test/frames-js.test.mjs`.
+- tsc runs with `--erasableSyntaxOnly --verbatimModuleSyntax`. Stripping types is exact only for TypeScript that
+  needs no transformation, and with type-only imports marked as `type`.
+- `scripts/dev.sh load` regenerates the files in the copy it runs.
+- The release workflow runs `node scripts/build-frames.mjs --check` before it commits or tags anything, so a tag never
+  ships stale JavaScript.
+
+`node scripts/cold-start-check.mjs` reproduces a busy cold start outside Orca. The worker's own `snapshot()` reads
+saved coordinators, sessions and goals from a fixture HOME, once with the Orca CLI not ready and once with it ready.
+Every module Orca would transpile is answered with Orca's timeout error. Headless Chrome then loads each frame, which
+must draw that state with no error. The old `.ts` entry must fail as Orca did. If an entry module ever fails to load,
+the frame shows "Orca Flow could not load. Restart Orca to try again." instead of staying blank.
 
 ## Releasing
 
