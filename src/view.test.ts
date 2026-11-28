@@ -1732,3 +1732,21 @@ test('remote rows never offer remove, never count as finished cleanup, and age b
   // The same lead on this machine does offer remove.
   assert.match(render({ ...snap, rows: [row('ob', 'shop', [{ ...lead, paneKey: 'p-ob', terminal: 'term-1' }])] }, emptyUi()).main, /data-remove="ob"/)
 })
+
+test("a caca row Orca lists here (openId) opens like a local one: its row, Up next's Jump to session and the chat shortcuts", () => {
+  const s = hosted(caca())
+  s.rows = s.rows.map((r) => (r.host ? { ...r, openId: `ws-${r.agents[0].paneKey.split(':').at(-1)}` } : r))
+  s.rows.push(row('remote:runtime:env-caca|repo1::/home/c/ask', 'reputation', [agent('runtime:env-caca|t:ask', 'cyucelen/reputation', 'done', { summary: asks('Allow npm install for reputation?', 'P1') })], { host: onCaca(caca()), openId: 'ws-ask', priority: 'P1', lastActivityAt: NOW }))
+  const r = render(s, { ...ui(), opened: new Set([askKey(s.rows.at(-1)!, s.rows.at(-1)!.agents[0])]) })
+  const worker = lineOf(r.main, 'runtime:env-caca|t:e2e')
+  assert.match(worker, /data-open="ws-e2e"/)
+  noMatch(worker, /aria-disabled|data-terminal/)
+  assert.match(worker, /<span class="hostlbl">caca<\/span>/, 'still labelled')
+  const at = r.attention.indexOf('data-menu="agent:runtime:env-caca|t:ask"')
+  const item = r.attention.slice(at, r.attention.indexOf('</div></div>', at))
+  assert.match(item, /<button class="jump" data-open="ws-ask">Jump to session<\/button>/)
+  noMatch(item, /Open in Orca's sidebar/)
+  assert.ok(chatTargets(s).some((t) => 'workspaceId' in t && t.workspaceId === 'ws-e2e'))
+  // Without one, the same row keeps the refusal and its button text.
+  noMatch(render(hosted(caca()), ui()).main, /data-open="ws-/)
+})

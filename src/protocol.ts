@@ -144,6 +144,11 @@ export type WorkspaceRow = {
    * `remote:<host id>|<worktree id>`, never a plugin workspace id: nothing here opens, closes or removes it.
    */
   host?: { id: string; name: string; stale: boolean; /** When the host last answered (for "seen 12m ago" while it is stale). */ seenAt?: number | null }
+  /**
+   * A paired host's row that Orca's plugin `workspace.list` also lists (same host id, exact path): the
+   * plugin workspace id `workspace.open` takes. Absent: the row opens only from Orca's own sidebar.
+   */
+  openId?: string
 }
 
 /**

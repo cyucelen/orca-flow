@@ -370,14 +370,15 @@ export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summ
  * host's parent pane, and is never joined to a local row, folder or remembered owner. Not focused here
  * (Orca's focus is on this machine), never a bot.
  */
-export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: ReturnType<typeof readOwners> = {}, summaries: Store['summaries'] = {}): WorkspaceRow[] {
+export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: ReturnType<typeof readOwners> = {}, summaries: Store['summaries'] = {}, listed: ListedWorkspace[] = []): WorkspaceRow[] {
   const rows = (remote?.worktrees ?? []).flatMap(({ host, worktrees }) => fromPs(worktrees).map((r): WorkspaceRow => {
     const { bot: _bot, ...row } = r
+    const openId = remoteOpenId(listed, host.id, r.path)
     const agents = r.agents.map((a) => {
       const summary = remoteSummary(summaries, host.id, a)
       return summary ? { ...a, summary, title: titleOk(summary.title) ? summary.title : a.title } : a
     })
-    return { ...row, agents, priority: highest(agents.map((a) => a.summary?.priority)), active: false, host }
+    return { ...row, agents, priority: highest(agents.map((a) => a.summary?.priority)), active: false, host, ...(openId ? { openId } : {}) }
   }))
   if (!rows.length) return rows
   const hidden = rows.map((r) => ({ ...r, path: null, agents: r.agents.map((a) => ({ ...a, orcaSession: null })) }))
@@ -395,8 +396,28 @@ export function remoteSummary(summaries: Store['summaries'], hostId: string, a: 
   return !card.orcaSession || !a.orcaSession || card.orcaSession === a.orcaSession ? card : null
 }
 
+/** Pure: the plugin workspace id a paired host's row (by its `remote:` id) opens by, when Orca lists it; else null. */
+export const remoteOpenTarget = (rows: WorkspaceRow[], workspaceId: string): string | null =>
+  (workspaceId.startsWith('remote:') && rows.find((r) => r.host && r.id === workspaceId)?.openId) || null
+
 /** A paired host's finished turn as a summary job: no transcript (summarizeRemote reads only the turn). */
 export const remoteSummaryJob = (t: RemoteTurn): Job => ({ pane: t.pane, transcript: '', worktreeId: t.worktreeId, remote: { hostId: t.hostId, prompt: t.prompt, lastAssistant: t.lastAssistant, at: t.at, key: t.key, orcaSession: t.orcaSession } })
+
+/** A workspace as the plugin API's `workspace.list` gives it; `hostId` is absent on an Orca that lists only its own. */
+export type ListedWorkspace = { id: string; path: string; hostId?: string | null }
+/** This machine's workspace in that list (no host id, or `local`). */
+export const isLocalWorkspace = (w: ListedWorkspace) => !w.hostId || w.hostId === LOCAL_HOST
+
+/**
+ * Pure: the plugin workspace id of a paired host's worktree, when an Orca that lists paired hosts'
+ * workspaces names exactly one with that host's id and that exact path; else null. Never by name or
+ * branch, and never a workspace of this machine or another host, whatever its path.
+ */
+export function remoteOpenId(listed: ListedWorkspace[], hostId: string, path: string | null): string | null {
+  if (!path || hostId === LOCAL_HOST) return null
+  const hits = listed.filter((w) => w.hostId === hostId && w.path === path)
+  return hits.length === 1 ? hits[0].id : null
+}
 
 /** A paired host's row id (`remote:<host id>|…`) or agent pane (`runtime:<environment id>|…`, see hostKey). */
 export const isRemoteId = (id: unknown): boolean => typeof id === 'string' && (id.startsWith('remote:') || /^runtime:[^|]*\|/.test(id))
@@ -902,10 +923,14 @@ export async function snapshot(
     const paired = remote()
     refreshLineage(orca, onLineage, allRows.flatMap(r => r.agents.map(a => a.paneKey)), roots, paired !== null)
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
+    // Only this machine's: an Orca that lists paired hosts' workspaces too may have the same path on one.
+    // While a paired host has rows, the same list says which of them Orca can open here (remoteOpenIds).
     const idByPath = new Map<string, string>()
-    if (worktrees.some((w) => !w.identity?.key)) {
-      const listed = await orca.host.call('workspace.list').catch(() => null)
-      for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
+    const remoteListed = paired?.worktrees.some((h) => h.worktrees.length) ?? false
+    let listed: ListedWorkspace[] = []
+    if (worktrees.some((w) => !w.identity?.key) || remoteListed) {
+      listed = (await orca.host.call('workspace.list').catch(() => null))?.workspaces ?? []
+      for (const w of listed) if (isLocalWorkspace(w)) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
     const store = readStore()
@@ -962,7 +987,7 @@ export async function snapshot(
     // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
     const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
     // Paired hosts' rows come after this machine's; everything above (owners, sessions, bots, capacity) saw local rows only.
-    const remoteRows = remoteRowsOf(paired, localPs, onDisk, lineage, owners, store.summaries)
+    const remoteRows = remoteRowsOf(paired, localPs, onDisk, lineage, owners, store.summaries, listed)
     return {
       rows: remoteRows.length ? [...rows, ...remoteRows] : rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}),
       ...(paired ? { hosts: [localHost(memory, memoryAt), ...paired.hosts] } : {})
@@ -1344,7 +1369,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   let lastJump: { id: string; at: number } | null = null
   orca.commands.register('sidebar.next', async () => {
     // A paired host's ask shows in Up next, but opens only from Orca's own sidebar: ⌘⇧N skips it.
-    const target = nextTarget(askingRows(latest ?? (await refresh())).filter((r) => !r.host), lastJump, Date.now())
+    const target = nextTarget(askingRows(latest ?? (await refresh())).filter((r) => !r.host || r.openId), lastJump, Date.now())
     if (!target) return 'Nothing is waiting on you.'
     lastJump = { id: target.queueKey ?? target.id, at: Date.now() }
     const terminal = leadAgent(target)?.terminal
@@ -1878,6 +1903,12 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
   const openChat = async (input: { workspaceId: string; terminal?: string }): Promise<{ opened: boolean; reason?: string }> => {
+    // A paired host's row Orca lists here opens by its plugin workspace id (its terminals are that host's: none to switch to).
+    const openId = remoteOpenTarget(latest?.rows ?? [], input.workspaceId)
+    if (openId) {
+      await orca.host.call('workspace.open', { workspaceId: openId })
+      return { opened: true }
+    }
     const refused = refusedRemote(input.workspaceId, input.terminal)
     if (refused) return { opened: false, reason: refused }
     if (input.terminal && closedMemberTerminal(latest?.coordinators ?? readCoordinators(), input.workspaceId, input.terminal)) return { opened: false }

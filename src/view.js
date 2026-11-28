@@ -1070,7 +1070,7 @@ function upNext(placed          , all             , coordinators               ,
     if (!open) return head
     const about = aboutOf(p)
     // A paired host's session opens only in Orca's own sidebar: the button says where, and opens nothing.
-    const jump = p.row.host
+    const jump = p.row.host && !p.row.openId
       ? `<button class="jump" aria-disabled="true" data-remote-jump data-tip="${esc(remoteTip(p.row))}">Open in Orca's sidebar, under ${esc(p.row.host.name)}</button>`
       : `<button class="jump" ${openAttrs(p)}>Jump to session</button>`
     return `${head}<div class="brief">${about ? `<div class="about">${esc(about)}</div>` : ''}<div class="glance"><span class="kicker">${esc(needsLabel(p))}</span><span>${esc(glanceOf(p))}</span>${replyOf(p) ? `<span class="reply">Reply: ${esc(replyOf(p))}</span>` : ''}</div><div class="jumps">${jump}${reviewPr(p)}</div></div>`
@@ -1206,7 +1206,7 @@ export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for i
  * coordinator as its tree row does (waking it).
  */
 const openAttrs = (p        ) =>
-  p.row.host ? `aria-disabled="true" data-tip="${esc(remoteTip(p.row))}"`
+  p.row.host ? (p.row.openId ? `data-open="${esc(p.row.openId)}"` : `aria-disabled="true" data-tip="${esc(remoteTip(p.row))}"`)
   : asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
   : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
   : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
@@ -1439,11 +1439,14 @@ export const FOLDED_KEY = 'folded'
  * is hidden, so it takes no numbers. The panel's key handler and the worker's commands both read this.
  */
 export function chatTargets(snap                                         , folded                      = new Set())               {
-  return treeBlocks(localView(snap)).flatMap(({ c, lines, auxiliary })               => [
+  // A paired host's row takes a number only when Orca can open it here (openId).
+  const openable = snap.rows.some((r) => r.host && !r.openId) ? { ...snap, rows: snap.rows.filter((r) => !r.host || r.openId) } : snap
+  return treeBlocks(openable).flatMap(({ c, lines, auxiliary })               => [
     ...(auxiliary ? [{ key: `agent:${auxiliary.p.a.paneKey}`, workspaceId: auxiliary.p.row.id, terminal: auxiliary.p.a.terminal  }] : c.you ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
     // A slept lead heading its open workers takes no number: a key press never resumes it unseen.
     ...(folded.has(auxiliary ? auxiliaryKey(auxiliary.p) : c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p })             => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
+      : p.row.openId ? { key: `agent:${p.a.paneKey}`, workspaceId: p.row.openId }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)
 }

@@ -2090,3 +2090,46 @@ test("a paired host's turn summaries show on its own agents only; local agents n
   const job = main.remoteSummaryJob({ pane: 'runtime:env-caca|tab1:leaf1', hostId: 'runtime:env-caca', worktreeId: 'remote:x', prompt: 'p', lastAssistant: 'm', at: 1, key: 'k', orcaSession: null, agentType: 'claude' })
   assert.deepEqual(job, { pane: 'runtime:env-caca|tab1:leaf1', transcript: '', worktreeId: 'remote:x', remote: { hostId: 'runtime:env-caca', prompt: 'p', lastAssistant: 'm', at: 1, key: 'k', orcaSession: null } })
 })
+
+test('a paired host\'s row opens when Orca\'s workspace.list lists it: exact host id and path, never this machine\'s or another host\'s', () => {
+  const listed = [
+    { id: 'ws-local-rep', path: '/Users/me/reputation', hostId: 'local' },
+    { id: 'ws-caca-rep', path: '/Users/me/reputation', hostId: 'runtime:env-caca' },
+    { id: 'ws-other-rep', path: '/Users/me/reputation', hostId: 'runtime:other' },
+    { id: 'ws-caca-mono', path: '/home/c/mono', hostId: 'runtime:env-caca' }
+  ]
+  assert.equal(main.remoteOpenId(listed, 'runtime:env-caca', '/Users/me/reputation'), 'ws-caca-rep')
+  assert.equal(main.remoteOpenId(listed, 'runtime:other', '/Users/me/reputation'), 'ws-other-rep')
+  assert.equal(main.remoteOpenId(listed, 'runtime:env-caca', '/Users/me/elsewhere'), null)
+  assert.equal(main.remoteOpenId(listed.filter((w) => w.hostId === 'local'), 'runtime:env-caca', '/Users/me/reputation'), null, 'a local workspace at the same path is not caca\'s')
+  assert.equal(main.remoteOpenId([...listed, { id: 'dup', path: '/Users/me/reputation', hostId: 'runtime:env-caca' }], 'runtime:env-caca', '/Users/me/reputation'), null, 'two candidates: none')
+  assert.equal(main.remoteOpenId([{ id: 'old', path: '/Users/me/reputation' }], 'runtime:env-caca', '/Users/me/reputation'), null, 'an Orca that lists no host ids opens nothing remote')
+  const [r] = main.remoteRowsOf(remoteOf([twin()]), [], [], noLineage, {}, {}, listed)
+  assert.equal(r.openId, 'ws-caca-rep')
+  assert.equal(main.remoteOpenTarget([r], r.id), 'ws-caca-rep')
+  assert.equal(main.remoteOpenTarget([r], 'identity:wt:rep'), null)
+  const [plain] = main.remoteRowsOf(remoteOf([twin()]), [], [], noLineage)
+  assert.equal('openId' in plain, false, 'no runtime rows: as before')
+  assert.equal(main.remoteOpenTarget([plain], plain.id), null)
+  assert.match(main.remoteRefusal([plain.id], [plain]) ?? '', /open from Orca's own sidebar/)
+})
+
+test('the snapshot reads workspace.list for remote rows only while a host has rows, and folder ids come from this machine\'s workspaces only', async () => {
+  const listed = [
+    { id: 'ws-local-folder', path: '/c/alpha', hostId: 'local' },
+    { id: 'ws-caca-folder', path: '/c/alpha', hostId: 'runtime:env-caca' },
+    { id: 'ws-caca-rep', path: '/Users/me/reputation', hostId: 'runtime:env-caca' }
+  ]
+  let calls = 0
+  const orca = { host: { call: async () => { calls++; return { workspaces: listed, truncated: false } } }, log: () => {} }
+  const folder: main.PsWorktree = { hostId: 'local', path: '/c/alpha', displayName: 'alpha', repo: 'alpha', agents: [] }
+  const [withHost, without] = await Promise.all([
+    main.snapshot(orca as never, async () => [twin(), folder], () => {}, false, () => remoteOf([twin()])),
+    main.snapshot(orca as never, async () => [twin()], () => {}, false, () => null)
+  ])
+  assert.ok(withHost.rows.some((r) => r.id === 'ws-local-folder'), 'the local folder keeps its own id')
+  assert.ok(!withHost.rows.some((r) => r.id === 'ws-caca-folder'))
+  assert.equal(withHost.rows.find((r) => r.host)?.openId, 'ws-caca-rep')
+  assert.equal(calls, 1, 'no paired host and identity keys only: workspace.list is not read')
+  assert.ok(without.rows.every((r) => !r.openId))
+})
