@@ -2,7 +2,7 @@
 // All UI state (what is open or folded) lives here; the worker only sends data, and reads the folds
 // from storage for Option+1..9.
 
-import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay,                               } from '../view.js'
+import { goalsOn, asleep, RELOAD_ALL, BOTS_UI_KEY, busy, character, chatDigit, chatTargets, coordinatorCharacter, coordinatorOrder, crew, emptyUi, esc, faceOf, FOLDED_KEY, finishedAgents, freeLooks, explainError, failedStatus, linearOn, localView, projectDot, render, tokenSpeedOn, updateButton, wakeDisplay,                               } from '../view.js'
 import { nextText } from '../../skills/orca-flow/scripts/goal-next.mjs'
 import { goalCard, GOALS_UI_KEY, goalsUiOf, jumpTarget, liveCoordinators,               } from '../goals-view.js'
 
@@ -148,8 +148,9 @@ function toggle(set             , key        )       {
 // The first snapshot can take a few seconds (Orca's CLI is slow on a busy machine).
 mainEl.innerHTML = crew('Loading workspaces…')
 setTimeout(draw, LINEAGE_WAIT_MS)
-orca.plugin.request('sidebar.list').then((s) => ((snap = s            ), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e       ) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
-orca.plugin.on('sidebar.changed', (s) => ((snap = s            ), settingsUpdateState(snap.update), applyFeatures(), draw()))
+// A paired host's rows (row.host) are left out until the agreed host UI lands: nothing here opens, closes or removes them.
+orca.plugin.request('sidebar.list').then((s) => ((snap = localView(s            )), settingsUpdateState(snap.update), applyFeatures(), draw())).catch((e       ) => (mainEl.innerHTML = `<div class="empty">Could not load workspaces: ${e.message}</div>`))
+orca.plugin.on('sidebar.changed', (s) => ((snap = localView(s            )), settingsUpdateState(snap.update), applyFeatures(), draw()))
 
 // Settings → Features: Linear and Analytics (stored as tokenSpeed). While one is off its data is dropped and not asked
 // for; switching it on asks at once, so the section shows fresh data, not what it had before.
@@ -841,7 +842,7 @@ function agentMenu(row              , a           )             {
   // conversation has no terminal to close: no Sleep that cannot work.
   if (!asleep(row)) items.push({ label: 'Sleep', icon: 'moon', run: () => inline(target, 'Sleeping…', 'Asleep', () => orca.plugin.request('sidebar.closeSessions', { panes: [a.paneKey] })) }, 'separator')
   // Hidden while any agent in the worktree is mid-turn: removing it would end that agent too.
-  if (canRemove(row)) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
+  if (canRemove(row) && !row.host) items.push({ label: 'Remove worktree', icon: 'trash', danger: true, run: () => removeWorktree(row, target) })
   return items
 }
 
@@ -1332,7 +1333,7 @@ const goalById = (id                    ) => goals?.find((g) => g.id === id)
  * the button offers Assign to coordinator.
  */
 async function goalJump(id        )                {
-  try { snap = (await orca.plugin.request('sidebar.list'))             } catch {}
+  try { snap = localView((await orca.plugin.request('sidebar.list'))            ) } catch {}
   const g = goalById(id)
   const target = g && snap ? jumpTarget(g, snap, ui.goalGone) : null
   if (!target) { goalToast('The agent on this step is gone. Assign it to a coordinator instead.'); draw(); return }

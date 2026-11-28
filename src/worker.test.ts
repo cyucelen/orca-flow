@@ -6,6 +6,11 @@ import { canRemove, monitoring, nextTarget, waitingQueue } from './rank.ts'
 import { assignCoordinators, COORDINATOR_FILE, deleteFolder, isCoordinatorHome, readCoordinators, readLinearMemory, readOwners, rememberOwners, scaffoldCoordinator, validateName, writeLinearMemory, writeLook, writeOwners } from './coordinators.ts'
 import { buildCockpit, removeWorktree } from './cockpit.ts'
 import { emptyUi, render } from './view.ts'
+import { createHostPoller, type RemoteHosts } from './hosts.ts'
+import { relabelWorktrees } from '../skills/orca-flow/scripts/hosts.mjs'
+
+// A mounted worker never reaches the real Orca for a paired host: its poller's commands all fail here.
+main.hostPolling.run = async () => { throw new Error('no Orca in tests') }
 
 const ps: main.PsWorktree[] = [
   {
@@ -1888,4 +1893,173 @@ test('usage.open: with a workspace focused it writes the stub in its folder and 
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ---------- paired hosts (src/hosts.ts) ----------
+
+const CACA = { id: 'runtime:env-caca', name: 'caca' }
+/** The same repo, branch, path and panes on this machine and on caca. */
+const twin = (hostId = 'local'): main.PsWorktree => ({
+  hostId, worktreeId: 'repo1::/Users/me/reputation', identity: { key: 'wt:rep' }, path: '/Users/me/reputation', repo: 'reputation', branch: 'refs/heads/main', displayName: 'reputation', liveTerminalCount: 2, lastActivityAt: 7,
+  agents: [
+    { paneKey: 'tab1:leaf1', state: 'done', agentType: 'claude', conversationName: 'Lead', orcaSessionId: 'sess-1' },
+    { paneKey: 'tab1:leaf2', parentPaneKey: 'tab1:leaf1', state: 'waiting', agentType: 'claude', conversationName: 'Worker', toolName: 'AskUserQuestion', toolInput: '{"questions":[{"question":"Ship it?"}]}' }
+  ]
+})
+const remoteOf = (worktrees: main.PsWorktree[], stale = false): RemoteHosts => ({
+  hosts: [{ id: CACA.id, name: CACA.name, kind: 'paired', state: stale ? 'unavailable' : 'reachable', stale, checkedAt: 1, seenAt: 1, version: '1.4.232', reason: stale ? 'host unreachable' : null, memory: { totalGB: 128, availableGB: 96, at: 1 }, agents: ['claude'], remoteWorkers: true }],
+  worktrees: [{ host: { ...CACA, stale }, worktrees: relabelWorktrees(worktrees, CACA) }]
+})
+const noLineage = { dispatcherOf: new Map<string, string>(), paneOf: new Map<string, string>() }
+
+test('duplicate identities: the same repo, branch, path and pane on this machine and on caca stay two rows, never merged or nested across hosts', () => {
+  const local = main.fromPs([twin()])
+  const remote = main.remoteRowsOf(remoteOf([twin()]), local, [], noLineage)
+  assert.equal(remote.length, 1)
+  const [l] = assignCoordinators(local, [], noLineage)
+  const [r] = remote
+  assert.equal(l.id, 'identity:wt:rep')
+  assert.equal(r.id, 'remote:runtime:env-caca|repo1::/Users/me/reputation') // never from name, branch or path
+  assert.notEqual(r.id, l.id)
+  assert.equal(l.host, undefined) // a local row is unchanged
+  assert.deepEqual(r.host, { id: 'runtime:env-caca', name: 'caca', stale: false })
+  assert.deepEqual([r.repo, r.branch, r.path], [l.repo, l.branch, l.path])
+  assert.deepEqual(r.agents.map((a) => a.paneKey), ['runtime:env-caca|tab1:leaf1', 'runtime:env-caca|tab1:leaf2'])
+  // Each worker nests under its own host's lead only.
+  assert.equal(l.agents[1].leadPane, 'tab1:leaf1')
+  assert.equal(r.agents[1].leadPane, 'runtime:env-caca|tab1:leaf1')
+  assert.ok(r.agents.every((a) => a.coordinator === 'you' && a.terminal === null && a.summary === null))
+  assert.equal(r.agents[0].orcaSession, 'sess-1') // kept on the row, never used to join
+  assert.equal(r.active, false)
+  // A local agent whose parent pane is the same string as caca's never nests under caca's.
+  const orphan = main.fromPs([{ ...twin(), agents: [{ paneKey: 'tab9:x', parentPaneKey: 'tab1:leaf1', state: 'working' }] }])
+  const placed = assignCoordinators([...orphan, ...remote.map((x) => ({ ...x, path: null }))], [], noLineage)[0].agents[0]
+  assert.equal(placed.leadPane, null)
+})
+
+test("remote rows read nothing local: no summary, card, transcript or plugin id; a caca bot's row is no bot here", () => {
+  const rows = main.remoteRowsOf(remoteOf([{ ...twin(), bot: 'nightly', isActive: true }]), [], [], noLineage)
+  assert.equal(rows[0].bot, undefined)
+  assert.equal(rows[0].card, null)
+  assert.equal(rows[0].agents[0].title, 'Lead')
+  // Without a worktree id a remote row has no id at all, so it is left out, never given a local one.
+  assert.deepEqual(main.remoteRowsOf(remoteOf([{ ...twin(), worktreeId: undefined }]), [], [], noLineage), [])
+})
+
+test('a worker a local lead dispatched to caca nests under that lead when its record names its host and pane (field names unverified)', async () => {
+  const { loadLineage } = await import('./coordinators.ts')
+  const coordinators = [{ key: 'alpha', name: 'alpha', repos: [], about: '', dir: '/c/alpha', workspaceId: null, sessions: { version: 1, current: 'c', members: [{ id: 'c', terminals: ['term-coord'], panes: ['p:coord'] }] } }] as any
+  const local = main.fromPs([
+    { identity: { key: 'home' }, displayName: 'alpha', repo: 'alpha', path: '/c/alpha', agents: [{ paneKey: 'p:coord', state: 'working' }] },
+    { identity: { key: 'w' }, displayName: 'checkout', repo: 'shop', agents: [{ paneKey: 'p:lead', state: 'working' }] }
+  ])
+  const workerList: string[][] = []
+  // UNVERIFIED: `projection.host.id` is what a local record carries (`local`); `paneKey` on a remote record is a guess.
+  const workers = [
+    { taskId: 't-lead', agentTerminalHandle: 'term-lead', workerState: 'running', terminalState: 'retained', dispatchId: 'd-lead', projection: { host: { kind: 'local', id: 'local' }, parent: null } },
+    { taskId: 't-remote', agentTerminalHandle: 'term-lead-twin', workerState: 'running', terminalState: 'active', dispatchId: 'd-remote', paneKey: 'tab1:leaf1', projection: { host: { kind: 'runtime', id: 'runtime:env-caca' }, parent: { taskId: 't-lead' } } },
+    // A remote worker whose record names no pane, with a handle that is also a local terminal's: it stays with 'you'.
+    { taskId: 't-anon', agentTerminalHandle: 'term-lead', workerState: 'running', terminalState: 'active', dispatchId: 'd-anon', projection: { host: { id: 'runtime:env-caca' }, parent: { taskId: 't-lead' } } }
+  ]
+  const run = async (args: string[]) => {
+    if (args[0] === 'terminal' && args[1] === 'list') return { terminals: [{ handle: 'term-coord', tabId: 'p', leafId: 'coord' }, { handle: 'term-lead', tabId: 'p', leafId: 'lead' }] }
+    if (args[1] === 'run-list') return { runs: [{ id: 'run-a', coordinator_handle: 'term-coord' }] }
+    if (args[1] === 'worker-list') { workerList.push(args); return { workers: args.includes('--include-remote') ? workers : workers.slice(0, 1) } }
+    throw new Error(`unexpected ${args.join(' ')}`)
+  }
+  const plain = await loadLineage(run, 1_000_000, true)
+  assert.ok(!workerList[0].includes('--include-remote')) // no paired host: the same command as before
+  assert.deepEqual([...plain.dispatcherOf.keys()], ['p:lead'])
+  const lineage = await loadLineage(run, 1_000_000, true, { includeRemote: true })
+  assert.ok(workerList[1].includes('--include-remote'))
+  assert.equal(lineage.dispatcherOf.get('runtime:env-caca|tab1:leaf1'), 'term-lead')
+  assert.equal(lineage.dispatchOf?.get('runtime:env-caca|tab1:leaf1'), 'open')
+  assert.equal(lineage.dispatchIdOf?.has('runtime:env-caca|tab1:leaf1'), false) // routes and token links read local panes only
+  assert.equal(lineage.dispatcherOf.get('p:lead'), 'term-coord') // the anonymous remote worker took nothing from the local lead's pane
+  const remote = main.remoteRowsOf(remoteOf([{ ...twin(), agents: [{ paneKey: 'tab1:leaf1', state: 'working' }, { paneKey: 'tab1:leaf3', state: 'working' }] }]), local, coordinators, lineage)
+  const [nested, mine] = remote[0].agents
+  assert.deepEqual([nested.coordinator, nested.leadPane, nested.dispatch, nested.terminal], ['alpha', 'p:lead', 'open', null])
+  assert.deepEqual([mine.coordinator, mine.leadPane], ['you', null])
+})
+
+test('no paired host (no poller data, an empty or failing environment list): the snapshot is what it was without hosts', async () => {
+  const orca = { host: { call: async () => ({ workspaces: [], truncated: false }) }, log: () => {} }
+  const local = [twin()]
+  const failing = createHostPoller({ run: async () => { throw new Error('environment list failed') }, now: () => 1 })
+  failing.tick()
+  await failing.idle()
+  const empty = createHostPoller({ run: async () => ({ environments: [] }), now: () => 1 })
+  empty.tick()
+  await empty.idle()
+  const [before, none, fail, emptied] = await Promise.all([
+    main.snapshot(orca as never, async () => local, () => {}, false),
+    main.snapshot(orca as never, async () => local, () => {}, false, () => null),
+    main.snapshot(orca as never, async () => local, () => {}, false, () => failing.view()),
+    main.snapshot(orca as never, async () => local, () => {}, false, () => empty.view())
+  ])
+  assert.equal(before.source, 'cli')
+  for (const s of [none, fail, emptied]) assert.equal(JSON.stringify(s), JSON.stringify(before))
+  assert.equal('hosts' in before, false)
+  assert.ok(before.rows.every((r) => r.host === undefined))
+})
+
+test('caca paired: its rows follow this machine\'s with host labels, the hosts list it, and local capacity ignores its agents', async () => {
+  const orca = { host: { call: async () => ({ workspaces: [], truncated: false }) }, log: () => {} }
+  const [local, paired, stale] = await Promise.all([
+    main.snapshot(orca as never, async () => [twin()], () => {}, false, () => null),
+    main.snapshot(orca as never, async () => [twin()], () => {}, false, () => remoteOf([twin(), { ...twin(), worktreeId: 'repo1::/Users/me/other', identity: { key: 'wt:other' }, liveTerminalCount: 5 }])),
+    main.snapshot(orca as never, async () => [twin()], () => {}, false, () => remoteOf([twin()], true))
+  ])
+  assert.deepEqual(paired.rows.slice(0, local.rows.length), local.rows) // local rows unchanged, first
+  const remote = paired.rows.filter((r) => r.host)
+  assert.deepEqual(remote.map((r) => [r.id, r.host?.name]), [['remote:runtime:env-caca|repo1::/Users/me/reputation', 'caca'], ['remote:runtime:env-caca|repo1::/Users/me/other', 'caca']])
+  assert.deepEqual(paired.capacity, local.capacity)
+  assert.deepEqual(paired.hosts?.map((h) => [h.id, h.kind, h.state]), [['local', 'local', 'reachable'], ['runtime:env-caca', 'paired', 'reachable']])
+  // Unreachable: its last rows stay, marked stale, and the host says why.
+  assert.deepEqual(stale.rows.filter((r) => r.host).map((r) => r.host?.stale), [true])
+  assert.equal(stale.hosts?.[1].reason, 'host unreachable')
+  // Never in what reaches summaries, skill reloads or the status bar's queue.
+  assert.ok(main.summaryAgents(paired).every((t) => !t.agent.paneKey.startsWith('runtime:')))
+  assert.equal(main.statusOf(paired).text, main.statusOf(local).text)
+  const asked: string[] = []
+  main.requestReload(paired, 'all', '/skill', { hashOf: () => 'h', write: (_d, targets) => { asked.push(...targets.map((t) => t.pane)); return { id: 'r', hash: 'h', count: targets.length } }, sessionOf: () => null })
+  assert.ok(asked.every((p) => !p.startsWith('runtime:')))
+  // Focus follows this machine only: a caca row named like the focused workspace is not focused.
+  const focused = main.withFocus(paired, { branch: 'refs/heads/main', displayName: 'reputation', terminals: [] })
+  assert.ok(focused.rows.filter((r) => r.host).every((r) => !r.active))
+})
+
+test('this machine as a host: reachable, its memory from the local capacity data', () => {
+  assert.deepEqual(main.localHost({ availableGB: 12.34, totalGB: 64, agentGB: 1, envGB: {} }, 5, 'mac'), { id: 'local', name: 'mac', kind: 'local', state: 'reachable', stale: false, checkedAt: 5, seenAt: 5, version: null, reason: null, memory: { totalGB: 64, availableGB: 12.3, at: 5 }, agents: null, remoteWorkers: null })
+  assert.equal(main.localHost({ availableGB: null, totalGB: null, agentGB: 1, envGB: {} }, 0).memory, null)
+})
+
+test('remote row actions are refused with a plain reason, before any host call or command', async () => {
+  const rows = main.remoteRowsOf(remoteOf([twin()]), [], [], noLineage)
+  assert.equal(main.remoteRefusal(['remote:runtime:env-caca|repo1::/Users/me/reputation'], rows), "caca's worktrees open from Orca's own sidebar")
+  assert.equal(main.remoteRefusal(['runtime:env-caca|tab1:leaf2'], rows), "caca's worktrees open from Orca's own sidebar")
+  assert.equal(main.remoteRefusal(['runtime:env-caca|gone'], [], remoteOf([]).hosts), "caca's worktrees open from Orca's own sidebar")
+  assert.equal(main.remoteRefusal(['identity:wt:rep', 'tab1:leaf1', undefined], rows), null)
+
+  const host = mockHost({ results: { 'statusBar.update': {}, 'workspace.open': { opened: true }, 'workspace.list': { workspaces: [], truncated: false } } })
+  const worker = await mountWorker(main, { host })
+  const id = 'remote:runtime:env-caca|repo1::/Users/me/reputation'
+  const reason = /worktrees open from Orca's own sidebar/
+  const open = await worker.request('sidebar.open', { workspaceId: id, terminal: 'term-x' }) as { opened: boolean; reason?: string }
+  assert.equal(open.opened, false)
+  assert.match(open.reason ?? '', reason)
+  const removed = await worker.request('sidebar.removeWorktree', { workspaceId: id, force: true }) as { removed: boolean; reason?: string }
+  assert.equal(removed.removed, false)
+  assert.match(removed.reason ?? '', reason)
+  const closed = await worker.request('sidebar.closeSessions', { panes: ['tab1:leaf1', 'runtime:env-caca|tab1:leaf1'] }) as { closed: number; reason?: string }
+  assert.equal(closed.closed, 0)
+  assert.match(closed.reason ?? '', reason)
+  const resumed = await worker.request('sidebar.resumeConversation', { workspaceId: id, pane: 'runtime:env-caca|tab1:leaf1' }) as { ok: boolean; error?: string }
+  assert.equal(resumed.ok, false)
+  assert.match(resumed.error ?? '', reason)
+  const priority = await worker.request('sidebar.setPriority', { workspaceId: id, priority: 'P0' }) as { ok: boolean; error?: string }
+  assert.equal(priority.ok, false)
+  assert.match(priority.error ?? '', reason)
+  assert.deepEqual(host.callsOf('workspace.open'), [])
+  await worker.deactivate()
 })

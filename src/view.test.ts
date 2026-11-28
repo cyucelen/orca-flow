@@ -3,7 +3,7 @@ import { askKey } from './coordinator-sessions.ts'
 import { assert, test } from 'orca/testing'
 import { readFileSync } from 'node:fs'
 import type { AgentInfo, AgentSummary, LinearData, LinearIssue, Snapshot, WorkspaceRow } from './protocol.ts'
-import { type UiState, adoptionWarning, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
+import { localView, upNextOrder, type UiState, adoptionWarning, explainError, failedStatus, ownershipRefusal, wakeDisplay, coordinatorOrder, LINEAR_ROWS, askingRows, askKindOf, BRANCH_COLORS, nodeOf, branchColor, character, laneColor, chatDigit, chatTargets, colorSlots, esc, emptyUi, faceOf, fitLabel, textWidth, finishedAgents, freeLooks, gaugesOf, prBadge, render, updateButton } from './view.ts'
 import type { CockpitStats } from './protocol.ts'
 import { pressGate } from './panel/press.ts'
 import { openerToggle } from './panel/opener.ts'
@@ -1591,4 +1591,32 @@ test('the summaries notice shows the full reason, wrapping instead of truncating
   const css = readFileSync(new URL('./panel/panel.css', import.meta.url).pathname, 'utf8')
   const rule = css.match(/\.sumfail \.sumtext \{[^}]*\}/)?.[0] ?? ''
   assert.ok(/white-space: normal/.test(rule) && !/text-overflow: ellipsis/.test(rule), 'the notice wraps')
+})
+
+// ---------- paired hosts' rows (row.host) ----------
+
+test("a paired host's row offers no remove, opens nothing here and stays out of the queue, Sleep all and the chat shortcuts", () => {
+  const host = { id: 'runtime:env-caca', name: 'caca', stale: false }
+  const lead = agent('runtime:env-caca|tab1:leaf1', 'Onboarding', 'done', { coordinator: 'alpha', dispatch: 'settled', summary: summary({ role: 'lead' }) })
+  const asking = agent('runtime:env-caca|tab1:leaf2', 'Ship?', 'waiting', { summary: asks('Ship it?') })
+  const finished = agent('runtime:env-caca|tab1:leaf3', 'Done', 'done', { terminal: 'term-x' })
+  const remote = [
+    row('remote:runtime:env-caca|repo1::/w/ob', 'shop', [lead], { host }),
+    row('remote:runtime:env-caca|repo1::/w/ask', 'shop', [asking], { host }),
+    row('remote:runtime:env-caca|repo1::/w/fin', 'blog', [finished], { host, liveTerminals: 1 })
+  ]
+  const both: Snapshot = { ...snap, rows: [...snap.rows, ...remote] }
+  // What the panel draws, the queue, the status bar and the shortcuts read: this machine's rows, as before.
+  assert.deepEqual(localView(both).rows, snap.rows)
+  assert.equal(localView(snap), snap, 'unchanged (the same object) without paired rows')
+  assert.deepEqual(askingRows(both).map((r) => r.id), askingRows(snap).map((r) => r.id))
+  assert.deepEqual(upNextOrder(both).map((p) => p.a.paneKey), upNextOrder(snap).map((p) => p.a.paneKey))
+  assert.deepEqual(chatTargets(both), chatTargets(snap))
+  assert.deepEqual(finishedAgents(both.rows).map((a) => a.paneKey), finishedAgents(snap.rows).map((a) => a.paneKey))
+  // Drawn directly (the agreed host UI is not built yet): no remove, no open, the reason on hover.
+  const html = render({ ...snap, rows: remote }, emptyUi()).main
+  noMatch(html, /data-remove=|data-open=|data-resume=/)
+  assert.match(html, /disabled data-tip="caca&#39;s worktrees open from Orca&#39;s own sidebar"/)
+  // The same lead on this machine does offer remove.
+  assert.match(render({ ...snap, rows: [row('ob', 'shop', [{ ...lead, paneKey: 'p-ob', terminal: 'term-1' }])] }, emptyUi()).main, /data-remove="ob"/)
 })

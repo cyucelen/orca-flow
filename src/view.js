@@ -262,6 +262,18 @@ export function shapeOf(a           , all             )        {
 
 
 
+/** This machine's rows: a paired host's rows (`host`) open, close and resume nothing here. */
+export const localRows =                                       (rows     )      => (rows.some((r) => r.host) ? rows.filter((r) => !r.host) : rows)
+
+/**
+ * The snapshot without paired hosts' rows: what the panel draws until the agreed host UI lands, and
+ * what Up next, the status bar and the chat shortcuts read. Unchanged (the same object) without them.
+ */
+export const localView =                                   (snap   )    => (snap.rows.some((r) => r.host) ? { ...snap, rows: localRows(snap.rows) } : snap)
+
+/** Why a paired host's row opens nothing here. */
+export const remoteTip = (row                            ) => `${row.host?.name ?? 'That host'}'s worktrees open from Orca's own sidebar`
+
 /**
  * A closed conversation in a coordinator's folder (folderRows in worker.ts): no open terminal of its
  * own, whatever else runs in the folder. The tree, Up next and every count leave it out like any
@@ -890,7 +902,7 @@ export function askingRows(snap          )                 {
       lastActivityAt: m.a .summary?.updatedAt ?? null, createdAt: 0, pr: null, coordinator: c.key, queueKey: askKey({ id: m.workspaceId ?? `coordinator:${c.key}` }                , m.a ), coordinatorMember: m.id
     }))
   })
-  return waitingQueue([...snap.rows.filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
+  return waitingQueue([...localRows(snap.rows).filter((r) => !asleep(r)), ...own, ...botChatRows(snap)])
 }
 
 /** What the queue reads: the rows, the coordinators and, when known, the bots. */
@@ -930,7 +942,7 @@ export function botChatRows(snap                                 )              
  */
 export function upNextOrder(snap          )           {
   const queued = askingRows(snap).flatMap((row) => row.agents.filter(asksYou).map((a) => ({ a, row })))
-  const working = snap.rows.filter((r) => !asleep(r)).sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
+  const working = localRows(snap.rows).filter((r) => !asleep(r)).sort(byUrgency).flatMap((row) => row.agents.filter((a) => a.state === 'working' && laterAsk(a)).map((a) => ({ a, row })))
   const later = [...queued.filter((p) => laterAsk(p.a)), ...working].sort((x, y) => byUrgency(x.row, y.row))
   return [...queued.filter((p) => !laterAsk(p.a)), ...later]
 }
@@ -1072,7 +1084,7 @@ function agentLine(p        , all             , coordinators               , sof
  * worktree can go. The remove flow still refuses a dirty checkout or an unmerged PR.
  */
 export const removable = ({ a, row }        , all             ) =>
-  a.summary?.role === 'lead' && (a.dispatch === 'settled' || row.pr?.state === 'merged') &&
+  !row.host && a.summary?.role === 'lead' && (a.dispatch === 'settled' || row.pr?.state === 'merged') &&
   canRemove(row) && faceOf(a) === 'done' && !leadsOpenWork(a, all)
 
 /** A review of a worktree with an open PR: the PR is what to look at, one click away. */
@@ -1089,7 +1101,8 @@ export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for i
  * coordinator as its tree row does (waking it).
  */
 const openAttrs = (p        ) =>
-  asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
+  p.row.host ? `disabled data-tip="${esc(remoteTip(p.row))}"`
+  : asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
   : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
   : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
 
@@ -1111,12 +1124,13 @@ function inFlight(a           , row              , all             )          {
 
 /** Finished sessions that still hold a terminal: what "Sleep all" puts to sleep. */
 export function finishedAgents(rows                )              {
+  rows = localRows(rows)
   const all = rows.flatMap((r) => r.agents)
   return rows.filter((r) => r.liveTerminals > 0 && !asleep(r)).flatMap((r) => r.agents.filter((a) => faceOf(a) === 'done' && !inFlight(a, r, all)))
 }
 const finishedOf = (placed          ) => {
   const all = placed.map((p) => p.a)
-  return placed.filter((p) => faceOf(p.a) === 'done' && p.row.liveTerminals > 0 && !asleep(p.row) && !inFlight(p.a, p.row, all))
+  return placed.filter((p) => !p.row.host && faceOf(p.a) === 'done' && p.row.liveTerminals > 0 && !asleep(p.row) && !inFlight(p.a, p.row, all))
 }
 
 /** Rows keep the order their workstreams started in; agent activity never moves them. */
@@ -1320,7 +1334,7 @@ export const FOLDED_KEY = 'folded'
  * is hidden, so it takes no numbers. The panel's key handler and the worker's commands both read this.
  */
 export function chatTargets(snap                                         , folded                      = new Set())               {
-  return treeBlocks(snap).flatMap(({ c, lines, auxiliary })               => [
+  return treeBlocks(localView(snap)).flatMap(({ c, lines, auxiliary })               => [
     ...(auxiliary ? [{ key: `agent:${auxiliary.p.a.paneKey}`, workspaceId: auxiliary.p.row.id, terminal: auxiliary.p.a.terminal  }] : c.you ? [] : [{ key: `coordinator:${c.key}`, coordinator: c.key }]),
     // A slept lead heading its open workers takes no number: a key press never resumes it unseen.
     ...(folded.has(auxiliary ? auxiliaryKey(auxiliary.p) : c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p })             => p.row.coordinator

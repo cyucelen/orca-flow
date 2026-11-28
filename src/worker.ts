@@ -22,8 +22,8 @@ import { applyGoalAction, assignNext, readGoals } from './goals.ts'
 import { readCompleted } from './completed-goals.ts'
 import { encodeLinear, linkedIssueOf, linkRows, loadLinear, pruneSent, sendIssue, teamsOf } from './linear.ts'
 import { associateSession, chooseSession, conversationRows, currentRecipient, deliverCurrent, deliveryBlock, DeliveryUncertainError, exclusive, memberAgent, memberFrom, memberOf, memberRows, readMemberHistory, reconcileSessions, resumeExactMember, selectCurrent, sessionChoices, verifyConversation, wakeCoordinator, bindLaunched, launchedAgent, launchedTerminal, launchOnce, settlePending, terminalPane, resumeIdFor, withResumeId, conversationSaved, parseProcs, programRuns, providerMessage, askKey, resumeExact, ResumeRefusedError, ResumeRunningError, ResumeUnverifiedError, type Launch, type ListedAgent, type ResumeIo, type TerminalRecord } from './coordinator-sessions.ts'
-import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
-import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions, AnalyticsView, AnalyticsWindow } from './protocol.ts'
+import { askingRows, asleep, CHAT_KEYS, chatTargets, FOLDED_KEY, finishedAgents, freeLooks, localRows, NO_RESUME_ID, showable, type ChatTarget } from './view.ts'
+import type { AgentInfo, AgentState, AgentSummary, Bot, Capacity, Coordinator, HostView, LinearData, Priority, SettingsState, Snapshot, WakeOutcome, WorkspaceRow, WorkstreamCard, CoordinatorSessions, AnalyticsView, AnalyticsWindow } from './protocol.ts'
 import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
@@ -55,6 +55,8 @@ import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snap
 import { ensureGoalsStub, ensureUsageStub, GOALS_PATH, USAGE_PATH } from './usage-open.ts'
 import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
 import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
+import { createHostPoller, type HostPoller, type HostRun, type RemoteHosts } from './hosts.ts'
+import { LOCAL_HOST } from '../skills/orca-flow/scripts/hosts.mjs'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -308,9 +310,14 @@ function toAgent(a: PsAgent, store: Store, quiet: (pane: string) => boolean, ope
 const highest = (levels: (Priority | undefined)[]) =>
   (levels.filter(Boolean) as Priority[]).sort()[0] ?? null
 
-/** A workspace's plugin id: its identity key, or (folder workspaces have none) the id the plugin API lists for its path. */
+/**
+ * A workspace's plugin id: its identity key, or (folder workspaces have none) the id the plugin API lists for its path.
+ * A paired host's row (re-keyed by relabelWorktrees: its hostId is not `local`) has no plugin id: it gets
+ * `remote:<its re-keyed worktree id>`, unique per host and never derived from its name, branch or path.
+ */
 const workspaceId = (w: PsWorktree, idByPath: Map<string, string>) =>
-  w.identity?.key ? `identity:${w.identity.key}` : (w.path && idByPath.get(w.path)) || null
+  w.hostId && w.hostId !== LOCAL_HOST ? (w.worktreeId ? `remote:${w.worktreeId}` : null)
+  : w.identity?.key ? `identity:${w.identity.key}` : (w.path && idByPath.get(w.path)) || null
 
 /**
  * `quiet(pane)`: the pane's only running background work is an artifact watch (see `stateOf`).
@@ -348,6 +355,48 @@ export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summ
         ...(w.bot ? { bot: w.bot } : {})
       }
     })
+}
+
+/**
+ * Pure: the paired hosts' rows, through the same fromPs path as this machine's, each carrying its host
+ * (`host`). Nothing local is read for them: no summary or card files, no transcript (`quiet`, `opened`),
+ * no plugin workspace ids. Ownership is assignCoordinators over this machine's rows (`local`, as fromPs
+ * gave them) plus these with their path and Orca session left out, so a remote agent nests only under a
+ * lead or coordinator the lineage names for its re-keyed pane (remoteWorkerPane), or under its own
+ * host's parent pane, and is never joined to a local row, folder or remembered owner. Not focused here
+ * (Orca's focus is on this machine), never a bot.
+ */
+export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: ReturnType<typeof readOwners> = {}): WorkspaceRow[] {
+  const rows = (remote?.worktrees ?? []).flatMap(({ host, worktrees }) => fromPs(worktrees).map((r): WorkspaceRow => {
+    const { bot: _bot, ...row } = r
+    return { ...row, active: false, host }
+  }))
+  if (!rows.length) return rows
+  const hidden = rows.map((r) => ({ ...r, path: null, agents: r.agents.map((a) => ({ ...a, orcaSession: null })) }))
+  const assigned = assignCoordinators([...local, ...hidden], coordinators, lineage, owners).slice(local.length)
+  return rows.map((r, i) => ({ ...r, agents: assigned[i].agents.map((a, j) => ({ ...a, orcaSession: r.agents[j].orcaSession })) }))
+}
+
+/** A paired host's row id (`remote:<host id>|…`) or agent pane (`runtime:<environment id>|…`, see hostKey). */
+export const isRemoteId = (id: unknown): boolean => typeof id === 'string' && (id.startsWith('remote:') || /^runtime:[^|]*\|/.test(id))
+
+/**
+ * Why a panel request that acts on a workspace or terminal by id is refused for a paired host's row or
+ * agent (none of them is a plugin workspace or this machine's terminal), or null when every id is local.
+ */
+export function remoteRefusal(ids: unknown[], rows: WorkspaceRow[], hosts: HostView[] = []): string | null {
+  const id = ids.find(isRemoteId) as string | undefined
+  if (!id) return null
+  const row = rows.find((r) => r.host && (r.id === id || r.agents.some((a) => a.paneKey === id)))
+  const hostId = id.startsWith('remote:') ? id.slice('remote:'.length).split('|')[0] : id.split('|')[0]
+  const name = row?.host?.name ?? hosts.find((h) => h.id === hostId)?.name ?? 'That host'
+  return `${name}'s worktrees open from Orca's own sidebar`
+}
+
+/** This machine as a host: always reachable; its memory is the local capacity data. */
+export function localHost(facts: MemoryFacts, at: number, name = 'This computer'): HostView {
+  const memory = facts.totalGB != null && facts.availableGB != null ? { totalGB: Math.round(facts.totalGB * 10) / 10, availableGB: Math.round(facts.availableGB * 10) / 10, at: at || null } : null
+  return { id: LOCAL_HOST, name, kind: 'local', state: 'reachable', stale: false, checkedAt: at || null, seenAt: at || null, version: null, reason: null, memory, agents: null, remoteWorkers: null }
 }
 
 /** Orca's code while a terminal it just started is still attaching to its surface: transient, not a failure. */
@@ -694,7 +743,8 @@ let allRows: WorkspaceRow[] = []
  */
 export function summaryAgents(snap: Pick<Snapshot, 'rows' | 'coordinators'> & Pick<Partial<Snapshot>, 'bots'>): { agent: AgentInfo; worktreeId?: string }[] {
   const candidates = [
-    ...snap.rows.flatMap((r) => r.agents.map((agent) => ({ agent, worktreeId: r.id }))),
+    // A paired host's agents have no transcript, summary or terminal here.
+    ...localRows(snap.rows).flatMap((r) => r.agents.map((agent) => ({ agent, worktreeId: r.id }))),
     // A bot's chats are summarized like any agent's, so a bot that asks reaches Up next the same way.
     ...(snap.bots ?? []).flatMap((b) => b.chats.map(({ agent, workspaceId }) => ({ agent, worktreeId: workspaceId }))),
     ...(snap.coordinators ?? []).flatMap((c) => c.members !== undefined
@@ -733,13 +783,23 @@ let lineageLoading = false
 /** Agent panes that existed when the lineage last loaded: a new one may be a freshly started worker. */
 let lineagePanes = new Set<string>()
 
-function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[], roots: ReturnType<typeof splitRoots>): void {
+/** The paired hosts' poller (src/hosts.ts), made by activate; null before. */
+let hostPoller: HostPoller | null = null
+
+/**
+ * When the poller's first `environment list` runs (hosts.json shows the last-known hosts at once) and
+ * what runs its commands. Orca is busy right after a start, and a mounted test worker (gone within
+ * seconds) never reaches the real Orca for a host; tests swap `run` for a fake.
+ */
+export const hostPolling: { startAfterMs: number; run: HostRun | null } = { startAfterMs: 10_000, run: null }
+
+function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[], roots: ReturnType<typeof splitRoots>, includeRemote = false): void {
   const unseen = panes.some((p) => !lineagePanes.has(p))
   if (lineageLoading || Date.now() - lineageAt < (unseen ? 10_000 : 60_000)) return
   lineageLoading = true
   const seen = new Set(panes)
   const run = orcaRunner(ORCA_BIN)
-  Promise.all([loadLineage(run), readSplitEvidence(run, roots).catch(() => undefined)])
+  Promise.all([loadLineage(run, Date.now(), false, { includeRemote }), readSplitEvidence(run, roots).catch(() => undefined)])
     .then(([next, split]) => {
       splitEvidence = split
       lineagePanes = seen
@@ -799,7 +859,9 @@ export async function snapshot(
   ps: () => Promise<PsWorktree[]> = runPs,
   onLineage: () => void = () => {},
   /** Settings → Features → Bots. Off: `orca bot list` is not read and the snapshot carries no bots. */
-  botsOn = true
+  botsOn = true,
+  /** The paired hosts as last polled (src/hosts.ts); never probes. Null: no paired host, no `hosts` and no remote rows. */
+  remote: () => RemoteHosts | null = () => hostPoller?.view() ?? null
 ): Promise<Snapshot> {
   const onDisk = readCoordinators()
   const coordinators: Coordinator[] = onDisk.map(({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, dir }) => ({ key, name, repos, look, linearTeams, bots, sessions, sessionNotice, handover: handoverStatus(dir), members: sessions?.members.map((m) => ({ ...m, agent: null })), workspaceId: null as string | null, session: null as AgentInfo | null, active: false }))
@@ -813,7 +875,8 @@ export async function snapshot(
     botsWereOn = botsOn
     const worktrees = await ps()
     const roots = splitRoots(worktrees, onDisk.map(c => c.dir))
-    refreshLineage(orca, onLineage, allRows.flatMap(r => r.agents.map(a => a.paneKey)), roots)
+    const paired = remote()
+    refreshLineage(orca, onLineage, allRows.flatMap(r => r.agents.map(a => a.paneKey)), roots, paired !== null)
     // Folder workspaces (your coordinators live in them) have no identity key; ask the plugin API for their ids.
     const idByPath = new Map<string, string>()
     if (worktrees.some((w) => !w.identity?.key)) {
@@ -821,7 +884,8 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const routed = withRoutes(assignCoordinators(fromPs(worktrees, readStore(), idByPath, quietPane, openedBy), onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
+    const localPs = fromPs(worktrees, readStore(), idByPath, quietPane, openedBy)
+    const routed = withRoutes(assignCoordinators(localPs, onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
     const all = withModels(routed, lineage.dispatchIdOf, readRouteChoices(), (a) => a.paneKey ? seenModel(findTranscript(a.paneKey, undefined, { orcaSession: a.orcaSession, provider: a.agentType })) : null)
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
     const remembered = rememberOwners(all, owners)
@@ -872,7 +936,12 @@ export async function snapshot(
     }
     // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
     const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
-    return { rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}) }
+    // Paired hosts' rows come after this machine's; everything above (owners, sessions, bots, capacity) saw local rows only.
+    const remoteRows = remoteRowsOf(paired, localPs, onDisk, lineage, owners)
+    return {
+      rows: remoteRows.length ? [...rows, ...remoteRows] : rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}),
+      ...(paired ? { hosts: [localHost(memory, memoryAt), ...paired.hosts] } : {})
+    }
   } catch (e) {
     orca.log(`orca worktree ps failed, using workspace.list: ${(e as Error).message}`)
     return { rows: (await fromApi(orca)).filter((r) => !isBotRow(r)), source: 'api', capacity: null, coordinators }
@@ -891,7 +960,7 @@ export function withFocus(snap: Snapshot, context: { branch: string; displayName
     !!context && (agents.some((a) => a.terminal !== null && ids.has(a.terminal)) || (name === context.displayName && branchOf(branch ?? '') === branchOf(context.branch)))
   return {
     ...snap,
-    rows: snap.rows.map((r) => ({ ...r, active: focused(r.name, r.branch, r.agents) })),
+    rows: snap.rows.map((r) => ({ ...r, active: !r.host && focused(r.name, r.branch, r.agents) })),
     coordinators: snap.coordinators.map((c) => ({ ...c, active: focused(c.name, null, c.session ? [c.session] : []) || (!!context && c.name === context.displayName) }))
   }
 }
@@ -1105,6 +1174,13 @@ export default function activate(orca: OrcaWorkerApi): void {
     const r = antigravityReloadReadiness()
     return { ready: r.state === 'ready', reason: r.reason, ...(r.state === 'disabled' ? { approval: true } : {}) }
   }
+  /** Why an action on a paired host's row or agent is refused (see remoteRefusal), from the latest snapshot. */
+  const refusedRemote = (...ids: unknown[]) => remoteRefusal(ids, latest?.rows ?? [], latest?.hosts ?? [])
+  // Paired hosts: polled on their own timer (src/hosts.ts); a change redraws, a redraw never probes.
+  const poller = hostPoller = createHostPoller({ run: hostPolling.run ?? run, file: join(DATA_DIR, 'hosts.json'), onChange: () => refreshSoon(), log: (line) => orca.log(line) })
+  const hostsStart = setTimeout(() => poller.start(), hostPolling.startAfterMs)
+  ;(hostsStart as unknown as { unref?: () => void }).unref?.()
+  disposers.push(() => { clearTimeout(hostsStart); poller.stop(); if (hostPoller === poller) hostPoller = null })
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
@@ -1117,6 +1193,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     handoverProviders = installed ? installed.filter((a) => a.id === 'claude' || a.id === 'codex').map((a) => a.id as 'claude' | 'codex') : null
     installedAgents = installed ? installed.map((a) => a.id) : null
     firstProviders = coordinatorProviders(installed)
+    if (snap.hosts?.[0]?.kind === 'local') snap.hosts[0] = { ...snap.hosts[0], agents: installedAgents }
     latest = snap
     focus = front
     if (latest.source === 'cli') refreshOldSummaries(latest)
@@ -1129,7 +1206,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
   // Goals: one file each under DATA_DIR/goals. An agent's `orca-flow goal` and the panel's edits change them; the
   // panel gets the list (with the live agents on each goal) on open, after its own edit, and whenever a file changes.
-  const goalRows = () => latest?.rows ?? allRows
+  // Goals match rows by path and pane: this machine's only (a paired host may have the same path).
+  const goalRows = () => (latest ? localRows(latest.rows) : allRows)
   // Settings → Features → Goals, read from the file each time so a save applies at once. Off: no goal is read or posted, and the panel's edits are refused. The files are never touched by the switch.
   const goalsOn = () => readSettings(DATA_DIR).settings.features.goals
   const postGoals = () => {
@@ -1240,7 +1318,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     if (target.coordinator && !terminal) return 'The exact asking session is unavailable.'
     const opened = await openChat(terminal ? { workspaceId: target.id, terminal } : { workspaceId: target.id })
-    if (!opened.opened) return 'The exact source session is unavailable or is now read-only history.'
+    if (!opened.opened) return opened.reason ?? 'The exact source session is unavailable or is now read-only history.'
     return `${target.repo}/${target.name}`
   })
   // The status bar item keeps this worker running, so it can fill the item in right away.
@@ -1266,7 +1344,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // The opened cockpit and its two actions. Each action redraws the panel afterwards.
   orca.panels.handle('sidebar.cockpit', async () => {
-    const stats = await loadCockpit(run, (latest ?? (await refresh())).rows)
+    // Its merged-worktree check runs git on each row's path: this machine's rows only.
+    const stats = await loadCockpit(run, localRows((latest ?? (await refresh())).rows))
     // The top bar and the opened details read the same Orca report, so they show the same numbers.
     if (stats.ram) {
       memory = { ...memory, availableGB: stats.ram.totalGB - stats.ram.usedGB }
@@ -1276,11 +1355,15 @@ export default function activate(orca: OrcaWorkerApi): void {
     return stats
   })
   orca.panels.handle('sidebar.closeSessions', async ({ panes }) => {
+    const refused = refusedRemote(...panes)
+    if (refused) return { closed: 0, reason: refused }
     const result = await closeSessions(run, panes)
     refreshSoon()
     return result
   })
   orca.panels.handle('sidebar.removeWorktree', async ({ workspaceId, force }) => {
+    const refused = refusedRemote(workspaceId)
+    if (refused) return { removed: false, reason: refused }
     const { rows } = await refresh()
     const result = await removeWorktree(run, rows.find((r) => r.id === workspaceId), force === true)
     refreshSoon()
@@ -1662,6 +1745,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('sidebar.coordinatorSessions', ({ key, action, member: id, workspaceId, paneKey, orcaSession, agent }) => exclusive(changing, key, async () => {
     try {
+      const refused = refusedRemote(workspaceId, paneKey)
+      if (refused) throw new Error(refused)
       await refresh()
       const c = readCoordinators().find((c) => c.key === key)
       if (!c) throw new Error('Coordinator no longer exists.')
@@ -1702,6 +1787,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // ---------- context menu actions ----------
   orca.panels.handle('sidebar.setPriority', async ({ workspaceId, priority }) => {
+    const refused = refusedRemote(workspaceId)
+    if (refused) return { ok: false, error: refused }
     if (!workspaceId.startsWith('identity:')) return { ok: false, error: 'Only worktrees have a priority card' }
     const key = workspaceId.slice('identity:'.length)
     const path = join(DATA_DIR, 'cards', `${fileKey(key)}.json`)
@@ -1753,7 +1840,9 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   // The clicked agent's tab is in front now: move the border at once, not at the panel's next look.
-  const openChat = async (input: { workspaceId: string; terminal?: string }) => {
+  const openChat = async (input: { workspaceId: string; terminal?: string }): Promise<{ opened: boolean; reason?: string }> => {
+    const refused = refusedRemote(input.workspaceId, input.terminal)
+    if (refused) return { opened: false, reason: refused }
     if (input.terminal && closedMemberTerminal(latest?.coordinators ?? readCoordinators(), input.workspaceId, input.terminal)) return { opened: false }
     const opened = await openAgent(orca, run, input)
     // A read already in flight predates the switch; read again after it.
@@ -1767,6 +1856,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   const resumingFolder = new Set<string>()
   orca.panels.handle('sidebar.resumeConversation', ({ workspaceId, pane }) => exclusive(resumingFolder, JSON.stringify([workspaceId, pane]), async () => {
     try {
+      const refused = refusedRemote(workspaceId, pane)
+      if (refused) return { ok: false, error: refused }
       const { rows } = await refresh()
       const outcome = await resumeFolderConversation(rows, { workspaceId, pane }, { ...resumeIo, open: async (w, terminal) => (await openChat({ workspaceId: w, terminal })).opened, terminals: terminalsNow }, folderResumes)
       refreshSoon()
@@ -2013,6 +2104,8 @@ export function requestReload(
   skill: string,
   io: { data?: string; hashOf?: (skill: string) => string; write?: typeof writeRequest; sessionOf?: (pane: string, a: AgentInfo | undefined) => string | null; now?: number } = {}
 ): { asked: number; unsupported: number; skipped: { finished: number; asleep: number }; hash?: string } {
+  // A paired host's agents cannot take the note: their sessions and files are on that host.
+  snap = { ...snap, rows: localRows(snap.rows) }
   const plan = reloadPlan(snap, scope)
   if (!plan.targets.length) return { asked: 0, unsupported: plan.unsupported.length, skipped: plan.skipped }
   const agents = new Map([...snap.rows.flatMap((r) => r.agents), ...snap.coordinators.flatMap((c) => (c.session ? [c.session] : []))].map((a) => [a.paneKey, a]))
