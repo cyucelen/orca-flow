@@ -1976,10 +1976,15 @@ test('a worker a local lead dispatched to caca nests under that lead when its re
   assert.equal(lineage.dispatchOf?.get('runtime:env-caca|tab1:leaf1'), 'open')
   assert.equal(lineage.dispatchIdOf?.has('runtime:env-caca|tab1:leaf1'), false) // routes and token links read local panes only
   assert.equal(lineage.dispatcherOf.get('p:lead'), 'term-coord') // the anonymous remote worker took nothing from the local lead's pane
-  const remote = main.remoteRowsOf(remoteOf([{ ...twin(), agents: [{ paneKey: 'tab1:leaf1', state: 'working' }, { paneKey: 'tab1:leaf3', state: 'working' }] }]), local, coordinators, lineage)
-  const [nested, mine] = remote[0].agents
+  // caca also has an agent whose pane id is the local lead's own ('p:lead'): it is not that lead, and nests under nothing.
+  const remote = main.remoteRowsOf(remoteOf([{ ...twin(), agents: [{ paneKey: 'tab1:leaf1', state: 'working' }, { paneKey: 'tab1:leaf3', state: 'working' }, { paneKey: 'p:lead', state: 'working' }] }]), local, coordinators, lineage)
+  const [nested, mine, namesake] = remote[0].agents
   assert.deepEqual([nested.coordinator, nested.leadPane, nested.dispatch, nested.terminal], ['alpha', 'p:lead', 'open', null])
   assert.deepEqual([mine.coordinator, mine.leadPane], ['you', null])
+  assert.deepEqual([namesake.paneKey, namesake.coordinator, namesake.leadPane, namesake.dispatch, namesake.terminal], ['runtime:env-caca|p:lead', 'you', null, null, null])
+  // The local lead keeps its own place: the remote namesake changes nothing for it.
+  const localLead = assignCoordinators(local, coordinators, lineage)[1].agents[0]
+  assert.deepEqual([localLead.coordinator, localLead.terminal], ['alpha', 'term-lead'])
 })
 
 test('no paired host (no poller data, an empty or failing environment list): the snapshot is what it was without hosts', async () => {
@@ -2062,4 +2067,25 @@ test('remote row actions are refused with a plain reason, before any host call o
   assert.match(priority.error ?? '', reason)
   assert.deepEqual(host.callsOf('workspace.open'), [])
   await worker.deactivate()
+})
+
+test("a paired host's turn summaries show on its own agents only; local agents never read them, nor it theirs", () => {
+  const remoteCard = { title: 'Status check', about: 'a', goal: '', since: '', glance: '', needs: { type: 'none', ask: '', options: [] }, effort: 'quick', priority: 'P1', role: 'solo', updatedAt: 1, remote: { hostId: 'runtime:env-caca', key: 'k', at: 1 }, orcaSession: 'sess-1' }
+  const localCard = { ...remoteCard, title: 'Local card', remote: undefined, priority: 'P0' }
+  const summaries = { 'runtime_env-caca_tab1_leaf1': remoteCard, 'tab1_leaf2': localCard } as never
+  const [r] = main.remoteRowsOf(remoteOf([twin()]), [], [], noLineage, {}, summaries)
+  assert.equal(r.agents[0].summary?.title, 'Status check')
+  assert.equal(r.agents[0].title, 'Status check')
+  assert.equal(r.priority, 'P1')
+  assert.equal(r.agents[1].summary, null, "a local card under the same pane id is not caca's")
+  // Another conversation in the same pane, or another host: not this card.
+  assert.equal(main.remoteSummary(summaries, 'runtime:env-caca', { paneKey: 'runtime:env-caca|tab1:leaf1', orcaSession: 'sess-2' }), null)
+  assert.equal(main.remoteSummary(summaries, 'runtime:other', { paneKey: 'runtime:env-caca|tab1:leaf1', orcaSession: 'sess-1' }), null)
+  // Local rows are read as before: the remote card is under a host-prefixed name no local pane has.
+  const [l] = main.fromPs([twin()], { cards: {}, summaries })
+  assert.equal(l.agents[0].summary, null)
+  assert.equal(l.agents[1].summary?.title, 'Local card')
+  // The job the poller queues: marked remote, no transcript to look for.
+  const job = main.remoteSummaryJob({ pane: 'runtime:env-caca|tab1:leaf1', hostId: 'runtime:env-caca', worktreeId: 'remote:x', prompt: 'p', lastAssistant: 'm', at: 1, key: 'k', orcaSession: null, agentType: 'claude' })
+  assert.deepEqual(job, { pane: 'runtime:env-caca|tab1:leaf1', transcript: '', worktreeId: 'remote:x', remote: { hostId: 'runtime:env-caca', prompt: 'p', lastAssistant: 'm', at: 1, key: 'k', orcaSession: null } })
 })

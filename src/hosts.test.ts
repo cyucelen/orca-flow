@@ -3,7 +3,8 @@ import { assert, test } from 'orca/testing'
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AGENTS_EVERY_MS, BACKOFF_MAX_MS, createHostPoller, MEMORY_EVERY_MS, PROBE_EVERY_MS, type HostRun } from './hosts.ts'
+import { AGENTS_EVERY_MS, BACKOFF_MAX_MS, createHostPoller, endedTurns, MEMORY_EVERY_MS, PROBE_EVERY_MS, turnKey, turnTracker, type HostRun } from './hosts.ts'
+import type { PsWorktree } from './worker.ts'
 import { STALE_AFTER_MS } from '../skills/orca-flow/scripts/hosts.mjs'
 
 const GB = 1024 ** 3
@@ -266,4 +267,65 @@ test('bounded: 5 paired hosts, one hanging: at most 2 probes in flight, the othe
   assert.deepEqual([h1.state, h1.reason], ['unavailable', 'orca status timed out'])
   assert.ok(orca.max() <= 2)
   p.stop()
+})
+
+// ---------- remote turn summaries: when a paired host's turn ended ----------
+
+const agentRow = (agent: Record<string, unknown>): PsWorktree[] => [{ hostId: 'runtime:env-caca', worktreeId: 'runtime:env-caca|repo1::/Users/me/reputation', agents: [{ paneKey: 'runtime:env-caca|tab1:leaf1', orcaSessionId: 's1', agentType: 'claude', prompt: 'whats statuss', ...agent }] }]
+
+test('remote turns: one per finished turn, none while working, none for repeated polls or after a restart', () => {
+  const file = tmpFile().replace('hosts.json', 'remote-turns.json')
+  const t = turnTracker({ file })
+  const host = 'runtime:env-caca'
+  assert.deepEqual(t.take(host, agentRow({ state: 'working', lastAssistantMessage: 'Looking…' }), 1), [], 'none while working')
+  assert.deepEqual(t.take(host, agentRow({ state: 'done', lastAssistantMessage: '' }), 2), [], 'none without a final message')
+  const [turn, ...more] = t.take(host, agentRow({ state: 'done', lastAssistantMessage: 'All green: 3 PRs merged.', updatedAt: 50 }), 3)
+  assert.equal(more.length, 0)
+  assert.deepEqual(turn, { pane: 'runtime:env-caca|tab1:leaf1', hostId: host, worktreeId: 'remote:runtime:env-caca|repo1::/Users/me/reputation', prompt: 'whats statuss', lastAssistant: 'All green: 3 PRs merged.', at: 50, key: turnKey('All green: 3 PRs merged.'), orcaSession: 's1', agentType: 'claude' })
+  for (let i = 0; i < 3; i++) assert.deepEqual(t.take(host, agentRow({ state: 'done', lastAssistantMessage: 'All green: 3 PRs merged.' }), 4 + i), [], 'the same turn polled again')
+  // Waiting on the user after a new message: that is a turn end too, once.
+  assert.equal(t.take(host, agentRow({ state: 'waiting', lastAssistantMessage: 'Ship it?' }), 10).length, 1)
+  assert.equal(t.take(host, agentRow({ state: 'blocked', lastAssistantMessage: 'Ship it?' }), 11).length, 0)
+  // Working only on background work while its own turn is done counts as done (as for local agents).
+  assert.equal(t.take(host, agentRow({ state: 'working', mainAgent: { state: 'done' }, lastAssistantMessage: 'Watching CI.' }), 12).length, 1)
+  // Orca restarts: the file remembers, so nothing runs again.
+  const again = turnTracker({ file })
+  assert.deepEqual(again.take(host, agentRow({ state: 'working', mainAgent: { state: 'done' }, lastAssistantMessage: 'Watching CI.' }), 13), [])
+  assert.ok(!/whats statuss|Watching CI/.test(readFileSync(file, 'utf8')), 'only hashes are kept')
+  // A pane the host no longer lists is forgotten; other hosts' panes are kept.
+  const other = endedTurns('runtime:h2', [{ worktreeId: 'runtime:h2|w', agents: [{ paneKey: 'runtime:h2|p', state: 'done', lastAssistantMessage: 'ok' }] }], {}, 1)
+  assert.equal(other.length, 1)
+  again.take('runtime:h2', [{ worktreeId: 'runtime:h2|w', agents: [{ paneKey: 'runtime:h2|p', state: 'done', lastAssistantMessage: 'ok' }] }], 14)
+  again.take(host, [], 15)
+  assert.deepEqual(Object.keys(again.seen()), ['runtime:h2|p'])
+})
+
+test('the poller hands over only fresh rows from a host that answered: never an unavailable host, a failed ps or rows from hosts.json', async () => {
+  let clock = 0
+  let down = false
+  let psFails = false
+  const file = tmpFile()
+  const handed: { host: string; at: number; n: number }[] = []
+  const onRows = (host: { id: string }, worktrees: PsWorktree[], at: number) => handed.push({ host: host.id, at, n: worktrees.length })
+  const orca = healthy({ status: () => (down ? new Error('unreachable') : status()), 'worktree ps': () => (psFails ? new Error('ps failed') : ps()) })
+  const p = createHostPoller({ run: orca.run, file, now: () => clock, onRows })
+  p.tick()
+  await p.idle()
+  assert.deepEqual(handed, [{ host: 'runtime:env-caca', at: 0, n: 1 }])
+  assert.equal(handed.length, 1)
+  psFails = true
+  clock = PROBE_EVERY_MS
+  p.tick()
+  await p.idle()
+  psFails = false
+  down = true
+  clock = 2 * PROBE_EVERY_MS
+  p.tick()
+  await p.idle()
+  assert.equal(handed.length, 1, 'neither a failed ps nor an unavailable host')
+  p.stop()
+  // Restarted: the last rows show from the file, stale, and are not handed over.
+  const q = createHostPoller({ run: fakeOrca({}).run, file, now: () => clock, onRows })
+  assert.ok(q.view())
+  assert.equal(handed.length, 1)
 })

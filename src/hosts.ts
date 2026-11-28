@@ -16,6 +16,10 @@
 //   never "asleep", never empty. It goes to ~/.orca-flow/hosts.json (written atomically) with the
 //   host's id, name and environment id, never its endpoints or pairing data; at start that file shows
 //   the last rows at once, stale, until a probe answers.
+// - A host's finished turns are summarized from the rows a probe just read (`onRows` + turnTracker:
+//   once per pane and final message, remembered in ~/.orca-flow/remote-turns.json); never from an
+//   unavailable host or rows from the file, and never with a read of their own.
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pairedHosts, probeHost, PROBE_TIMEOUT_MS, REMOTE_WORKER_CAPABILITY, safeReason, STALE_AFTER_MS, type HostMemory, type PairedHost } from '../skills/orca-flow/scripts/hosts.mjs'
@@ -91,7 +95,12 @@ export function bounded(run: HostRun, ms: number): (args: string[]) => Promise<a
   })
 }
 
-export function createHostPoller(opts: { run: HostRun; file?: string | null; now?: () => number; timeoutMs?: number; onChange?: () => void; log?: (line: string) => void }) {
+/**
+ * `onRows(host, worktrees, at)`: a probe just read the host's worktrees, and the host answered (never for
+ * an unavailable host, a failed or timed-out worktree list, or rows from hosts.json). What reads the
+ * end of remote turns hangs here (turnTracker), so it needs no remote read of its own.
+ */
+export function createHostPoller(opts: { run: HostRun; file?: string | null; now?: () => number; timeoutMs?: number; onChange?: () => void; onRows?: (host: { id: string; name: string }, worktrees: PsWorktree[], at: number) => void; log?: (line: string) => void }) {
   const now = opts.now ?? Date.now
   const run = bounded(opts.run, opts.timeoutMs ?? PROBE_TIMEOUT_MS)
   const log = opts.log ?? (() => {})
@@ -189,7 +198,10 @@ export function createHostPoller(opts: { run: HostRun; file?: string | null; now
       e.version = p.status.version
       e.capabilities = p.status.capabilities
       // A read that failed keeps the last good one: rows, agents and memory each stand alone.
-      if (p.worktrees) { e.worktrees = p.worktrees; e.rowsAt = p.at; e.rowsFresh = true }
+      if (p.worktrees) {
+        e.worktrees = p.worktrees; e.rowsAt = p.at; e.rowsFresh = true
+        try { opts.onRows?.({ id: e.host.id, name: e.host.name }, p.worktrees, p.at) } catch (err) { log(`reading ${e.host.name}'s turns failed: ${safeReason(err)}`) }
+      }
       if (p.agents) e.agents = p.agents
       if (p.memory) e.memory = p.memory
       e.reason = p.errors.worktrees ? `worktree list failed: ${p.errors.worktrees}` : null
@@ -255,3 +267,77 @@ export function createHostPoller(opts: { run: HostRun; file?: string | null; now
 }
 
 export type HostPoller = ReturnType<typeof createHostPoller>
+
+// ---------- the end of remote turns ----------
+
+/**
+ * A paired host's agent whose turn just ended, from what its `worktree ps` row already says (`prompt`
+ * and `lastAssistantMessage`): enough for a summary card without its transcript, which is on that host.
+ * `pane` is host-prefixed (relabelWorktrees), `worktreeId` the row's id (`remote:…`), `key` the hash
+ * of the message.
+ */
+export type RemoteTurn = { pane: string; hostId: string; worktreeId: string; prompt: string; lastAssistant: string; at: number; key: string; orcaSession: string | null; agentType: string | null }
+
+/** Pure: the hash a turn is known by (its final message), so one message is summarized once. */
+export const turnKey = (message: string) => createHash('sha256').update(message).digest('hex').slice(0, 24)
+
+/** Orca's word that the agent's own turn is over: done, waiting or blocked, or working only on background work. */
+const turnOver = (a: { state?: string; mainAgent?: { state?: string } | null }) =>
+  a.state === 'done' || a.state === 'waiting' || a.state === 'blocked' || (a.state === 'working' && (a.mainAgent?.state === 'done' || a.mainAgent?.state === 'waiting'))
+
+/**
+ * Pure: the turns that ended in a host's fresh rows and were not summarized yet (`seen`: pane → key of
+ * the last message summarized). A working agent, an agent with no final message, or one whose message
+ * is the one already seen gives none: repeated polls of a finished turn give nothing.
+ */
+export function endedTurns(hostId: string, worktrees: PsWorktree[], seen: Record<string, string>, at: number): RemoteTurn[] {
+  const out: RemoteTurn[] = []
+  for (const w of worktrees) {
+    if (w.isArchived || !w.worktreeId) continue
+    for (const a of w.agents ?? []) {
+      const message = typeof a.lastAssistantMessage === 'string' ? a.lastAssistantMessage.trim() : ''
+      if (!a.paneKey || !message || !turnOver(a)) continue
+      const key = turnKey(message)
+      if (seen[a.paneKey] === key) continue
+      out.push({ pane: a.paneKey, hostId, worktreeId: `remote:${w.worktreeId}`, prompt: typeof a.prompt === 'string' ? a.prompt : '', lastAssistant: message, at: typeof a.updatedAt === 'number' ? a.updatedAt : at, key, orcaSession: a.orcaSessionId ?? null, agentType: a.agentType ?? null })
+    }
+  }
+  return out
+}
+
+/**
+ * Which remote turns were already handed to the summarizer: pane → message key, in `file`
+ * (~/.orca-flow/remote-turns.json, written atomically), so a restart does not summarize them again.
+ * `take` returns the new turns of a host's fresh rows and records them at once: at most one summary
+ * per (pane, message), even when the writer then fails. A pane its host no longer lists is forgotten.
+ */
+export function turnTracker(opts: { file?: string | null; log?: (line: string) => void } = {}) {
+  let seen: Record<string, string> = {}
+  if (opts.file && existsSync(opts.file)) {
+    try { const d = JSON.parse(readFileSync(opts.file, 'utf8')); if (d && typeof d.seen === 'object' && !Array.isArray(d.seen)) seen = d.seen } catch {}
+  }
+  const save = () => {
+    if (!opts.file) return
+    try {
+      mkdirSync(join(opts.file, '..'), { recursive: true })
+      const tmp = `${opts.file}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify({ version: 1, seen }), { mode: 0o600 })
+      renameSync(tmp, opts.file)
+    } catch (e) { opts.log?.(`saving remote turns failed: ${(e as Error).message}`) }
+  }
+  return {
+    take(hostId: string, worktrees: PsWorktree[], at: number): RemoteTurn[] {
+      const turns = endedTurns(hostId, worktrees, seen, at)
+      const listed = new Set(worktrees.flatMap((w) => (w.agents ?? []).map((a) => a.paneKey).filter(Boolean)))
+      const prefix = `${hostId}|`
+      const next: Record<string, string> = {}
+      for (const [pane, key] of Object.entries(seen)) if (!pane.startsWith(prefix) || listed.has(pane)) next[pane] = key
+      for (const t of turns) next[t.pane] = t.key
+      const changed = JSON.stringify(next) !== JSON.stringify(seen)
+      seen = next
+      if (changed) save()
+      return turns
+    },
+    seen: () => ({ ...seen })
+  }
+}

@@ -28,7 +28,7 @@ import { claimsAsk, leadAgent, nextTarget } from './rank.ts'
 import { createWriter } from './writer.ts'
 import { configFile, configuredWriters, readSettings, writeSettings } from './config.ts'
 import { settingsToSave, WRITER_PROVIDERS, type WriterStatus } from './settings.ts'
-import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summaryProviders, turnSummarizer } from './summarize.ts'
+import { currentSummaryJobs, findTranscript, refreshStale, summaryMatches, summarizePane, summarizeRemote, summaryProviders, turnSummarizer, type Job } from './summarize.ts'
 import { ensureOwnLinks, ensureOwnStopHook, ensureSeeds, linksFor, pluginDir, seedsFor, stopHookFor } from './install.ts'
 import { bootstrapCoordinator, coordinatorPrompt } from './coordinator-bootstrap.ts'
 import { coordinatorLaunchPlan, startCoordinator } from './coordinator-launch.ts'
@@ -55,7 +55,7 @@ import { appendLinks, dispatchInfo, paneBinding, readLinks, readRouteLines, snap
 import { ensureGoalsStub, ensureUsageStub, GOALS_PATH, USAGE_PATH } from './usage-open.ts'
 import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
 import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
-import { createHostPoller, type HostPoller, type HostRun, type RemoteHosts } from './hosts.ts'
+import { createHostPoller, turnTracker, type HostPoller, type HostRun, type RemoteHosts, type RemoteTurn } from './hosts.ts'
 import { LOCAL_HOST } from '../skills/orca-flow/scripts/hosts.mjs'
 
 const background = backgroundReader()
@@ -75,6 +75,10 @@ const URGENCY: AgentState[] = ['blocked', 'waiting', 'working', 'done']
 export type PsAgent = {
   address?: string | null
   paneKey?: string
+  /** The agent's latest prompt and final message (a paired host's turn summary reads them: its transcript is on that host). */
+  prompt?: string | null
+  lastAssistantMessage?: string | null
+  updatedAt?: number | null
   /** The pane that started this agent (a lead's or coordinator's), when Orca knows it. */
   parentPaneKey?: string | null
   /** Orca's id for the conversation; survives `claude --resume` in a new terminal. */
@@ -366,10 +370,14 @@ export function fromPs(worktrees: PsWorktree[], store: Store = { cards: {}, summ
  * host's parent pane, and is never joined to a local row, folder or remembered owner. Not focused here
  * (Orca's focus is on this machine), never a bot.
  */
-export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: ReturnType<typeof readOwners> = {}): WorkspaceRow[] {
+export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], coordinators: CoordinatorInfo[], lineage: Lineage, owners: ReturnType<typeof readOwners> = {}, summaries: Store['summaries'] = {}): WorkspaceRow[] {
   const rows = (remote?.worktrees ?? []).flatMap(({ host, worktrees }) => fromPs(worktrees).map((r): WorkspaceRow => {
     const { bot: _bot, ...row } = r
-    return { ...row, active: false, host }
+    const agents = r.agents.map((a) => {
+      const summary = remoteSummary(summaries, host.id, a)
+      return summary ? { ...a, summary, title: titleOk(summary.title) ? summary.title : a.title } : a
+    })
+    return { ...row, agents, priority: highest(agents.map((a) => a.summary?.priority)), active: false, host }
   }))
   if (!rows.length) return rows
   const hidden = rows.map((r) => ({ ...r, path: null, agents: r.agents.map((a) => ({ ...a, orcaSession: null })) }))
@@ -377,12 +385,28 @@ export function remoteRowsOf(remote: RemoteHosts | null, local: WorkspaceRow[], 
   return rows.map((r, i) => ({ ...r, agents: assigned[i].agents.map((a, j) => ({ ...a, orcaSession: r.agents[j].orcaSession })) }))
 }
 
+/**
+ * Pure: a paired host's agent's card (summarizeRemote): only one written for that host from what its ps
+ * said (`remote`), for the same Orca conversation. A local card never shows on a remote agent.
+ */
+export function remoteSummary(summaries: Store['summaries'], hostId: string, a: Pick<AgentInfo, 'paneKey' | 'orcaSession'>): AgentSummary | null {
+  const card = summaries[fileKey(a.paneKey)] as (AgentSummary & { remote?: { hostId?: string }; orcaSession?: string }) | undefined
+  if (!card || card.remote?.hostId !== hostId) return null
+  return !card.orcaSession || !a.orcaSession || card.orcaSession === a.orcaSession ? card : null
+}
+
+/** A paired host's finished turn as a summary job: no transcript (summarizeRemote reads only the turn). */
+export const remoteSummaryJob = (t: RemoteTurn): Job => ({ pane: t.pane, transcript: '', worktreeId: t.worktreeId, remote: { hostId: t.hostId, prompt: t.prompt, lastAssistant: t.lastAssistant, at: t.at, key: t.key, orcaSession: t.orcaSession } })
+
 /** A paired host's row id (`remote:<host id>|…`) or agent pane (`runtime:<environment id>|…`, see hostKey). */
 export const isRemoteId = (id: unknown): boolean => typeof id === 'string' && (id.startsWith('remote:') || /^runtime:[^|]*\|/.test(id))
 
 /**
  * Why a panel request that acts on a workspace or terminal by id is refused for a paired host's row or
  * agent (none of them is a plugin workspace or this machine's terminal), or null when every id is local.
+ * Checked on caca: `orca worktree activate --environment caca` marks the worktree active in caca's own
+ * Orca and does not bring it up in this window, so Flow cannot open one; Orca's own sidebar shows the
+ * host's worktrees under their project with the host's chip, which is where the reason points.
  */
 export function remoteRefusal(ids: unknown[], rows: WorkspaceRow[], hosts: HostView[] = []): string | null {
   const id = ids.find(isRemoteId) as string | undefined
@@ -884,7 +908,8 @@ export async function snapshot(
       for (const w of listed?.workspaces ?? []) idByPath.set(w.path, w.id)
     }
     const owners = readOwners()
-    const localPs = fromPs(worktrees, readStore(), idByPath, quietPane, openedBy)
+    const store = readStore()
+    const localPs = fromPs(worktrees, store, idByPath, quietPane, openedBy)
     const routed = withRoutes(assignCoordinators(localPs, onDisk, lineage, owners), lineage.dispatchIdOf, readRoutes())
     const all = withModels(routed, lineage.dispatchIdOf, readRouteChoices(), (a) => a.paneKey ? seenModel(findTranscript(a.paneKey, undefined, { orcaSession: a.orcaSession, provider: a.agentType })) : null)
     // Remember who each agent works for, so it keeps its coordinator if resumed in a new terminal.
@@ -937,7 +962,7 @@ export async function snapshot(
     // Off: no bots at all, so the section, bot chats in Up next, the counts and summaries see none (bot rows stay out of `rows`).
     const bots = botsOn ? botsOf(botRows, coordinators, botData, (line) => orca.log(line)) : undefined
     // Paired hosts' rows come after this machine's; everything above (owners, sessions, bots, capacity) saw local rows only.
-    const remoteRows = remoteRowsOf(paired, localPs, onDisk, lineage, owners)
+    const remoteRows = remoteRowsOf(paired, localPs, onDisk, lineage, owners, store.summaries)
     return {
       rows: remoteRows.length ? [...rows, ...remoteRows] : rows, source: 'cli', capacity: capacityOf(all, pressureLevel()), coordinators, ready: lineageAt > 0, ...(bots !== undefined ? { bots } : {}),
       ...(paired ? { hosts: [localHost(memory, memoryAt), ...paired.hosts] } : {})
@@ -1177,7 +1202,13 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Why an action on a paired host's row or agent is refused (see remoteRefusal), from the latest snapshot. */
   const refusedRemote = (...ids: unknown[]) => remoteRefusal(ids, latest?.rows ?? [], latest?.hosts ?? [])
   // Paired hosts: polled on their own timer (src/hosts.ts); a change redraws, a redraw never probes.
-  const poller = hostPoller = createHostPoller({ run: hostPolling.run ?? run, file: join(DATA_DIR, 'hosts.json'), onChange: () => refreshSoon(), log: (line) => orca.log(line) })
+  // A paired host's finished turns are summarized from the rows its 60 s probe already read (no remote
+  // read of its own), once per (pane, final message), through the same queue and writer as local turns.
+  const turns = turnTracker({ file: join(DATA_DIR, 'remote-turns.json'), log: (line) => orca.log(line) })
+  const onRemoteRows = (host: { id: string }, worktrees: PsWorktree[], at: number) => {
+    for (const t of turns.take(host.id, worktrees, at)) void summarizer.enqueue(remoteSummaryJob(t))
+  }
+  const poller = hostPoller = createHostPoller({ run: hostPolling.run ?? run, file: join(DATA_DIR, 'hosts.json'), onChange: () => refreshSoon(), onRows: onRemoteRows, log: (line) => orca.log(line) })
   const hostsStart = setTimeout(() => poller.start(), hostPolling.startAfterMs)
   ;(hostsStart as unknown as { unref?: () => void }).unref?.()
   disposers.push(() => { clearTimeout(hostsStart); poller.stop(); if (hostPoller === poller) hostPoller = null })
@@ -2002,7 +2033,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     findTranscript: (pane, identity) => currentAgent(pane)
       ? findTranscript(pane, undefined, { ...identityFor(pane), ...identity })
       : { path: null, why: 'No unambiguous live summary target; waiting for current inventory' },
-    run: (job) => summarizePane({ ...job, writer, isCurrent: () => !job.transcriptSource?.orcaSession || (currentAgent(job.pane)?.orcaSession === job.transcriptSource.orcaSession && currentAgent(job.pane)?.agentType === job.transcriptSource.providerSession?.provider), goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
+    run: (job) => job.remote ? summarizeRemote({ pane: job.pane, remote: job.remote, worktreeId: job.worktreeId, force: job.force, writer }) : summarizePane({ ...job, writer, isCurrent: () => !job.transcriptSource?.orcaSession || (currentAgent(job.pane)?.orcaSession === job.transcriptSource.orcaSession && currentAgent(job.pane)?.agentType === job.transcriptSource.providerSession?.provider), goal: job.worktreeId ? readStore().cards[fileKey(job.worktreeId)]?.goal : undefined }),
     log: (m) => orca.log(m)
   })
   let disposed = false
