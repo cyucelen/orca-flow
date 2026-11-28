@@ -240,6 +240,10 @@ When the answer is no, `reclaimable` names what would free memory: `idleEnvironm
 worktree's dev servers running while no agent there works, usually the biggest win; `gb` is hot in
 RAM, `footprintGB` adds compressed pages, `parts` lists each pane's processes) and
 `finishedSessions`. Offer the largest as an `approval` ask; never stop anything without a yes.
+Finished worktrees (merged or never diverged, clean, idle, yours by lineage) come from the
+read-only `orca-flow sweep`, which also lists leads that died with work open; the coordinator asks
+about its one batch and removes it only with `orca-flow sweep remove --batch <id>` after a yes
+(roles/coordinator.md, Worktree cleanup).
 
 **Queue, don't squeeze.** When the gate says no, queue the task instead of starting it, and tell
 the user it is queued and why in one line. A task needs a Run: if `orca orchestration run-current`

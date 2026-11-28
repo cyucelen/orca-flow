@@ -260,11 +260,38 @@ orca-flow queue              # what is waiting on you, ranked
 orca-flow capacity [--repo]  # does another agent or a new worktree fit in memory?
 orca-flow set / get          # a worktree's card: priority, goal, what it unblocks
 orca-flow resume             # a woken coordinator takes back the runs it was coordinating
+orca-flow sweep              # read-only: finished worktrees, interrupted leads, unclear cases
 orca-flow bots [--repo]      # a project's Orca bots, with the command that hands each one work
 orca-flow role lead|clear    # record (or clear) that you made this Claude session a lead
 ```
 
 (`orca-flow` here means `node <skill folder>/scripts/orca-flow.mjs`.)
+
+### Worktree cleanup from facts
+
+Leads die without reporting when Orca restarts or a coordinator sleeps, so cleanup does not wait
+for their reports. `orca-flow sweep [--coordinator <name>] [--json]` reads Orca's worktree list and
+dispatch records, git (local refs, never fetched) and the PR, and sorts every worktree into:
+
+- **finished**: the coordinator's by lineage (Orca's parent workspace, or a dispatch from its runs;
+  sharing a repo is not enough), idle, clean, and with nothing beyond origin's default branch or
+  inside a merged PR's head (squash merges count). These form one batch, named by a hash of the
+  worktrees, their HEADs and PRs.
+- **interrupted**: a lead that died without reporting while work is still open, with one recovery
+  to take: resume that exact lead (one per wake, only when memory allows), wait when Orca cannot
+  tell whether it is alive, or reassign when Orca allows it. A lead that dies again after a resume
+  is not resumed twice: the coordinator asks you.
+- **unclear**: a missing fact, named (no owner, unknown liveness, no PR metadata, newer local commits
+  than the merged PR, and so on). Never removed.
+- **skipped**: another coordinator's, main, pinned, protected by Orca, active, or kept by you.
+
+The preview changes nothing. The coordinator asks you one yes or no per batch, naming the
+worktrees, at most daily (`daily review: due`), and records it with `orca-flow sweep asked`.
+Your no (`sweep declined`) holds until a worktree's HEAD moves. After your yes, `orca-flow sweep remove --batch <id>`
+re-derives the batch (a changed batch is refused), rechecks each worktree right before removing
+it, and runs `orca worktree rm --run-hooks` one at a time. It keeps the local branches and stops
+at the first failed archive hook, with no retry and no `--force`. Nothing runs in the background:
+the sweep runs only while a coordinator is awake, when it wakes and once a day.
 
 A lead keeps its role across Claude resume and compaction. A lead started with `Your role: lead`
 in its first prompt is known by that line. A session you make a lead yourself (a worker you keep
@@ -455,6 +482,7 @@ before publication; an old session's card is not shown as a new Codex conversati
 - `~/.orca-flow/config.json`: your settings, if you change any (see [Settings](#settings)).
 - `~/.orca-flow/format-misses.jsonl`: one line per message that missed the message frame.
 - `~/.orca-flow/goals/`: one JSON file per goal (`<id>.json`), written by you in the panel and by agents with `orca-flow goal`.
+- `~/.orca-flow/sweep/<coordinator>.json`: when a cleanup batch was offered, and the worktrees you kept (at which HEAD).
 - `~/orca/coordinators/<name>/`: one folder per coordinator, with its `coordinator.json`.
 - `~/orca/coordinators/CLAUDE.md`: shared coordinator instructions and your project notes.
 

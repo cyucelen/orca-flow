@@ -47,6 +47,14 @@
 //   orca-flow plan check|start|next|status <plan.json> [--worktree <sel>] [--run <id>] [--dry-run]
 //       [--restart <id>]                      A lead's parallel plan: checked file ownership and deps,
 //                                             one Orca task each, started in waves, each behind the memory check
+//   orca-flow sweep [--coordinator <name>] [--json]   Read-only: this coordinator's worktrees as finished
+//                                             (removal candidates), interrupted (a dead lead's open work),
+//                                             unclear (a fact is missing) and skipped, decided from facts,
+//                                             plus one named batch to ask about (scripts/sweep.mjs)
+//   orca-flow sweep asked|declined --batch <id>   Record that the batch was offered / the user said no
+//   orca-flow sweep resumed --dispatch <id>   Record a resumed interrupted lead (if it dies again: ask the user)
+//   orca-flow sweep remove --batch <id>       Only after the user's yes to that exact batch: rechecks each
+//                                             item, then `orca worktree rm --run-hooks` one at a time
 //   route, dispatch and plan cache model discovery for 10 minutes (models-cache.json);
 //   --refresh-models looks again.
 //
@@ -54,7 +62,8 @@
 // coordinators, agents/<pane>.json written by the summarizer (the plugin worker), config.json for
 // limits and `routing` (Settings → Models), roles.json for leads the user named (roles.mjs),
 // goals/<id>.json (goals.mjs, one file per goal), routes.jsonl (one line per routed start), plans/<slug>-<path hash>.json (plan state),
-// pending-starts.json (dispatches whose outcome is unknown), models-cache.json. The Orca plugin reads
+// pending-starts.json (dispatches whose outcome is unknown), models-cache.json, sweep/<coordinator>.json
+// (when a sweep batch was offered, what the user kept, which leads were resumed). The Orca plugin reads
 // them too. No dependencies.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync, appendFileSync } from 'node:fs'
@@ -750,8 +759,19 @@ async function main() {
       }
       break
     }
+    case 'sweep': {
+      const { sweepCommand, liveSweepDeps } = await import('./sweep.mjs')
+      try {
+        process.exitCode = await sweepCommand(args, liveSweepDeps({ dir: DIR, orcaBin: ORCA_BIN }))
+      } catch (e) {
+        if (!(e instanceof flow.UsageError)) throw e
+        console.error(e.message)
+        process.exitCode = 1
+      }
+      break
+    }
     default:
-      console.log('usage: orca-flow <queue|capacity|set|get|goal|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan> [options]  (see the header of scripts/orca-flow.mjs)')
+      console.log('usage: orca-flow <queue|capacity|set|get|goal|resume|summarize-run|bots|role|skills-reloaded|types|route|dispatch|plan|sweep> [options]  (see the header of scripts/orca-flow.mjs)')
       process.exit(command ? 1 : 0)
   }
 }
