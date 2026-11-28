@@ -30,6 +30,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # build-frames.mjs uses Node's built-in type stripping (module.stripTypeScriptTypes).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Orca installs the tagged tree as it is: the panel and editors load the generated .js, so a tag never ships
+      # JavaScript older than its TypeScript. Stale output fails the release before anything is committed or tagged.
+      - name: Check the generated frame JavaScript
+        run: node scripts/build-frames.mjs --check
+
       - name: Decide the release
         id: decide
         run: node scripts/release.mjs >> "$GITHUB_OUTPUT"
