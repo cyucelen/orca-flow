@@ -16,7 +16,7 @@
 // up empty (`import { type A } from './a.ts'`) are dropped the way Orca's transpiler drops them, so a frame never
 // loads a worker-only module, and relative `.ts` specifiers become `.js`. The sources must be erasable TypeScript:
 // `scripts/dev.sh check` runs tsc with --erasableSyntaxOnly --verbatimModuleSyntax.
-import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import module from 'node:module'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -64,7 +64,8 @@ export function toJs(ts) {
     if (!/^\.\.?\//.test(m.specifier) || extname(m.specifier) !== '.ts') continue
     js = js.slice(0, m.start) + m.specifier.slice(0, -3) + '.js' + js.slice(m.end)
   }
-  return js.replace(/[ \t]+$/gm, '').replace(/\n*$/, '\n') + BANNER + '\n'
+  js = js.replace(/[ \t]+$/gm, '')
+  return (js.endsWith('\n') ? js : js + '\n') + BANNER + '\n'
 }
 
 /**
@@ -129,7 +130,7 @@ export function staleness(root = ROOT, files = build(root).files) {
   return out
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   process.removeAllListeners('warning') // stripTypeScriptTypes is "experimental" and says so on every run
   const check = process.argv.includes('--check')
   const { files, problems } = build()
