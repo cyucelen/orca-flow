@@ -2133,3 +2133,25 @@ test('the snapshot reads workspace.list for remote rows only while a host has ro
   assert.equal(calls, 1, 'no paired host and identity keys only: workspace.list is not read')
   assert.ok(without.rows.every((r) => !r.openId))
 })
+
+test("Orca's provisional contract: an encoded runtime host id matches; a refused workspace.open says where it opens instead", async () => {
+  // hostId = 'runtime:' + encodeURIComponent(environmentId); compared decoded, as hosts.mjs hostIdOf names it.
+  const listed = [{ id: 'runtime:env%2Fcaca|wt-1', path: '/home/c/rep', hostId: 'runtime:env%2Fcaca' }, { id: 'x', path: '/home/c/rep', hostId: 'runtime:%E0%A4%A' }]
+  assert.equal(main.remoteOpenId(listed, 'runtime:env/caca', '/home/c/rep'), 'runtime:env%2Fcaca|wt-1')
+  assert.equal(main.listedHostId('runtime:%E0%A4%A'), 'runtime:%E0%A4%A', 'a malformed escape is compared as given')
+  assert.equal(main.isLocalWorkspace({ id: 'runtime:env%2Fcaca|wt-1', path: '/c/alpha', hostId: 'runtime:env%2Fcaca' }), false)
+  const rows = main.remoteRowsOf(remoteOf([twin()]), [], [], noLineage)
+  for (const [error, why] of [[Object.assign(new Error('Workspace not found'), { code: 'action_failed' }), 'action_failed'], [Object.assign(new Error('No window'), { code: 'unavailable' }), 'unavailable'], [new Error('boom at ws://10.0.0.5:1'), 'boom at <endpoint>']] as const)
+    assert.equal(main.remoteOpenFailed(rows, rows[0].id, error), `Orca could not open it here (${why}). Open it in Orca's sidebar, under caca.`)
+  // Option+N passes the refusal on (a local open that did not happen has no reason, as before).
+  const target = [{ key: 'agent:p', workspaceId: rows[0].id }]
+  assert.equal(await main.openNthChat(target, 1, { coordinator: async () => ({ ok: true }), chat: async () => ({ opened: false, reason: 'Orca could not open it here (unavailable). Open it in Orca\'s sidebar, under caca.' }) }), "Orca could not open it here (unavailable). Open it in Orca's sidebar, under caca.")
+  assert.equal(await main.openNthChat(target, 1, { coordinator: async () => ({ ok: true }), chat: async () => ({ opened: true }) }), undefined)
+})
+
+test('the workspace.list fallback (worktree ps failed) never shows a paired host\'s workspace as this machine\'s', async () => {
+  const workspaces = [{ id: 'x', kind: 'worktree', name: 'main', path: '/u/projects/shop', branch: 'refs/heads/main', hostId: 'local' }, { id: 'runtime:env-caca|wt', kind: 'worktree', name: 'main', path: '/u/projects/shop', branch: 'refs/heads/main', hostId: 'runtime:env-caca' }]
+  const orca = { host: { call: async () => ({ workspaces, truncated: false }) }, log: () => {} }
+  const answer = await main.snapshot(orca as never, () => Promise.reject(new Error('no cli')))
+  assert.deepEqual(answer.rows.map((r) => r.id), ['x'])
+})

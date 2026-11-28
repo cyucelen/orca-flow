@@ -328,7 +328,9 @@ document.addEventListener('click', (event) => {
   if (d.yes) { void runAction(d.yes); return }
   if ('cockpit' in d) toggleCockpit()
   if (d.open) {
+    // A paired host's workspace Orca could not open here comes back with where it opens instead.
     void orca.plugin.request('sidebar.open', d.terminal ? { workspaceId: d.open, terminal: d.terminal } : { workspaceId: d.open })
+      .then((r) => { if (!r.opened && r.reason) goalToast(r.reason) }).catch(() => {})
     return
   }
   if (d.resume && d.workspace) { void resumeAsleep(d.workspace, d.resume); return }

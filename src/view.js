@@ -1206,7 +1206,8 @@ export const NO_RESUME_ID = 'Asleep: no saved conversation id was recorded for i
  * coordinator as its tree row does (waking it).
  */
 const openAttrs = (p        ) =>
-  p.row.host ? (p.row.openId ? `data-open="${esc(p.row.openId)}"` : `aria-disabled="true" data-tip="${esc(remoteTip(p.row))}"`)
+  // One Orca lists (openId) opens by its row id: the worker opens it by that id, or says where it opens if Orca refuses.
+  p.row.host ? (p.row.openId ? `data-open="${esc(p.row.id)}"` : `aria-disabled="true" data-tip="${esc(remoteTip(p.row))}"`)
   : asleep(p.row) ? (p.row.resumeId ? `data-resume="${esc(p.a.paneKey)}" data-workspace="${esc(p.row.id)}" data-tip="Asleep: click to resume this conversation"` : `disabled data-tip="${esc(NO_RESUME_ID)}"`)
   : p.row.coordinator && p.row.coordinatorMember && p.row.liveTerminals === 0 ? `data-coordinator="${esc(p.row.coordinator)}"`
   : !p.a.terminal && (p.row.coordinatorMember || p.row.folderOf) ? 'disabled data-tip="Exact session unavailable"' : p.row.coordinator && !p.row.coordinatorMember ? `data-coordinator="${esc(p.row.coordinator)}"` : `data-open="${esc(p.row.id)}"${p.a.terminal ? ` data-terminal="${esc(p.a.terminal)}"` : ''}`
@@ -1446,7 +1447,6 @@ export function chatTargets(snap                                         , folde
     // A slept lead heading its open workers takes no number: a key press never resumes it unseen.
     ...(folded.has(auxiliary ? auxiliaryKey(auxiliary.p) : c.key) ? [] : lines.filter(({ p }) => !asleep(p.row)).map(({ p })             => p.row.coordinator
       ? { key: `agent:${p.a.paneKey}`, coordinator: p.row.coordinator }
-      : p.row.openId ? { key: `agent:${p.a.paneKey}`, workspaceId: p.row.openId }
       : { key: `agent:${p.a.paneKey}`, workspaceId: p.row.id, ...(p.a.terminal ? { terminal: p.a.terminal } : {}) }))
   ]).slice(0, CHAT_KEYS)
 }

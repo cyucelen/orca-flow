@@ -56,7 +56,7 @@ import { ensureGoalsStub, ensureUsageStub, GOALS_PATH, USAGE_PATH } from './usag
 import { parseTaskTitles, readTitles, runsMissingTitles, writeTitles, type Titles } from './usage-titles.ts'
 import { analyticsView, analyticsWindow, buildModel, SUMMARY_DAYS, usageSummary, workstreamView, type AnalyticsModel } from './analytics.ts'
 import { createHostPoller, turnTracker, type HostPoller, type HostRun, type RemoteHosts, type RemoteTurn } from './hosts.ts'
-import { LOCAL_HOST } from '../skills/orca-flow/scripts/hosts.mjs'
+import { LOCAL_HOST, safeReason } from '../skills/orca-flow/scripts/hosts.mjs'
 
 const background = backgroundReader()
 /** Workaround for stablyai/orca#26192; remove with src/background.ts once Orca ships stablyai/orca#36164. */
@@ -400,6 +400,13 @@ export function remoteSummary(summaries: Store['summaries'], hostId: string, a: 
 export const remoteOpenTarget = (rows: WorkspaceRow[], workspaceId: string): string | null =>
   (workspaceId.startsWith('remote:') && rows.find((r) => r.host && r.id === workspaceId)?.openId) || null
 
+/** Why a paired host's listed workspace did not open here, and where it opens instead (safe to show). */
+export function remoteOpenFailed(rows: WorkspaceRow[], workspaceId: string, e: unknown): string {
+  const name = rows.find((r) => r.id === workspaceId)?.host?.name ?? 'That host'
+  const code = (e as { code?: unknown } | null)?.code
+  return `Orca could not open it here (${typeof code === 'string' && code ? code : safeReason(e)}). Open it in Orca's sidebar, under ${name}.`
+}
+
 /** A paired host's finished turn as a summary job: no transcript (summarizeRemote reads only the turn). */
 export const remoteSummaryJob = (t: RemoteTurn): Job => ({ pane: t.pane, transcript: '', worktreeId: t.worktreeId, remote: { hostId: t.hostId, prompt: t.prompt, lastAssistant: t.lastAssistant, at: t.at, key: t.key, orcaSession: t.orcaSession } })
 
@@ -409,13 +416,22 @@ export type ListedWorkspace = { id: string; path: string; hostId?: string | null
 export const isLocalWorkspace = (w: ListedWorkspace) => !w.hostId || w.hostId === LOCAL_HOST
 
 /**
+ * A listed workspace's host id as hosts.mjs names it (`hostIdOf`): Orca's provisional contract
+ * (host API 1.11, not in Orca 1.4.263) encodes the environment id (`runtime:` + encodeURIComponent).
+ */
+export const listedHostId = (hostId: string | null | undefined): string | null => {
+  if (!hostId) return null
+  try { return decodeURIComponent(hostId) } catch { return hostId }
+}
+
+/**
  * Pure: the plugin workspace id of a paired host's worktree, when an Orca that lists paired hosts'
  * workspaces names exactly one with that host's id and that exact path; else null. Never by name or
  * branch, and never a workspace of this machine or another host, whatever its path.
  */
 export function remoteOpenId(listed: ListedWorkspace[], hostId: string, path: string | null): string | null {
   if (!path || hostId === LOCAL_HOST) return null
-  const hits = listed.filter((w) => w.hostId === hostId && w.path === path)
+  const hits = listed.filter((w) => listedHostId(w.hostId) === hostId && w.path === path)
   return hits.length === 1 ? hits[0].id : null
 }
 
@@ -531,7 +547,8 @@ export async function openNthChat(
     const r = await open.coordinator(t.coordinator)
     return r.ok ? undefined : r.error
   }
-  await open.chat(t.terminal ? { workspaceId: t.workspaceId, terminal: t.terminal } : { workspaceId: t.workspaceId })
+  const opened = await open.chat(t.terminal ? { workspaceId: t.workspaceId, terminal: t.terminal } : { workspaceId: t.workspaceId }) as { opened?: boolean; reason?: string } | undefined
+  return opened?.opened === false ? opened.reason : undefined
 }
 
 function runPs(): Promise<PsWorktree[]> {
@@ -551,7 +568,8 @@ function runPs(): Promise<PsWorktree[]> {
 
 async function fromApi(orca: OrcaWorkerApi): Promise<WorkspaceRow[]> {
   const { workspaces } = await orca.host.call('workspace.list')
-  return workspaces.map((w) => ({
+  // A paired host's workspaces (an Orca that lists them) are no rows of this machine.
+  return workspaces.filter((w) => isLocalWorkspace(w)).map((w) => ({
     id: w.id,
     name: w.name,
     branch: shortBranch(w.branch),
@@ -1435,7 +1453,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   // ---------- coordinators: create and open ----------
   /** The coordinator's workspace id, adding its folder to Orca first if it is not there yet. */
   async function workspaceFor(dir: string): Promise<string | null> {
-    const find = async () => (await orca.host.call('workspace.list')).workspaces.find((w) => w.path === dir)?.id ?? null
+    const find = async () => (await orca.host.call('workspace.list')).workspaces.find((w) => isLocalWorkspace(w) && w.path === dir)?.id ?? null
     let id = await find()
     if (!id) {
       await run(['repo', 'add', '--path', dir, '--kind', 'folder'])
@@ -1906,8 +1924,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     // A paired host's row Orca lists here opens by its plugin workspace id (its terminals are that host's: none to switch to).
     const openId = remoteOpenTarget(latest?.rows ?? [], input.workspaceId)
     if (openId) {
-      await orca.host.call('workspace.open', { workspaceId: openId })
-      return { opened: true }
+      // Orca refuses (action_failed: it does not know it; unavailable: no window to show it in): say where it opens instead.
+      try { await orca.host.call('workspace.open', { workspaceId: openId }); return { opened: true } }
+      catch (e) { return { opened: false, reason: remoteOpenFailed(latest?.rows ?? [], input.workspaceId, e) } }
     }
     const refused = refusedRemote(input.workspaceId, input.terminal)
     if (refused) return { opened: false, reason: refused }
