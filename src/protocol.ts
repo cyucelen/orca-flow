@@ -329,7 +329,7 @@ export type Snapshot = {
   /** The user's Orca bots; absent or null until `orca bot list` (or a bot workspace) has told. */
   bots?: Bot[] | null
   /** Settings → Features: Goals (off by default), Linear and Analytics (stored as `tokenSpeed`). Linear and Analytics default to on; false hides the section and its entry points. */
-  features?: { goals?: boolean; linear: boolean; tokenSpeed: boolean }
+  features?: { goals?: boolean; linear: boolean; tokenSpeed: boolean; hosts?: boolean }
   /** "Reload skills" requests that have not expired, one per pane (skills/orca-flow/scripts/skill-reload.mjs). */
   skillReload?: SkillReloadEntry[]
   /**

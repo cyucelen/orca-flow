@@ -4,6 +4,8 @@ Orca can pair other machines (servers) with this one, for example a machine with
 work this one has no room for. Orca Flow lets a lead or coordinator see those hosts and start a lead
 or worker on one, when the user chooses it. Nothing moves to another host on its own.
 
+This is opt-in: it stays off until **Paired hosts** is switched on in Orca Flow Settings → Features (off, no host is polled or shown, and `hosts`, `dispatch --on` and `capacity --on` refuse). It needs Orca host API 1.11 ([stablyai/orca#51918](https://github.com/stablyai/orca/pull/51918)); Orca Flow does not detect the Orca version for this.
+
 ## Supported
 
 - **`orca-flow hosts [--json]`**: this machine and each paired host, read-only: reachable or

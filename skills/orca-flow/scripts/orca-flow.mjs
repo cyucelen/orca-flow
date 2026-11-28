@@ -715,9 +715,25 @@ async function runFlow(run, args) {
   }
 }
 
+export const HOSTS_OFF = 'Paired hosts is off (Orca Flow Settings → Features); nothing started.'
+/** Settings → Features → Paired hosts: on only when config.json says features.hosts is exactly true (read like goalsEnabled). */
+function hostsEnabled(env = process.env) {
+  try {
+    return JSON.parse(readFileSync(join(env.ORCA_FLOW_DIR || join(homedir(), '.orca-flow'), 'config.json'), 'utf8'))?.features?.hosts === true
+  } catch {
+    return false
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   const [command] = args._
+  // Off: `hosts` and anything with --on refuse before a host is looked at. Local dispatch and capacity are unchanged.
+  if ((command === 'hosts' || ((command === 'dispatch' || command === 'capacity') && args.on !== undefined)) && !hostsEnabled()) {
+    console.error(HOSTS_OFF)
+    process.exitCode = 1
+    return
+  }
   switch (command) {
     case 'queue': {
       const q = await queue({ all: !!args.all })

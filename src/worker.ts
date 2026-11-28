@@ -854,7 +854,7 @@ let hostPoller: HostPoller | null = null
  * what runs its commands. Orca is busy right after a start, and a mounted test worker (gone within
  * seconds) never reaches the real Orca for a host; tests swap `run` for a fake.
  */
-export const hostPolling: { startAfterMs: number; run: HostRun | null } = { startAfterMs: 10_000, run: null }
+export const hostPolling: { startAfterMs: number; run: HostRun | null; /** Tests: stands in for Settings → Features → Paired hosts. */ on: (() => boolean) | null } = { startAfterMs: 10_000, run: null, on: null }
 
 function refreshLineage(orca: OrcaWorkerApi, onLoaded: () => void, panes: string[], roots: ReturnType<typeof splitRoots>, includeRemote = false): void {
   const unseen = panes.some((p) => !lineagePanes.has(p))
@@ -1247,21 +1247,39 @@ export default function activate(orca: OrcaWorkerApi): void {
   // Paired hosts: polled on their own timer (src/hosts.ts); a change redraws, a redraw never probes.
   // A paired host's finished turns are summarized from the rows its 60 s probe already read (no remote
   // read of its own), once per (pane, final message), through the same queue and writer as local turns.
-  const turns = turnTracker({ file: join(DATA_DIR, 'remote-turns.json'), log: (line) => orca.log(line) })
+  let turns: ReturnType<typeof turnTracker> | null = null
   const onRemoteRows = (host: { id: string }, worktrees: PsWorktree[], at: number) => {
+    turns ??= turnTracker({ file: join(DATA_DIR, 'remote-turns.json'), log: (line) => orca.log(line) })
     for (const t of turns.take(host.id, worktrees, at)) void summarizer.enqueue(remoteSummaryJob(t))
   }
-  const poller = hostPoller = createHostPoller({ run: hostPolling.run ?? run, file: join(DATA_DIR, 'hosts.json'), onChange: () => refreshSoon(), onRows: onRemoteRows, log: (line) => orca.log(line) })
-  const hostsStart = setTimeout(() => poller.start(), hostPolling.startAfterMs)
-  ;(hostsStart as unknown as { unref?: () => void }).unref?.()
-  disposers.push(() => { clearTimeout(hostsStart); poller.stop(); if (hostPoller === poller) hostPoller = null })
+  // Settings → Features → Paired hosts (off by default). Off: no poller exists, so no probe runs and hosts.json is not
+  // read or shown (the file stays). Read from the settings file on each refresh, so a save starts or stops polling
+  // without a restart.
+  let hostsStart: ReturnType<typeof setTimeout> | undefined
+  let hostsFirst = true
+  let mine: HostPoller | null = null
+  const stopHosts = () => { clearTimeout(hostsStart); mine?.stop(); if (hostPoller === mine) hostPoller = null; mine = null }
+  let hostsDisposed = false
+  const syncHosts = (on: boolean) => {
+    if (hostsDisposed || on === !!mine) return
+    if (!on) return stopHosts()
+    const poller = mine = hostPoller = createHostPoller({ run: hostPolling.run ?? run, file: join(DATA_DIR, 'hosts.json'), onChange: () => refreshSoon(), onRows: onRemoteRows, log: (line) => orca.log(line) })
+    hostsStart = setTimeout(() => poller.start(), hostsFirst ? hostPolling.startAfterMs : 0)
+    hostsFirst = false
+    ;(hostsStart as unknown as { unref?: () => void }).unref?.()
+  }
+  disposers.push(() => { hostsDisposed = true; stopHosts() }) // a refresh still in flight must not start polling again
+  const hostsOn = (features: { hosts: boolean }) => hostPolling.on ? hostPolling.on() : features.hosts
+  syncHosts(hostsOn(readSettings(DATA_DIR).settings.features))
   let localVersion: string | null | undefined
   // Full snapshots also catch missing/stale summaries, with bounded retries below.
   const refresh = async (): Promise<Snapshot> => {
     // When the coordinator lineage finishes loading, draw again with it.
     const features = readSettings(DATA_DIR).settings.features
-    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots), readFocus(run), readInstalledProviders(run)])
-    snap.features = { goals: features.goals, linear: features.linear, tokenSpeed: features.tokenSpeed }
+    features.hosts = hostsOn(features)
+    const [snap, front, installed] = await Promise.all([snapshot(orca, runPs, () => void refresh(), features.bots, () => (features.hosts ? hostPoller?.view() ?? null : null)), readFocus(run), readInstalledProviders(run)])
+    syncHosts(features.hosts)
+    snap.features = { goals: features.goals, linear: features.linear, tokenSpeed: features.tokenSpeed, hosts: features.hosts }
     snap.skillReload = readSkillReload()
     snap.codexReload = codexReady()
     snap.antigravityReload = antigravityReady()

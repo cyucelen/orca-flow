@@ -1,7 +1,7 @@
 // node --test test/*.test.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -230,6 +230,7 @@ test('end to end: `orca-flow dispatch --on caca --dry-run` and `orca-flow hosts`
     const log = join(dir, 'calls.jsonl')
     const env = { ...process.env, ORCA_CLI_BIN_DIR: dir, ORCA_FLOW_DIR: dir, FAKE_ORCA_LOG: log }
     const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ features: { hosts: true } }))
 
     const dry = run('dispatch', '--on', 'caca', '--dry-run', '--role', 'worker', '--kind', 'simple', '--worktree', 'new-top-level', '--repo', 'name:mono', '--spec', 'x')
     assert.equal(dry.status, 0, dry.stderr)
@@ -254,5 +255,26 @@ test('end to end: `orca-flow dispatch --on caca --dry-run` and `orca-flow hosts`
     const calls = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
     assert.equal(calls.filter((a) => a[1] === 'worker-start').length, 0, 'nothing started')
     for (const a of calls) assert.match(a.slice(0, 2).join(' '), /^(environment list|status|worktree ps|agent installed|diagnostics memory|repo show|account list)/, 'read-only commands only')
+  } finally { rmSync(dir, { recursive: true }) }
+})
+
+test('Paired hosts switch off: `hosts`, `dispatch --on` and `capacity --on` refuse with one line and exit 1, touching no Orca', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flow-hosts-off-'))
+  try {
+    const cli = fileURLToPath(new URL('../skills/orca-flow/scripts/orca-flow.mjs', import.meta.url))
+    const log = join(dir, 'calls.jsonl')
+    writeFileSync(join(dir, 'orca'), FAKE_ORCA(process.execPath), { mode: 0o700 })
+    const env = { ...process.env, ORCA_CLI_BIN_DIR: dir, ORCA_FLOW_DIR: dir, FAKE_ORCA_LOG: log }
+    const line = 'Paired hosts is off (Orca Flow Settings → Features); nothing started.'
+    for (const config of [null, { features: { hosts: false } }, { features: { hosts: 'true' } }]) {
+      if (config) writeFileSync(join(dir, 'config.json'), JSON.stringify(config))
+      for (const args of [['hosts'], ['dispatch', '--on', 'caca', '--role', 'worker', '--worktree', 'new-top-level', '--repo', 'name:mono', '--spec', 'x'], ['capacity', '--on', 'caca']]) {
+        const r = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env })
+        assert.equal(r.status, 1, args.join(' '))
+        assert.equal(r.stderr.trim(), line)
+        assert.equal(r.stdout, '')
+      }
+    }
+    assert.equal(existsSync(log), false, 'no orca command ran')
   } finally { rmSync(dir, { recursive: true }) }
 })

@@ -11,6 +11,7 @@ import { relabelWorktrees } from '../skills/orca-flow/scripts/hosts.mjs'
 
 // A mounted worker never reaches the real Orca for a paired host: its poller's commands all fail here.
 main.hostPolling.run = async () => { throw new Error('no Orca in tests') }
+main.hostPolling.on = () => true // the Paired hosts switch; the switch tests below change it
 
 const ps: main.PsWorktree[] = [
   {
@@ -2154,4 +2155,39 @@ test('the workspace.list fallback (worktree ps failed) never shows a paired host
   const orca = { host: { call: async () => ({ workspaces, truncated: false }) }, log: () => {} }
   const answer = await main.snapshot(orca as never, () => Promise.reject(new Error('no cli')))
   assert.deepEqual(answer.rows.map((r) => r.id), ['x'])
+})
+
+test('Paired hosts switch: off, no probe runs and the snapshot has no hosts or remote rows; turning it on starts polling and off stops it, without a restart', async () => {
+  const calls: string[][] = []
+  const savedRun = main.hostPolling.run, savedStart = main.hostPolling.startAfterMs, savedOn = main.hostPolling.on
+  const environments = { environments: [{ id: 'env-caca', name: 'caca', runtimeId: 'rt1' }] }
+  main.hostPolling.run = async (args) => { calls.push([...args]); return args[0] === 'environment' && args[1] === 'list' ? environments : null }
+  main.hostPolling.startAfterMs = 0
+  let switchOn = false
+  main.hostPolling.on = () => switchOn
+  const worker = await mountWorker(main, { host: mockHost({ results: { 'statusBar.update': {}, 'workspace.list': { workspaces: [], truncated: false } } }) })
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  try {
+    let snap = (await worker.request('sidebar.list')) as import('./protocol.ts').Snapshot
+    await wait(150)
+    assert.deepEqual(calls, [], 'off: no environment list, no --environment probe')
+    assert.equal('hosts' in snap, false)
+    assert.ok(snap.rows.every((r) => !r.host))
+    assert.equal(snap.features?.hosts, false)
+    switchOn = true
+    snap = (await worker.request('sidebar.list')) as import('./protocol.ts').Snapshot
+    assert.equal(snap.features?.hosts, true)
+    await wait(150)
+    assert.ok(calls.some((a) => a[0] === 'environment' && a[1] === 'list'), 'on: polling starts')
+    switchOn = false
+    await worker.request('sidebar.list')
+    const seen = calls.length
+    await wait(150)
+    assert.equal(calls.length, seen, 'off again: polling stops')
+    snap = (await worker.request('sidebar.list')) as import('./protocol.ts').Snapshot
+    assert.equal('hosts' in snap, false)
+  } finally {
+    await worker.deactivate()
+    main.hostPolling.run = savedRun; main.hostPolling.startAfterMs = savedStart; main.hostPolling.on = savedOn
+  }
 })

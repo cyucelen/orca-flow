@@ -246,6 +246,7 @@ export function createHostPoller(opts: { run: HostRun; file?: string | null; now
     tick,
     start(): void {
       if (timer) return
+      stopped = false
       tick()
       timer = setInterval(tick, TICK_MS)
       ;(timer as unknown as { unref?: () => void }).unref?.()

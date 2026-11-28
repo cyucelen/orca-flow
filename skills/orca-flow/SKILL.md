@@ -265,7 +265,7 @@ orca-flow dispatch --on <host> --role worker --kind normal --worktree new-top-le
   --repo <a project on that host> --task-title "<outcome>" --spec-file -
 ```
 
-`--on` takes the host's name or environment id. `--worktree current` (or none) is this machine's
+`--on` (and `hosts`) need the Paired hosts switch on (Orca Flow Settings → Features); off, they refuse and start nothing. `--on` takes the host's name or environment id. `--worktree current` (or none) is this machine's
 worktree and is refused: use `new-top-level` or `new-child` with `--repo` naming a project on that
 host (`orca repo list --environment <host>`), or an exact selector (`id:`, `path:`, `name:`,
 `branch:`, `identity:`) of a worktree there. Before anything starts, dispatch checks read-only that
