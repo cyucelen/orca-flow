@@ -77,6 +77,11 @@ remain untested. Flow has no Antigravity transcript summary or structured handov
   presets to start from. Each dispatch starts on the model for its task, says why, and refuses rather than
   silently using another. Leads and coordinators hand implementation to Orca workers, not to native
   subagents. [Details and limits](docs/model-routing.md)
+- **Paired hosts:** `orca-flow hosts` lists this machine and each Orca server paired with it
+  (reachable or not, Orca version, RAM, agents, worktrees), and `orca-flow dispatch --on <host>`
+  starts a lead or worker on the host you choose, after checking that host's reachability, agents
+  and memory. Its reports come back to the lead that started it. Nothing moves to another host
+  unless you choose it. [What is supported](docs/remote-hosts.md)
 - **Issue, PR and age:** the title gets the row; on its right, the worktree's Linear issue when it
   has one, then its PR's number, colored the way Orca colors it (hover for the title, click to open
   the PR), the project and the age. The branch shows only as the color of the row's tree lines.
